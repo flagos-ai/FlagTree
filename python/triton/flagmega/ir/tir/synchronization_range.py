@@ -23,9 +23,13 @@ class SynchronizationRange(TIRNode):
         if not self.storage or not self.physical_id:
             raise IRSchemaError("SynchronizationRange requires storage identity.")
         if self.offset < 0 or self.nbytes <= 0:
-            raise IRSchemaError("SynchronizationRange requires a non-negative offset and positive size.")
+            raise IRSchemaError(
+                "SynchronizationRange requires a non-negative offset and positive size."
+            )
         if self.mode not in {"read", "write", "read_write"}:
-            raise IRSchemaError("SynchronizationRange mode must be read, write, or read_write.")
+            raise IRSchemaError(
+                "SynchronizationRange mode must be read, write, or read_write."
+            )
 
 
 __all__ = ["SynchronizationRange"]

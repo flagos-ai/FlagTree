@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Contracts shared by AutoVectorize rules."""
+"""Contracts shared by nncase-shaped AutoVectorize rules."""
 
 from __future__ import annotations
 
@@ -32,11 +32,9 @@ class VectorizeRule(Protocol):
     name: str
     op_names: frozenset[str]
 
-    def candidates(self, node: Node, module: IRModule) -> tuple[VectorizeCandidate, ...]:
-        ...
+    def candidates(self, node: Node, module: IRModule) -> tuple[VectorizeCandidate, ...]: ...
 
-    def rewrite(self, node: Node, module: IRModule, candidate: VectorizeCandidate) -> RewriteResult:
-        ...
+    def rewrite(self, node: Node, module: IRModule, candidate: VectorizeCandidate) -> RewriteResult: ...
 
 
 class VectorizeRuleRegistry:

@@ -25,10 +25,10 @@ def test_default_reduction_order_keeps_existing_ir_canonical():
 def test_ordered_reduction_survives_every_vectorization():
     lhs, rhs = operands()
     prepared = MatMul.prepare((lhs, rhs), {"transpose_b": True, "reduction_order": "mma_k16"})
-    projection = fm.Node("projection", MatMul.op_name, (lhs.id, rhs.id), prepared.result_type, prepared.effect,
-                         prepared.attrs)
-    module = fm.IRModule(dialect="hl", stage="imported", nodes=(lhs, rhs, projection),
-                         functions=(fm.Function("main", (lhs.id, rhs.id), (projection.id, )), ), entry="main")
+    projection = fm.Node("projection", MatMul.op_name, (lhs.id, rhs.id), prepared.result_type,
+                         prepared.effect, prepared.attrs)
+    module = fm.IRModule(dialect="hl", stage="imported", nodes=(lhs, rhs, projection), functions=(
+        fm.Function("main", (lhs.id, rhs.id), (projection.id,)),), entry="main")
     rule = VectorizeMatMul()
     candidates = rule.candidates(projection, module)
     assert {c.parameters["kind"] for c in candidates} == {"n", "mn", "mkn"}
@@ -41,7 +41,7 @@ def test_ordered_reduction_survives_every_vectorization():
 @pytest.mark.parametrize("packed", [False, True])
 def test_ordered_reduction_rejects_cross_owner_k_reassociation(packed):
     placement = fm.Placement((2, 2), "yx", "bb")
-    b, split = fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 1)
+    b, split = fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 1)
     lhs, rhs = operands()
     lhs = fm.Node("x", "builtin.var", (), fm.DistributedType(lhs.type, (b, split), placement))
     if packed:

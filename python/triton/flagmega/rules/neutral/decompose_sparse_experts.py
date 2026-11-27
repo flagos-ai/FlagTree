@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Expose the selected-expert GateUp/Down handoff, as in reference."""
+"""Expose the selected-expert GateUp/Down handoff, as in nncase."""
 
 from triton.flagmega.ir.ops.nn.sparse_experts import SparseExperts
 from triton.flagmega.pattern_match import F, wildcard

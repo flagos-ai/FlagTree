@@ -12,6 +12,7 @@ from triton.flagmega.evaluator import (
     create_gdn_state,
 )
 
+
 torch = pytest.importorskip("torch")
 
 
@@ -27,7 +28,7 @@ def _config() -> GatedDeltaNetStateConfig:
     )
 
 
-def test_state_ir_type_matches_reference_vector_lane_abi():
+def test_state_ir_type_matches_nncase_vector_lane_abi():
     config = _config()
     convolution = config.logical_tensor_type(GatedDeltaNetStateKind.CONVOLUTION)
     recurrent = config.logical_tensor_type(GatedDeltaNetStateKind.RECURRENT)

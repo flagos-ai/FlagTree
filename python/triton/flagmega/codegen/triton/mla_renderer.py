@@ -8,9 +8,7 @@ from triton.flagmega.ir.distributed_type import SBPSplit
 from triton.flagmega.ir.ops.nn._mla_head_distribution import validate_mla_head_distribution
 from triton.flagmega.codegen.triton.tensor_transform_renderers import _tensor_type
 from triton.flagmega.codegen.triton.physical_access import (
-    emit_active_extent,
-    emit_local_scalar_offset,
-    emit_logical_coordinate,
+    emit_active_extent, emit_local_scalar_offset, emit_logical_coordinate,
 )
 
 
@@ -23,8 +21,9 @@ def mla_projection_call(raw):
     )
 
     attrs = raw["semantic_attrs"]
-    x, w, result = (_buffer(raw, group, name)
-                    for group, name in (("inputs", "value"), ("inputs", "weight"), ("outputs", "result")))
+    x, w, result = (
+        _buffer(raw, group, name) for group, name in (("inputs", "value"), ("inputs", "weight"), ("outputs", "result"))
+    )
     shape = _static_shape(x["abi"], "logical_shape")
     if len(shape) != 3 or shape[0] != 1:
         raise CodegenError("MLA projection MMA currently implements single-token rank-3 inputs.")
@@ -35,10 +34,9 @@ def mla_projection_call(raw):
         raise CodegenError("MLA projection MMA requires BF16 or FP8 E4M3 weights.")
     quantized = weight_dtype == "float8_e4m3fn"
     scale = _buffer(raw, "inputs", "scale") if quantized else None
-    bindings = (x, w, *((scale, ) if scale else ()), result)
-    placement = next(
-        (kind.placement for binding in bindings if isinstance(kind := _tensor_type(binding["abi"]), DistributedType)),
-        None)
+    bindings = (x, w, *((scale,) if scale else ()), result)
+    placement = next((kind.placement for binding in bindings
+                      if isinstance(kind := _tensor_type(binding["abi"]), DistributedType)), None)
 
     def ownership_type(binding):
         abi = binding["abi"]
@@ -48,11 +46,11 @@ def mla_projection_call(raw):
             # ABI beside a distributed private activation. A complete such
             # tensor is a broadcast value for ownership proofs; its storage
             # and addressing stay unchanged. This cannot create head shards.
-            if (abi.get("coordinate_space") != "canonical_global" or abi.get("distributed_backing_type") is not None
+            if (abi.get("coordinate_space") != "canonical_global"
+                    or abi.get("distributed_backing_type") is not None
                     or tuple(abi["local_capacity_shape"]) != tuple(abi["logical_shape"])):
-                raise CodegenError(
-                    "MLA projection requires a complete canonical tensor for implicit broadcast ownership.")
-            return DistributedType(kind, (SBP.broadcast(), ) * kind.rank, placement)
+                raise CodegenError("MLA projection requires a complete canonical tensor for implicit broadcast ownership.")
+            return DistributedType(kind, (SBP.broadcast(),) * kind.rank, placement)
         return kind
 
     source_type = ownership_type(x)
@@ -63,9 +61,10 @@ def mla_projection_call(raw):
     except IRSchemaError as error:
         raise CodegenError(str(error)) from error
     if (isinstance(source_type, DistributedType) != isinstance(result_type, DistributedType)
-            or isinstance(source_type, DistributedType) and
-        (source_type.placement != result_type.placement or source_type.axis_policies != result_type.axis_policies
-         or result_type.partial is not None or result_type.exclusive is not None)):
+            or isinstance(source_type, DistributedType) and (
+                source_type.placement != result_type.placement
+                or source_type.axis_policies != result_type.axis_policies
+                or result_type.partial is not None or result_type.exclusive is not None)):
         raise CodegenError("MLA projection result must preserve source head ownership.")
     head_sharded = isinstance(source_type, DistributedType) and isinstance(source_type.axis_policies[1], SBPSplit)
     owned = {}
@@ -73,12 +72,10 @@ def mla_projection_call(raw):
         head = "_fm_mla_head"
         reduction_index = "_fm_mla_reduction"
         columns = "_fm_mla_columns"
-
         def packed_offset(binding, scalar):
             lanes = int(binding["abi"].get("scalar_lane_count", 1))
             return emit_local_scalar_offset(binding["abi"], ("0", head, f"({scalar} // {lanes})"),
                                             lane_coordinate=f"({scalar} % {lanes})" if lanes > 1 else None)
-
         owned["source_offset"] = packed_offset(x, reduction_index)
         owned["result_offset"] = packed_offset(result, columns)
         owned["global_head"] = emit_logical_coordinate(x["abi"], 1, ("0", head, "0"))
@@ -86,11 +83,9 @@ def mla_projection_call(raw):
         owned["weight_offset"] = emit_local_scalar_offset(w["abi"], ("_fm_mla_weight_row", "_fm_mla_weight_col"))
         if scale:
             scale_type = _tensor_type(scale["abi"])
-            scale_sharded = isinstance(scale_type, DistributedType) and isinstance(scale_type.axis_policies[0],
-                                                                                   SBPSplit)
+            scale_sharded = isinstance(scale_type, DistributedType) and isinstance(scale_type.axis_policies[0], SBPSplit)
             scale_row = "_fm_mla_weight_row" if scale_sharded else "_fm_mla_global_weight_row"
-            owned["scale_offset"] = emit_local_scalar_offset(
-                scale["abi"],
+            owned["scale_offset"] = emit_local_scalar_offset(scale["abi"],
                 (f"({scale_row} // {attrs['weight_block_n']})", f"(_fm_mla_weight_col // {attrs['weight_block_k']})"))
     x_strides = x["abi"]["scalar_storage_strides"]
     w_strides = w["abi"]["scalar_storage_strides"]

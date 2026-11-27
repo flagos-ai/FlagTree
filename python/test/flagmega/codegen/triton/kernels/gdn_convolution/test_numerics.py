@@ -64,7 +64,7 @@ def test_native_fast_silu_midpoints_survive_batched_convolution(tmp_path, fixtur
     inputs = torch.tensor([case["input"] for case in cases], dtype=torch.bfloat16).T.repeat(1, repeats)
     weight = torch.tensor([case["weight"] for case in cases], dtype=torch.bfloat16).repeat(repeats, 1)
     expected = torch.tensor([case["expected"] for case in cases], dtype=torch.bfloat16).repeat(repeats)
-    actual, _ = execute_convolution(tmp_path, torch, inputs, weight, torch.zeros(
-        (64, 3), dtype=torch.bfloat16), tokens_per_call=4, round_products=True, round_before_activation=False,
-                                    accumulation_order="chronological")
+    actual, _ = execute_convolution(
+        tmp_path, torch, inputs, weight, torch.zeros((64, 3), dtype=torch.bfloat16), tokens_per_call=4,
+        round_products=True, round_before_activation=False, accumulation_order="chronological")
     torch.testing.assert_close(actual[-1], expected, rtol=0, atol=0)

@@ -22,6 +22,7 @@ from triton.flagmega.ir.distributed_type import local_shape
 
 from .core import TIRMicroKernelContext, TIRMicroKernelProposal
 
+
 _FAMILY_BY_OP = {
     "ntt.paged_attention_partial": "paged_attention_partial",
     "ntt.paged_attention_combine": "paged_attention_combine",
@@ -40,23 +41,35 @@ class PagedAttentionSplitMicroKernelProvider:
 
     op_names = frozenset(_FAMILY_BY_OP)
 
-    def propose(self, context: TIRMicroKernelContext) -> TIRMicroKernelProposal | None:
+    def propose(
+        self, context: TIRMicroKernelContext
+    ) -> TIRMicroKernelProposal | None:
         dispatch = context.dispatch
         operation = dispatch.semantic_op
         family = _FAMILY_BY_OP.get(operation)
         if family is None:
             return None
         expected_inputs, expected_outputs = _ARITY_BY_OP[operation]
-        if (len(dispatch.arguments) != expected_inputs or len(dispatch.outputs) != expected_outputs):
-            raise CodegenError(f"Semantic op {operation!r} requires {expected_inputs} arguments "
-                               f"and {expected_outputs} outputs, got {len(dispatch.arguments)} "
-                               f"and {len(dispatch.outputs)}.")
+        if (
+            len(dispatch.arguments) != expected_inputs
+            or len(dispatch.outputs) != expected_outputs
+        ):
+            raise CodegenError(
+                f"Semantic op {operation!r} requires {expected_inputs} arguments "
+                f"and {expected_outputs} outputs, got {len(dispatch.arguments)} "
+                f"and {len(dispatch.outputs)}."
+            )
         _validate_contract(operation, dispatch.semantic_attrs)
-        implementations = tuple(implementation for implementation in context.implementations(family, mode="decode")
-                                if _applicable(context, implementation.contract, implementation.parameters))
+        implementations = tuple(
+            implementation
+            for implementation in context.implementations(family, mode="decode")
+            if _applicable(context, implementation.contract, implementation.parameters)
+        )
         if not implementations:
-            raise CodegenError(f"Implementation model {context.implementation_model.name!r} has no "
-                               f"decode implementation for semantic op {operation!r}.")
+            raise CodegenError(
+                f"Implementation model {context.implementation_model.name!r} has no "
+                f"decode implementation for semantic op {operation!r}."
+            )
         candidates = tuple(context.candidate(value) for value in implementations)
         default = context.choose_default(family, candidates)
         if operation == "ntt.paged_attention_gated_combine":
@@ -67,9 +80,9 @@ class PagedAttentionSplitMicroKernelProvider:
                 capacity = prod(shape) * _lane_count(logical_type(output).dtype)
                 # Ownership is already fixed. Avoid masked lanes when a smaller
                 # catalog tile still covers the complete owner-local result.
-                covering = tuple(
-                    candidate for candidate in candidates if candidate.facts.get("portable_triton") and capacity <=
-                    candidate.parameters["elements_per_program"] <= preferred.parameters["elements_per_program"])
+                covering = tuple(candidate for candidate in candidates if candidate.facts.get("portable_triton")
+                                 and capacity <= candidate.parameters["elements_per_program"]
+                                 <= preferred.parameters["elements_per_program"])
                 if covering:
                     default = min(covering, key=lambda candidate: candidate.parameters["elements_per_program"]).id
         return TIRMicroKernelProposal(
@@ -102,7 +115,11 @@ def _applicable(context, contract, parameters) -> bool:
     except (IndexError, KeyError):
         return False
     query = logical_type(query_type)
-    if (not isinstance(query, TensorType) or query.rank != 3 or not isinstance(state_type, RefType)):
+    if (
+        not isinstance(query, TensorType)
+        or query.rank != 3
+        or not isinstance(state_type, RefType)
+    ):
         return False
     fields = dict(state_type.fields)
     cache = fields.get("kv_caches")
@@ -130,7 +147,10 @@ def _applicable(context, contract, parameters) -> bool:
         "required_local_query_heads": query_shape[head_axis],
         "required_scalar_head_dim": query_head_dim,
     }
-    if any(contract.get(key) is not None and contract[key] != value for key, value in observed.items()):
+    if any(
+        contract.get(key) is not None and contract[key] != value
+        for key, value in observed.items()
+    ):
         return False
     if contract.get("requires_local_query_heads_within_one_kv_group"):
         logical_query_shape = _fixed_shape(query)
@@ -150,7 +170,11 @@ def _applicable(context, contract, parameters) -> bool:
             return False
     block_n = int(parameters.get("block_n", 1))
     block_k = int(parameters.get("block_k", query_head_dim))
-    return (query_head_dim == cache_head_dim == block_k and cache_shape[3] % block_n == 0 and cache_shape[-2] > 0)
+    return (
+        query_head_dim == cache_head_dim == block_k
+        and cache_shape[3] % block_n == 0
+        and cache_shape[-2] > 0
+    )
 
 
 def _fixed_shape(value: TensorType) -> tuple[int, ...] | None:
@@ -186,17 +210,25 @@ def _lane_count(value) -> int:
 
 def _validate_contract(operation: str, attrs: Mapping[str, object]) -> None:
     layout = attrs.get("layout")
-    if not isinstance(layout, (tuple, list)) or set(layout) != {"seq", "head", "dim"} or len(layout) != 3:
-        raise CodegenError(f"Semantic op {operation!r} requires one seq/head/dim layout.")
+    if not isinstance(layout, (tuple, list)) or set(layout) != {
+        "seq", "head", "dim"
+    } or len(layout) != 3:
+        raise CodegenError(
+            f"Semantic op {operation!r} requires one seq/head/dim layout."
+        )
     _positive_int(attrs, "hidden_size", operation)
     split_axis = attrs.get("split_hierarchy_axis")
     if isinstance(split_axis, bool) or not isinstance(split_axis, int) or split_axis < 0:
-        raise CodegenError(f"Semantic op {operation!r} requires a non-negative split_hierarchy_axis.")
+        raise CodegenError(
+            f"Semantic op {operation!r} requires a non-negative split_hierarchy_axis."
+        )
     _positive_int(attrs, "split_count", operation, minimum=2)
     if operation == "ntt.paged_attention_partial":
         scale = attrs.get("scale")
         if isinstance(scale, bool) or not isinstance(scale, Real) or scale <= 0:
-            raise CodegenError("PagedAttentionPartial requires a positive attention scale.")
+            raise CodegenError(
+                "PagedAttentionPartial requires a positive attention scale."
+            )
         return
     if not isinstance(attrs.get("output_type"), IRType):
         raise CodegenError("PagedAttentionCombine requires a typed output contract.")
@@ -213,7 +245,9 @@ def _positive_int(
 ) -> int:
     value = attrs.get(name)
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise CodegenError(f"Semantic op {operation!r} requires {name} >= {minimum}.")
+        raise CodegenError(
+            f"Semantic op {operation!r} requires {name} >= {minimum}."
+        )
     return value
 
 

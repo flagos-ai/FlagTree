@@ -9,7 +9,8 @@ from itertools import product
 from math import prod
 
 from triton.flagmega.codegen.triton.distribution import (
-    dense_matmul_distribution_contract, )
+    dense_matmul_distribution_contract,
+)
 from triton.flagmega.codegen.triton.vectorization import (
     configured_vector_schedule,
     consumed_vector_contracts,
@@ -43,9 +44,7 @@ from .core import TritonCandidateContext, TritonCandidateProposal
 
 class DenseMatmulCandidateProvider:
     op_names = frozenset({
-        "math.matmul",
-        "math.packed_dense_matmul",
-        "math.vectorized_matmul",
+        "math.matmul", "math.packed_dense_matmul", "math.vectorized_matmul",
         "ntt.packed_matmul",
     })
 
@@ -55,18 +54,28 @@ class DenseMatmulCandidateProvider:
         context: TritonCandidateContext,
     ) -> TritonCandidateProposal | None:
         output_type = logical_type(node.type)
-        if (not isinstance(output_type, TensorType)
-                or _scalar_dtype(output_type) not in {DType.BFLOAT16, DType.FLOAT32}):
+        if (
+            not isinstance(output_type, TensorType)
+            or _scalar_dtype(output_type) not in {DType.BFLOAT16, DType.FLOAT32}
+        ):
             return None
         vector_contract = vectorization_contract(node)
-        distribution_contract = dense_matmul_distribution_contract(node, context.module)
+        distribution_contract = dense_matmul_distribution_contract(
+            node, context.module
+        )
         if node.op == "math.vectorized_matmul":
             # Survivors of the offline N-major weight pack lower through the
             # reviewed logical GEMV path; their attrs own the output lanes.
-            return self._propose_logical(node, context, vector_contract, distribution_contract)
+            return self._propose_logical(
+                node, context, vector_contract, distribution_contract
+            )
         if node.op in {"math.packed_dense_matmul", "ntt.packed_matmul"}:
-            return self._propose_packed(node, context, vector_contract, distribution_contract)
-        return self._propose_logical(node, context, vector_contract, distribution_contract)
+            return self._propose_packed(
+                node, context, vector_contract, distribution_contract
+            )
+        return self._propose_logical(
+            node, context, vector_contract, distribution_contract
+        )
 
     def _propose_packed(
         self,
@@ -82,57 +91,85 @@ class DenseMatmulCandidateProvider:
             return None
         output_dimension = output_type.shape[-1]
         reduction_dimension = input_type.shape[-1]
-        output_extent = (output_dimension.fixed_value *
-                         _last_axis_lane_count(output_type) if output_dimension.is_fixed else None)
-        reduction_extent = (reduction_dimension.fixed_value if reduction_dimension.is_fixed else None)
+        output_extent = (
+            output_dimension.fixed_value * _last_axis_lane_count(output_type)
+            if output_dimension.is_fixed else None
+        )
+        reduction_extent = (
+            reduction_dimension.fixed_value if reduction_dimension.is_fixed else None
+        )
         if node.op == "ntt.packed_matmul":
             weight_type = logical_type(context.module.node_map[node.inputs[1]].type)
-            if (not isinstance(weight_type, TensorType) or not isinstance(weight_type.dtype, VectorType)
-                    or len(weight_type.dtype.lanes) != 3):
+            if (
+                not isinstance(weight_type, TensorType)
+                or not isinstance(weight_type.dtype, VectorType)
+                or len(weight_type.dtype.lanes) != 3
+            ):
                 return None
             n_vector, k_pack, k_vector = weight_type.dtype.lanes
-            packed_layout = k_major_layout_name(n_vector, k_pack * k_vector)
+            packed_layout = k_major_layout_name(
+                n_vector, k_pack * k_vector
+            )
         else:
             packed_layout = str(node.attrs["packed_layout"])
 
         def applicable(epilogue: str):
             return tuple(
-                implementation for implementation in context.implementations(
+                implementation
+                for implementation in context.implementations(
                     "dense_matmul",
                     input_kind="packed",
                     epilogue=epilogue,
                     packed_layout=packed_layout,
                     vectorization_kind=vector_contract["kind"],
                     distribution_kind=distribution_contract["kind"],
-                ) if output_extent is not None and reduction_extent is not None
-                and _supports_reduction_order(implementation, node.attrs) and (
-                    not (node.attrs.get("post_ops") and node.attrs.get("output_data_type") == "bfloat16")
-                    or implementation.contract.get("supports_projection_widening_post_ops", False)) and (
-                        implementation.contract.get("required_input_dtype",
-                                                    _scalar_dtype(input_type).value) == _scalar_dtype(input_type).value)
-                and (implementation.contract.get("required_output_dtype",
-                                                 _scalar_dtype(output_type).value) == _scalar_dtype(output_type).value)
+                )
+                if output_extent is not None
+                and reduction_extent is not None
+                and _supports_reduction_order(implementation, node.attrs)
+                and (not (node.attrs.get("post_ops") and node.attrs.get("output_data_type") == "bfloat16")
+                     or implementation.contract.get("supports_projection_widening_post_ops", False))
+                and (implementation.contract.get("required_input_dtype", _scalar_dtype(input_type).value)
+                     == _scalar_dtype(input_type).value)
+                and (implementation.contract.get("required_output_dtype", _scalar_dtype(output_type).value)
+                     == _scalar_dtype(output_type).value)
                 and (not implementation.contract.get("requires_unpartitioned_reduction", False)
                      or not isinstance(context.module.node_map[node.inputs[0]].type, DistributedType)
                      or isinstance(context.module.node_map[node.inputs[0]].type.axis_policies[-1], SBPBroadCast))
-                and _supports_local_rows(implementation, context.module.node_map[node.inputs[0]].type) and (
+                and _supports_local_rows(implementation, context.module.node_map[node.inputs[0]].type)
+                and (
                     implementation.parameters.get("descriptor_kind") != "table"
-                    or isinstance(context.module.node_map[node.inputs[1]].type, DistributedType))
-                and supports_descriptor_weight_storage(implementation, context.module.node_map[node.inputs[1]].type)
-                and _supports_lhs_staging(implementation, context.module.node_map[node.inputs[0]].type) and (
-                    implementation.contract.get("supports_masked_tiles", False) or (
-                        (implementation.contract.get("supports_masked_output_tiles", False) or output_extent %
-                         int(implementation.parameters["tile_n"]) == 0) and reduction_extent %
-                        int(implementation.parameters["block_k"]) == 0)) and
-                (not (implementation.contract.get("requires_contiguous_local_tiles", False) or implementation.contract.
-                      get("requires_affine_local_tiles", False)) or _supports_packed_descriptor_tiles(
-                          node,
-                          context.module,
-                          block_k=implementation.parameters.get("block_k"),
-                          tile_n=implementation.parameters.get("tile_n"),
-                          affine_rhs=implementation.contract.get("requires_affine_local_tiles", False),
-                          allow_output_tail=implementation.contract.get("supports_masked_output_tiles", False),
-                      )))
+                    or isinstance(context.module.node_map[node.inputs[1]].type, DistributedType)
+                )
+                and supports_descriptor_weight_storage(
+                    implementation, context.module.node_map[node.inputs[1]].type
+                )
+                and _supports_lhs_staging(
+                    implementation, context.module.node_map[node.inputs[0]].type
+                )
+                and (
+                    implementation.contract.get("supports_masked_tiles", False)
+                    or (
+                        (implementation.contract.get("supports_masked_output_tiles", False)
+                         or output_extent % int(implementation.parameters["tile_n"]) == 0)
+                        and reduction_extent % int(implementation.parameters["block_k"]) == 0
+                    )
+                )
+                and (
+                    not (
+                        implementation.contract.get("requires_contiguous_local_tiles", False)
+                        or implementation.contract.get("requires_affine_local_tiles", False)
+                    )
+                    or _supports_packed_descriptor_tiles(
+                        node,
+                        context.module,
+                        block_k=implementation.parameters.get("block_k"),
+                        tile_n=implementation.parameters.get("tile_n"),
+                        affine_rhs=implementation.contract.get("requires_affine_local_tiles", False),
+                        allow_output_tail=implementation.contract.get("supports_masked_output_tiles", False),
+                    )
+                )
+            )
 
         variants: tuple[Candidate, ...] = tuple(
             _configure_dense_implementation(
@@ -141,8 +178,14 @@ class DenseMatmulCandidateProvider:
                 vector_contract,
                 distribution_contract,
                 semantic_parameters={"packed_layout": packed_layout},
-            ) for implementation in applicable("none"))
-        match = (context.projection_norm_matches.get(node.id) if context.is_reusable(node) else None)
+            )
+            for implementation in applicable("none")
+        )
+        match = (
+            context.projection_norm_matches.get(node.id)
+            if context.is_reusable(node)
+            else None
+        )
         if match is not None:
             fused_vectors = consumed_vector_contracts(
                 context.module,
@@ -175,12 +218,18 @@ class DenseMatmulCandidateProvider:
                         "projection_result_single_use": True,
                         "materializes_residual": True,
                     },
-                ) for implementation in applicable("residual_norm_stats"))
+                )
+                for implementation in applicable("residual_norm_stats")
+            )
         logits_match = context.projection_logits_matches.get(node.id)
-        logits_vectors = (None if logits_match is None else consumed_vector_contracts(
-            context.module,
-            {"logits_cast": (logits_match.logits, "axes")},
-        ))
+        logits_vectors = (
+            None
+            if logits_match is None
+            else consumed_vector_contracts(
+                context.module,
+                {"logits_cast": (logits_match.logits, "axes")},
+            )
+        )
         if logits_match is not None and logits_vectors is not None:
             variants += tuple(
                 _configure_dense_implementation(
@@ -200,10 +249,14 @@ class DenseMatmulCandidateProvider:
                         "materializes_projection": False,
                         "materializes_fp32_logits": True,
                     },
-                ) for implementation in applicable("cast_logits_argmax"))
+                )
+                for implementation in applicable("cast_logits_argmax")
+            )
         if not variants:
             return None
-        return TritonCandidateProposal(variants, context.choose_default("dense_matmul", variants))
+        return TritonCandidateProposal(
+            variants, context.choose_default("dense_matmul", variants)
+        )
 
     def _propose_logical(
         self,
@@ -213,8 +266,11 @@ class DenseMatmulCandidateProvider:
         distribution_contract,
     ) -> TritonCandidateProposal | None:
         input_type = logical_type(context.module.node_map[node.inputs[0]].type)
-        reduction_extent = (input_type.shape[-1].fixed_value
-                            if isinstance(input_type, TensorType) and input_type.shape[-1].is_fixed else None)
+        reduction_extent = (
+            input_type.shape[-1].fixed_value
+            if isinstance(input_type, TensorType) and input_type.shape[-1].is_fixed
+            else None
+        )
         local_output_extent = _local_scalar_last_axis_extent(node.type)
 
         def applicable(implementation) -> bool:
@@ -223,29 +279,48 @@ class DenseMatmulCandidateProvider:
             if not _supports_local_rows(implementation, context.module.node_map[node.inputs[0]].type):
                 return False
             required_transpose_b = implementation.contract.get("transpose_b")
-            if (required_transpose_b is not None
-                    and bool(node.attrs.get("transpose_b", False)) is not bool(required_transpose_b)):
+            if (
+                required_transpose_b is not None
+                and bool(node.attrs.get("transpose_b", False))
+                is not bool(required_transpose_b)
+            ):
                 return False
-            maximum_local_output = implementation.contract.get("maximum_local_output_extent")
-            if (maximum_local_output is not None
-                    and (local_output_extent is None or local_output_extent > int(maximum_local_output))):
+            maximum_local_output = implementation.contract.get(
+                "maximum_local_output_extent"
+            )
+            if (
+                maximum_local_output is not None
+                and (
+                    local_output_extent is None
+                    or local_output_extent > int(maximum_local_output)
+                )
+            ):
                 return False
             if not implementation.contract.get("requires_full_reduction_tiles", False):
                 full_reduction_tiles = True
             else:
                 block_k = implementation.parameters.get("block_k")
-                full_reduction_tiles = (reduction_extent is not None and isinstance(block_k, int)
-                                        and reduction_extent % block_k == 0)
-            return full_reduction_tiles and (not implementation.contract.get("requires_contiguous_local_tiles", False)
-                                             or _supports_contiguous_descriptor_tiles(
-                                                 node,
-                                                 context.module,
-                                                 block_k=implementation.parameters.get("block_k"),
-                                                 tile_n=implementation.parameters.get("tile_n"),
-                                             ))
+                full_reduction_tiles = (
+                    reduction_extent is not None
+                    and isinstance(block_k, int)
+                    and reduction_extent % block_k == 0
+                )
+            return full_reduction_tiles and (
+                not implementation.contract.get(
+                    "requires_contiguous_local_tiles", False
+                )
+                or _supports_contiguous_descriptor_tiles(
+                    node,
+                    context.module,
+                    block_k=implementation.parameters.get("block_k"),
+                    tile_n=implementation.parameters.get("tile_n"),
+                )
+            )
 
         variants = tuple(
-            _configure_dense_implementation(context, implementation, vector_contract, distribution_contract)
+            _configure_dense_implementation(
+                context, implementation, vector_contract, distribution_contract
+            )
             for implementation in context.implementations(
                 "dense_matmul",
                 input_kind="logical",
@@ -253,8 +328,13 @@ class DenseMatmulCandidateProvider:
                 vectorization_kind=vector_contract["kind"],
                 distribution_kind=distribution_contract["kind"],
             )
-            if applicable(implementation))
-        match = (context.projection_norm_matches.get(node.id) if context.is_reusable(node) else None)
+            if applicable(implementation)
+        )
+        match = (
+            context.projection_norm_matches.get(node.id)
+            if context.is_reusable(node)
+            else None
+        )
         if match is not None:
             fused_vectors = consumed_vector_contracts(
                 context.module,
@@ -286,23 +366,36 @@ class DenseMatmulCandidateProvider:
                         "projection_result_single_use": True,
                         "materializes_residual": True,
                     },
-                ) for implementation in context.implementations(
+                )
+                for implementation in context.implementations(
                     "dense_matmul",
                     input_kind="logical",
                     epilogue="residual_norm_stats",
                     vectorization_kind=vector_contract["kind"],
                     distribution_kind=distribution_contract["kind"],
-                ) if applicable(implementation))
+                )
+                if applicable(implementation)
+            )
         output_type = logical_type(node.type)
         assert isinstance(output_type, TensorType)
         output_dimension = output_type.shape[-1]
-        output_extent = (output_dimension.fixed_value if output_dimension.is_fixed else None)
+        output_extent = (
+            output_dimension.fixed_value if output_dimension.is_fixed else None
+        )
         logits_match = context.projection_logits_matches.get(node.id)
-        logits_vectors = (None if logits_match is None else consumed_vector_contracts(
-            context.module,
-            {"logits_cast": (logits_match.logits, "axes")},
-        ))
-        if (logits_match is not None and logits_vectors is not None and output_extent is not None):
+        logits_vectors = (
+            None
+            if logits_match is None
+            else consumed_vector_contracts(
+                context.module,
+                {"logits_cast": (logits_match.logits, "axes")},
+            )
+        )
+        if (
+            logits_match is not None
+            and logits_vectors is not None
+            and output_extent is not None
+        ):
             variants += tuple(
                 _configure_dense_implementation(
                     context,
@@ -320,20 +413,29 @@ class DenseMatmulCandidateProvider:
                         "materializes_projection": False,
                         "materializes_fp32_logits": True,
                     },
-                ) for implementation in context.implementations(
+                )
+                for implementation in context.implementations(
                     "dense_matmul",
                     input_kind="logical",
                     epilogue="cast_logits_argmax",
                     vectorization_kind=vector_contract["kind"],
                     distribution_kind=distribution_contract["kind"],
-                ) if applicable(implementation) and output_extent % int(implementation.parameters["tile_n"]) == 0)
+                )
+                if applicable(implementation)
+                and output_extent % int(implementation.parameters["tile_n"]) == 0
+            )
         if not variants:
             return None
         default = context.choose_default("dense_matmul", variants)
-        leading_rows = _local_leading_rows(context.module.node_map[node.inputs[0]].type)
+        leading_rows = _local_leading_rows(
+            context.module.node_map[node.inputs[0]].type
+        )
         if leading_rows is not None and leading_rows > 1:
             tensor_core = next(
-                (candidate for candidate in variants if candidate.parameters.get("variant") == "mma"),
+                (
+                    candidate for candidate in variants
+                    if candidate.parameters.get("variant") == "mma"
+                ),
                 None,
             )
             if tensor_core is not None:
@@ -348,7 +450,10 @@ def _local_leading_rows(value_type):
     a tensor-core (WMMA) tl.dot kernel wins, so it drives the tir default.
     """
 
-    shape = (local_shape(value_type) if isinstance(value_type, DistributedType) else logical_type(value_type).shape)
+    shape = (
+        local_shape(value_type) if isinstance(value_type, DistributedType)
+        else logical_type(value_type).shape
+    )
     if not shape or any(not dimension.is_fixed for dimension in shape[:-1]):
         return None
     return prod(dimension.fixed_value for dimension in shape[:-1])
@@ -372,9 +477,16 @@ def _supports_contiguous_descriptor_tiles(
 ) -> bool:
     """Check the local affine rectangles required by one descriptor load."""
 
-    if (node.op != "math.matmul" or bool(node.attrs.get("transpose_a", False)) or not isinstance(block_k, int)
-            or isinstance(block_k, bool) or not isinstance(tile_n, int) or isinstance(tile_n, bool) or block_k <= 0
-            or tile_n <= 0):
+    if (
+        node.op != "math.matmul"
+        or bool(node.attrs.get("transpose_a", False))
+        or not isinstance(block_k, int)
+        or isinstance(block_k, bool)
+        or not isinstance(tile_n, int)
+        or isinstance(tile_n, bool)
+        or block_k <= 0
+        or tile_n <= 0
+    ):
         return False
     lhs = module.node_map[node.inputs[0]].type
     output = node.type
@@ -389,13 +501,29 @@ def _supports_contiguous_descriptor_tiles(
     if not _axis_has_contiguous_local_order(output, output_n_axis):
         return False
     lhs_dimensions = local_shape(lhs) if isinstance(lhs, DistributedType) else lhs_type.shape
-    output_dimensions = (local_shape(output) if isinstance(output, DistributedType) else output_type.shape)
+    output_dimensions = (
+        local_shape(output) if isinstance(output, DistributedType) else output_type.shape
+    )
     lhs_extent = lhs_dimensions[lhs_k_axis].fixed_value
     output_extent = output_dimensions[output_n_axis].fixed_value
-    lhs_extent = (None if lhs_extent is None else lhs_extent * _last_axis_lane_count(lhs_type))
-    output_extent = (None if output_extent is None else output_extent * _last_axis_lane_count(output_type))
-    return (lhs_extent is not None and output_extent is not None and lhs_extent >= block_k and output_extent >= tile_n
-            and lhs_extent % block_k == 0 and output_extent % tile_n == 0)
+    lhs_extent = (
+        None
+        if lhs_extent is None
+        else lhs_extent * _last_axis_lane_count(lhs_type)
+    )
+    output_extent = (
+        None
+        if output_extent is None
+        else output_extent * _last_axis_lane_count(output_type)
+    )
+    return (
+        lhs_extent is not None
+        and output_extent is not None
+        and lhs_extent >= block_k
+        and output_extent >= tile_n
+        and lhs_extent % block_k == 0
+        and output_extent % tile_n == 0
+    )
 
 
 def _supports_packed_descriptor_tiles(
@@ -409,8 +537,15 @@ def _supports_packed_descriptor_tiles(
 ) -> bool:
     """Prove that each packed descriptor issue names one affine rectangle."""
 
-    if (node.op != "ntt.packed_matmul" or not isinstance(block_k, int) or isinstance(block_k, bool)
-            or not isinstance(tile_n, int) or isinstance(tile_n, bool) or block_k <= 0 or tile_n <= 0):
+    if (
+        node.op != "ntt.packed_matmul"
+        or not isinstance(block_k, int)
+        or isinstance(block_k, bool)
+        or not isinstance(tile_n, int)
+        or isinstance(tile_n, bool)
+        or block_k <= 0
+        or tile_n <= 0
+    ):
         return False
     lhs = module.node_map[node.inputs[0]].type
     rhs = module.node_map[node.inputs[1]].type
@@ -418,9 +553,13 @@ def _supports_packed_descriptor_tiles(
     lhs_type = logical_type(lhs)
     rhs_type = logical_type(rhs)
     output_type = logical_type(output)
-    if (not isinstance(lhs_type, TensorType) or not isinstance(output_type, TensorType)
-            or not isinstance(rhs_type, TensorType) or not isinstance(rhs_type.dtype, VectorType)
-            or rhs_type.dtype.lanes != (8, 2, 8)):
+    if (
+        not isinstance(lhs_type, TensorType)
+        or not isinstance(output_type, TensorType)
+        or not isinstance(rhs_type, TensorType)
+        or not isinstance(rhs_type.dtype, VectorType)
+        or rhs_type.dtype.lanes != (8, 2, 8)
+    ):
         return False
     if affine_rhs:
         # An owner table encodes RHS global strides. LHS and result use the
@@ -428,16 +567,22 @@ def _supports_packed_descriptor_tiles(
         if not all(_axis_has_affine_local_order(rhs, axis) for axis in range(rhs_type.rank)):
             return False
     elif not all((
-            _axis_has_contiguous_local_order(lhs, lhs_type.rank - 1),
-            _axis_has_contiguous_local_order(rhs, rhs_type.rank - 2),
-            _axis_has_contiguous_local_order(rhs, rhs_type.rank - 1),
-            _axis_has_contiguous_local_order(output, output_type.rank - 1),
+        _axis_has_contiguous_local_order(lhs, lhs_type.rank - 1),
+        _axis_has_contiguous_local_order(rhs, rhs_type.rank - 2),
+        _axis_has_contiguous_local_order(rhs, rhs_type.rank - 1),
+        _axis_has_contiguous_local_order(output, output_type.rank - 1),
     )):
         return False
     local_k = _local_scalar_last_axis_extent(lhs)
     local_n = _local_scalar_last_axis_extent(output)
-    return (local_k is not None and local_n is not None and local_k >= block_k and local_n >= tile_n
-            and local_k % block_k == 0 and (allow_output_tail or local_n % tile_n == 0))
+    return (
+        local_k is not None
+        and local_n is not None
+        and local_k >= block_k
+        and local_n >= tile_n
+        and local_k % block_k == 0
+        and (allow_output_tail or local_n % tile_n == 0)
+    )
 
 
 def supports_descriptor_weight_storage(implementation, value_type) -> bool:
@@ -457,9 +602,11 @@ def supports_descriptor_weight_storage(implementation, value_type) -> bool:
     exists to constrain.
     """
 
-    if (not implementation.facts.get("host_tensor_descriptor")
-            or implementation.parameters.get("descriptor_kind") == "table"
-            or not isinstance(value_type, DistributedType)):
+    if (
+        not implementation.facts.get("host_tensor_descriptor")
+        or implementation.parameters.get("descriptor_kind") == "table"
+        or not isinstance(value_type, DistributedType)
+    ):
         return True
     placement = value_type.placement
     chip_count = placement.physical_level_size("c") * placement.physical_level_size("d")
@@ -475,12 +622,20 @@ def _is_chip_split(value_type: DistributedType) -> bool:
     applicability and the storage kind it later derives cannot disagree.
     """
 
-    chip_axes = {axis for axis, level in enumerate(value_type.placement.hierarchy_levels) if level in {"c", "d"}}
+    chip_axes = {
+        axis
+        for axis, level in enumerate(value_type.placement.hierarchy_levels)
+        if level in {"c", "d"}
+    }
     return any(
-        isinstance(policy, SBPSplit) and any(axis in chip_axes
-                                             for stage in policy.stages
-                                             for axis in stage.hierarchy_axes)
-        for policy in value_type.axis_policies)
+        isinstance(policy, SBPSplit)
+        and any(
+            axis in chip_axes
+            for stage in policy.stages
+            for axis in stage.hierarchy_axes
+        )
+        for policy in value_type.axis_policies
+    )
 
 
 @lru_cache(maxsize=1024)
@@ -489,14 +644,17 @@ def _axis_has_affine_local_order(value, axis: int) -> bool:
         return True
     return all(
         local_shard_descriptor(value, owner).axes[axis].affine_stride is not None
-        for owner in product(*(range(extent) for extent in value.placement.hierarchy)))
+        for owner in product(*(range(extent) for extent in value.placement.hierarchy))
+    )
 
 
 def _axis_has_contiguous_local_order(value, axis: int) -> bool:
     if not isinstance(value, DistributedType):
         return True
     policy = value.axis_policies[axis]
-    return isinstance(policy, SBPBroadCast) or (isinstance(policy, SBPSplit) and policy.is_contiguous)
+    return isinstance(policy, SBPBroadCast) or (
+        isinstance(policy, SBPSplit) and policy.is_contiguous
+    )
 
 
 def _local_scalar_last_axis_extent(value) -> int | None:
@@ -521,10 +679,13 @@ class MatMulNormStatsCandidateProvider:
     ) -> TritonCandidateProposal | None:
         result_type = node.type
         output_type = logical_type(result_type)
-        if (not isinstance(output_type, TupleType) or len(output_type.fields) != 2
-                or not isinstance(output_type.fields[0], TensorType)
-                or _scalar_dtype(output_type.fields[0]) not in {DType.BFLOAT16, DType.FLOAT32}
-                or bool(node.attrs["use_mean"])):
+        if (
+            not isinstance(output_type, TupleType)
+            or len(output_type.fields) != 2
+            or not isinstance(output_type.fields[0], TensorType)
+            or _scalar_dtype(output_type.fields[0]) not in {DType.BFLOAT16, DType.FLOAT32}
+            or bool(node.attrs["use_mean"])
+        ):
             return None
         value_type = output_type.fields[0]
         # M==1 (decode) reduces one row; M>1 (prefill) iterates an explicit row
@@ -557,13 +718,20 @@ class MatMulNormStatsCandidateProvider:
                 "rhs_layout": "k_major",
                 "reduction_order": node.attrs.get("reduction_order", "relaxed"),
             }
-            matmul_type = PackedMatMul.infer_type((lhs, rhs, none, none), matmul_attrs)
+            matmul_type = PackedMatMul.infer_type(
+                (lhs, rhs, none, none), matmul_attrs
+            )
             rhs_type = logical_type(rhs.type)
-            if (not isinstance(rhs_type, TensorType) or not isinstance(rhs_type.dtype, VectorType)
-                    or len(rhs_type.dtype.lanes) != 3):
+            if (
+                not isinstance(rhs_type, TensorType)
+                or not isinstance(rhs_type.dtype, VectorType)
+                or len(rhs_type.dtype.lanes) != 3
+            ):
                 return None
             n_vector, k_pack, k_vector = rhs_type.dtype.lanes
-            packed_layout = k_major_layout_name(n_vector, k_pack * k_vector)
+            packed_layout = k_major_layout_name(
+                n_vector, k_pack * k_vector
+            )
             synthetic_op = PackedMatMul.op_name
             input_kind = "packed"
         else:
@@ -582,7 +750,9 @@ class MatMulNormStatsCandidateProvider:
             vector_metadata,
         )
         vector_contract = vectorization_contract(synthetic)
-        distribution_contract = dense_matmul_distribution_contract(synthetic, context.module)
+        distribution_contract = dense_matmul_distribution_contract(
+            synthetic, context.module
+        )
         residual_add = node.metadata.get("residual_add")
         residual_input = node.metadata.get("residual_input")
         norm_consumer = node.metadata.get("norm_consumer")
@@ -595,25 +765,34 @@ class MatMulNormStatsCandidateProvider:
                 "residual_add": (residual_add, "axes"),
                 "norm": (norm_consumer, "reduction_axis"),
             },
-        ) if all(
-            isinstance(value, str) and value in context.module.node_map
-            for value in (residual_add, norm_consumer)) else None
+        ) if all(isinstance(value, str) and value in context.module.node_map
+                 for value in (residual_add, norm_consumer)) else None
         input_type = logical_type(lhs.type)
-        reduction_extent = (input_type.shape[-1].fixed_value
-                            if isinstance(input_type, TensorType) and input_type.shape[-1].is_fixed else None)
+        reduction_extent = (
+            input_type.shape[-1].fixed_value
+            if isinstance(input_type, TensorType) and input_type.shape[-1].is_fixed
+            else None
+        )
 
         output_extent = _local_scalar_last_axis_extent(matmul_type)
         owner_count = _output_partition_owner_count(matmul_type)
-        if (not isinstance(result_type, TupleType)
-                or promoted_projection_type(matmul_type, result_type.fields[0]) != result_type.fields[0]):
+        if (
+            not isinstance(result_type, TupleType)
+            or promoted_projection_type(matmul_type, result_type.fields[0]) != result_type.fields[0]
+        ):
             return None
         stats_type = result_type.fields[1]
-        output_partition_axes = _local_norm_stats_partition_axes(matmul_type, stats_type)
+        output_partition_axes = _local_norm_stats_partition_axes(
+            matmul_type, stats_type
+        )
         if output_partition_axes is None:
             return None
-        owner_partial_fast_path = (isinstance(matmul_type, DistributedType)
-                                   and owner_count == prod(matmul_type.placement.hierarchy)
-                                   and output_partition_axes == tuple(range(matmul_type.placement.rank)))
+        owner_partial_fast_path = (
+            isinstance(matmul_type, DistributedType)
+            and owner_count == prod(matmul_type.placement.hierarchy)
+            and output_partition_axes
+            == tuple(range(matmul_type.placement.rank))
+        )
 
         def applicable(implementation) -> bool:
             if (not _supports_reduction_order(implementation, node.attrs)
@@ -625,7 +804,9 @@ class MatMulNormStatsCandidateProvider:
             # `host_tensor_descriptor` implementations the plain dense_matmul
             # provider does and owes the weight the same storage rule: a single
             # canonical map would oblige every chip to hold the whole weight.
-            if not supports_descriptor_weight_storage(implementation, context.module.node_map[node.inputs[1]].type):
+            if not supports_descriptor_weight_storage(
+                implementation, context.module.node_map[node.inputs[1]].type
+            ):
                 return False
             statistics_kind = implementation.contract.get("statistics_kind")
             if statistics_kind == "owner_partial":
@@ -635,17 +816,28 @@ class MatMulNormStatsCandidateProvider:
                 return False
             block_k = implementation.parameters.get("block_k")
             tile_n = implementation.parameters.get("tile_n")
-            full_tiles = (reduction_extent is not None and isinstance(block_k, int) and reduction_extent % block_k == 0
-                          and output_extent is not None and isinstance(tile_n, int) and output_extent % tile_n == 0)
-            if not implementation.contract.get("requires_full_reduction_tiles", False):
+            full_tiles = (
+                reduction_extent is not None
+                and isinstance(block_k, int)
+                and reduction_extent % block_k == 0
+                and output_extent is not None
+                and isinstance(tile_n, int)
+                and output_extent % tile_n == 0
+            )
+            if not implementation.contract.get(
+                "requires_full_reduction_tiles", False
+            ):
                 full_tiles = True
             if not full_tiles:
                 return False
             affine_rhs = implementation.contract.get("requires_affine_local_tiles", False)
             if not (implementation.contract.get("requires_contiguous_local_tiles", False) or affine_rhs):
                 return True
-            descriptor_proof = (_supports_packed_descriptor_tiles
-                                if input_kind == "packed" else _supports_contiguous_descriptor_tiles)
+            descriptor_proof = (
+                _supports_packed_descriptor_tiles
+                if input_kind == "packed"
+                else _supports_contiguous_descriptor_tiles
+            )
             return descriptor_proof(
                 synthetic,
                 context.module,
@@ -662,15 +854,22 @@ class MatMulNormStatsCandidateProvider:
                 distribution_contract,
                 semantic_parameters={
                     "epilogue": "residual_norm_stats",
-                    **({"packed_layout": packed_layout} if packed_layout is not None else {}),
+                    **(
+                        {"packed_layout": packed_layout}
+                        if packed_layout is not None else {}
+                    ),
                     "residual_add": residual_add,
                     "residual_input": residual_input,
                     "norm_consumer": norm_consumer,
-                    "projection_adapters": tuple(node.metadata.get("projection_adapters", ())),
+                    "projection_adapters": tuple(
+                        node.metadata.get("projection_adapters", ())
+                    ),
                     "consumed_vector_contracts": fused_vectors or {},
                     "explicit_results": ("value", "norm_stats"),
                     "owner_count": owner_count,
-                    "statistics_kind": str(implementation.contract["statistics_kind"]),
+                    "statistics_kind": str(
+                        implementation.contract["statistics_kind"]
+                    ),
                     "output_partition_axes": output_partition_axes,
                 },
                 facts={
@@ -678,13 +877,16 @@ class MatMulNormStatsCandidateProvider:
                     "materializes_residual": True,
                     "explicit_norm_stats_result": True,
                 },
-            ) for implementation in context.implementations(
+            )
+            for implementation in context.implementations(
                 "dense_matmul",
                 input_kind=input_kind,
                 epilogue="residual_norm_stats",
                 vectorization_kind=vector_contract["kind"],
                 distribution_kind=distribution_contract["kind"],
-            ) if applicable(implementation))
+            )
+            if applicable(implementation)
+        )
         if not candidates:
             return None
         return TritonCandidateProposal(
@@ -700,12 +902,14 @@ def _supports_reduction_order(implementation, attrs):
     split_k4 = implementation.facts.get("split_k4_ordered_mma_accumulation", False)
     split_mode = implementation.parameters.get("accumulation_mode") == "split_k4_mma"
     if split_k4 or split_mode:
-        return (order == SPLIT_K4_REDUCTION_ORDER and split_k4 is True and split_mode
+        return (order == SPLIT_K4_REDUCTION_ORDER
+                and split_k4 is True and split_mode
                 and not implementation.facts.get("ordered_mma_accumulation", False)
                 and implementation.parameters.get("accumulation_splits", 1) == 1)
     if order == "relaxed":
         return True
-    return (order == "mma_k16" and implementation.facts.get("ordered_mma_accumulation", False)
+    return (order == "mma_k16"
+            and implementation.facts.get("ordered_mma_accumulation", False)
             and implementation.parameters.get("accumulation_splits", 1) == 1)
 
 
@@ -720,11 +924,16 @@ def _supports_lhs_staging(implementation, value_type) -> bool:
         from triton.flagmega.codegen.triton.row_transfer import has_full_static_rows
 
         tile = implementation.parameters.get("lhs_copy_tile")
-        if (not isinstance(tile, int) or isinstance(tile, bool) or tile <= 0 or extent is None or extent % tile
-                or not has_full_static_rows(value_type)):
+        if (not isinstance(tile, int) or isinstance(tile, bool) or tile <= 0
+                or extent is None or extent % tile or not has_full_static_rows(value_type)):
             return False
-    return (isinstance(capacity, int) and not isinstance(capacity, bool) and capacity > 0 and extent is not None
-            and 0 < extent <= capacity)
+    return (
+        isinstance(capacity, int)
+        and not isinstance(capacity, bool)
+        and capacity > 0
+        and extent is not None
+        and 0 < extent <= capacity
+    )
 
 
 def _output_partition_owner_count(value_type) -> int:
@@ -745,13 +954,16 @@ def _local_norm_stats_partition_axes(value_type, stats_type) -> tuple[int, ...] 
     A normal kernel computes only the local output shard.  Consequently its
     square sum is materialized when N is broadcast, or is Sum-partial over
     exactly the placement axes that partition N.  This is the same generic
-    local-buffer contract used by the reference PackedMatMulNormStats TIR and does
+    local-buffer contract used by nncase's PackedMatMulNormStats TIR and does
     not depend on a model shape or target architecture.
     """
 
     if not isinstance(value_type, DistributedType):
         return () if not isinstance(stats_type, DistributedType) else None
-    if (not isinstance(stats_type, DistributedType) or stats_type.placement != value_type.placement):
+    if (
+        not isinstance(stats_type, DistributedType)
+        or stats_type.placement != value_type.placement
+    ):
         return None
     output_policy = value_type.axis_policies[-1]
     if isinstance(output_policy, SBPBroadCast):
@@ -763,7 +975,11 @@ def _local_norm_stats_partition_axes(value_type, stats_type) -> tuple[int, ...] 
     partial = stats_type.partial
     if not axes:
         return () if partial is None else None
-    if (partial is None or partial.reduce_op is not ReduceOp.SUM or tuple(partial.axes) != axes):
+    if (
+        partial is None
+        or partial.reduce_op is not ReduceOp.SUM
+        or tuple(partial.axes) != axes
+    ):
         return None
     return axes
 
@@ -780,8 +996,10 @@ def _configure_dense_implementation(
     tile_n = int(implementation.parameters["tile_n"])
     lane_count = int(vector_contract["lane_count"])
     if vector_contract["kind"] != "scalar" and tile_n % lane_count:
-        raise ValueError(f"Dense implementation {implementation.id!r} tile_n={tile_n} does not "
-                         f"preserve vector lane group {lane_count}.")
+        raise ValueError(
+            f"Dense implementation {implementation.id!r} tile_n={tile_n} does not "
+            f"preserve vector lane group {lane_count}."
+        )
     parameters = dict(semantic_parameters or {})
     parameters["distribution_schedule"] = dict(distribution_contract)
     parameters["vector_schedule"] = configured_vector_schedule(

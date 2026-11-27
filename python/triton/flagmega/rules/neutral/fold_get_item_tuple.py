@@ -6,6 +6,7 @@ from triton.flagmega.ir import IRModule, Node
 from triton.flagmega.pattern_match import F, MatchResult
 from triton.flagmega.rules import RewriteRedirect, RewriteRule
 
+
 _PATTERN = F.tensors.is_get_item(
     F.builtin.is_tuple(call_name="tuple"),
     call_name="get_item",

@@ -22,20 +22,19 @@ def _graph(config, width, *, probability="online_bf16", heads=None, index_traver
     heads = config.num_kv_heads if heads is None else heads
 
     class Graph(fm.Module):
-
         def forward(self):
-            query = self.input("query",
-                               fm.tensor_type(fm.vector_type("bfloat16", (8, )), (1, heads, config.head_dim // 8)),
-                               id="query")
+            query = self.input(
+                "query", fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, heads, config.head_dim // 8)), id="query"
+            )
             topk = self.input("topk", fm.tensor_type("int32", (1, width)), id="topk")
             state = self.input("state", config.ref_type, id="state")
             layer = fm.F.builtin.scalar_const(fm.tensor_type("int32", ()), 0)
             q, indices = query, topk
             if placement is not None:
-                q = fm.F.distributed.sharded_view(query,
-                                                  fm.DistributedType(query.type, (fm.SBP.broadcast(), ) * 3, placement))
-                indices = fm.F.distributed.sharded_view(
-                    topk, fm.DistributedType(topk.type, (fm.SBP.broadcast(), ) * 2, placement))
+                q = fm.F.distributed.sharded_view(query, fm.DistributedType(
+                    query.type, (fm.SBP.broadcast(),) * 3, placement))
+                indices = fm.F.distributed.sharded_view(topk, fm.DistributedType(
+                    topk.type, (fm.SBP.broadcast(),) * 2, placement))
             result = fm.F.nn.dsa_paged_attention(
                 q,
                 indices,
@@ -47,7 +46,7 @@ def _graph(config, width, *, probability="online_bf16", heads=None, index_traver
                 probability_rounding=probability,
                 index_traversal=index_traversal,
             )
-            self.function("main", (query, topk, state), (result, ))
+            self.function("main", (query, topk, state), (result,))
 
     return Graph(
         dialect="distributed" if placement is not None else "high_level",
@@ -63,8 +62,11 @@ def _compile(module, path, schedule, *, placement=None):
     catalog = replace(
         base,
         implementations=tuple(
-            replace(value, parameters={**value.parameters, "decode_schedule": schedule, "compute_num_warps": 8}
-                    ) if value.id == "tir.dsa_paged_attention.decode" else value for value in base.implementations),
+            replace(value, parameters={**value.parameters, "decode_schedule": schedule, "compute_num_warps": 8})
+            if value.id == "tir.dsa_paged_attention.decode"
+            else value
+            for value in base.implementations
+        ),
     )
     compiler.target = NvidiaSm90Target(triton_implementation_model=catalog)
     if placement is not None:
@@ -73,7 +75,8 @@ def _compile(module, path, schedule, *, placement=None):
     restored = fm.load_module(fm.emit_module(compiled, path / "selected.py"))
     assert restored.semantic_hash == compiled.semantic_hash
     assert any(
-        d.dispatch.microkernel.parameters.get("decode_schedule") == schedule for d in restored.kernel_definitions)
+        d.dispatch.microkernel.parameters.get("decode_schedule") == schedule for d in restored.kernel_definitions
+    )
     artifact = write_artifact(compiled, path / "artifact", target="nvidia-sm90", emit_executable=True)
     return compiled, artifact
 
@@ -87,7 +90,8 @@ def _arguments(runtime, module, state, query, topk, output):
                     ids,
                     (state.kv_caches, state.query_start_loc, state.seq_lens, state.slot_mapping, state.block_table),
                     strict=True,
-                ))
+                )
+            )
         else:
             buffers[ids[0]] = {"query": query, "topk": topk}[module.node_map[value].attrs["name"]]
     for _, ids in runtime.buffer_plan.function_map[module.entry].outputs:
@@ -111,7 +115,7 @@ def test_two_key_cancellation_uses_selected_dot_accumulation(tmp_path, schedule,
     key[0], key[8], key[16] = 4096, 1, 4096
     state.kv_caches[0, 0, 1, 0].fill_(1)
     topk = torch.full((1, 130), -1, dtype=torch.int32, device="cuda")
-    topk[0, slot:slot + 2] = torch.tensor([0, 1], device="cuda")
+    topk[0, slot : slot + 2] = torch.tensor([0, 1], device="cuda")
     output = torch.empty_like(query)
     runtime = load(artifact, device="cuda:0")
     args = _arguments(runtime, module, state, query, topk, output)
@@ -169,7 +173,7 @@ def test_mma_token_column_to_value_row_layout_at_small_head_dim(tmp_path, traver
     query = torch.zeros((1, 17, 2, 8), dtype=torch.bfloat16, device="cuda")
     topk = torch.full((1, 130), -1, dtype=torch.int32, device="cuda")
     topk[0, [0, 64, 129]] = torch.tensor([0, 1, 2], dtype=torch.int32, device="cuda")
-    storage = torch.full((query.numel() + 32, ), 123, dtype=torch.bfloat16, device="cuda")
+    storage = torch.full((query.numel() + 32,), 123, dtype=torch.bfloat16, device="cuda")
     output = storage[16:-16].reshape_as(query)
     runtime = load(artifact, device="cuda:0")
     try:
@@ -194,31 +198,25 @@ def test_mma_private_scalar_query_preserves_token_gather_layout(tmp_path, traver
     b = fm.SBP.broadcast()
 
     class Graph(fm.Module):
-
         def forward(self):
             query = self.input("query", fm.tensor_type(fm.vector_type("bfloat16", (2, 4)), (1, 4)), id="query")
             topk = self.input("topk", fm.tensor_type("int32", (1, 3)), id="topk")
             state = self.input("state", config.ref_type, id="state")
             value = fm.F.distributed.force_boxing(query, fm.DistributedType(query.type, (b, b), mesh))
-            computed = fm.F.math.vectorized_unary(
-                value, unary_op="sigmoid", name="query.compute", metadata={
-                    "vectorized_from": "math.sigmoid",
-                    "vectorization_root": "query",
-                    "vectorization_semantic_id": "query",
-                    "vectorization_internal": True,
-                    "vectorization_candidate": "vectorization.last_axis",
-                    "vector_axes": (1, 1),
-                    "vector_lanes": (2, 4),
-                })
+            computed = fm.F.math.vectorized_unary(value, unary_op="sigmoid", name="query.compute", metadata={
+                "vectorized_from": "math.sigmoid", "vectorization_root": "query", "vectorization_semantic_id": "query",
+                "vectorization_internal": True, "vectorization_candidate": "vectorization.last_axis",
+                "vector_axes": (1, 1), "vector_lanes": (2, 4),
+            })
             scalar = fm.F.tensors.unpack(computed, axes=(1, 1))
             heads = fm.F.tensors.reshape(scalar, (1, 2, 16))
             indices = fm.F.distributed.force_boxing(topk, fm.DistributedType(topk.type, (b, b), mesh))
             layer = fm.F.builtin.scalar_const(fm.tensor_type("int32", ()), 0)
-            result = fm.F.nn.dsa_paged_attention(heads, indices, state, layer, scale=.25, layout=("seq", "head", "dim"),
-                                                 hidden_size=32, probability_rounding="online_bf16",
-                                                 index_traversal=traversal)
+            result = fm.F.nn.dsa_paged_attention(heads, indices, state, layer, scale=.25,
+                layout=("seq", "head", "dim"), hidden_size=32, probability_rounding="online_bf16",
+                index_traversal=traversal)
             result = fm.F.distributed.force_boxing(result, fm.logical_type(result.type))
-            self.function("main", (query, topk, state), (result, ))
+            self.function("main", (query, topk, state), (result,))
 
     source = Graph(dialect="ntt", stage="distributed", entry="main",
                    metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()
@@ -272,7 +270,7 @@ def test_compact_traversal_preserves_results_when_padding_moves_tokens(tmp_path,
         compact = output.clone()
         topk.fill_(-1)
         topk[0, :4] = torch.arange(4, device="cuda")
-        topk[0, 2048:2048 + count - 4] = torch.arange(4, count, device="cuda")
+        topk[0, 2048 : 2048 + count - 4] = torch.arange(4, count, device="cuda")
         runtime.run_into(*args)
         torch.testing.assert_close(output, compact, rtol=0, atol=0)
         assert runtime.resource_report["spill_bytes"] == 0
@@ -296,7 +294,7 @@ def test_compact_traversal_reads_each_valid_cache_entry(tmp_path, count):
     topk = torch.full((1, 2175), -1, dtype=torch.int32, device="cuda")
     pooled = count // 4 * 4
     topk[0, :pooled] = torch.arange(pooled, device="cuda")
-    topk[0, 2048:2048 + count - pooled] = torch.arange(pooled, count, device="cuda")
+    topk[0, 2048 : 2048 + count - pooled] = torch.arange(pooled, count, device="cuda")
     output = torch.empty_like(query)
     runtime = load(artifact, device="cuda:0")
     try:
@@ -391,8 +389,8 @@ def test_mma_full_head_domain_stays_within_register_contract(tmp_path):
 
 
 @triton.jit
-def _attention_with_live_caller(saved, query, topk, s0, s1, s2, s3, s4, result, pool, FN: tl.constexpr,
-                                HAS_POOL: tl.constexpr):
+def _attention_with_live_caller(saved, query, topk, s0, s1, s2, s3, s4, result, pool,
+                              FN: tl.constexpr, HAS_POOL: tl.constexpr):
     offsets = tl.arange(0, 32768)
     # The callee writes this same buffer. Its previous values must survive the
     # call, as live caller state does in a complete model's shared function.
@@ -413,7 +411,8 @@ def test_mma_register_budget_includes_live_caller(tmp_path, index_traversal):
     # callee. Head shards require the artifact's full runtime launch grid.
     # Keep all 64 heads here; normal-runtime tests cover automatic sharding.
     module, artifact = _compile(
-        _graph(config, 2175, heads=64, index_traversal=index_traversal, placement=fm.Placement((8, 16), "yx", "bb")),
+        _graph(config, 2175, heads=64, index_traversal=index_traversal,
+               placement=fm.Placement((8, 16), "yx", "bb")),
         tmp_path,
         "bf16_mma",
     )
@@ -438,8 +437,9 @@ def test_mma_register_budget_includes_live_caller(tmp_path, index_traversal):
             *(p["name"] for p in pools),
         ]
         pool = torch.empty(pools[0]["nbytes"] if pools else 0, dtype=torch.uint8, device="cuda")
-        compiled = _attention_with_live_caller[(1, )](saved, *args, pool, runtime.kernel, bool(pools), num_warps=8,
-                                                      ptx_options="--minnctapersm=1")
+        compiled = _attention_with_live_caller[(1,)](
+            saved, *args, pool, runtime.kernel, bool(pools), num_warps=8, ptx_options="--minnctapersm=1"
+        )
         torch.testing.assert_close(output, torch.full_like(output, 1.5), rtol=0, atol=0)
         torch.testing.assert_close(saved, expected_saved, rtol=0, atol=0)
         resources = _spill_resource_report(compiled, ResourceContract(compute_num_warps=8, resident_blocks_per_sm=1))

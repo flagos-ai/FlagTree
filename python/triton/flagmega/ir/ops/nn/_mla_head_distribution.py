@@ -6,13 +6,7 @@ from math import prod
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_type import (
-    BlockCyclicSplit,
-    ContiguousSplit,
-    SBP,
-    SBPBroadCast,
-    SBPSplit,
-    SplitStage,
-    scale_split_units,
+    BlockCyclicSplit, ContiguousSplit, SBP, SBPBroadCast, SBPSplit, SplitStage, scale_split_units,
 )
 from triton.flagmega.ir.model import DistributedType, NoneType
 
@@ -27,8 +21,8 @@ def _explicit_split(policy, extent, placement):
         owners = prod(placement.hierarchy[axis] for axis in stage.hierarchy_axes)
         distribution = stage.distribution
         if isinstance(distribution, ContiguousSplit):
-            extent = ((extent + owners - 1) //
-                      owners if distribution.granularity is None else distribution.granularity.fixed_value)
+            extent = ((extent + owners - 1) // owners if distribution.granularity is None
+                      else distribution.granularity.fixed_value)
             stages.append(SplitStage.contiguous(stage.hierarchy_axes, extent))
         elif isinstance(distribution, BlockCyclicSplit):
             block = distribution.block_size

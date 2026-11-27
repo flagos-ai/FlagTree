@@ -1,0 +1,180 @@
+{# Consumer-issued L2 hints; four logical partials and exact ROWS reuse. #}
+import triton.experimental.tle.language.gpu as gpu
+{% for call in render_calls %}
+{% if call.variant == "r049_glu_consumer_prefetch_v1" and call.family == "iq4_q8_glu" %}
+E = tl.constexpr(gpu.BlockEncoding([1,1],[1,32],[{{ call.cta_warps }},1],[1,0]))
+
+@triton.jit
+def packets_cached_tables(word):
+    word = gpu.set_layout(word,E)
+    t0=gpu.set_layout(tl.full((4,32),0xbfad9881,tl.uint32),E)
+    t1=gpu.set_layout(tl.full((4,32),0xf6eaddcf,tl.uint32),E)
+    t2=gpu.set_layout(tl.full((4,32),0x26190d01,tl.uint32),E)
+    t3=gpu.set_layout(tl.full((4,32),0x71594535,tl.uint32),E)
+    a,b = tl.inline_asm_elementwise('''{
+.reg .b32 sel,idx,lo,hi,t0,t1;
+shr.u32 idx,$2,16;
+and.b32 sel,$2,0x88888888; shr.u32 sel,sel,1; or.b32 sel,sel,0x32103210;
+and.b32 lo,$2,0x7777; prmt.b32 lo,$3,$4,lo;
+and.b32 hi,$2,0x7777; prmt.b32 hi,$5,$6,hi;
+prmt.b32 t0,lo,hi,sel;
+shr.u32 sel,sel,16;
+and.b32 lo,idx,0x7777; prmt.b32 lo,$3,$4,lo;
+and.b32 hi,idx,0x7777; prmt.b32 hi,$5,$6,hi;
+prmt.b32 t1,lo,hi,sel;
+prmt.b32 $0,t0,t1,0x6420; prmt.b32 $1,t0,t1,0x7531;
+}''', constraints='=r,=r,r,r,r,r,r',args=[word,t0,t1,t2,t3],dtype=(tl.int32,tl.int32),is_pure=True,pack=1)
+    return gpu.set_layout(a,E),gpu.set_layout(b,E)
+
+@triton.jit
+def warp0_sum(p, w, l):
+    # Uniform warp branch; every lane in warp0 reaches all five full-mask shuffles.
+    for off in tl.static_range(5):
+        p = tl.inline_asm_elementwise("""{
+.reg .pred z; .reg .b32 v;
+setp.eq.u32 z,$2,0; @!z bra DONE;
+shfl.sync.bfly.b32 v,$1,$3,0x1f,0xffffffff;
+add.rn.f32 $0,$1,v; bra END;
+DONE: mov.b32 $0,0; END:
+}""", constraints="=f,f,r,r", args=[p, w, 16 >> off],
+            dtype=tl.float32, is_pure=False, pack=1)
+    return gpu.set_layout(tl.where((w == 0) & (l == 0), p, 0.), E)
+
+
+
+@triton.jit
+def batch_partial_store(p, u, S, slot, w, l):
+    index = slot * 128 + w * 32 + l
+    pp = gpu.set_layout(gpu.local_ptr(S, (index,), shape=(4,32)), E)
+    packed = p.to(tl.uint32, bitcast=True).to(tl.uint64) | (u.to(tl.uint32, bitcast=True).to(tl.uint64) << 32)
+    tl.store(pp, packed)
+
+@triton.jit
+def batch_partial_read(S, slot, l, active):
+    index = slot * 128 + l
+    ptr = gpu.set_layout(gpu.local_ptr(S, (index,), shape=(4,32)), E)
+    pair = tl.load(ptr, active, 0)
+    p = (pair & 0xffffffff).to(tl.uint32).to(tl.float32, bitcast=True)
+    u = (pair >> 32).to(tl.uint32).to(tl.float32, bitcast=True)
+    for t in tl.static_range(3):
+        ptr = gpu.set_layout(gpu.local_ptr(S, (index + 32 * (t + 1),), shape=(4,32)), E)
+        pair = tl.load(ptr, active, 0)
+        v = (pair & 0xffffffff).to(tl.uint32).to(tl.float32, bitcast=True)
+        p = tl.inline_asm_elementwise(
+            'add.rn.f32 $0,$1,$2;', constraints='=f,f,f',
+            args=[p, v], dtype=tl.float32, is_pure=True, pack=1)
+        v = (pair >> 32).to(tl.uint32).to(tl.float32, bitcast=True)
+        u = tl.inline_asm_elementwise(
+            'add.rn.f32 $0,$1,$2;', constraints='=f,f,f',
+            args=[u, v], dtype=tl.float32, is_pure=True, pack=1)
+    return gpu.set_layout(p,E),gpu.set_layout(u,E)
+
+@triton.jit
+def batch_typed_reduce(S, owner_slot, w, l, G: tl.constexpr):
+    # Safe materialized pointer even in the unused G=2 warps.
+    safe_slot = tl.minimum(owner_slot, G - 1)
+    active = owner_slot < G
+    p,u = batch_partial_read(S, safe_slot, l, active)
+    owner = gpu.set_layout(tl.where(active, 0, 1), E)
+    p = warp0_sum(p, owner, l)
+    u = warp0_sum(u, owner, l)
+    return p, gpu.set_layout(tl.where((owner == 0) & (l == 0), u, 0.0), E)
+
+@triton.jit
+def {{ call.symbol }}__accumulate_pair(W, U, Q, row, kbx, g, active, p, u, K: tl.constexpr, ROWS: tl.constexpr):
+    base = row.to(tl.int32) * (K // 256) * 34 + kbx.to(tl.int32) * 34
+    WP = W.to(tl.pointer_type(tl.uint32))
+    UP = U.to(tl.pointer_type(tl.uint32))
+    QP = Q.to(tl.pointer_type(tl.uint32))
+    qb = (8 * kbx.to(tl.int32) + g) * 9
+    I = ()
+    H = ()
+    for r in tl.static_range(ROWS):
+        I += (gpu.set_layout(tl.full((4, 32), 0, tl.int32), E),)
+        H += (gpu.set_layout(tl.full((4, 32), 0, tl.int32), E),)
+    for pair_index in tl.static_range(2):
+        pair = gpu.set_layout(tl.load((WP + base + 2 + 4 * g + 2 * pair_index).to(tl.pointer_type(tl.uint64)), active, 0, eviction_policy='evict_first'), E)
+        upair = gpu.set_layout(tl.load((UP + base + 2 + 4 * g + 2 * pair_index).to(tl.pointer_type(tl.uint64)), active, 0, eviction_policy='evict_first'), E)
+        for half in tl.static_range(2):
+            j = 2 * pair_index + half
+            a, b = packets_cached_tables((pair >> (32 * half)).to(tl.uint32))
+            c, d = packets_cached_tables((upair >> (32 * half)).to(tl.uint32))
+            next_I = ()
+            next_H = ()
+            for r in tl.static_range(ROWS):
+                qr = qb + r * (K // 32) * 9
+                q0 = gpu.set_layout(tl.load(QP + qr + 1 + j, active, 0).to(tl.int32, bitcast=True), E)
+                q1 = gpu.set_layout(tl.load(QP + qr + 5 + j, active, 0).to(tl.int32, bitcast=True), E)
+                Ir = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[a, q0, I[r]], dtype=tl.int32, is_pure=True, pack=1)
+                Hr = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[c, q0, H[r]], dtype=tl.int32, is_pure=True, pack=1)
+                Ir = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[b, q1, Ir], dtype=tl.int32, is_pure=True, pack=1)
+                Hr = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[d, q1, Hr], dtype=tl.int32, is_pure=True, pack=1)
+                next_I += (Ir,)
+                next_H += (Hr,)
+            I = next_I
+            H = next_H
+    header = gpu.set_layout(tl.load((WP + base).to(tl.pointer_type(tl.uint64)), active, 0, eviction_policy='evict_first'), E)
+    uheader = gpu.set_layout(tl.load((UP + base).to(tl.pointer_type(tl.uint64)), active, 0, eviction_policy='evict_first'), E)
+    h, s = header.to(tl.uint32), (header >> 32).to(tl.uint32)
+    uh, us = uheader.to(tl.uint32), (uheader >> 32).to(tl.uint32)
+    sg = (((s >> (8 * (g // 2) + 4 * (g % 2))) & 15) | (((h >> (16 + 2 * g)) & 3) << 4)).to(tl.int32) - 32
+    usg = (((us >> (8 * (g // 2) + 4 * (g % 2))) & 15) | (((uh >> (16 + 2 * g)) & 3) << 4)).to(tl.int32) - 32
+    dw = (h & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    udw = (uh & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    pp, uu = (), ()
+    for r in tl.static_range(ROWS):
+        dq = gpu.set_layout(tl.load(QP + qb + r * (K // 32) * 9, active, 0), E)
+        dx = (dq & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+        J = (I[r] * sg).to(tl.float32)
+        UJ = (H[r] * usg).to(tl.float32)
+        D = tl.inline_asm_elementwise('mul.rn.f32 $0,$1,$2;', constraints='=f,f,f', args=[dw, dx], dtype=tl.float32, is_pure=True, pack=1)
+        UD = tl.inline_asm_elementwise('mul.rn.f32 $0,$1,$2;', constraints='=f,f,f', args=[udw, dx], dtype=tl.float32, is_pure=True, pack=1)
+        pn = tl.inline_asm_elementwise('fma.rn.f32 $0,$1,$2,$3;', constraints='=f,f,f,f', args=[D, J, p[r]], dtype=tl.float32, is_pure=True, pack=1)
+        un = tl.inline_asm_elementwise('fma.rn.f32 $0,$1,$2,$3;', constraints='=f,f,f,f', args=[UD, UJ, u[r]], dtype=tl.float32, is_pure=True, pack=1)
+        pp += (gpu.set_layout(tl.where(active, pn, p[r]), E),)
+        uu += (gpu.set_layout(tl.where(active, un, u[r]), E),)
+    return pp, uu
+
+@triton.jit
+def {{ call.symbol }}__store_rows(p, u, Y, row, w, l, ROWS: tl.constexpr):
+    S = gpu.alloc((ROWS * 128,), tl.uint64, layout=None, nv_mma_shared_layout=False, alignment_bytes=16)
+    B = gpu.alloc_barrier(arrive_count={{ 32 * call.cta_warps }})
+    for token in tl.static_range(ROWS):
+        batch_partial_store(p[token], u[token], S, token, w, l)
+    gpu.barrier_wait(B)
+    for token_batch in tl.static_range((ROWS + 3) // 4):
+        token = 4 * token_batch + w
+        gate, up = batch_typed_reduce(S, token, w, l, ROWS)
+        value = gate / (1.0 + tl.exp(-gate)) * up
+        tl.store(Y + token * {{ call.transport_n }} + row, value, (token < ROWS) & (l == 0) & (row < {{ call.transport_n }}))
+    gpu.barrier_wait(B)
+
+
+
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+    w = gpu.set_layout(tl.broadcast_to(tl.arange(0,4)[:,None],(4,32)),E)
+    l = gpu.set_layout(tl.broadcast_to(tl.arange(0,32)[None,:],(4,32)),E)
+    tid = w*32+l
+    g = tid%8
+    # d is measured in this CTA's grid-strided columns, as in the old producer.
+    # All iterations, including the last masked column, reach both reduction waits.
+    for row_iteration in range(tl.cdiv({{ call.transport_n }}, {{ call.transport_grid_cap }})):
+        row = gpu.set_layout(tl.full((4,32),tl.program_id(0)+row_iteration*{{ call.transport_grid_cap }},tl.int32),E)
+        future = row + {{ call.prefetch_distance * call.transport_grid_cap }}
+        valid = (future < {{ call.transport_n }}) & (tid < {{ (136 * (call.transport_k // 256) + 127) // 128 }})
+{% for bank in (1,2) %}
+        ptr = {{ call.pointers[bank] }} + future.to(tl.int64)*{{ 136 * (call.transport_k // 256) }} + tid*128
+        tl.inline_asm_elementwise('{ .reg .pred p; setp.ne.u32 p,$1,0; @p prefetch.global.L2 [$2]; mov.u32 $0,0; }',constraints='=r,r,l',args=[valid,ptr],dtype=tl.int32,is_pure=False,pack=1)
+{% endfor %}
+        p, u = (), ()
+        for token in tl.static_range({{ call.constexprs.ROWS }}):
+            p += (gpu.set_layout(tl.full((4,32),0.,tl.float32),E),)
+            u += (gpu.set_layout(tl.full((4,32),0.,tl.float32),E),)
+        for it in range(tl.cdiv({{ call.transport_k }}//256,16)):
+            kbx = tid//8+16*it
+            active = (row<{{ call.transport_n }}) & (kbx<{{ call.transport_k }}//256)
+            p,u = {{ call.symbol }}__accumulate_pair({{ call.pointers[1] }},{{ call.pointers[2] }},{{ call.pointers[0] }},row,kbx,g,active,p,u,{{ call.transport_k }},{{ call.constexprs.ROWS }})
+        {{ call.symbol }}__store_rows(p,u,{{ call.pointers[3] }},row,w,l,{{ call.constexprs.ROWS }})
+{% endif %}
+{% endfor %}

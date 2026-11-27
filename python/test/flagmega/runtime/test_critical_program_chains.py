@@ -14,10 +14,10 @@ def asymmetric_forks(count=2):
         prefix = f'{i}.prefix'
         up, down, shared, join = (f'{i}.{name}' for name in ('up', 'down', 'shared', 'join'))
         programs.extend([
-            dict(symbol=prefix, depends_on=() if not i else (f'{i-1}.join', )),
-            dict(symbol=up, depends_on=(prefix, )),
-            dict(symbol=down, depends_on=(up, )),
-            dict(symbol=shared, depends_on=(prefix, )),
+            dict(symbol=prefix, depends_on=() if not i else (f'{i-1}.join',)),
+            dict(symbol=up, depends_on=(prefix,)),
+            dict(symbol=down, depends_on=(up,)),
+            dict(symbol=shared, depends_on=(prefix,)),
             dict(symbol=join, depends_on=(prefix, up, down, shared)),
         ])
     return programs
@@ -41,7 +41,7 @@ def test_critical_cover_preserves_every_original_dependency_and_parallel_branch(
     # Sharing a stream adds no ordering beyond the original transitive DAG.
     names = list(ancestors)
     for i, left in enumerate(names):
-        for right in names[i + 1:]:
+        for right in names[i+1:]:
             if streams[left] == streams[right]:
                 assert left in ancestors[right]
     reverse = [{**p, 'depends_on': tuple(reversed(p['depends_on']))} for p in programs]

@@ -1,9 +1,13 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
+import inspect
+from pathlib import Path
+
 from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.candidates import (
-    PackedQKVSemanticTIRCandidateProvider, )
+    PackedQKVSemanticTIRCandidateProvider,
+)
 from triton.flagmega.targets import NvidiaSm90Target
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.passes.constants import freeze_constant_islands
@@ -15,7 +19,7 @@ def _packed_qkv_graph() -> fm.IRModule:
     packed_dtype = fm.VectorType(fm.DType.BFLOAT16, (8, 2, 8))
     q_weight_type = fm.tensor_type(packed_dtype, (2, 8))
     kv_weight_type = fm.tensor_type(packed_dtype, (2, 4))
-    output_dtype = fm.VectorType(fm.DType.BFLOAT16, (8, ))
+    output_dtype = fm.VectorType(fm.DType.BFLOAT16, (8,))
     result_type = fm.TupleType((
         fm.tensor_type(output_dtype, (2, 8)),
         fm.tensor_type(output_dtype, (2, 4)),
@@ -29,11 +33,13 @@ def _packed_qkv_graph() -> fm.IRModule:
             source="weights",
             key=name,
             id=name,
-        ) for name, value_type in (
+        )
+        for name, value_type in (
             ("q_weight", q_weight_type),
             ("k_weight", kv_weight_type),
             ("v_weight", kv_weight_type),
-        ))
+        )
+    )
     none = builder.call("builtin.none", (), fm.NoneType(), id="none")
     qkv = builder.call(
         "ntt.packed_qkv_parallel_linear",
@@ -47,12 +53,14 @@ def _packed_qkv_graph() -> fm.IRModule:
             "rhs_layout": "k_major",
         },
     )
-    builder.function("main", (value, ), (qkv, ))
+    builder.function("main", (value,), (qkv,))
     return freeze_constant_islands(builder.build(entry="main"))
 
 
 def test_packed_qkv_proposal_is_semantic_and_has_no_target_variant():
-    output = fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8, )), (1, 16))
+    output = fm.tensor_type(
+        fm.VectorType(fm.DType.BFLOAT16, (8,)), (1, 16)
+    )
     node = fm.Node(
         "qkv",
         "ntt.packed_qkv_parallel_linear",
@@ -65,8 +73,28 @@ def test_packed_qkv_proposal_is_semantic_and_has_no_target_variant():
 
     assert proposal is not None
     assert proposal.selection_kind == "semantic_tir"
-    assert tuple(value.id for value in proposal.candidates) == ("semantic.ntt.packed_qkv_parallel_linear", )
+    assert tuple(value.id for value in proposal.candidates) == (
+        "semantic.ntt.packed_qkv_parallel_linear",
+    )
     assert proposal.candidates[0].parameters == {}
+
+
+def test_semantic_provider_has_no_machine_catalog_or_physical_geometry():
+    source = Path(
+        inspect.getsourcefile(PackedQKVSemanticTIRCandidateProvider) or ""
+    ).read_text(encoding="utf-8").lower()
+
+    for spelling in (
+        "implementation_model",
+        "context.implementations",
+        "nvidia",
+        "sm90",
+        "block_k",
+        "block_n",
+        "mesh_size",
+        "num_stages",
+    ):
+        assert spelling not in source
 
 
 def test_tir_proposal_and_lowering_preserve_an_unselected_semantic_dispatch():
@@ -87,7 +115,10 @@ def test_tir_proposal_and_lowering_preserve_an_unselected_semantic_dispatch():
 
 def test_default_selects_truthful_packed_qkv_after_fused_rhs_canonicalization():
     compiled = Compiler().compile(_packed_qkv_graph()).module
-    function = next(value for value in compiled.kernel_definitions if fm.kernel_dispatch_of(value) is not None)
+    function = next(
+        value for value in compiled.kernel_definitions
+        if fm.kernel_dispatch_of(value) is not None
+    )
     dispatch = fm.kernel_dispatch_of(function)
 
     assert compiled.stage == "bufferized_tir"
@@ -96,8 +127,11 @@ def test_default_selects_truthful_packed_qkv_after_fused_rhs_canonicalization():
     assert dispatch.microkernel.implementation == (
         # Largest tile that fits the register contract; tn512 is registered
         # but deliberately not preferred (fails prepare() on BI-V150).
-        "tir.qkv_parallel_linear.packed_fused_gemv_tn256")
+        "tir.qkv_parallel_linear.packed_fused_gemv_tn256"
+    )
     assert dispatch.microkernel.facts["portable_triton"] is True
     assert not dispatch.microkernel.requires
-    assert compiled.selection_map[f"microkernel.{function.name}"].candidate_id == (dispatch.microkernel.implementation)
+    assert compiled.selection_map[f"microkernel.{function.name}"].candidate_id == (
+        dispatch.microkernel.implementation
+    )
     assert compiled.metadata["launch_contract"]["num_warps"] == 16

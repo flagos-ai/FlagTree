@@ -72,7 +72,9 @@ def canonical_call_storage_values(module, required):
         for parameter in function.parameters:
             for name in leaves[parameter]:
                 kind = types[name]
-                if isinstance(kind, TensorType) or (name in parent and is_fully_replicated(kind)):
+                if isinstance(kind, TensorType) or (
+                    name in parent and is_fully_replicated(kind)
+                ):
                     # Undistributed or broadcast parameters already own a
                     # complete logical allocation; a view retains its origin.
                     seeds.add(name)
@@ -96,8 +98,9 @@ def canonical_call_storage_values(module, required):
                     incoming, outgoing = types[before], types[after]
                     if after not in parent or not isinstance(outgoing, DistributedType):
                         continue
-                    if isinstance(incoming, TensorType) or (before in parent
-                                                            and not is_local_shard_subview(incoming, outgoing)):
+                    if isinstance(incoming, TensorType) or (
+                        before in parent and not is_local_shard_subview(incoming, outgoing)
+                    ):
                         # Reassigning owners requires canonical backing even
                         # when the producer was initially a compact component.
                         seeds.add(after)

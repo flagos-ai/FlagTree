@@ -14,7 +14,7 @@ from triton.flagmega.rules.ntt.vectorize.utility import finish_vector_result, ge
 class VectorizeUnary:
     name = "VectorizeUnary"
     op_names = frozenset(definition.op_name for definition in VectorizedUnary.scalar_definitions.values())
-    layout_input_indices = (0, )
+    layout_input_indices = (0,)
 
     def __init__(
         self,
@@ -26,8 +26,10 @@ class VectorizeUnary:
         self.max_axes = max_axes
 
     def candidates(self, node: Node, module: IRModule) -> tuple[VectorizeCandidate, ...]:
-        if (node.op not in self.op_names or not node.effect.is_pure or not isinstance(node.type, TensorType)
-                or node.type.dtype not in {DType.BFLOAT16, DType.FLOAT32}):
+        if (
+            node.op not in self.op_names or not node.effect.is_pure or not isinstance(node.type, TensorType)
+            or node.type.dtype not in {DType.BFLOAT16, DType.FLOAT32}
+        ):
             return ()
         candidates = generate_axis_candidates(
             node.type,
@@ -51,12 +53,10 @@ class VectorizeUnary:
         compute = Node(
             f"{node.id}.vectorized.compute",
             "math.vectorized_unary",
-            (packed.id, ),
+            (packed.id,),
             packed.type,
-            attrs={
-                "unary_op": node.op.removeprefix("math."),
-                **({"math_mode": node.attrs["math_mode"]} if "math_mode" in node.attrs else {})
-            },
+            attrs={"unary_op": node.op.removeprefix("math."),
+                   **({"math_mode": node.attrs["math_mode"]} if "math_mode" in node.attrs else {})},
             metadata=internal_metadata(node.id, "compute"),
         )
         return finish_vector_result(

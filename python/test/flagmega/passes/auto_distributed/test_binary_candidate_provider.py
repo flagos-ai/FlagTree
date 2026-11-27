@@ -15,14 +15,14 @@ def _context(last_extent: int) -> DistributedCandidateContext:
         "high_level",
         "packed",
         (lhs, rhs, call),
-        (fm.Function("main", (lhs.id, rhs.id), (call.id, )), ),
+        (fm.Function("main", (lhs.id, rhs.id), (call.id,)),),
         "main",
     )
     return DistributedCandidateContext(
         module,
         call,
         fm.Placement((8, 16), "yx", "bb"),
-        ((value_type, ), (value_type, )),
+        ((value_type,), (value_type,)),
     )
 
 
@@ -34,7 +34,7 @@ def test_binary_provider_enumerates_each_legal_2d_mesh_axis_combination():
         if isinstance(candidate.return_type.axis_policies[-1], fm.SBPSplit)
     }
 
-    assert set(split) == {(0, ), (1, ), (0, 1)}
+    assert set(split) == {(0,), (1,), (0, 1)}
     for axes, candidate in split.items():
         assert candidate.input_types == (
             candidate.return_type,
@@ -57,4 +57,4 @@ def test_binary_provider_rejects_only_the_nondividing_mesh_combinations():
         if isinstance(candidate.return_type.axis_policies[-1], fm.SBPSplit)
     }
 
-    assert axes == {(0, ), (1, )}
+    assert axes == {(0,), (1,)}

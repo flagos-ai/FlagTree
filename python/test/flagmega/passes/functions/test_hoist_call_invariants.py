@@ -14,21 +14,19 @@ from triton.flagmega.passes.functions import function_nodes
 
 def module(*, same=True, calls=2, export_source=False):
     b = fm.IRBuilder(dialect="high_level", stage="decomposed")
-    f32 = fm.tensor_type("float32", (8, ))
-    bf16 = fm.tensor_type("bfloat16", (8, ))
+    f32 = fm.tensor_type("float32", (8,))
+    bf16 = fm.tensor_type("bfloat16", (8,))
     a = b.var("a", f32, id="a")
     other = b.var("other", f32, id="other")
     x = b.var("x", bf16, id="x")
     p = b.var("p", f32, id="p")
     q = b.var("q", bf16, id="q")
-    rounded = b.call("tensors.cast", (p, ), bf16, attrs={"dtype": "bfloat16"}, id="rounded")
+    rounded = b.call("tensors.cast", (p,), bf16, attrs={"dtype": "bfloat16"}, id="rounded")
     result = b.call("math.add", (rounded, q), bf16, id="result")
-    outputs = (result, p) if export_source else (result, )
+    outputs = (result, p) if export_source else (result,)
     result_type = fm.TupleType((bf16, f32)) if export_source else bf16
-    values = [
-        b.call("builtin.call", (a if same or i == 0 else other, x), result_type, attrs={"callee": "shared"},
-               id=f"call{i}") for i in range(calls)
-    ]
+    values = [b.call("builtin.call", (a if same or i == 0 else other, x), result_type,
+                     attrs={"callee": "shared"}, id=f"call{i}") for i in range(calls)]
     b.function("shared", (p, q), outputs, attrs={"reusable": True, "calling_convention": "device"})
     b.function("main", (a, other, x), values)
     return fm.verify_module(b.build(entry="main"))
@@ -49,7 +47,7 @@ def test_shared_transform_moves_to_caller_once_and_roundtrips(tmp_path, export_s
     assert not any(n.op == "tensors.cast" for n in function_nodes(result, callee))
     casts = [n for n in function_nodes(result, result.function_map["main"]) if n.op == "tensors.cast"]
     assert len(casts) == 1
-    assert casts[0].inputs == ("a", )
+    assert casts[0].inputs == ("a",)
     assert ("p" in callee.parameters) == export_source
     assert result.node_map["call0"].inputs == result.node_map["call1"].inputs
     torch.manual_seed(712)
@@ -79,10 +77,10 @@ def test_effectful_expression_is_not_moved():
 def test_invariance_never_treats_pointer_or_reference_payload_as_immutable_data():
     from triton.flagmega.passes.functions.hoist_call_invariants import _immutable
     reference = fm.RefType("state")
-    pointer = fm.tensor_type(fm.PointerType(fm.DType.FLOAT32), (8, ))
+    pointer = fm.tensor_type(fm.PointerType(fm.DType.FLOAT32), (8,))
     assert not _immutable(reference)
     assert not _immutable(pointer)
-    assert not _immutable(fm.TupleType((fm.tensor_type("float32", (8, )), reference)))
+    assert not _immutable(fm.TupleType((fm.tensor_type("float32", (8,)), reference)))
 
 
 def test_varying_data_keeps_the_callee_computation_and_only_hoists_shared_cast():

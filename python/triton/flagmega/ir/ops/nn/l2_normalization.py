@@ -22,7 +22,7 @@ from triton.flagmega.ir.types import DType
 class L2Normalization(OpDefinition):
     const_evaluable = True
     value = input_parameter(is_tensor())
-    axes = attribute_parameter(default=(-1, ))
+    axes = attribute_parameter(default=(-1,))
     epsilon = attribute_parameter(default=1e-10)
     epsilon_mode = attribute_parameter(default="clamp")
     division_mode = attribute_parameter(default="divide")
@@ -33,11 +33,12 @@ class L2Normalization(OpDefinition):
     def normalize_attrs(cls, attributes):
         attrs = super().normalize_attrs(attributes)
         axes = attrs["axes"]
-        if (not isinstance(axes, (tuple, list)) or not axes or any(type(axis) is not int for axis in axes)):
+        if (not isinstance(axes, (tuple, list)) or not axes
+                or any(type(axis) is not int for axis in axes)):
             raise IRSchemaError("L2Normalization axes must be a nonempty sequence of integers.")
         epsilon = attrs["epsilon"]
-        if (isinstance(epsilon, bool) or not isinstance(epsilon, (int, float)) or not math.isfinite(epsilon)
-                or epsilon <= 0):
+        if (isinstance(epsilon, bool) or not isinstance(epsilon, (int, float))
+                or not math.isfinite(epsilon) or epsilon <= 0):
             raise IRSchemaError("L2Normalization epsilon must be finite and positive.")
         if attrs["epsilon_mode"] not in ("add", "clamp"):
             raise IRSchemaError("L2Normalization epsilon_mode must be add or clamp.")
@@ -68,9 +69,8 @@ class L2Normalization(OpDefinition):
             extents = tuple(value.shape[axis].fixed_value for axis in axes)
             if any(extent is None for extent in extents) or math.prod(extents) % group:
                 raise IRSchemaError("L2Normalization reduction_group_size must divide the fixed reduction capacity.")
-        if isinstance(source, DistributedType) and (source.partial is not None
-                                                    or any(source.axis_policies[axis] != SBP.broadcast()
-                                                           for axis in axes)):
+        if isinstance(source, DistributedType) and (
+                source.partial is not None or any(source.axis_policies[axis] != SBP.broadcast() for axis in axes)):
             raise IRSchemaError("L2Normalization requires materialized broadcast reduction axes.")
         return source
 
@@ -100,7 +100,7 @@ class L2Normalization(OpDefinition):
             while mask:
                 total = total + total.index_select(-1, lanes ^ mask)
                 mask //= 2
-            square_sum = total[..., :1].reshape(*outer_shape, *((1, ) * len(axes)))
+            square_sum = total[..., :1].reshape(*outer_shape, *((1,) * len(axes)))
             square_sum = square_sum.permute(tuple(order.index(axis) for axis in range(value.ndim)))
         epsilon = node.attrs["epsilon"]
         stabilized = square_sum + epsilon if node.attrs["epsilon_mode"] == "add" else square_sum.clamp_min(epsilon)
@@ -109,8 +109,8 @@ class L2Normalization(OpDefinition):
             return normalize(wide, stabilized,
                              reciprocal=node.attrs["division_mode"] == "reciprocal_multiply").to(value.dtype)
         denominator = torch.sqrt(stabilized)
-        result = (wide * (1. / denominator) if node.attrs["division_mode"] == "reciprocal_multiply" else wide /
-                  denominator)
+        result = (wide * (1. / denominator) if node.attrs["division_mode"] == "reciprocal_multiply"
+                  else wide / denominator)
         return result.to(value.dtype)
 
     @classmethod

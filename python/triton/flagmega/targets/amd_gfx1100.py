@@ -15,8 +15,8 @@ class AmdGfx1100Target(PyNttTarget):
     codegen_platform = "amd"
     codegen_architecture = "gfx1100"
 
-    def __init__(self, capability=None, *, options: NttTargetOptions | None = None, triton_implementation_model=None,
-                 **policies) -> None:
+    def __init__(self, capability=None, *, options: NttTargetOptions | None = None,
+                 triton_implementation_model=None, **policies) -> None:
         machine = AmdGfx1100Machine(capability, implementation_model=triton_implementation_model)
         active_options = options or machine.default_ntt_options()
         super().__init__(

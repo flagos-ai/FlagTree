@@ -14,12 +14,14 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined, TemplateError
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import IRModule
 
+
 _SNAKE_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
 def _require_codegen(condition: bool, message: str) -> None:
     if not condition:
         raise CodegenError(message)
+
 
 
 @dataclass(frozen=True)
@@ -35,7 +37,9 @@ class KernelTemplateSpec:
         for field_name in ("kernel", "variant", "platform", "architecture"):
             value = getattr(self, field_name)
             if value is not None and not _SNAKE_NAME.fullmatch(value):
-                raise CodegenError(f"Triton template {field_name} must be snake_case, got {value!r}.")
+                raise CodegenError(
+                    f"Triton template {field_name} must be snake_case, got {value!r}."
+                )
         if self.architecture is not None and self.platform is None:
             raise CodegenError("A Triton architecture specialization requires a platform.")
 
@@ -55,7 +59,7 @@ class TritonTemplateRegistry:
         self.environment = Environment(
             loader=FileSystemLoader(str(self.root)),
             undefined=StrictUndefined,
-            extensions=("jinja2.ext.do", ),
+            extensions=("jinja2.ext.do",),
             trim_blocks=True,
             lstrip_blocks=True,
             keep_trailing_newline=True,
@@ -75,7 +79,9 @@ class TritonTemplateRegistry:
         base = f"kernels/{spec.kernel}"
         values: list[str] = []
         if spec.platform is not None and spec.architecture is not None:
-            values.append(f"{base}/platforms/{spec.platform}/{spec.architecture}/{spec.variant}.py.jinja")
+            values.append(
+                f"{base}/platforms/{spec.platform}/{spec.architecture}/{spec.variant}.py.jinja"
+            )
         if spec.platform is not None:
             values.append(f"{base}/platforms/{spec.platform}/{spec.variant}.py.jinja")
         values.append(f"{base}/{spec.variant}.py.jinja")
@@ -86,8 +92,10 @@ class TritonTemplateRegistry:
         for relative in candidates:
             if (self.root / relative).is_file():
                 return relative
-        raise CodegenError(f"No Triton template implements {spec.kernel}/{spec.variant}; "
-                           f"searched {list(candidates)}.")
+        raise CodegenError(
+            f"No Triton template implements {spec.kernel}/{spec.variant}; "
+            f"searched {list(candidates)}."
+        )
 
     def render_kernel(
         self,
@@ -109,7 +117,9 @@ class TritonTemplateRegistry:
             self.prepare(template_name, context)
             return self.environment.get_template(template_name).render(**context)
         except TemplateError as error:
-            raise CodegenError(f"Failed to render Triton template {template_name}: {error}") from error
+            raise CodegenError(
+                f"Failed to render Triton template {template_name}: {error}"
+            ) from error
 
 
 def module_template_target(module: IRModule) -> tuple[str, str]:

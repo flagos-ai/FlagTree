@@ -6,7 +6,8 @@ import torch
 from triton.flagmega import ir as fm
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.passes.auto_distributed import (
-    PyNttDistributedReshardRealizationPolicy, )
+    PyNttDistributedReshardRealizationPolicy,
+)
 from triton.flagmega.passes.functions import (
     function_nodes,
     propagate_post_auto_distributed_function_boundary_layouts,
@@ -33,7 +34,6 @@ def test_caller_output_demand_moves_reshard_into_callee_and_restores_raw_use():
     source, target = _types()
 
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="ntt", stage="distributed", entry="main")
 
@@ -42,14 +42,15 @@ def test_caller_output_demand_moves_reshard_into_callee_and_restores_raw_use():
             layer_output = fm.F.math.silu(layer_input, name="layer_output")
 
             value = self.input("value", source, id="value")
-            call = fm.F.builtin.call(value, result_type=source, callee="layer", name="call")
+            call = fm.F.builtin.call(
+                value, result_type=source, callee="layer", name="call")
             demanded = fm.F.distributed.boxing(call, target, name="demanded")
             raw = fm.F.math.silu(call, name="raw")
-            self.function("main", (value, ), (demanded, raw))
+            self.function("main", (value,), (demanded, raw))
             self.function(
                 "layer",
-                (layer_input, ),
-                (layer_output, ),
+                (layer_input,),
+                (layer_output,),
                 attrs={"reusable": True, "noinline": True},
             )
 
@@ -61,8 +62,10 @@ def test_caller_output_demand_moves_reshard_into_callee_and_restores_raw_use():
 
     layer = rewritten.function_map["layer"]
     assert rewritten.node_map[layer.outputs[0]].type == target
-    body_adapters = tuple(node for node in function_nodes(rewritten, layer)
-                          if node.op in {"distributed.boxing", "distributed.sharded_view"})
+    body_adapters = tuple(
+        node for node in function_nodes(rewritten, layer)
+        if node.op in {"distributed.boxing", "distributed.sharded_view"}
+    )
     assert len(body_adapters) == 1
     assert body_adapters[0].type == target
 
@@ -89,7 +92,6 @@ def test_tuple_caller_output_demand_retypes_only_selected_port():
     source, target = _types()
 
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="ntt", stage="distributed", entry="main")
 
@@ -106,11 +108,12 @@ def test_tuple_caller_output_demand_retypes_only_selected_port():
                 name="call",
             )
             projected = fm.F.tensors.get_item(call, 0, name="projected")
-            demanded = fm.F.distributed.boxing(projected, target, name="demanded")
-            self.function("main", (value, ), (demanded, ))
+            demanded = fm.F.distributed.boxing(
+                projected, target, name="demanded")
+            self.function("main", (value,), (demanded,))
             self.function(
                 "layer",
-                (layer_input, ),
+                (layer_input,),
                 (first, second),
                 attrs={"reusable": True, "noinline": True},
             )
@@ -123,7 +126,10 @@ def test_tuple_caller_output_demand_retypes_only_selected_port():
     layer = rewritten.function_map["layer"]
     assert rewritten.node_map[layer.outputs[0]].type == target
     assert rewritten.node_map[layer.outputs[1]].type == source
-    raw_call = next(node for node in rewritten.nodes if node.op == "builtin.call" and node.attrs["callee"] == "layer")
+    raw_call = next(
+        node for node in rewritten.nodes
+        if node.op == "builtin.call" and node.attrs["callee"] == "layer"
+    )
     assert raw_call.type == fm.TupleType((target, source))
     assert "demanded" not in rewritten.node_map
     main_output = rewritten.node_map[rewritten.function_map["main"].outputs[0]]

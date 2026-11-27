@@ -7,8 +7,7 @@ from triton.flagmega.ir import DistributedType, Node
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.ops.nn.greedy_sample import GreedySample
 from triton.flagmega.passes.auto_distributed.candidates import (
-    DistributedCandidate,
-    DistributedCandidateProviderBase,
+    DistributedCandidate, DistributedCandidateProviderBase,
 )
 from triton.flagmega.passes.auto_distributed.candidate_identity import distributed_candidate_id
 
@@ -31,21 +30,17 @@ class GreedySampleCandidateProvider(DistributedCandidateProviderBase):
                 continue
             typed = Node("<logits>", "builtin.var", (), value, attrs={"name": "<logits>"})
             try:
-                output = GreedySample.infer_type((typed, ), node.attrs)
+                output = GreedySample.infer_type((typed,), node.attrs)
             except IRSchemaError:
                 continue
-            factors = GreedySample.cost_factors((typed, ), node.attrs, output)
-            result.append(
-                DistributedCandidate(
-                    distributed_candidate_id(node.id, "greedy_sample", output, (value, )),
-                    output,
-                    (value, ),
-                    1 << 20 if factors is None else context.operation_cost_model.get_latency(factors, output),
-                    "local-argmax-and-global-index-merge",
-                    objective_kind="heuristic" if factors is None else "analytic",
-                    objective_model="flagmega.dynamic-argmax/v1"
-                    if factors is None else context.operation_cost_model.identity,
-                    objective_evidence=("op-definition-cost-factors", "target-owned-input-split",
-                                        "materialized-argmax"),
-                ))
+            factors = GreedySample.cost_factors((typed,), node.attrs, output)
+            result.append(DistributedCandidate(
+                distributed_candidate_id(node.id, "greedy_sample", output, (value,)),
+                output, (value,),
+                1 << 20 if factors is None else context.operation_cost_model.get_latency(factors, output),
+                "local-argmax-and-global-index-merge",
+                objective_kind="heuristic" if factors is None else "analytic",
+                objective_model="flagmega.dynamic-argmax/v1" if factors is None else context.operation_cost_model.identity,
+                objective_evidence=("op-definition-cost-factors", "target-owned-input-split", "materialized-argmax"),
+            ))
         return tuple(result)

@@ -10,10 +10,8 @@ from .conftest import partial_sum_module
 
 
 @pytest.mark.parametrize("values,axes,use_mean", [
-    (1, (0, 1), False),
-    (3, (0, 1), True),
-    (25, (0, ), False),
-    (17, (1, ), True),
+    (1, (0, 1), False), (3, (0, 1), True),
+    (25, (0,), False), (17, (1,), True),
 ])
 def test_partial_reduce_preserves_group_owners_and_ragged_output(tmp_path, values, axes, use_mean):
     torch = pytest.importorskip("torch")

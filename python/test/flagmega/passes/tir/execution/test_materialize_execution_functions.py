@@ -15,7 +15,7 @@ from triton.flagmega.passes.tir import (
     materialize_kernel_prim_functions,
 )
 
-from .helpers import kernel_attrs, scheduled_nested_module
+from .helpers import kernel_attrs, nested_allocated_module, scheduled_nested_module
 
 
 def test_materializes_one_typed_execution_function_per_graph_function():
@@ -27,7 +27,9 @@ def test_materializes_one_typed_execution_function_per_graph_function():
     ]
     worker = result.execution_function_map["worker"]
     main = result.execution_function_map["main"]
-    assert [call.call_id for call in fm.execution_calls_of(worker)] == ["worker_result"]
+    assert [call.call_id for call in fm.execution_calls_of(worker)] == [
+        "worker_result"
+    ]
     assert [call.call_id for call in fm.execution_calls_of(main)] == [
         "prepared",
         "nested",
@@ -40,8 +42,8 @@ def test_materializes_one_typed_execution_function_per_graph_function():
     record = fm.verify_buffer_plan(result).call_map[nested.call_id]
     assert nested.workspace_offset == record.workspace_offset
     assert nested.workspace_nbytes == record.workspace_bytes
-    assert nested.dependencies == ("prepared", )
-    assert fm.execution_calls_of(main)[2].dependencies == ("nested", )
+    assert nested.dependencies == ("prepared",)
+    assert fm.execution_calls_of(main)[2].dependencies == ("nested",)
 
 
 def test_call_bindings_are_concrete_buffer_plan_identities():
@@ -73,8 +75,11 @@ def test_verifier_rejects_execution_call_to_missing_target():
     edited = replace(
         result,
         execution_functions=tuple(
-            replace(value, body=fm.T.sequential(tuple(calls))) if value.name == "main" else value
-            for value in result.execution_functions),
+            replace(value, body=fm.T.sequential(tuple(calls)))
+            if value.name == "main"
+            else value
+            for value in result.execution_functions
+        ),
     )
 
     try:
@@ -92,7 +97,9 @@ def test_codegen_call_abi_does_not_recover_order_from_graph(monkeypatch):
     monkeypatch.setattr(
         call_abi,
         "function_nodes",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("graph schedule must not be read")),
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("graph schedule must not be read")
+        ),
     )
 
     described = call_abi.describe_function_call_abi(result)
@@ -102,13 +109,16 @@ def test_codegen_call_abi_does_not_recover_order_from_graph(monkeypatch):
         ("function_call", "nested"),
         ("kernel_call", "output"),
     ]
-    assert described["events"][1]["memory_pools"] == [{
-        "memory_space": pool.memory_space,
-        "allocation": pool.allocation,
-        "offset": pool.offset,
-        "scope_bytes": pool.scope_bytes,
-        "scope_count": 1,
-    } for pool in fm.verify_buffer_plan(result).call_map["nested"].memory_pools]
+    assert described["events"][1]["memory_pools"] == [
+        {
+            "memory_space": pool.memory_space,
+            "allocation": pool.allocation,
+            "offset": pool.offset,
+            "scope_bytes": pool.scope_bytes,
+            "scope_count": 1,
+        }
+        for pool in fm.verify_buffer_plan(result).call_map["nested"].memory_pools
+    ]
 
 
 def test_verifier_rejects_agent_schedule_that_moves_consumer_before_producer():
@@ -121,8 +131,10 @@ def test_verifier_rejects_agent_schedule_that_moves_consumer_before_producer():
     )
     edited = replace(
         result,
-        execution_functions=tuple(edited_main if value.name == "main" else value
-                                  for value in result.execution_functions),
+        execution_functions=tuple(
+            edited_main if value.name == "main" else value
+            for value in result.execution_functions
+        ),
     )
 
     try:
@@ -140,7 +152,7 @@ def test_materialization_preserves_effect_resource_order_without_data_edge():
     source = builder.var("source", value_type, id="source")
     writer = builder.call(
         "tir.kernel",
-        (source, ),
+        (source,),
         value_type,
         id="writer",
         effect=fm.effect("write", "state"),
@@ -148,14 +160,16 @@ def test_materialization_preserves_effect_resource_order_without_data_edge():
     )
     reader = builder.call(
         "tir.kernel",
-        (source, ),
+        (source,),
         value_type,
         id="reader",
         effect=fm.effect("read", "state"),
         attrs=kernel_attrs("tir.silu.reader"),
     )
-    builder.function("main", (source, ), (writer, reader))
-    selected = materialize_kernel_prim_functions(builder.build(entry="main"))
+    builder.function("main", (source,), (writer, reader))
+    selected = materialize_kernel_prim_functions(
+        builder.build(entry="main")
+    )
     plan = fm.make_buffer_plan(selected)
     bound = bind_prim_function_buffers(selected, plan=plan)
     allocated = replace(
@@ -168,7 +182,7 @@ def test_materialization_preserves_effect_resource_order_without_data_edge():
     calls = fm.execution_calls_of(materialize_execution_functions(allocated).execution_function_map["main"])
 
     assert calls[0].dependencies == ()
-    assert calls[1].dependencies == ("writer", )
+    assert calls[1].dependencies == ("writer",)
 
 
 def _as_legacy_v5_buffer_plan(data):
@@ -176,7 +190,11 @@ def _as_legacy_v5_buffer_plan(data):
     legacy["schema"] = LEGACY_BUFFER_PLAN_SCHEMA
     legacy.pop("default_workspace")
     for function in legacy["functions"]:
-        pool = next(value for value in function.pop("memory_pools") if value["memory_space"] == "workspace")
+        pool = next(
+            value
+            for value in function.pop("memory_pools")
+            if value["memory_space"] == "workspace"
+        )
         function.update({
             "workspace_bytes": pool["scope_bytes"],
             "workspace_alignment": pool["alignment"],
@@ -185,13 +203,21 @@ def _as_legacy_v5_buffer_plan(data):
         for call in function["calls"]:
             pools = call.pop("memory_pools")
             workspace = next(
-                (value for value in pools if value["memory_space"] == "workspace"),
+                (
+                    value
+                    for value in pools
+                    if value["memory_space"] == "workspace"
+                ),
                 None,
             )
             call.update({
-                "workspace_allocation": (None if workspace is None else workspace["allocation"]),
+                "workspace_allocation": (
+                    None if workspace is None else workspace["allocation"]
+                ),
                 "workspace_offset": 0 if workspace is None else workspace["offset"],
-                "workspace_bytes": (0 if workspace is None else workspace["scope_bytes"]),
+                "workspace_bytes": (
+                    0 if workspace is None else workspace["scope_bytes"]
+                ),
             })
     return legacy
 
@@ -202,33 +228,33 @@ def _scheduled_nested_module_with_a_nonempty_callee_pool():
     worker_input = builder.var("worker_input", value_type, id="worker_input")
     temporary = builder.call(
         "tir.kernel",
-        (worker_input, ),
+        (worker_input,),
         value_type,
         id="worker_temporary",
         attrs=kernel_attrs("tir.silu.worker_temporary"),
     )
     worker_result = builder.call(
         "tir.kernel",
-        (temporary, ),
+        (temporary,),
         value_type,
         id="worker_result",
         attrs=kernel_attrs("tir.silu.worker_result"),
     )
     builder.function(
         "worker",
-        (worker_input, ),
-        (worker_result, ),
+        (worker_input,),
+        (worker_result,),
         attrs={"calling_convention": "device", "reusable": True},
     )
     source = builder.var("source", value_type, id="source")
     nested = builder.call(
         "tir.call",
-        (source, ),
+        (source,),
         value_type,
         id="nested",
         attrs={"callee": "worker"},
     )
-    builder.function("main", (source, ), (nested, ))
+    builder.function("main", (source,), (nested,))
     selected = materialize_kernel_prim_functions(builder.build(entry="main"))
     plan = fm.make_buffer_plan(selected)
     bound = bind_prim_function_buffers(selected, plan=plan)
@@ -249,21 +275,28 @@ def test_legacy_v5_execution_workspace_frame_resumes_without_allocation_id():
     assert nested.call_id == "nested"
     fields[0] = replace(
         nested,
-        memory_pools=(fm.T.memory_pool_frame(
-            "workspace",
-            None,
-            nested.workspace_offset,
-            nested.workspace_nbytes,
-        ), ),
+        memory_pools=(
+            fm.T.memory_pool_frame(
+                "workspace",
+                None,
+                nested.workspace_offset,
+                nested.workspace_nbytes,
+            ),
+        ),
     )
     resumed = replace(
         result,
         execution_functions=tuple(
-            replace(value, body=fm.T.sequential(tuple(fields))) if value.name == "main" else value
-            for value in result.execution_functions),
+            replace(value, body=fm.T.sequential(tuple(fields)))
+            if value.name == "main"
+            else value
+            for value in result.execution_functions
+        ),
         metadata={
             **result.metadata,
-            "buffer_plan": _as_legacy_v5_buffer_plan(fm.verify_buffer_plan(result).to_data()),
+            "buffer_plan": _as_legacy_v5_buffer_plan(
+                fm.verify_buffer_plan(result).to_data()
+            ),
         },
     )
 
@@ -271,18 +304,22 @@ def test_legacy_v5_execution_workspace_frame_resumes_without_allocation_id():
 
     wrong = replace(
         fields[0],
-        memory_pools=(fm.T.memory_pool_frame(
-            "workspace",
-            None,
-            nested.workspace_offset + 256,
-            nested.workspace_nbytes,
-        ), ),
+        memory_pools=(
+            fm.T.memory_pool_frame(
+                "workspace",
+                None,
+                nested.workspace_offset + 256,
+                nested.workspace_nbytes,
+            ),
+        ),
     )
-    wrong_main = replace(main, body=fm.T.sequential((wrong, )))
+    wrong_main = replace(main, body=fm.T.sequential((wrong,)))
     corrupted = replace(
         resumed,
-        execution_functions=tuple(wrong_main if value.name == "main" else value
-                                  for value in resumed.execution_functions),
+        execution_functions=tuple(
+            wrong_main if value.name == "main" else value
+            for value in resumed.execution_functions
+        ),
     )
     with pytest.raises(IRVerificationError, match="memory-pool frames differ"):
         fm.verify_module(corrupted)

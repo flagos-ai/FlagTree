@@ -1,0 +1,14 @@
+{# Copyright 2026 FlagOS Contributors; SPDX-License-Identifier: MIT #}
+{# Accepted arithmetic stays in the repository JIT module. #}
+from triton.flagmega.codegen.triton.iq4_q8_kernels import dp4a_m1 as _r003_iq4_q8_interleaved
+{% if render_calls | selectattr("family", "equalto", "iq4_q8_interleaved") | selectattr("constexprs.COLS", "defined") | list %}
+from triton.flagmega.codegen.triton.iq4_q8_multi_column import dp4a_columns as _r038_iq4_q8_interleaved
+from triton.flagmega.codegen.triton.iq4_q8_multi_column import dp4a_two_columns as _r039_iq4_q8_interleaved
+{% endif %}
+{% for call in render_calls %}
+{% if call.family == "iq4_q8_interleaved" %}
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+    {{ "_r039_iq4_q8_interleaved" if call.constexprs.COLS is defined and call.constexprs.COLS == 2 else "_r038_iq4_q8_interleaved" if call.constexprs.COLS is defined else "_r003_iq4_q8_interleaved" }}({{ call.pointers | join(', ') }}{% for name, value in call.constexprs.items() %}, {{ name }}={{ value }}{% endfor %})
+{% endif %}
+{% endfor %}

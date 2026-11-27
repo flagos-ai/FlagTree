@@ -16,7 +16,9 @@ def memory_scope_count(module: IRModule, scope: MemorySharingScope) -> int:
     if scope is MemorySharingScope.CHIP:
         return 1
     if scope is MemorySharingScope.DIE:
-        raise CodegenError("The Triton runtime has no die-scoped pool-addressing primitive.")
+        raise CodegenError(
+            "The Triton runtime has no die-scoped pool-addressing primitive."
+        )
     launch = module.metadata.get("launch_contract", {})
     mesh = launch.get("grid_mesh") if isinstance(launch, Mapping) else None
     if mesh is None:
@@ -35,13 +37,14 @@ def memory_scope_count(module: IRModule, scope: MemorySharingScope) -> int:
 
 
 def memory_scope_counts(module: IRModule, plan) -> dict[str, int]:
-    used_spaces = {value.memory_space
-                   for value in plan.physical_buffers} | {
-                       pool.memory_space
-                       for function in plan.functions
-                       for pool in function.memory_pools
-                       if pool.scope_bytes
-                   }
+    used_spaces = {
+        value.memory_space for value in plan.physical_buffers
+    } | {
+        pool.memory_space
+        for function in plan.functions
+        for pool in function.memory_pools
+        if pool.scope_bytes
+    }
     return {
         space.name: memory_scope_count(module, space.sharing_scope)
         for space in plan.memory_spaces
@@ -64,9 +67,13 @@ def emit_pool_scope_base(pool: Mapping[str, object], argument: str) -> str:
     if scope_nbytes < 0 or not isinstance(scope_index, str) or not scope_index:
         raise CodegenError("Replicated runtime pool has an incomplete scope ABI.")
     if pool.get("scope") != MemorySharingScope.BLOCK.value:
-        raise CodegenError("The Triton runtime can replicate function pools only per block.")
+        raise CodegenError(
+            "The Triton runtime can replicate function pools only per block."
+        )
     if scope_index != "program_id_x":
-        raise CodegenError(f"Unsupported block-pool scope-index ABI {scope_index!r}.")
+        raise CodegenError(
+            f"Unsupported block-pool scope-index ABI {scope_index!r}."
+        )
     if scope_nbytes == 0:
         # Empty per-block frames have the same base and cannot be dereferenced.
         return argument

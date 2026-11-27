@@ -16,8 +16,7 @@ def test_bf16_gemv_retains_product_bits_before_reduction(tmp_path, family):
     helper_name = "_accumulate"
     context = {family + "_accumulate_helper": helper_name}
     helper = TritonTemplateRegistry().render(
-        f"kernels/{family}/_local_accumulate.py.jinja",
-        context,
+        f"kernels/{family}/_local_accumulate.py.jinja", context,
     )
     arguments = "X, W, offsets, offsets[None, :], offsets < 16, tl.arange(0, 1) < 1"
     result = "value"
@@ -40,10 +39,10 @@ def run(X, W, Y):
     spec.loader.exec_module(module)
     # Both operands are exactly representable BF16; their product requires
     # more mantissa bits. FP32 accumulation cannot recover a rounded product.
-    x = torch.full((16, ), 1.0078125, device="cuda", dtype=torch.bfloat16)
+    x = torch.full((16,), 1.0078125, device="cuda", dtype=torch.bfloat16)
     w = x.clone()
-    y = torch.empty((1, ), device="cuda", dtype=torch.float32)
-    module.run[(1, )](x, w, y)
+    y = torch.empty((1,), device="cuda", dtype=torch.float32)
+    module.run[(1,)](x, w, y)
     expected = (x.float() * w.float()).sum().reshape(1)
     if family == "dense_matmul_glu":
         expected *= 2

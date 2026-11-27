@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Emit structured local-shard accesses for Triton package renderers.
 
-This is the renderer-side equivalent of reference/PyNTT's canonical access
+This is the renderer-side equivalent of nncase/PyNTT's canonical access
 rewriter. Kernel algorithms are written over dense local coordinates. The
 buffer ABI decides whether those coordinates address a compact owner slice or
 must first be mapped into canonical-global storage.
@@ -38,7 +38,9 @@ def emit_triton_scalar_type(dtype: str) -> str:
     try:
         return _TRITON_SCALAR_TYPES[str(dtype)]
     except KeyError as error:
-        raise CodegenError(f"Triton has no scalar spelling for dtype {dtype!r}.") from error
+        raise CodegenError(
+            f"Triton has no scalar spelling for dtype {dtype!r}."
+        ) from error
 
 
 def emit_buffer_pointer(
@@ -65,15 +67,19 @@ def emit_storage_pointer(
     if storage in {"rdata", "workspace"} or bool(abi.get("pooled", False)):
         scalar_dtype = _TRITON_SCALAR_TYPES.get(str(abi.get("scalar_dtype")))
         if scalar_dtype is None:
-            raise CodegenError("Triton pooled storage cannot cast scalar dtype "
-                               f"{abi.get('scalar_dtype')!r}.")
+            raise CodegenError(
+                "Triton pooled storage cannot cast scalar dtype "
+                f"{abi.get('scalar_dtype')!r}."
+            )
         itemsize = int(abi["scalar_itemsize"])
         byte_offset = int(abi["pool_byte_offset"])
         scope_stride = int(abi.get("pool_scope_stride_bytes", 0))
         scope_index = abi.get("pool_scope_index")
         if itemsize <= 0 or byte_offset % itemsize or scope_stride % itemsize:
-            raise CodegenError(f"Pooled buffer offset/stride {byte_offset}/{scope_stride} is not aligned to "
-                               f"{itemsize}-byte {abi.get('scalar_dtype')} elements.")
+            raise CodegenError(
+                f"Pooled buffer offset/stride {byte_offset}/{scope_stride} is not aligned to "
+                f"{itemsize}-byte {abi.get('scalar_dtype')} elements."
+            )
         pointer = f"{argument}.to(tl.pointer_type({scalar_dtype}))"
         terms = []
         if scope_stride:
@@ -124,26 +130,39 @@ def emit_remote_storage_pointer(
 
     storage = str(abi.get("storage"))
     if storage not in {"rdata", "workspace"} and not bool(abi.get("pooled", False)):
-        raise CodegenError(f"Remote reads require pooled storage registered as the device "
-                           f"window, got storage {storage!r}.")
+        raise CodegenError(
+            f"Remote reads require pooled storage registered as the device "
+            f"window, got storage {storage!r}."
+        )
     scalar_dtype = _TRITON_SCALAR_TYPES.get(str(abi.get("scalar_dtype")))
     if scalar_dtype is None:
-        raise CodegenError("Triton remote storage cannot cast scalar dtype "
-                           f"{abi.get('scalar_dtype')!r}.")
+        raise CodegenError(
+            "Triton remote storage cannot cast scalar dtype "
+            f"{abi.get('scalar_dtype')!r}."
+        )
     itemsize = int(abi["scalar_itemsize"])
     byte_offset = int(abi["pool_byte_offset"])
     if itemsize <= 0 or byte_offset % itemsize:
-        raise CodegenError(f"Pooled buffer offset {byte_offset} is not aligned to "
-                           f"{itemsize}-byte {abi.get('scalar_dtype')} elements.")
+        raise CodegenError(
+            f"Pooled buffer offset {byte_offset} is not aligned to "
+            f"{itemsize}-byte {abi.get('scalar_dtype')} elements."
+        )
     if int(abi.get("pool_scope_stride_bytes") or 0):
-        raise CodegenError("A per-scope replicated pool has no single peer-side instance; "
-                           "remote reads require a chip-scoped pool.")
+        raise CodegenError(
+            "A per-scope replicated pool has no single peer-side instance; "
+            "remote reads require a chip-scoped pool."
+        )
     if "view_byte_offset" in abi:
-        raise CodegenError("A runtime-indexed view offset is local state; remote reads "
-                           "require a statically addressed pool buffer.")
-    offset = (str(byte_offset // itemsize) if window_byte_offset is None else f"({window_byte_offset}) // {itemsize}")
-    return (f'tle.remote({device_context}, space="device", dtype={scalar_dtype}, '
-            f"shard_id={peer}, offset={offset})")
+        raise CodegenError(
+            "A runtime-indexed view offset is local state; remote reads "
+            "require a statically addressed pool buffer."
+        )
+    offset = (str(byte_offset // itemsize) if window_byte_offset is None else
+              f"({window_byte_offset}) // {itemsize}")
+    return (
+        f'tle.remote({device_context}, space="device", dtype={scalar_dtype}, '
+        f"shard_id={peer}, offset={offset})"
+    )
 
 
 def emit_scalar_immediate(
@@ -162,8 +181,10 @@ def emit_scalar_immediate(
         raise CodegenError("Only scalar ABI values can materialize an immediate.")
     scalar_dtype = _TRITON_SCALAR_TYPES.get(str(abi.get("scalar_dtype")))
     if scalar_dtype is None:
-        raise CodegenError("Triton cannot materialize scalar dtype "
-                           f"{abi.get('scalar_dtype')!r}.")
+        raise CodegenError(
+            "Triton cannot materialize scalar dtype "
+            f"{abi.get('scalar_dtype')!r}."
+        )
     return f"tl.full((), {value}, {scalar_dtype})"
 
 
@@ -180,8 +201,13 @@ def emit_owner_base(
         if stride <= 0:
             raise CodegenError("Compact-per-owner buffer has no scalar owner stride.")
         selected_owner = str(
-            abi.get("owner_index_expression", owner_index) if owner_index == "shard_index" else owner_index)
-        selected_owner = _bind_coordinate_expression(selected_owner, (), _shard_coordinates(abi, None))
+            abi.get("owner_index_expression", owner_index)
+            if owner_index == "shard_index"
+            else owner_index
+        )
+        selected_owner = _bind_coordinate_expression(
+            selected_owner, (), _shard_coordinates(abi, None)
+        )
         return f"({argument} + ({selected_owner}) * {stride})"
     return str(argument)
 
@@ -198,24 +224,37 @@ def emit_local_scalar_offset(
     shard_coordinates = _shard_coordinates(abi, shard_coordinates)
     strides = tuple(int(value) for value in abi["scalar_storage_strides"])
     if len(local_coordinates) != len(strides):
-        raise CodegenError("Local access rank does not match the physical buffer ABI: "
-                           f"{len(local_coordinates)} != {len(strides)}.")
+        raise CodegenError(
+            "Local access rank does not match the physical buffer ABI: "
+            f"{len(local_coordinates)} != {len(strides)}."
+        )
     coordinate_space = str(abi.get("coordinate_space"))
     if coordinate_space in {"canonical_global", "parent_shard_local"}:
-        expression_key = ("logical_coordinate_expressions"
-                          if coordinate_space == "canonical_global" else "storage_coordinate_expressions")
+        expression_key = (
+            "logical_coordinate_expressions"
+            if coordinate_space == "canonical_global"
+            else "storage_coordinate_expressions"
+        )
         raw_coordinates = tuple(str(value) for value in abi[expression_key])
         if len(raw_coordinates) != len(strides):
-            raise CodegenError(f"{coordinate_space} buffer coordinate rank is incomplete.")
+            raise CodegenError(
+                f"{coordinate_space} buffer coordinate rank is incomplete."
+            )
         coordinates = tuple(
             _bind_coordinate_expression(
                 expression,
                 local_coordinates,
                 shard_coordinates,
-            ) for expression in raw_coordinates)
+            )
+            for expression in raw_coordinates
+        )
     else:
         coordinates = tuple(str(value) for value in local_coordinates)
-    terms = [f"({coordinate}) * {stride}" for coordinate, stride in zip(coordinates, strides, strict=True) if stride]
+    terms = [
+        f"({coordinate}) * {stride}"
+        for coordinate, stride in zip(coordinates, strides, strict=True)
+        if stride
+    ]
     if lane_coordinate is not None:
         lane_count = int(abi.get("scalar_lane_count", 1))
         if lane_count == 1:
@@ -234,14 +273,22 @@ def emit_logical_coordinate(
     """Map one dense local tensor coordinate to its logical coordinate."""
 
     shard_coordinates = _shard_coordinates(abi, shard_coordinates)
-    expressions = tuple(str(value) for value in abi["logical_coordinate_expressions"])
+    expressions = tuple(
+        str(value) for value in abi["logical_coordinate_expressions"]
+    )
     if len(local_coordinates) != len(expressions):
-        raise CodegenError("Logical-coordinate rank does not match the physical buffer ABI.")
+        raise CodegenError(
+            "Logical-coordinate rank does not match the physical buffer ABI."
+        )
     try:
         expression = expressions[axis]
     except IndexError as error:
-        raise CodegenError(f"Logical-coordinate axis {axis} is outside rank {len(expressions)}.") from error
-    return _bind_coordinate_expression(expression, local_coordinates, shard_coordinates)
+        raise CodegenError(
+            f"Logical-coordinate axis {axis} is outside rank {len(expressions)}."
+        ) from error
+    return _bind_coordinate_expression(
+        expression, local_coordinates, shard_coordinates
+    )
 
 
 def emit_global_scalar_offset(
@@ -254,9 +301,13 @@ def emit_global_scalar_offset(
 
     strides = tuple(int(value) for value in abi["scalar_storage_strides"])
     if len(logical_coordinates) != len(strides):
-        raise CodegenError("Global access rank does not match the physical buffer ABI.")
+        raise CodegenError(
+            "Global access rank does not match the physical buffer ABI."
+        )
     terms = [
-        f"({coordinate}) * {stride}" for coordinate, stride in zip(logical_coordinates, strides, strict=True) if stride
+        f"({coordinate}) * {stride}"
+        for coordinate, stride in zip(logical_coordinates, strides, strict=True)
+        if stride
     ]
     if lane_coordinate is not None:
         lane_count = int(abi.get("scalar_lane_count", 1))
@@ -277,7 +328,9 @@ def emit_active_extent(
     try:
         expression = expressions[axis]
     except IndexError as error:
-        raise CodegenError(f"Active-extent axis {axis} is outside rank {len(expressions)}.") from error
+        raise CodegenError(
+            f"Active-extent axis {axis} is outside rank {len(expressions)}."
+        ) from error
     return _bind_coordinate_expression(expression, (), shard_coordinates)
 
 
@@ -299,7 +352,7 @@ def _shard_coordinates(
     rank = len(hierarchy)
     if rank == 2:
         # Preserve the established 2-D source ABI while higher/lower ranks use
-        # the reference placement-indexed spelling.
+        # nncase's placement-indexed spelling.
         return ("shard_y", "shard_x")
     return tuple(f"shard_coord{axis}" for axis in range(rank))
 
@@ -312,11 +365,17 @@ def _bind_coordinate_expression(
     result = str(expression)
     # Replace longer numeric suffixes first (axis 10 before axis 1).
     for axis in reversed(range(len(local_coordinates))):
-        result = result.replace(f"local_coord_{axis}", f"({local_coordinates[axis]})")
+        result = result.replace(
+            f"local_coord_{axis}", f"({local_coordinates[axis]})"
+        )
     for axis in reversed(range(len(shard_coordinates))):
-        result = result.replace(f"shard_coord_{axis}", f"({shard_coordinates[axis]})")
+        result = result.replace(
+            f"shard_coord_{axis}", f"({shard_coordinates[axis]})"
+        )
     if "local_coord_" in result or "shard_coord_" in result:
-        raise CodegenError(f"Unbound local-shard coordinate in expression {result!r}.")
+        raise CodegenError(
+            f"Unbound local-shard coordinate in expression {result!r}."
+        )
     return result
 
 

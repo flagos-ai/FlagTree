@@ -23,12 +23,10 @@ def test_registered_plain_async_row_matches_original_exactly_on_reuse(tmp_path):
     checkpoint = MemoryCheckpoint({}, {
         "weight": TensorInfo("weight", DType.BFLOAT16, (n, k), "memory"),
     }, {"weight": weight})
-    runtimes = [
-        load(
-            write_artifact(make_module(implementation), tmp_path / name, target="nvidia-sm90", checkpoint=checkpoint,
-                           emit_executable=True), device="cuda:0")
-        for name, implementation in (("ordinary", BASE), ("async", REGISTERED))
-    ]
+    runtimes = [load(write_artifact(make_module(implementation), tmp_path / name,
+                                    target="nvidia-sm90", checkpoint=checkpoint,
+                                    emit_executable=True), device="cuda:0")
+                for name, implementation in (("ordinary", BASE), ("async", REGISTERED))]
     value = torch.empty((1, k), dtype=torch.bfloat16, device="cuda")
     outputs = [runtime.create_outputs() for runtime in runtimes]
     for runtime, output in zip(runtimes, outputs, strict=True):

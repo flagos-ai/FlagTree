@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Pad/Slice address transforms over local tensor shards, including vector lanes.
 
-As in the reference NTT Pad/Slice, these kernels transform local coordinates only.
+As in nncase's NTT Pad/Slice, these kernels transform local coordinates only.
 Axes whose index range changes must be broadcast; any inter-owner data
 movement is represented by an explicit Boxing in the input graph.
 """
@@ -183,10 +183,11 @@ def gather_call(raw):
     result_type = _tensor_type(result["abi"])
     definition = get_definition("tensors.gather")
     attrs = definition.normalize_attrs(raw["semantic_attrs"])
-    actual_type = definition.infer_type((
-        Node("value", "builtin.var", (), source_type),
-        Node("indices", "builtin.var", (), index_type),
-    ), attrs)
+    actual_type = definition.infer_type(
+        (
+            Node("value", "builtin.var", (), source_type),
+            Node("indices", "builtin.var", (), index_type),
+        ), attrs)
     if actual_type != result_type:
         raise CodegenError("Gather call ABI disagrees with its inferred gather contract.")
     domain = _scalar_local_domain(result["abi"], "_fm_offsets")
@@ -206,11 +207,13 @@ def gather_call(raw):
         "active":
         domain["active"],
         "index_offset":
-        emit_local_scalar_offset(index_buffer["abi"], index_coordinates, lane_coordinate=domain["lane_coordinate"]),
+        emit_local_scalar_offset(
+            index_buffer["abi"], index_coordinates, lane_coordinate=domain["lane_coordinate"]),
         "source_offset":
         emit_local_scalar_offset(source["abi"], value_coordinates, lane_coordinate=domain["lane_coordinate"]),
         "result_offset":
-        emit_local_scalar_offset(result["abi"], domain["local_coordinates"], lane_coordinate=domain["lane_coordinate"]),
+        emit_local_scalar_offset(
+            result["abi"], domain["local_coordinates"], lane_coordinate=domain["lane_coordinate"]),
         "writer_active":
         _canonical_writer_active(result["abi"]),
         "tile":

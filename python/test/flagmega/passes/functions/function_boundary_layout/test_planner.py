@@ -11,19 +11,22 @@ from triton.flagmega.passes.functions import propagate_function_boundary_layouts
 
 
 class _PackUnpackLayer(fm.Module):
-
     def __init__(self):
         super().__init__(dialect="ntt", stage="packed", entry="main")
 
     def forward(self):
         tensor_type = fm.tensor_type("float32", (4, 16))
         parameter = self.input("parameter", tensor_type, id="parameter")
-        packed = fm.F.tensors.pack(parameter, (4, ), axes=(1, ), name="packed")
-        result = fm.F.tensors.unpack(packed, axes=(1, ), name="result")
+        packed = fm.F.tensors.pack(
+            parameter, (4,), axes=(1,), name="packed"
+        )
+        result = fm.F.tensors.unpack(packed, axes=(1,), name="result")
         value = self.input("value", tensor_type, id="value")
-        call = fm.F.builtin.call(value, result_type=tensor_type, callee="layer", name="call")
-        self.function("main", (value, ), (call, ))
-        self.function("layer", (parameter, ), (result, ), attrs={"reusable": True})
+        call = fm.F.builtin.call(
+            value, result_type=tensor_type, callee="layer", name="call"
+        )
+        self.function("main", (value,), (call,))
+        self.function("layer", (parameter,), (result,), attrs={"reusable": True})
 
 
 def test_agent_editable_identity_override_keeps_original_function_abi():
@@ -60,4 +63,4 @@ def test_cp_sat_decision_is_serialized_in_editable_module_metadata():
         "function": "layer",
         "candidate": "internal",
         "solver": "ortools-cp-sat",
-    }, )
+    },)

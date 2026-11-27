@@ -1,10 +1,14 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
+from math import prod
+
 import pytest
 
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
-    prepare_kernel_calls, )
+    prepare_kernel_calls,
+)
+from triton.flagmega.errors import CodegenError
 
 
 def _abi(
@@ -30,38 +34,35 @@ def _abi(
         current *= extent
     strides = tuple(reversed(strides))
     return {
-        "storage":
-        storage,
-        "storage_kind":
-        storage_kind,
-        "pool_byte_offset":
-        0,
-        "scalar_dtype":
-        dtype,
-        "scalar_itemsize":
-        itemsize,
-        "logical_shape":
-        shape,
-        "local_capacity_shape":
-        local_shape,
-        "active_shape_expressions":
-        tuple(str(value) for value in local_shape),
-        "logical_coordinate_expressions":
-        tuple(coordinates or (f"local_coord_{axis}" for axis in range(len(shape)))),
-        "scalar_storage_strides":
-        tuple(value * lanes for value in strides),
-        "scalar_lane_shape": () if lanes == 1 else (lanes, ),
-        "scalar_lane_count":
-        lanes,
-        "component_stride_scalar_elements":
-        0,
-        "coordinate_space":
-        coordinate_space,
-        "distributed_type": ({
-            "placement": {"hierarchy": (8, 16)},
-            "axis_policies": tuple(axis_policies or ({"kind": "broadcast"} for _ in shape)),
-            "partial": None,
-        } if distributed else None),
+        "storage": storage,
+        "storage_kind": storage_kind,
+        "pool_byte_offset": 0,
+        "scalar_dtype": dtype,
+        "scalar_itemsize": itemsize,
+        "logical_shape": shape,
+        "local_capacity_shape": local_shape,
+        "active_shape_expressions": tuple(str(value) for value in local_shape),
+        "logical_coordinate_expressions": tuple(
+            coordinates
+            or (f"local_coord_{axis}" for axis in range(len(shape)))
+        ),
+        "scalar_storage_strides": tuple(value * lanes for value in strides),
+        "scalar_lane_shape": () if lanes == 1 else (lanes,),
+        "scalar_lane_count": lanes,
+        "component_stride_scalar_elements": 0,
+        "coordinate_space": coordinate_space,
+        "distributed_type": (
+            {
+                "placement": {"hierarchy": (8, 16)},
+                "axis_policies": tuple(
+                    axis_policies
+                    or ({"kind": "broadcast"} for _ in shape)
+                ),
+                "partial": None,
+            }
+            if distributed
+            else None
+        ),
     }
 
 
@@ -85,7 +86,7 @@ def _raw(*, q_abi=None, q_result_abi=None, k_abi=None, v_abi=None):
     q_result_abi = q_result_abi or _abi((1, 2, head_dim // 8), lanes=8)
     k_abi = k_abi or _abi((1, 1, head_dim))
     v_abi = v_abi or _abi((1, 1, head_dim))
-    scale_abi = _abi((head_dim, ))
+    scale_abi = _abi((head_dim,))
     frequency_abi = _abi((1, 1, head_dim), dtype="float32", itemsize=4)
     cache_abi = _abi(
         (16, 2, 2, 256, k_abi["logical_shape"][1], head_dim // 8),
@@ -96,35 +97,29 @@ def _raw(*, q_abi=None, q_result_abi=None, k_abi=None, v_abi=None):
     )
     state_abis = (
         cache_abi,
-        _abi((2, ), dtype="int32", itemsize=4, distributed=False, storage_kind="compact_local",
-             coordinate_space="local"),
-        _abi((1, ), dtype="int32", itemsize=4, distributed=False, storage_kind="compact_local",
-             coordinate_space="local"),
-        _abi((1, ), dtype="int64", itemsize=8, distributed=False, storage_kind="compact_local",
-             coordinate_space="local"),
-        _abi((1, 16), dtype="int32", itemsize=4, distributed=False, storage_kind="compact_local",
-             coordinate_space="local"),
+        _abi((2,), dtype="int32", itemsize=4, distributed=False,
+             storage_kind="compact_local", coordinate_space="local"),
+        _abi((1,), dtype="int32", itemsize=4, distributed=False,
+             storage_kind="compact_local", coordinate_space="local"),
+        _abi((1,), dtype="int64", itemsize=8, distributed=False,
+             storage_kind="compact_local", coordinate_space="local"),
+        _abi((1, 16), dtype="int32", itemsize=4, distributed=False,
+             storage_kind="compact_local", coordinate_space="local"),
     )
     scalar_abi = _abi(
-        (),
-        dtype="int32",
-        itemsize=4,
-        storage="scalar",
-        storage_kind="compact_local",
-        coordinate_space="local",
+        (), dtype="int32", itemsize=4, storage="scalar",
+        storage_kind="compact_local", coordinate_space="local",
         distributed=False,
     )
     bool_abi = {**scalar_abi, "scalar_dtype": "bool", "scalar_itemsize": 1}
-    state = tuple(_binding(f"state.{index}", abi) for index, abi in enumerate(state_abis))
+    state = tuple(
+        _binding(f"state.{index}", abi) for index, abi in enumerate(state_abis)
+    )
     return {
-        "call":
-        "qkv_rope_cache",
-        "family":
-        "qkv_rope_with_cache",
-        "variant":
-        "decode",
-        "execution_kind":
-        "local_shard",
+        "call": "qkv_rope_cache",
+        "family": "qkv_rope_with_cache",
+        "variant": "decode",
+        "execution_kind": "local_shard",
         "parameters": {"elements_per_program": 128},
         "semantic_attrs": {
             "q_axis": -1,
@@ -158,19 +153,18 @@ def _raw(*, q_abi=None, q_result_abi=None, k_abi=None, v_abi=None):
                 "advance_sequence",
                 _binding("advance", bool_abi, value_kind="immediate", argument="True"),
             ),
-            *(_parameter(
-                f"{role}_stats",
-                _binding(f"{role}_stats", _abi(
-                    (1, *abi["logical_shape"][:2], 1),
-                    dtype="float32",
-                    itemsize=4,
-                ))) for role, abi in (("q", q_abi), ("k", k_abi))),
+            *(_parameter(f"{role}_stats", _binding(f"{role}_stats", _abi(
+                (1, *abi["logical_shape"][:2], 1), dtype="float32", itemsize=4,
+            ))) for role, abi in (("q", q_abi), ("k", k_abi))),
         ),
         "outputs": (
             _parameter("result_0", _binding("query_result", q_result_abi)),
             _parameter(
                 "result_1",
-                *(_binding(f"state_result.{index}", abi) for index, abi in enumerate(state_abis)),
+                *(
+                    _binding(f"state_result.{index}", abi)
+                    for index, abi in enumerate(state_abis)
+                ),
             ),
         ),
         "workspaces": (),
@@ -178,7 +172,7 @@ def _raw(*, q_abi=None, q_result_abi=None, k_abi=None, v_abi=None):
 
 
 def _prepare(**kwargs):
-    return prepare_kernel_calls((_raw(**kwargs), ), function_name="decode_layer")[0]
+    return prepare_kernel_calls((_raw(**kwargs),), function_name="decode_layer")[0]
 
 
 def test_decode_encoder_uses_only_local_buffer_abi_and_paged_state_contract():
@@ -194,13 +188,16 @@ def test_decode_encoder_uses_only_local_buffer_abi_and_paged_state_contract():
     assert call["advance_sequence"] == "True"
     assert "qkv_k_cache_physical_block" in call["k"]["cache_offset"]
     assert "qkv_v_cache_physical_block" in call["v"]["cache_offset"]
-    assert not any(name in repr(call).lower() for name in ("qwen", "sm90", "nvidia"))
+    assert not any(
+        name in repr(call).lower()
+        for name in ("qwen", "sm90", "nvidia")
+    )
 
 
 def test_head_sharding_changes_coordinates_without_changing_kernel_family():
     split = (
         {"kind": "broadcast"},
-        {"kind": "split", "stages": ({"hierarchy_axes": (1, )}, )},
+        {"kind": "split", "stages": ({"hierarchy_axes": (1,)},)},
         {"kind": "broadcast"},
     )
     q_abi = _abi(
@@ -235,7 +232,7 @@ def test_head_sharding_changes_coordinates_without_changing_kernel_family():
 def test_k_and_v_use_distinct_redundant_writers_when_capacity_allows():
     kv_split = (
         {"kind": "broadcast"},
-        {"kind": "split", "stages": ({"hierarchy_axes": (0, )}, )},
+        {"kind": "split", "stages": ({"hierarchy_axes": (0,)},)},
         {"kind": "broadcast"},
     )
     coordinates = (
@@ -274,20 +271,16 @@ def test_pair_local_dimension_sharding_uses_global_coordinates_and_external_stat
         axis_policies=(
             {"kind": "broadcast"},
             {"kind": "broadcast"},
-            {
-                "kind": "split", "stages":
-                ({"hierarchy_axes": (1, ), "distribution": {"kind": "block_cyclic", "block_size": 8}}, )
-            },
+            {"kind": "split", "stages": ({"hierarchy_axes": (1,),
+                "distribution": {"kind": "block_cyclic", "block_size": 8}},)},
         ),
     )
 
     result_abi = _abi((1, 2, 32), lanes=8, local_shape=(1, 2, 2),
-                      coordinates=("local_coord_0", "local_coord_1", "local_coord_2 * 16 + shard_coord_1"),
-                      axis_policies=({"kind": "broadcast"}, {"kind": "broadcast"}, {
-                          "kind":
-                          "split", "stages":
-                          ({"hierarchy_axes": (1, ), "distribution": {"kind": "block_cyclic", "block_size": 1}}, )
-                      }))
+        coordinates=("local_coord_0", "local_coord_1", "local_coord_2 * 16 + shard_coord_1"),
+        axis_policies=({"kind": "broadcast"}, {"kind": "broadcast"},
+            {"kind": "split", "stages": ({"hierarchy_axes": (1,),
+                "distribution": {"kind": "block_cyclic", "block_size": 1}},)}))
     call = _prepare(q_abi=q_abi, q_result_abi=result_abi)
     assert call["q"]["stats"] == "q_stats"
     assert "shard_x" in call["q"]["partner_domain"]["global_by_kind"]["dim"]
@@ -302,24 +295,19 @@ def test_sequence_advance_waits_for_all_cache_position_readers(tmp_path):
     from triton.flagmega.codegen.triton.templates import TritonTemplateRegistry
     if not torch.cuda.is_available():
         pytest.skip('requires a GPU')
-    split = {
-        "kind":
-        "split", "stages": ({
-            "hierarchy_axes": (0, 1), "distribution":
-            {"kind": "contiguous", "granularity": {"kind": "fixed", "value": 1}}
-        }, )
-    }
+    split = {"kind": "split", "stages": ({"hierarchy_axes": (0, 1),
+        "distribution": {"kind": "contiguous", "granularity": {"kind": "fixed", "value": 1}}},)}
     policies = ({"kind": "broadcast"}, split, {"kind": "broadcast"})
     coordinates = ("local_coord_0", "local_coord_1 + shard_coord_0 * 2 + shard_coord_1", "local_coord_2")
     source = _abi((1, 4, 128), local_shape=(1, 1, 128), coordinates=coordinates, axis_policies=policies)
     result = _abi((1, 4, 16), lanes=8, local_shape=(1, 1, 16), coordinates=coordinates, axis_policies=policies)
     raw = _raw(q_abi=source, k_abi=source, v_abi=source, q_result_abi=result)
-    state = (_abi((2, 1, 2, 4, 4, 16), lanes=8, distributed=False, storage_kind='compact_local',
-                  coordinate_space='local'), _abi((2, ), dtype='int32', itemsize=4, distributed=False),
-             _abi((1, ), dtype='int32', itemsize=4,
-                  distributed=False), _abi((1, ), dtype='int64', itemsize=8,
-                                           distributed=False), _abi((1, 2), dtype='int32', itemsize=4,
-                                                                    distributed=False))
+    state = (_abi((2, 1, 2, 4, 4, 16), lanes=8, distributed=False,
+                  storage_kind='compact_local', coordinate_space='local'),
+             _abi((2,), dtype='int32', itemsize=4, distributed=False),
+             _abi((1,), dtype='int32', itemsize=4, distributed=False),
+             _abi((1,), dtype='int64', itemsize=8, distributed=False),
+             _abi((1, 2), dtype='int32', itemsize=4, distributed=False))
     for section in ('inputs', 'outputs'):
         for parameter in raw[section]:
             for i, binding in enumerate(parameter['buffers']):
@@ -332,12 +320,10 @@ def test_sequence_advance_waits_for_all_cache_position_readers(tmp_path):
                 if abi.get('distributed_type'):
                     abi['distributed_type']['placement']['hierarchy'] = (2, 2)
     raw['facts'] = {'internal_grid_barriers': 1}
-    call = prepare_kernel_calls((raw, ), function_name='position_probe')[0]
-    source_code = TritonTemplateRegistry().render(
-        'kernels/qkv_rope_with_cache/decode.py.jinja', {
-            'render_calls': [call], 'distributed_entry': True, 'mesh_hierarchy': (2, 2), 'mesh_axis_names':
-            ('block_y', 'block_x')
-        })
+    call = prepare_kernel_calls((raw,), function_name='position_probe')[0]
+    source_code = TritonTemplateRegistry().render('kernels/qkv_rope_with_cache/decode.py.jinja', {
+        'render_calls': [call], 'distributed_entry': True, 'mesh_hierarchy': (2, 2),
+        'mesh_axis_names': ('block_y', 'block_x')})
     header = '''import triton
 import triton.language as tl
 from triton.language.extra import libdevice
@@ -361,9 +347,9 @@ def run({call['signature']}, DelayOut):
     values = {name: torch.ones((1, 4, 128), device='cuda', dtype=torch.bfloat16) for name in ('q', 'k')}
     values['v'] = torch.arange(1, 5, device='cuda').bfloat16()[None, :, None].expand(1, 4, 128).contiguous()
     for name in ('q_scale', 'k_scale'):
-        values[name] = torch.ones((128, ), device='cuda', dtype=torch.bfloat16)
+        values[name] = torch.ones((128,), device='cuda', dtype=torch.bfloat16)
     for name in ('q_bias', 'k_bias'):
-        values[name] = torch.zeros((128, ), device='cuda', dtype=torch.bfloat16)
+        values[name] = torch.zeros((128,), device='cuda', dtype=torch.bfloat16)
     for name in ('q_stats', 'k_stats'):
         values[name] = torch.full((1, 1, 4, 1), 128., device='cuda')
     values['cos'] = torch.ones((1, 1, 128), device='cuda')
@@ -371,13 +357,13 @@ def run({call['signature']}, DelayOut):
     values['query_result'] = torch.empty((1, 4, 16, 8), device='cuda', dtype=torch.bfloat16)
     values['S0'] = torch.full((2, 1, 2, 4, 4, 16, 8), float('nan'), device='cuda', dtype=torch.bfloat16)
     values['S1'] = torch.tensor([0, 1], device='cuda', dtype=torch.int32)
-    values['S2'] = torch.zeros((1, ), device='cuda', dtype=torch.int32)
-    values['S3'] = torch.zeros((1, ), device='cuda', dtype=torch.int64)
+    values['S2'] = torch.zeros((1,), device='cuda', dtype=torch.int32)
+    values['S3'] = torch.zeros((1,), device='cuda', dtype=torch.int64)
     values['S4'] = torch.tensor([[0, 1]], device='cuda', dtype=torch.int32)
     arguments = [values[x.strip()] for x in call['signature'].split(',')]
     triton.set_allocator(lambda size, alignment, stream: torch.zeros(max(16, size), device='cuda', dtype=torch.uint8))
-    delay = torch.zeros((4, ), device='cuda', dtype=torch.int32)
-    module.run[(4, )](*arguments, delay)
+    delay = torch.zeros((4,), device='cuda', dtype=torch.int32)
+    module.run[(4,)](*arguments, delay)
     torch.cuda.synchronize()
     assert delay.cpu().tolist() == [0, 10000, 0, 0]
     torch.testing.assert_close(values['S0'][0, 0, 1, 0].reshape(1, 4, 128), values['v'], rtol=0, atol=0)

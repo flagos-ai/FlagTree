@@ -25,7 +25,7 @@ def test_dataflow_and_egraph_rules_are_pass_manager_native():
         lambda node, _module: node.op == "math.add",
         lambda node, _module: replace(node, op="math.mul"),
     )
-    dataflow = PassManager("dataflow").add(DataflowPass("Dataflow", (dataflow_rule, ))).run(module).module
+    dataflow = PassManager("dataflow").add(DataflowPass("Dataflow", (dataflow_rule,))).run(module).module
     assert dataflow.node_map["output"].op == "math.mul"
 
     swap_rule = RewriteRule(
@@ -33,10 +33,7 @@ def test_dataflow_and_egraph_rules_are_pass_manager_native():
         lambda node, _module: node.op == "math.add",
         lambda node, _module: replace(node, inputs=tuple(reversed(node.inputs))),
     )
-    egraph = PassManager("egraph").add(
-        EGraphRulesPass(
-            "EGraph",
-            (swap_rule, ),
-            selector=lambda _original, alternatives, _module: alternatives[0].node,
-        )).run(module).module
+    egraph = PassManager("egraph").add(EGraphRulesPass(
+        "EGraph", (swap_rule,), selector=lambda _original, alternatives, _module: alternatives[0].node,
+    )).run(module).module
     assert egraph.node_map["output"].inputs == ("rhs", "lhs")

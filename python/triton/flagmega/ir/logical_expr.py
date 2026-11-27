@@ -4,7 +4,7 @@
 
 ``Dimension`` describes an integer-valued expression; this module adds its
 boolean sibling. Both are plain immutable value trees that round-trip through
-Python IR, mirroring the reference ``Dimension``/``BaseExpr`` relation where a
+Python IR, mirroring nncase's ``Dimension``/``BaseExpr`` relation where a
 comparison is an expression node rather than an operator in the graph.
 
 ``DimCompare`` compares two dimensions and yields a boolean, so a predicate
@@ -140,7 +140,8 @@ class DimCompare(LogicalExpr):
         return None
 
     def evaluate(self, bindings: Mapping[str, int]) -> bool:
-        return _COMPARISONS[self.compare][1](evaluate_dim(self.lhs, bindings), evaluate_dim(self.rhs, bindings))
+        return _COMPARISONS[self.compare][1](
+            evaluate_dim(self.lhs, bindings), evaluate_dim(self.rhs, bindings))
 
     def substitute(self, bindings: Mapping[str, int | Dimension]) -> LogicalExpr:
         # Binding every symbol makes the predicate decidable, so fold it.
@@ -226,7 +227,9 @@ class LogicalOp(LogicalExpr):
         return all(values) if self.op == "and" else any(values)
 
     def substitute(self, bindings: Mapping[str, int | Dimension]) -> LogicalExpr:
-        return LogicalOp(self.op, tuple(value.substitute(bindings) for value in self.operands)).simplify()
+        return LogicalOp(
+            self.op, tuple(value.substitute(bindings) for value in self.operands)
+        ).simplify()
 
     def simplify(self) -> LogicalExpr:
         decided = self.value

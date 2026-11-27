@@ -1,0 +1,5 @@
+// flagmega-kernel: paged_attention_gated_combine/decode platform=generic
+{% set attention_combine_family = "paged_attention_gated_combine" %}
+{% if render_calls is defined %}
+{% include "kernels/paged_attention_combine/_function.cpp.jinja" %}
+{% endif %}

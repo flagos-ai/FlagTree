@@ -8,11 +8,11 @@ from triton.flagmega.diagnostics import DumpFlags, DumpManager
 
 def _two_function_module():
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
-    value_type = fm.tensor_type("float32", (8, ))
+    value_type = fm.tensor_type("float32", (8,))
     for name in ("main", "helper"):
         argument = builder.var(f"{name}_argument", value_type, id=f"{name}_argument")
-        result = builder.call("math.silu", (argument, ), value_type, id=f"{name}_result")
-        builder.function(name, (argument, ), (result, ))
+        result = builder.call("math.silu", (argument,), value_type, id=f"{name}_result")
+        builder.function(name, (argument,), (result,))
     return builder.build(entry="main")
 
 
@@ -32,6 +32,7 @@ def test_identical_module_boundaries_reuse_verified_function_render(tmp_path, mo
 
     assert len(calls) == len(module.functions)
     for function in ("main", "helper"):
-        assert (tmp_path / "Before" / f"{function}.py").read_bytes() == (tmp_path / "Repeated" /
-                                                                         f"{function}.py").read_bytes()
+        assert (tmp_path / "Before" / f"{function}.py").read_bytes() == (
+            tmp_path / "Repeated" / f"{function}.py"
+        ).read_bytes()
         assert fm.load_module(tmp_path / "Repeated").semantic_hash == module.semantic_hash

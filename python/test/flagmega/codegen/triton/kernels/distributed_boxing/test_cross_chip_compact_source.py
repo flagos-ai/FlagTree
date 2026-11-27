@@ -33,20 +33,21 @@ def test_remote_gather_reads_each_logical_element_from_its_compact_component(lan
     dtype = "bfloat16" if lanes == 1 else fm.vector_type("bfloat16", lanes)
     width = 130 if cyclic else 160
     tensor = fm.tensor_type(dtype, (3, width))
-    policy = (fm.SBP.split_block_cyclic((0, 1, 2), 4) if cyclic else fm.SBP.split_contiguous((0, 1, 2), 5))
+    policy = (fm.SBP.split_block_cyclic((0, 1, 2), 4) if cyclic
+              else fm.SBP.split_contiguous((0, 1, 2), 5))
     source_type = fm.DistributedType(tensor, (fm.SBP.broadcast(), policy), mesh)
-    target_type = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.split_contiguous(
-        (1, ), width // 2) if target_split else fm.SBP.broadcast()), mesh)
+    target_type = fm.DistributedType(tensor, (fm.SBP.broadcast(),
+        fm.SBP.split_contiguous((1,), width // 2) if target_split else fm.SBP.broadcast()), mesh)
     source = local_abi(source_type)
     # A padded component stride distinguishes table addressing from assuming
     # that compact owner components happen to follow canonical logical order.
     stride = prod(source["local_capacity_shape"]) * lanes + 8
-    source.update(storage="workspace", memory_space="workspace", storage_kind=storage_kind,
-                  component_stride_scalar_elements=stride)
+    source.update(storage="workspace", memory_space="workspace",
+                  storage_kind=storage_kind, component_stride_scalar_elements=stride)
     target = local_abi(target_type)
     target.update(storage="workspace", memory_space="workspace", storage_kind="canonical_global",
                   coordinate_space="canonical_global", scalar_storage_strides=(width * lanes, lanes))
-    leaf = _prepare((source, ), (target, ), ("gather_reduce_scatter", ))["leaves"][0]
+    leaf = _prepare((source,), (target,), ("gather_reduce_scatter",))["leaves"][0]
 
     # Build the independent expected pool contents from each owner's IR shard.
     components = 32 if storage_kind == "compact_per_owner" else 8
@@ -57,11 +58,12 @@ def test_remote_gather_reads_each_logical_element_from_its_compact_component(lan
         if storage_kind == "compact_per_chip":
             ordinal %= 8
         shape = tuple(d.fixed_value for d in shard.local_capacity_shape)
-        for row, column in product(range(shard.active_shape[0].fixed_value), range(shard.active_shape[1].fixed_value)):
+        for row, column in product(range(shard.active_shape[0].fixed_value),
+                                   range(shard.active_shape[1].fixed_value)):
             global_column = shard.axes[1].map_local_to_global(column).fixed_value
             for lane in range(lanes):
-                images[owner[0]][ordinal * stride + (row * shape[1] + column) * lanes +
-                                 lane] = (row * width + global_column) * lanes + lane
+                images[owner[0]][ordinal * stride + (row * shape[1] + column) * lanes + lane] = (
+                    row * width + global_column) * lanes + lane
 
     assert leaf["remote_peers"] == 4
     assert leaf["capacity"] == prod(target["local_capacity_shape"]) * lanes
@@ -69,13 +71,10 @@ def test_remote_gather_reads_each_logical_element_from_its_compact_component(lan
         shard = fm.local_shard_descriptor(target_type, owner)
         columns = shard.local_capacity_shape[1].fixed_value
         for row, column, lane in product(range(3), range(shard.active_shape[1].fixed_value), range(lanes)):
-            scope = {
-                "boxing_offsets": (row * columns + column) * lanes + lane,
-                **{f"shard_coord_{i}": value
-                   for i, value in enumerate(owner)}, **{f"shard_coord{i}": value
-                                                         for i, value in enumerate(owner)}, "tl":
-                SimpleNamespace(minimum=min, maximum=max)
-            }
+            scope = {"boxing_offsets": (row * columns + column) * lanes + lane,
+                     **{f"shard_coord_{i}": value for i, value in enumerate(owner)},
+                     **{f"shard_coord{i}": value for i, value in enumerate(owner)},
+                     "tl": SimpleNamespace(minimum=min, maximum=max)}
             peer = eval(leaf["remote_owner"], {"__builtins__": {}}, scope)
             offset = eval(leaf["remote_source_offset"], {"__builtins__": {}}, scope)
             destination = eval(leaf["result_offset"], {"__builtins__": {}}, scope)

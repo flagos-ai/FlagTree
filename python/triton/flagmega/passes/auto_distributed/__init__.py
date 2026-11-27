@@ -14,7 +14,8 @@ from triton.flagmega.passes.auto_distributed.candidates import (
 from triton.flagmega.passes.auto_distributed.materializer import DistributedMaterializer
 from triton.flagmega.passes.auto_distributed.packed_matmul_provider import PackedMatMulCandidateProvider
 from triton.flagmega.passes.auto_distributed.inference_providers import (
-    TypeInferenceCandidateProvider, )
+    TypeInferenceCandidateProvider,
+)
 from triton.flagmega.passes.auto_distributed.norm_providers import (
     BindNormStatsCandidateProvider,
     AddNormStatsCandidateProvider,
@@ -23,7 +24,8 @@ from triton.flagmega.passes.auto_distributed.norm_providers import (
     NormStatsCandidateProvider,
 )
 from triton.flagmega.passes.auto_distributed.operation_cost import (
-    DistributedOperationCostModel, )
+    DistributedOperationCostModel,
+)
 from triton.flagmega.passes.auto_distributed.paged_attention_providers import (
     PagedAttentionCombineCandidateProvider,
     PagedAttentionPartialCandidateProvider,
@@ -36,9 +38,11 @@ from triton.flagmega.passes.auto_distributed.reshard import (
     reshard_step_cost,
 )
 from triton.flagmega.passes.auto_distributed.reshard_decomposition import (
-    get_partial_reduce_scatter_intermediates, )
+    get_partial_reduce_scatter_intermediates,
+)
 from triton.flagmega.passes.auto_distributed.reshard_cost import (
-    DistributedReshardCostModel, )
+    DistributedReshardCostModel,
+)
 from triton.flagmega.passes.auto_distributed.realization import (
     CanonicalStorageReshardRealizationPolicy,
     DistributedReshardRealization,
@@ -50,7 +54,8 @@ from triton.flagmega.passes.auto_distributed.realization import (
     PyNttDistributedReshardRealizationPolicy,
 )
 from triton.flagmega.passes.auto_distributed.qkv_rope_with_cache_provider import (
-    QKVRoPEWithCacheCandidateProvider, )
+    QKVRoPEWithCacheCandidateProvider,
+)
 from triton.flagmega.passes.auto_distributed.search import (
     CandidateBucket,
     ReshardSite,

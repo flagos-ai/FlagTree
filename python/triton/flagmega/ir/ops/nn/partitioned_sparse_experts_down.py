@@ -42,8 +42,8 @@ from triton.flagmega.ir.type_pattern import TypePattern, has_rank, is_tensor
 from triton.flagmega.ir.types import DType, VectorType
 
 
-@op_definition("nn.partitioned_sparse_experts_down", namespace="nn", functional_name="partitioned_sparse_experts_down",
-               display_name="NN.PartitionedSparseExpertsDown")
+@op_definition("nn.partitioned_sparse_experts_down", namespace="nn",
+               functional_name="partitioned_sparse_experts_down", display_name="NN.PartitionedSparseExpertsDown")
 class PartitionedSparseExpertsDown(OpDefinition):
     """Project each [T,R,P,K] partition into FP32 [P,T,R,H].
 
@@ -58,9 +58,8 @@ class PartitionedSparseExpertsDown(OpDefinition):
     down_input_scale = input_parameter(EXPERT_SCALE)
     down_weight = input_parameter(is_tensor() & has_rank(4) & TypePattern(
         lambda value: tensor_of(value).dtype == DType.FLOAT8_E4M3FN, "scalar FP8 partitioned expert weights"))
-    down_proj_scale = input_parameter(
-        is_tensor() & has_rank(4)
-        & TypePattern(lambda value: tensor_of(value).dtype == DType.FLOAT32, "F32 partitioned block scales"))
+    down_proj_scale = input_parameter(is_tensor() & has_rank(4) & TypePattern(
+        lambda value: tensor_of(value).dtype == DType.FLOAT32, "F32 partitioned block scales"))
     weight_block_n = attribute_parameter(default=128)
     weight_block_k = attribute_parameter(default=128)
     activation_quantization = attribute_parameter(default="dynamic_fp8")
@@ -89,20 +88,18 @@ class PartitionedSparseExpertsDown(OpDefinition):
             raise IRSchemaError("PartitionedSparseExpertsDown requires fixed positive P/H/K extents.")
         if activation.shape[2] != partitions or activation.shape[3] * lanes(activation.dtype) != reduction:
             raise IRSchemaError("PartitionedSparseExpertsDown activation P/K extents must match the weight.")
-        if attrs.get("activation_quantization") == "dynamic_fp8_ue8m0" and element_type(
-                activation.dtype) != DType.BFLOAT16:
+        if attrs.get("activation_quantization") == "dynamic_fp8_ue8m0" and element_type(activation.dtype) != DType.BFLOAT16:
             raise IRSchemaError("PartitionedSparseExpertsDown UE8M0 requires BF16 activations.")
         check_routes(tensors["router_expert_ids"], activation.shape[0], experts)
         require_shape(tensors["router_expert_ids"], activation.shape[:2], "router_expert_ids")
         require_shape(tensors["down_input_scale"], (experts, 1), "down_input_scale")
         bn, bk = attrs["weight_block_n"], attrs["weight_block_k"]
         require_shape(tensors["down_proj_scale"], (experts, partitions, (hidden.fixed_value + bn - 1) // bn,
-                                                   (reduction.fixed_value + bk - 1) // bk), "down_proj_scale")
+                                                  (reduction.fixed_value + bk - 1) // bk), "down_proj_scale")
         width = prod(attrs.get("output_lanes", ()))
         if hidden.fixed_value % width:
             raise IRSchemaError("PartitionedSparseExpertsDown output lanes must divide H.")
-        dtype = VectorType(DType.FLOAT32,
-                           attrs["output_lanes"]) if width != 1 or attrs.get("output_lanes") else DType.FLOAT32
+        dtype = VectorType(DType.FLOAT32, attrs["output_lanes"]) if width != 1 or attrs.get("output_lanes") else DType.FLOAT32
         output = tensor_type(dtype, (partitions, *activation.shape[:2], hidden.fixed_value // width))
         placement = distributed_inputs(types)
         if placement is None:
@@ -110,19 +107,15 @@ class PartitionedSparseExpertsDown(OpDefinition):
         b = SBP.broadcast()
         token, route, partition, k = types["activations"].axis_policies
         if k != b or types["down_weight"].axis_policies[3] != b:
-            raise IRSchemaError(
-                "PartitionedSparseExpertsDown requires complete K inside each partition; split P instead.")
+            raise IRSchemaError("PartitionedSparseExpertsDown requires complete K inside each partition; split P instead.")
         scalar_hidden = types["down_weight"].axis_policies[2]
         output_hidden = scale_policy(scalar_hidden, 1, width)
         role_axes(partition, token, route, output_hidden)
-        require_policies(
-            types, {
-                "activations": (token, route, partition, b),
-                "router_expert_ids": (token, route),
-                "down_weight": (b, partition, scalar_hidden, b),
-                "down_input_scale": (b, b),
-                "down_proj_scale": (b, b, b, b),
-            })
+        require_policies(types, {
+            "activations": (token, route, partition, b), "router_expert_ids": (token, route),
+            "down_weight": (b, partition, scalar_hidden, b), "down_input_scale": (b, b),
+            "down_proj_scale": (b, b, b, b),
+        })
         return DistributedType(output, (partition, token, route, output_hidden), placement)
 
     @classmethod
@@ -138,8 +131,7 @@ class PartitionedSparseExpertsDown(OpDefinition):
             for token in range(t):
                 for route in range(r):
                     expert = int(ids[token, route])
-                    projected = scaled_projection(
-                        activation[token, route, partition], weights[expert, partition],
+                    projected = scaled_projection(activation[token, route, partition], weights[expert, partition],
                         values["down_input_scale"][expert], values["down_proj_scale"][expert, partition],
                         block_n=node.attrs["weight_block_n"], block_k=node.attrs["weight_block_k"],
                         activation_quantization=node.attrs.get("activation_quantization", "dynamic_fp8"))
@@ -150,8 +142,7 @@ class PartitionedSparseExpertsDown(OpDefinition):
 
     @classmethod
     def cost(cls, node):
-        return OpCost(bytes_written=tensor_nbytes(tensor_of(node.type)),
-                      notes=("partitioned-selected-expert-projection", ))
+        return OpCost(bytes_written=tensor_nbytes(tensor_of(node.type)), notes=("partitioned-selected-expert-projection",))
 
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
@@ -161,8 +152,7 @@ class PartitionedSparseExpertsDown(OpDefinition):
         domain = tensor_type(weight.dtype, (weight.shape[1], *ids.shape, *weight.shape[2:]))
         if isinstance(return_type, DistributedType):
             hidden = kinds["down_weight"].axis_policies[2]
-            domain = DistributedType(domain, (*return_type.axis_policies[:3], hidden, SBP.broadcast()),
-                                     return_type.placement)
+            domain = DistributedType(domain, (*return_type.axis_policies[:3], hidden, SBP.broadcast()), return_type.placement)
             selected = max_chip_active_elements(domain)
         else:
             selected = static_elements(domain.shape)
@@ -171,8 +161,8 @@ class PartitionedSparseExpertsDown(OpDefinition):
         local_output = local_tensor_type(return_type) if isinstance(return_type, DistributedType) else return_type
         local_domain = local_tensor_type(domain) if isinstance(domain, DistributedType) else domain
         return OpCostFactors(simt_fma_operations=static_elements(local_domain.shape),
-                             chip_aggregate_memory_load_bytes=selected * weight.dtype.itemsize,
-                             block_local_memory_store_bytes=tensor_nbytes(local_output) or 0)
+            chip_aggregate_memory_load_bytes=selected * weight.dtype.itemsize,
+            block_local_memory_store_bytes=tensor_nbytes(local_output) or 0)
 
 
 __all__ = ["PartitionedSparseExpertsDown"]

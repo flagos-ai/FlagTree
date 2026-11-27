@@ -4,7 +4,8 @@
 import pytest
 
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
-    _gather_reduce_add_norm_stats_call, )
+    _gather_reduce_add_norm_stats_call,
+)
 from triton.flagmega.codegen.triton.templates import TritonTemplateRegistry
 from triton.flagmega.errors import CodegenError
 
@@ -35,8 +36,10 @@ def _abi(
         "logical_shape": tuple(shape),
         "local_capacity_shape": local_shape,
         "active_shape_expressions": tuple(str(value) for value in local_shape),
-        "logical_coordinate_expressions": tuple(coordinates
-                                                or (f"local_coord_{axis}" for axis in range(len(local_shape)))),
+        "logical_coordinate_expressions": tuple(
+            coordinates
+            or (f"local_coord_{axis}" for axis in range(len(local_shape)))
+        ),
         "scalar_storage_strides": tuple(reversed(strides)),
         "scalar_lane_shape": (),
         "scalar_lane_count": 1,
@@ -44,8 +47,15 @@ def _abi(
         "coordinate_space": coordinate_space,
         "distributed_type": {
             "placement": {"hierarchy": (8, 16)},
-            "axis_policies": tuple(axis_policies or ({"kind": "broadcast"} for _ in shape)),
-            "partial": (None if partial_axes is None else {"axes": tuple(partial_axes), "reduce_op": "sum"}),
+            "axis_policies": tuple(
+                axis_policies
+                or ({"kind": "broadcast"} for _ in shape)
+            ),
+            "partial": (
+                None
+                if partial_axes is None
+                else {"axes": tuple(partial_axes), "reduce_op": "sum"}
+            ),
         },
     }
 
@@ -58,7 +68,7 @@ def _parameter(formal, abi):
             "actual": formal,
             "runtime_argument": formal,
             "abi": abi,
-        }, ),
+        },),
     }
 
 
@@ -87,7 +97,7 @@ def _raw(partial_abi, *, partial_axes, partial_owner_count, stats_abi=None):
         ),
         "workspaces": (
             _parameter("collective", value_abi),
-            _parameter("norm_stats_partials", _abi((128, ))),
+            _parameter("norm_stats_partials", _abi((128,))),
         ),
     }
 
@@ -101,16 +111,16 @@ def test_hybrid_partial_group_reads_owner_components_in_one_local_shard():
         coordinates=("local_coord_0", "local_coord_1 + shard_coord_0 * 256"),
         axis_policies=(
             {"kind": "broadcast"},
-            {"kind": "split", "stages": ({"hierarchy_axes": (0, )}, )},
+            {"kind": "split", "stages": ({"hierarchy_axes": (0,)},)},
         ),
-        partial_axes=(1, ),
+        partial_axes=(1,),
         owner_stride=256,
     )
 
     stats = _abi(
         (1, 1, 1),
         storage_kind="compact_per_owner",
-        partial_axes=(0, ),
+        partial_axes=(0,),
         owner_stride=1,
     )
     stats["scalar_dtype"] = "float32"
@@ -118,10 +128,11 @@ def test_hybrid_partial_group_reads_owner_components_in_one_local_shard():
     call = _gather_reduce_add_norm_stats_call(
         _raw(
             partial,
-            partial_axes=(1, ),
+            partial_axes=(1,),
             partial_owner_count=16,
             stats_abi=stats,
-        ))
+        )
+    )
 
     assert call["local_capacity"] == 256
     assert call["owner_stride"] == 256
@@ -142,16 +153,16 @@ def test_hybrid_partial_statistics_keep_y_partials_broadcast_across_x():
         coordinates=("local_coord_0", "local_coord_1 + shard_coord_0 * 256"),
         axis_policies=(
             {"kind": "broadcast"},
-            {"kind": "split", "stages": ({"hierarchy_axes": (0, )}, )},
+            {"kind": "split", "stages": ({"hierarchy_axes": (0,)},)},
         ),
-        partial_axes=(1, ),
+        partial_axes=(1,),
         owner_stride=256,
     )
 
     stats = _abi(
         (1, 1, 1),
         storage_kind="compact_per_owner",
-        partial_axes=(0, ),
+        partial_axes=(0,),
         owner_stride=1,
     )
     stats["scalar_dtype"] = "float32"
@@ -159,15 +170,18 @@ def test_hybrid_partial_statistics_keep_y_partials_broadcast_across_x():
     call = _gather_reduce_add_norm_stats_call(
         _raw(
             partial,
-            partial_axes=(1, ),
+            partial_axes=(1,),
             partial_owner_count=16,
             stats_abi=stats,
-        ))
+        )
+    )
 
     # P(y) is broadcast over x: each x replica must read the representative
     # x=0 partial for its y group, rather than consuming one global total.
     assert call["stats_source_owner"] == "(shard_y * 16 + (0))"
-    assert call["stats_partial_owner"] == ("(shard_y * 16 + (gather_stats_lane))")
+    assert call["stats_partial_owner"] == (
+        "(shard_y * 16 + (gather_stats_lane))"
+    )
     assert call["stats_reduction_count"] == 16
     assert call["stats_store_active"] == "True"
 
@@ -181,7 +195,9 @@ def test_all_axis_partial_group_has_one_representative_and_full_owner_range():
         owner_stride=2048,
     )
 
-    call = _gather_reduce_add_norm_stats_call(_raw(partial, partial_axes=(0, 1), partial_owner_count=128))
+    call = _gather_reduce_add_norm_stats_call(
+        _raw(partial, partial_axes=(0, 1), partial_owner_count=128)
+    )
 
     assert call["participant_active"] == "True"
     assert call["work_partition_index"] == "(shard_index)"
@@ -207,7 +223,9 @@ def test_token_sharded_single_row_stats_index_partials_per_token():
         partial_axes=(0, 1),
         owner_stride=2048,
     )
-    call = _gather_reduce_add_norm_stats_call(_raw(partial, partial_axes=(0, 1), partial_owner_count=128))
+    call = _gather_reduce_add_norm_stats_call(
+        _raw(partial, partial_axes=(0, 1), partial_owner_count=128)
+    )
 
     # The partials layout follows the PARTIAL input's local row count (4), not the
     # single-row output's.
@@ -222,7 +240,9 @@ def test_token_sharded_single_row_stats_index_partials_per_token():
     rendered = {
         **call,
         "symbol": "_flagmega_test_gather_norm_token_sharded",
-        "signature": ("input, addend, result_0, result_1, collective, norm_stats_partials"),
+        "signature": (
+            "input, addend, result_0, result_1, collective, norm_stats_partials"
+        ),
         "execution_kind": "collective",
         "family": "gather_reduce_add_norm_stats",
         "variant": "sum_rms",
@@ -231,7 +251,7 @@ def test_token_sharded_single_row_stats_index_partials_per_token():
     source = TritonTemplateRegistry().render(
         "kernels/gather_reduce_add_norm_stats/sum_rms.py.jinja",
         {
-            "render_calls": (rendered, ),
+            "render_calls": (rendered,),
             "distributed_entry": True,
             "mesh_axis_names": ("y", "x"),
             "mesh_hierarchy": (8, 16),
@@ -263,14 +283,15 @@ def test_token_sharded_single_row_stats_writes_each_owner_its_own_token():
         local_shape=(1, 1),
         coordinates=("local_coord_0 + shard_index", "local_coord_1"),
         axis_policies=(
-            {"kind": "split", "stages": ({"hierarchy_axes": (0, 1)}, )},
+            {"kind": "split", "stages": ({"hierarchy_axes": (0, 1)},)},
             {"kind": "broadcast"},
         ),
     )
     stats["scalar_dtype"] = "float32"
     stats["scalar_itemsize"] = 4
     call = _gather_reduce_add_norm_stats_call(
-        _raw(partial, partial_axes=(0, 1), partial_owner_count=128, stats_abi=stats))
+        _raw(partial, partial_axes=(0, 1), partial_owner_count=128, stats_abi=stats)
+    )
 
     assert call["stats_local_m"] == 1
     # The destination is the owner's own token (shard-dependent), not a constant
@@ -282,10 +303,14 @@ def test_partial_value_without_per_owner_storage_is_rejected():
     partial = _abi((1, 2048), partial_axes=(0, 1))
 
     with pytest.raises(CodegenError, match="compact component per placement owner"):
-        _gather_reduce_add_norm_stats_call(_raw(partial, partial_axes=(0, 1), partial_owner_count=128))
+        _gather_reduce_add_norm_stats_call(
+            _raw(partial, partial_axes=(0, 1), partial_owner_count=128)
+        )
 
 
-def test_owner_reduction_loads_bounded_owner_vectors_instead_of_scalar_gathers(assert_entry_owned_phase_schedule, ):
+def test_owner_reduction_loads_bounded_owner_vectors_instead_of_scalar_gathers(
+    assert_entry_owned_phase_schedule,
+):
     partial = _abi(
         (1, 2048),
         storage_kind="compact_per_owner",
@@ -294,10 +319,14 @@ def test_owner_reduction_loads_bounded_owner_vectors_instead_of_scalar_gathers(a
         owner_stride=2048,
     )
     call = {
-        **_gather_reduce_add_norm_stats_call(_raw(partial, partial_axes=(0, 1), partial_owner_count=128)),
+        **_gather_reduce_add_norm_stats_call(
+            _raw(partial, partial_axes=(0, 1), partial_owner_count=128)
+        ),
         "symbol": "_flagmega_test_gather_norm",
-        "signature": ("input, addend, result_0, result_1, collective, "
-                      "norm_stats_partials"),
+        "signature": (
+            "input, addend, result_0, result_1, collective, "
+            "norm_stats_partials"
+        ),
         "execution_kind": "collective",
         "family": "gather_reduce_add_norm_stats",
         "variant": "sum_rms",
@@ -306,7 +335,7 @@ def test_owner_reduction_loads_bounded_owner_vectors_instead_of_scalar_gathers(a
     source = TritonTemplateRegistry().render(
         "kernels/gather_reduce_add_norm_stats/sum_rms.py.jinja",
         {
-            "render_calls": (call, ),
+            "render_calls": (call,),
             "distributed_entry": True,
             "mesh_axis_names": ("y", "x"),
             "mesh_hierarchy": (8, 16),

@@ -23,16 +23,15 @@ def _add_module(shape):
 
 def test_generic_ntt_policy_can_select_multi_axis_egraph_candidate():
     module = _add_module((16, 16))
-    target = NvidiaSm90Target(vectorization_policy=NttVectorizationPolicy(lane_bytes=16, max_axes=2))
+    target = NvidiaSm90Target(
+        vectorization_policy=NttVectorizationPolicy(lane_bytes=16, max_axes=2)
+    )
     candidates = target.propose_vectorization(module)
     point = next(point for point in candidates.selection_points if point.id == "vectorization.output")
-    assert {candidate.id
-            for candidate in point.candidates}.issuperset({
-                "vectorization.scalar",
-                "vectorization.last_axis",
-                "vectorization.axes_0_1",
-            })
-    plan = override_plan(candidates, ((point.id, "vectorization.axes_0_1"), ))
+    assert {candidate.id for candidate in point.candidates}.issuperset({
+        "vectorization.scalar", "vectorization.last_axis", "vectorization.axes_0_1",
+    })
+    plan = override_plan(candidates, ((point.id, "vectorization.axes_0_1"),))
     vectorized = target.apply_vectorization(apply_plan(candidates, plan))
     compute_type = vectorized.node_map["output.vectorized.compute"].type
     assert compute_type == fm.tensor_type(fm.vector_type("bfloat16", (8, 8)), (2, 2))
@@ -45,7 +44,7 @@ def test_generic_ntt_policy_can_select_multi_axis_egraph_candidate():
 
 def test_symbolic_exact_division_can_vectorize_without_static_shape():
     n = fm.dim("n", minimum=1, maximum=64)
-    module = _add_module((n * 8, ))
+    module = _add_module((n * 8,))
     vectorized = Compiler().compile(module, stop_after="apply-vectorization").module
     assert vectorized.selection_map["vectorization.output"].candidate_id == "vectorization.last_axis"
     assert all(node.op != "tensors.pad" for node in vectorized.nodes)

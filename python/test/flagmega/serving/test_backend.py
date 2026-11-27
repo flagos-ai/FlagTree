@@ -1,5 +1,3 @@
-# Copyright 2026 FlagOS Contributors
-# SPDX-License-Identifier: MIT
 import pytest
 
 from triton.flagmega.serving.backend import ArtifactBackend

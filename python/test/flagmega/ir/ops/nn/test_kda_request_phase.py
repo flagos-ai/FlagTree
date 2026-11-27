@@ -20,7 +20,8 @@ from python.test.flagmega.codegen.triton.kernels.kda_gated_recurrent_core.test_k
 @pytest.mark.parametrize("prefill", [False, True])
 @pytest.mark.parametrize("packed", [False, True])
 def test_explicit_phase_uses_its_static_numerical_contract(tmp_path, prefill, packed):
-    attrs = {"heads": 2, "dim": 128, "query_scale": 128**-.5, "output_lanes": (8, ) if packed else ()}
+    attrs = {"heads": 2, "dim": 128, "query_scale": 128 ** -.5,
+             "output_lanes": (8,) if packed else ()}
     module = _module(request_phase=True, **attrs)
     reloaded = fm.load_module(fm.emit_module(module, tmp_path / "phase.py"))
     assert reloaded.semantic_hash == module.semantic_hash
@@ -38,7 +39,7 @@ def test_explicit_phase_uses_its_static_numerical_contract(tmp_path, prefill, pa
     assert any(torch.count_nonzero(a != b) for a, b in zip(actual, alternative, strict=True))
 
 
-@pytest.mark.parametrize("dtype,shape", [("bool", (1, )), ("int32", ())])
+@pytest.mark.parametrize("dtype,shape", [("bool", (1,)), ("int32", ())])
 def test_phase_rejects_nonscalar_or_nonboolean_inputs(dtype, shape):
     source = _module(request_phase=True, heads=2, dim=128)
     node, = [node for node in source.nodes if node.op == "nn.kda_gated_step"]
@@ -53,15 +54,14 @@ def test_runtime_phase_validates_both_algorithms():
 
 
 def test_phase_is_broadcast_when_heads_are_partitioned():
-    placement = fm.Placement((2, ), "c", "c")
-    module = _module(request_phase=True, heads=4, dim=128, placement=placement, head_policy=fm.SBP.split_contiguous(
-        (0, )), output_lanes=(8, ))
+    placement = fm.Placement((2,), "c", "c")
+    module = _module(request_phase=True, heads=4, dim=128, placement=placement,
+                     head_policy=fm.SBP.split_contiguous((0,)), output_lanes=(8,))
     node, = [node for node in module.nodes if node.op == "nn.kda_gated_step"]
     inputs = tuple(module.node_map[value] for value in node.inputs)
-    assert node.type.fields[0].axis_policies[1] == fm.SBP.split_contiguous((0, ))
+    assert node.type.fields[0].axis_policies[1] == fm.SBP.split_contiguous((0,))
     assert inputs[-1].type.axis_policies == ()
-    other = fm.Placement((2, ), "x", "b")
+    other = fm.Placement((2,), "x", "b")
     with pytest.raises(IRSchemaError, match="broadcast"):
-        KdaGatedStep.infer_type(
-            (*inputs[:-1], replace(inputs[-1], type=fm.DistributedType(fm.tensor_type("bool", ()),
-                                                                       (), other))), node.attrs)
+        KdaGatedStep.infer_type((*inputs[:-1], replace(inputs[-1], type=fm.DistributedType(
+            fm.tensor_type("bool", ()), (), other))), node.attrs)

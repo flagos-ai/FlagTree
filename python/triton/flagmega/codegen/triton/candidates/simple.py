@@ -41,22 +41,23 @@ class ElementwiseCandidateProvider:
             context.configure_implementation(
                 implementation,
                 semantic_parameters={
-                    "vector_schedule":
-                    _elementwise_vector_schedule(contract, implementation.parameters),
-                    **({
-                        'task_mapping': {
-                            'schema': 'flagmega.independent-linear-tiles/v1',
-                            'program_kind': node.metadata.get('kernel_program_kind', 'ordinary'),
-                            'max_ctas': node.metadata.get('kernel_max_ctas'),
-                            'ctas_per_sm': node.metadata.get('kernel_ctas_per_sm', 1),
-                        }
-                    } if dynamic else {}),
+                    "vector_schedule": _elementwise_vector_schedule(
+                        contract, implementation.parameters
+                    ),
+                    **({'task_mapping': {
+                        'schema': 'flagmega.independent-linear-tiles/v1',
+                        'program_kind': node.metadata.get('kernel_program_kind', 'ordinary'),
+                        'max_ctas': node.metadata.get('kernel_max_ctas'),
+                        'ctas_per_sm': node.metadata.get('kernel_ctas_per_sm', 1),
+                    }} if dynamic else {}),
                 },
-            ) for implementation in context.implementations(
+            )
+            for implementation in context.implementations(
                 "elementwise",
                 semantic_op=semantic_op,
                 vectorization_kind=contract["kind"],
-            ))
+            )
+        )
         return None if not candidates else _proposal(candidates)
 
 
@@ -78,18 +79,20 @@ class BlockFp8CandidateProvider:
 
     def propose(self, node: Node, context: TritonCandidateContext) -> TritonCandidateProposal | None:
         native_quant = node.attrs.get("weight_encoding")
-        if not block_scaled_precision_supports_target(node.attrs, getattr(context.target, "codegen_platform", None),
-                                                      getattr(context.target, "codegen_architecture", None)):
+        if not block_scaled_precision_supports_target(
+                node.attrs, getattr(context.target, "codegen_platform", None),
+                getattr(context.target, "codegen_architecture", None)):
             raise CodegenError("SM90 reciprocal activation quantization requires the NVIDIA SM90 target.")
         value_dtype = tensor_of(context.module.node_map[node.inputs[0]].type).dtype
         mma_legal = block_scaled_mma_supports_precision(node.attrs, value_dtype,
-                                                        block_k=int(node.attrs["weight_block_k"]))
+                                                       block_k=int(node.attrs["weight_block_k"]))
         candidates = tuple(
             context.configure_implementation(implementation)
             for implementation in context.implementations("block_fp8")
-            if (native_quant is None or implementation.variant == "simt") and (
-                implementation.variant != "mma" or mma_legal) and (not implementation.contract.get(
-                    "requires_chip_projection_blocks", False) or _supports_chip_projection_blocks(node, context)))
+            if (native_quant is None or implementation.variant == "simt")
+            and (implementation.variant != "mma" or mma_legal)
+            and (not implementation.contract.get("requires_chip_projection_blocks", False)
+                 or _supports_chip_projection_blocks(node, context)))
         if not candidates:
             return None
         return _proposal(candidates, context.choose_default("block_fp8", candidates))
@@ -98,28 +101,27 @@ class BlockFp8CandidateProvider:
 def _supports_chip_projection_blocks(node, context):
     from triton.flagmega.codegen.triton.block_fp8_geometry import cooperative_block_geometry
 
-    return cooperative_block_geometry(
-        dict(
-            zip(
-                ("value", "weight", "weight_scale"),
-                (context.module.node_map[value].type for value in node.inputs),
-                strict=True,
-            )), node.type, node.attrs) is not None
+    return cooperative_block_geometry(dict(zip(
+        ("value", "weight", "weight_scale"),
+        (context.module.node_map[value].type for value in node.inputs), strict=True,
+    )), node.type, node.attrs) is not None
 
 
 class MatmulGluCandidateProvider:
     op_names = frozenset({"nn.matmul_glu", "nn.packed_matmul_glu"})
 
     def propose(self, node: Node, context: TritonCandidateContext) -> TritonCandidateProposal | None:
-        if not block_scaled_precision_supports_target(node.attrs, getattr(context.target, "codegen_platform", None),
-                                                      getattr(context.target, "codegen_architecture", None)):
+        if not block_scaled_precision_supports_target(
+                node.attrs, getattr(context.target, "codegen_platform", None),
+                getattr(context.target, "codegen_architecture", None)):
             raise CodegenError("SM90 reciprocal activation quantization requires the NVIDIA SM90 target.")
         native_quant = node.attrs.get("gate_weight_encoding") or node.attrs.get("up_weight_encoding")
         candidates = tuple(
             context.configure_implementation(implementation)
             for implementation in context.implementations("matmul_glu")
-            if (native_quant is None or implementation.variant == "simt") and (not implementation.contract.get(
-                "requires_chip_glu_blocks", False) or _supports_chip_glu_blocks(node, context)))
+            if (native_quant is None or implementation.variant == "simt")
+            and (not implementation.contract.get("requires_chip_glu_blocks", False)
+                 or _supports_chip_glu_blocks(node, context)))
         if not candidates:
             return None
         return _proposal(candidates, context.choose_default("matmul_glu", candidates))
@@ -129,11 +131,10 @@ def _supports_chip_glu_blocks(node, context):
     from triton.flagmega.codegen.triton.matmul_glu_geometry import cooperative_glu_geometry
     from triton.flagmega.ir.ops.core import get_definition
 
-    return cooperative_glu_geometry(
-        {
-            parameter.name: context.module.node_map[node.inputs[index]].type
-            for index, parameter in enumerate(get_definition(node.op).input_parameters)
-        }, node.type, node.attrs) is not None
+    return cooperative_glu_geometry({
+        parameter.name: context.module.node_map[node.inputs[index]].type
+        for index, parameter in enumerate(get_definition(node.op).input_parameters)
+    }, node.type, node.attrs) is not None
 
 
 class EmbeddingCandidateProvider:
@@ -143,7 +144,8 @@ class EmbeddingCandidateProvider:
         del node
         candidates = tuple(
             context.configure_implementation(implementation)
-            for implementation in context.implementations("embedding", mode="decode"))
+            for implementation in context.implementations("embedding", mode="decode")
+        )
         return None if not candidates else _proposal(candidates)
 
 
@@ -156,10 +158,16 @@ class GreedySampleCandidateProvider:
             context.configure_implementation(
                 implementation,
                 semantic_parameters={"tie_break": "lowest_index"},
-            ) for implementation in context.implementations("greedy_sample", tie_break="lowest_index"))
+            )
+            for implementation in context.implementations(
+                "greedy_sample", tie_break="lowest_index"
+            )
+        )
         if not candidates:
             return None
-        return _proposal(candidates, context.choose_default("greedy_sample", candidates))
+        return _proposal(
+            candidates, context.choose_default("greedy_sample", candidates)
+        )
 
 
 class RmsNormCandidateProvider:
@@ -171,14 +179,18 @@ class RmsNormCandidateProvider:
             context.configure_implementation(
                 implementation,
                 semantic_parameters={
-                    "vector_schedule": _rms_vector_schedule(contract, implementation.parameters),
+                    "vector_schedule": _rms_vector_schedule(
+                        contract, implementation.parameters
+                    ),
                 },
                 facts={"local_shard_reduction": True},
-            ) for implementation in context.implementations(
+            )
+            for implementation in context.implementations(
                 "rms_norm",
                 schedule="local",
                 fuse_consumer=False,
-            ))
+            )
+        )
         return None if not candidates else _proposal(candidates)
 
 
@@ -220,7 +232,8 @@ class GdnCandidateProvider:
         candidates = tuple(
             context.configure_implementation(implementation)
             for implementation in context.implementations(family)
-            if _gdn_applicable(node, context, implementation))
+            if _gdn_applicable(node, context, implementation)
+        )
         if not candidates:
             return None
         return _proposal(candidates, context.choose_default(family, candidates))

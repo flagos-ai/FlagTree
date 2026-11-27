@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{# Batch independent output heads; each retains the same ordered partial fold. #}
+{# Batch independent output heads; each retains the same ordered partial fold. #}
 {% set ns = namespace(calls=[]) %}
 {% for call in render_calls | default([]) %}
 {% if num_warps is defined and num_warps == 16 and call.family == "paged_attention_combine" and call.variant == "decode" and call.tile == 128 and call.local_capacity >= 256 %}

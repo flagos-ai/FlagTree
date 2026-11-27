@@ -1,23 +1,977 @@
 # FlagMega
 
-FlagMega compiles a model into executable Triton kernels and a runtime artifact.
-It imports model weights and configuration from a checkpoint, rewrites the
-model graph, selects distribution and kernel implementations for the target,
-and plans the runtime buffers. Triton Language Extensions provide the
-synchronization and memory operations used by generated kernels.
+FlagMega is a Python-native, staged model compiler for FlagTree, organized around
+nncase-style IR, rewriting, target policies, TIR and runtime contracts. Python IR
+is an executable serialization format for editing and resuming compilation, not
+just a debug dump. The compiler can run unattended; a user or agent can also
+inspect a checkpoint, edit it, override a selection and resume through the CLI.
 
-The compiler saves editable Python IR at stage boundaries. Use
-`flagmega inspect` to examine a checkpoint, `flagmega stage` to run one pass
-group, and `flagmega resume` to continue from saved IR. An executable artifact
-contains generated kernel source, a manifest, and the packed readonly weights.
-Use `flagmega artifact verify` to check the artifact before loading it on the
-target device.
+`F.nn.rope(value, cos, sin, rotary_dim=64)` represents partial RoPE directly,
+without Slice/Concat nodes. `rotary_dim` is a positive even scalar-coordinate
+prefix length, bounded by the input head dimension; omitting it preserves full-head
+rotation and the existing serialized contract. Tables cover only that prefix.
+The tail is copied unchanged. `F.ntt.vectorized_rope` uses the same scalar units
+after packing. RoPE promotes inputs and tables independently to FP32, computes the products
+and sum in FP32, and rounds only the result back to the input dtype, as nncase
+does. `F.nn.rotary_embedding(..., output_dtype="bfloat16")` expresses a rounded
+table directly at its producer's store boundary. Thus a numerical profile can
+use BF16 input/output and BF16 tables without surrounding RoPE Cast nodes;
+normalization's separate rounding boundaries remain unchanged.
 
-Install the dependencies with the `flagmega` package extra. Install PyTorch
-with GPU support for the target to execute an artifact.
+`F.math.block_scaled_matmul`, `F.math.packed_block_scaled_matmul` and
+`F.math.reduce_sum` accept optional `output_lanes`. They divide the final result
+dimension by the lane count and store the original scalar result in that vector
+layout, preserving its dtype and final rounding. FP8 weight K packing remains
+independent of activation output packing. `F.nn.kda_recurrent_core` and
+`F.nn.kda_gated_recurrent_core` support the same attribute on the activation
+field only; recurrent state remains scalar FP32 with the same effect order.
+All inputs retain their existing scalar/weight contracts. Packing propagation
+selects result lanes from consumer demand after function layouts are reconciled,
+without duplicating a shared producer. Empty lanes preserve the scalar API and
+serialized attributes.
 
-See the [tutorial index](../../tutorials/flagmega/README.md) for installation
-commands and model examples.
+`F.nn.update_paged_attention_kv_cache_pair(slots, state, layer_id,
+advance_sequence, layout=("seq", "head", "dim"))` publishes a BF16 chunk
+whose scalar shape is `[T,H,2D]`, with each head ordered `[K(D) | V(D)]`.
+The cache RefType supplies `H,D` and cache lanes. Input vector lanes belong to
+the semantic `dim` axis; their full product may differ from the cache lanes.
+Both fields read the same old sequence position, scheduler metadata is written
+once, and the sequence advances by `T` only when requested, after all owners
+finish their writes. The result aliases the original state reference.
+Block owners may split input axes; every chip must receive a complete,
+non-partial chunk before updating its CHIP-scoped cache.
 
-The [FlagMega developer skill](../../../skills/flagmega-developer/SKILL.md)
-covers profiling, optimization, and validation workflows.
+The GLM interleaved projection importer uses this consumer directly. The
+target-independent formation rule also recognizes older complementary Slice
+and optional Pack branches feeding non-advancing K then V updates. It preserves
+shared selections, rejects intermediate-state observers and intervening
+effects, and retains projection rounding and required Boxing. Formation runs
+before packing/distribution; codegen reads the original source stride directly
+without K/V slice buffers. The single-field API remains available for separate
+projection sources.
+
+Post-boundary representation extraction uses
+`representation-boundary-preference/v3`: for the same operation, packed tensor
+results have strictly lower preference cost in every operation category,
+including views, structural nodes and Bitcast. Distributed tensor leaves and
+individual Tuple tensor fields follow the same ordering. This preference is
+separate from physical traffic/latency estimates. Existing Pack/Reshape
+equalities therefore select the packed view before producer packing, without
+an additional reshape traversal or normalization pass.
+
+`F.nn.sparse_experts` decomposes before AutoDistribution into Dispatch
+(`[T,H] -> [T,R,H]`), GateUp, per-route FP32 Down, and Combine. `R` is a
+selected route slot, not the expert-bank axis. These stages independently model
+token/route/feature ownership and cost; weight-bank expert axes remain broadcast.
+After distribution, private Dispatch/GateUp and Down/WeightedSum pairs fuse
+locally. Route and split-K owner sums remain explicit Boxing operations before
+the final cast; per-route rounding cannot cross an unfinished K reduction.
+This is static route parallelism, not dynamic expert-owner all-to-all dispatch.
+Qwen3.5 shared experts use an independent, always-active group with their own
+sigmoid coefficient, outside routed TopK normalization. Different intermediate
+widths retain separate groups and costs without padding their weight banks.
+
+## Workspace implementation summary
+
+| Area | Implemented responsibilities |
+| --- | --- |
+| `importer` | Checkpoint-backed model import; Qwen3 entry/decode function separation during import, embedding, paged attention, FFN, final projection and sampling. |
+| `ir` | Per-operation modules; colocated operation semantics and parameter/type contracts; handwritten functional builders; symbolic dimensions, vector/distributed types, graph functions and TIR. |
+| `pattern_match`, `rules` | Typed patterns, parameter descriptors, dataflow rewrites and reusable rule/pass-level tests. |
+| `egraph` | Typed equality saturation and OR-Tools CP-SAT extraction, including acyclic extraction constraints; graph/cost/pick diagnostics. |
+| `passes` | TargetIndependent, TargetDependent, AutoPacking, AutoDistribution and TIR pass groups; real vectorization, packing, distribution and bufferization transformations. |
+| `diagnostics` | Pass/stage Before and After directories, per-function names, dump flags, editable Python IR and readable `.il`/`.script` companions. |
+| `evaluator`, `artifacts` | Lazy constant islands compatible with graph/egraph rewriting, reference evaluation, readonly-data materialization/cache, section hashes and artifact validation. |
+| `targets` | Target-machine capabilities, selection policies, implementation catalogs and launch/package contracts, separated from model import. |
+| `codegen/triton` | Kernel-family/variant/platform templates; function-level producer/consumer regions; reusable decode functions, kernel definitions and tensor-map tables. |
+| `runtime` | Prepared launches, argument binding, persistent state, descriptors, compiler scratch and explicit resource/spill validation. |
+| `serving` | Standalone artifact-only prompt prefill and decode, chat templates, prefix-cache reuse, sampling, interactive CLI and per-turn performance metrics. |
+
+Bufferization models memory spans, aliases, lifetimes and synchronization; it
+uses a CP-SAT allocator by default, or verified first-fit for fast iteration. Distribution
+uses a 2D mesh in the validated configuration. Ordinary kernels consume local
+shards; communication/boxing implementations own the necessary distributed
+coordination.
+
+Triton code generation emits each independently compiled program namespace in
+`program_sources/<entry>.py`, alongside the complete `generated_kernels.py` for
+inspection. Artifact manifests describe and hash every program file; the normal
+loader imports these files and resolves shared entry aliases to the same JIT
+object. Codegen refresh preserves readonly data and stores the new program files
+under their source hashes. Legacy artifacts containing one source file continue
+to load through their original format. The renderer prepares each program
+namespace once and reuses it for the complete source and its independent file.
+Kernel schedule transforms run while preparing a concrete namespace; assembling
+the package wrapper does not replay them. Descriptor overrides should use
+`dataclasses.replace(spec, describe=...)` to preserve the renderer's preparation
+callback and other registered behavior. The registered TIR source renderer also
+owns its preparer, so existing descriptor extensions that retain `spec.render`
+through the original five-argument API keep namespace preparation intact.
+
+An edit that changes the length of one program's source now leaves unrelated
+programs' source locations and Triton JIT cache keys unchanged. Changing a
+program or one of its referenced helpers still invalidates that program through
+Triton's normal dependency tracking. Programs containing several fused operators
+remain one compilation unit, and a compiler or target change can require new
+compilation. Moving an existing artifact to this source layout requires an
+initial compilation with the new source locations.
+
+Explicit program-DAG modules may request `persistent_window_resources` in
+module metadata. Each named byte range declares its size, alignment, zero
+initialization and ordered program users. The planner verifies those users
+against the actual dependencies and appends disjoint ranges after the complete
+scratch arena in the existing chip-scoped symmetric window. Artifact loading
+reconstructs the plan from the typed request, allocates and initializes the
+complete window, and binds ordinary functions to the original scratch extent.
+Persistent ranges survive scratch reuse and belong to the module's window
+lifecycle. Implementations using a channel still own its publication and
+consumption protocol; program ordering alone does not replace peer-read
+completion.
+
+Optimized bufferization also considers keeping a leaf function's reusable
+chip buffers live until the relevant peer accesses have completed. These
+completion lifetimes are derived from semantic dependencies and full-chip or
+device fences; final synchronization still checks every physical reuse hazard.
+Candidates must fit the original pool budget and improve the composed entry
+schedule. Caller frames, loop-carried accesses and axis-group completion retain
+their existing proofs.
+
+Targets may declare a verified, serialized `memory_synchronization_protocol`
+contract for schedule comparison. NVIDIA cooperative grid rendezvous includes
+two CTA barriers; local entries include one. Device rendezvous expands through
+the declared grid phases. Unknown targets retain conservative event accounting,
+and derived targets must declare their own lowering protocol. The declaration
+participates in the normal module hash and is refreshed on target-policy resume.
+SAT objectives share one deadline, preserve feasible layouts when a later
+objective times out, and report each objective's actual proof status. Aligned
+live-set and reuse-clique bounds accelerate proof without changing feasible
+placements or optimization objectives.
+
+The packed BF16-to-FP32 threaded FMA implementation supports
+`weight_load_layout="register8"` for complete 1024-element K chunks. It loads
+eight contiguous BF16 values per lane, selects them from registers in the
+original FMA order, and retains the original warp reduction tree explicitly.
+`scalar_store_subtile_n=2` can divide a logical N8 vector tile into four
+disjoint fragments when a verified CTA replica group supplies that cooperation.
+The vector type and candidate lane-group contract remain N8; missing or
+incompatible replica proofs are compilation errors. Configure these parameters
+through the target implementation model and normal TIR selection before
+bufferization. The default scalar-load schedule retains its source identity.
+
+The supporting TLE changes preserve pipe endpoints and synchronization across
+noinline calls, carry shared offsets and compiler scratch across function
+boundaries, and maintain legal explicit memory layouts and asynchronous copies.
+They include standalone MLIR, Python/GPU and C++ regression tests. TLE-specific
+native changes are compile-time guarded; the Python/backend hooks are gated.
+
+Repeated cleanup removed unnecessary native changes and the public
+`rematerialize_index` and exact-physical-warp-allocation controls. Physical warp
+allocation now uses ordinary four-warp padding. Device calls still retain a
+fixed register ABI; logical single-warp producer functions remain supported.
+The allocator's remaining native delta is 17 lines against the development
+base, including guards/comments.
+
+## CLI and editable IR
+
+### PreOps and PostOps
+
+`Fusion` is a closed, typed unary IR function, built with ordinary `F.*`
+expressions. `F.with_ops` attaches these functions to an existing operation:
+PreOps bind to its `ParameterInfo` inputs and PostOps bind to its result fields.
+The base op keeps its own schema and implementation; no per-op dtype switches
+or source strings are needed.
+
+```python
+from triton.flagmega import ir as fm
+from triton.flagmega.ir.ops.nn.softmax import Softmax
+
+@fm.fusion(fm.tensor_type("bfloat16", (4, 32)))
+def widen(value):
+    return fm.F.tensors.cast(value, "float32")
+
+class Graph(fm.Module):
+    def forward(self):
+        value = self.input("value", widen.input_type)
+        result = fm.F.with_ops(fm.F.nn.softmax, value,
+                              pre_ops={Softmax.value: widen}, axis=-1)
+        self.function("main", (value,), (result,))
+```
+
+Python checkpoints emit `@fm.fusion` definitions and `F.with_ops` calls; their
+bodies can be edited and resumed normally. `.il`/`.script` show inline typed
+fusion expressions. Visitors enter these semantic bodies, and
+`body.rewrite(rules)` runs ordinary dataflow rules within their own SSA scope.
+Existing rules do not implicitly treat a fused call as a naked op; a rule that
+understands these boundaries declares `supports_fusion=True`. Fusion bodies
+participate in inference-cache keys, e-graph identity and cost accounting.
+
+The PyNTT target registers shared Pattern rules in the existing
+`FuseDistributedOps` DataflowPass. Automatic fusion currently covers unary
+casts/activations around **elementwise and scalar-axis softmax** kernels.
+Elementwise supports explicit vectorized-cast lane repacking. Manually authored
+bodies may also contain supported binary expressions and local constants.
+BroadcastTo and ReduceSum additionally support numeric cast boundaries that
+preserve coordinates, lane geometry and ownership. Reduction input casts run
+before the FP32 sum; its base result rounds before any output cast. Both local
+and tiled-row reductions retain their existing reduction tree, including the
+identity case. These families reject lane regrouping and arbitrary activations.
+Materialized tensor Boxing copies support coordinate-preserving numeric
+PostOps at the result store. The original copy target still defines ownership
+and peer reads; the fused result defines the output dtype and physical ABI.
+This support excludes partial reductions, exclusive values and identity copies.
+For a same-chip reshard whose destination needs other block owners' values,
+Boxing declares a chip-scoped source before memory placement. A destination
+walk inverts the source distribution into its owner component and dense local
+coordinates, retaining every packed lane and the physical component stride.
+Compact owner tables require proven chip sharing; private block components
+remain valid only for local copies and proven narrowing. No canonical staging
+tensor is required for a supported chip-local owner-table gather.
+Private casts can fuse through a ShardedView or a scalar-element-preserving
+Bitcast lane view while retaining every intermediate numeric rounding.
+Shared producers are not duplicated. Backend capability checks reject
+unsupported bodies/families, partial reductions and effectful boundaries;
+they never silently drop a Fusion. Other kernel families require explicit
+boundary-emitter support before they can use this facility.
+
+`FuseDistributedOps` also forms `NTT.PagedAttentionGatedCombine` from a private
+attention combine followed by `attention * sigmoid(gate)`. Unlike a unary
+`Fusion`, this op has four explicit operands: max/sum/acc partial states and
+the gate. It preserves both BF16 producer rounding boundaries and the final
+product type. Output and gate must have identical types and owners; the
+combine's released partial axis may become an output split. Shared/exported
+attention intermediates are not removed or recomputed. Formation and layout
+validation precede TIR implementation selection, and normal bufferization
+plans gate-side views, cross-owner state reads, lifetimes and barriers. The
+portable Triton implementation shares the ordinary combine algorithm and
+performs gating before its output store.
+
+Private numeric casts can commute through read-only ShardedView and
+scalar-element-preserving Bitcast lane views before boundary fusion. This
+exposes a conversion to its consuming kernel without materializing a wide
+temporary. Inference must preserve the result type and owner mapping; shared
+or exported casts, partial values, numeric bit reinterpretation and
+non-trailing Bitcast lane regrouping are not moved. This rule is value-exact
+and does not remove an intermediate rounding step.
+
+TargetIndependent's `FoldCast` independently eliminates identity casts and
+floating `A → B → A` round trips. This is a **relaxed numerical optimization**:
+the intermediate rounding is intentionally discarded, including narrowing
+round trips. Integer/boolean conversions and non-round-trip chains are not
+covered. PreOps/PostOps do not perform this simplification. Selecting an
+importer numerical profile alone therefore does not promise full-sequence
+token equality after relaxed optimization; validate the intended workload.
+
+### Commands
+
+Use a FlagTree environment built with NVIDIA/TLE support. The package installs
+the `flagmega` CLI by default; `python -m triton.flagmega` is equivalent.
+`FLAGTREE_FLAGMEGA=0` disables the optional console entry point and its extra
+installation dependencies. Core extraction requires `ortools==9.10.4067`, with
+no greedy-extraction fallback; templates use Jinja2. GPU execution additionally
+needs the corresponding CUDA/PyTorch environment and model checkpoint.
+
+```sh
+python -m triton.flagmega --help
+python -m triton.flagmega import --model /path/to/checkpoint --output imported.py
+python -m triton.flagmega verify imported.py
+python -m triton.flagmega inspect imported.py --json
+python -m triton.flagmega compile --input imported.py --checkpoint /path/to/checkpoint \
+  --target nvidia-sm90 --output /path/to/artifact --emit-executable \
+  --work-dir /path/to/dumps --dump-flags all
+python -m triton.flagmega artifact verify /path/to/artifact
+```
+
+Additional commands include `stage`, `candidates`, `select`, `diff`, `schedule`,
+`resume`, `replay` and `artifact run`; use each command's `--help` for its inputs.
+Import defaults to the first decode layer; `--full-model` imports the complete
+model. JSON CLI output is an inspection/report format, not a replacement for
+the editable Python IR. Only load trusted Python checkpoints: loading executes
+their Python builders.
+
+Readable `.il`/`.script` dumps use function-local short SSA names on the left
+and original node IDs in trailing `name=...` comments. Constants and weight
+references are typed inline operands; splats stay compressed and weights are
+never loaded for printing. Constant recipes use the same notation. Computations
+with shared users remain single SSA definitions, and each function prints its
+own body. These display names do not rename the IR or change executable Python
+checkpoints, semantic hashes, selection plans, or generated kernels.
+
+Each function groups proven weight/constant preprocessing into an internal
+`weights { ... }` section, using `%w0`, `%w1`, etc.; the compute body has its own
+`%0`, `%1` numbering. Frozen recipes also live in the consuming function's
+weights section. This is only a display grouping, not a scope, scheduling
+region, or claim that an operation has already been folded. No extra dump
+files are created. Classification follows immutable dependencies and the op's
+constant-evaluation/determinism contracts, not names such as `pack` or `weight`.
+DumpManager proves constant parameters across all call sites before splitting
+function views, and shares that read-only analysis across their renders. A
+standalone callee without caller context keeps unproven parameter expressions
+in its compute body. Dynamic inputs, effects and physical TIR calls remain in
+the execution body.
+
+After post-boundary vector-layout propagation, `PackResultProducers` moves
+embedding feature packing into the weight table (nncase Gather propagation)
+and makes rotary-table producers return vector elements directly. It rebuilds
+each producer once in dataflow order, preserving shared scalar consumers and
+the single position-state read. A subsequent egraph pass folds inverse layout
+boundaries. No Pack-to-Bitcast normalization is used to hide activation packing.
+
+An executable artifact contains `ir/final.py`, the readable companion
+`ir/final.script`, generated source, readonly data and a checked manifest.
+Custom implementation catalogs must match the saved target snapshot when
+resuming target verification. Regenerate generated source after API changes;
+retired names are not silently accepted by compatibility shims.
+
+Before freezing readonly-data recipes, `LiftConstantParameterExpressions`
+uses all call sites to prove constant function arguments, including through
+nested wrappers. Pure, deterministic, constant-evaluable expressions over
+fixed-size immutable tensors move to each caller; the reusable callee accepts
+their results through one refined ABI. Weights may differ between calls and
+no `packed_from` annotation is required. Shared users, exported parameters and
+runtime call order are preserved. Stop at `lift-constant-parameters` (IR stage
+`constant_parameters_lifted`) to edit these ordinary Python expressions before
+`FreezeConstantIslands`. Frozen or already lowered TIR must be resumed from an
+earlier checkpoint to perform this transformation.
+
+Readonly-data index v4 hashes bounded chunks as they are written, including
+alignment gaps and owner padding. It avoids rereading the finished image and
+omits redundant whole-image and per-entry payload hashes. Multi-chip `sha256`
+identifies the domain-separated ordered chunk tables and their geometry
+(`digest_kind="sha256-chunks/v1"`, image section v2). Every table must cover
+its complete chip segment without gaps or overlap. Audits verify all chunks;
+runtime mapping verifies the segment it reads. Index v3 segment digests and
+v1/v2 whole-image/entry checks remain supported. Single-chip images keep v3
+and their raw image SHA-256.
+
+Directory checkpoints additionally support index v5 source layouts
+(`digest_kind="sha256-source-layout/v1"`, image section v3). Byte-preserving
+views, concat, Pack and Permute are stored as verified byte-address maps plus
+independent source-file snapshots. Numeric operations still materialize at
+compile time. The sparse `rdata.bin` stores the remaining physical ranges;
+its logical size remains the full dense chip pool. CUDA loading gathers from
+registered readonly host pages directly into that pool, combining layout with
+the required device transfer without CPU reordering or a second model-sized
+device allocation. CPU loading is an explicit reference target. Audits check
+source SHA-256, materialized chunks, bijective transformations and complete
+destination coverage. Every map is checked against the saved constant recipe
+and buffer plan. Older dense image formats retain their existing readers.
+
+Source snapshots use reflink when available and ordinary copies otherwise.
+On Linux, exposed OverlayFS upper files and bind-mount aliases are used only
+after inode identity checks to make same-filesystem remaps legal. Artifacts
+contain their own snapshots; they keep working after removing the checkpoint.
+Already audited inputs can provide `DirectoryCheckpoint(...,
+integrity_report=...)` or CLI `--checkpoint-integrity-report`. This trusted local
+report must name the same checkpoint and contain successful SHA-256 records;
+files changed after the report are rejected. Digest reuse is bound to device,
+inode, size, mtime and ctime. Without a report, each source file is hashed once
+in parallel during its first snapshot. No packed-output cache is required.
+
+Chip packing evaluates independent closed recipes concurrently, with a limit
+on live materialization bytes. Checkpoint arrays share readonly file mappings.
+Writers build disjoint physical extents and assemble the image with reflink
+range cloning, so a single inode's allocation lock does not serialize all
+writers. IR/source emission overlaps packing; the manifest is published only
+after both finish. Failures remove unpublished images and temporary extents.
+Filesystems without reflink range cloning assemble the same extents by bounded
+range copies, preserving payload and verification contracts.
+Immutable local pack-cache hits clone the image without reading or hashing its
+payload. Cache schema v2 includes the complete distribution, backing layout,
+strides and owner stride as well as source identity, recipe fingerprints and
+the materialization ABI;
+equal-sized contiguous and cyclic shards cannot share an entry.
+Writer scheduling and digest-index changes retain the physical materializer
+ABI when packed bytes are unchanged, preserving valid earlier cache entries.
+Cache identity validates each checkpoint shard once, rather than once per
+tensor. Reusing unchanged readonly data avoids model-sized disk writes during
+compiler iteration; a first pack still depends on disk write throughput.
+
+Materializers index only the current closed recipe's node types. NumPy and
+Torch evaluation keep recipe namespaces separate, including when different
+recipes reuse node names; per-recipe type indexing visits each node once.
+
+### Physical input visibility contracts
+
+Selected implementations use `source_memory_scope` for a uniform physical
+input visibility requirement. `source_memory_scopes` overrides individual ABI
+input names, for example:
+
+```python
+facts = {
+    "source_memory_scope": "chip",
+    "source_memory_scopes": {"value": "inferred"},
+}
+```
+
+Here unlisted inputs retain chip visibility, while `value` retains the
+operation's own visibility requirement. An inferred override does not erase a
+scope required by the semantic operation. Both legacy kernel materialization
+and semantic microkernel selection transfer these declarations into typed
+memory effects before storage and synchronization planning. The complete input
+schema rejects unknown names, output names and invalid scopes. A logical-only
+operand with no physical access stays `NONE`.
+
+An implementation that accepts private activations must also prove its actual
+read pattern: the current CTA reads a complete identical broadcast component,
+with the correct private-pool owner index and no partial, exclusive or backing
+view. Peer-read weights and cross-phase workspaces keep their shared contracts.
+This is an explicit implementation alternative; ordinary implementations and
+their default visibility requirements stay unchanged.
+
+### Bufferization optimization levels
+
+Use `CompileOptions(bufferize_opt_level="fast")` or `--bufferize-opt-level fast`
+for deterministic first-fit allocation during iteration. Use `optimized` (the
+target default) for final memory planning: CP-SAT minimizes pool high-water,
+then optionally reduces proven reuse-only synchronization conflicts without
+increasing any pool. First-fit supplies an initial placement, hints and upper
+bound. All SAT objectives share the configured per-allocation time budget;
+there is no address-sum objective. Pool records retain solver status and bounds,
+so a feasible placement is not presented as a proven optimum.
+
+Both levels use the same alias/MemSpan analysis, inclusive lifetimes, alignment,
+capacity checks, call ABI verification and synchronization realization. Fast
+can require more memory or synchronization; it does not silently fall back to
+SAT when a pool does not fit. Exact physical allocation problems are cached
+within one bufferization run, including baseline/preferred planning and function
+specialization. Readonly data remains linearly allocated.
+
+Changing levels requires resuming the Python IR **before Bufferize**, normally
+the `PlanFunctionMemory/After` or `Bufferize/Before` directory. Already allocated
+checkpoints cannot simply be relabeled: offsets, call bindings, synchronization
+and generated source must all be regenerated. Omitting the flag when resuming
+an allocated checkpoint preserves its saved level.
+
+For example, compile an imported decode module for iteration, then resume its
+complete pre-Bufferize dump with SAT for the final build:
+
+```sh
+python -m triton.flagmega compile --input imported.py --output build/fast \
+  --bufferize-opt-level fast --work-dir build/fast-dumps --dump-flags compile,pass-ir
+python -m triton.flagmega resume --input /path/to/Bufferize/Before \
+  --output build/optimized --bufferize-opt-level optimized \
+  --work-dir build/optimized-dumps --dump-flags compile,pass-ir
+```
+
+The second input is the function-complete `Before` directory produced by the
+first command, not its allocated output. Add `--emit-executable` and
+`--checkpoint /path/to/checkpoint` to materialize runnable artifacts; these examples otherwise
+compile IR and do not load weights or measure device execution. The same level
+option is available on `compile`, `resume`, `replay` and `stage`.
+
+AutoDistribution shares exact type-inference, reshard and realized-cost queries
+within a search. Fixed choices are propagated through exact compatibility
+relations before CP-SAT variables are constructed; candidate IDs remain
+unchanged and distinct weights remain independent decisions. `DistributedSearchGraph.dot`
+retains all candidates; `Costs/Pick.dot` contains only the selected subgraph.
+The pass analysis manager can reuse an unchanged proposal during uninterrupted
+compilation. Pausing/resuming creates a fresh manager, and an intervening custom
+pass invalidates this analysis unless it explicitly declares preservation.
+Custom passes that mutate target/provider policy must not claim preservation.
+
+For verified typed operations, `OpDefinition.zero_copy_input_index` proves a
+read-only physical alias without repeating type inference. Dense Reshape,
+Bitcast and legal ShardedView contracts use it; byte preservation alone is not
+enough for strided or opaque layouts. Alias reshapes have zero execution cost.
+Internal read-only views of one immutable producer share a grid-publication
+cost, including tuple fields and alias chains. CP-SAT charges the logical OR
+of their selected uses, weighted by function invocations. Boxing transfers,
+independent producers and ownership-exclusive transitions remain separate.
+`Costs/Pick.txt` separates edge costs from shared publication groups; DOT edges
+show standalone estimates, which must not be summed as the solver objective.
+Packed QKV and its partial combine expose operation-owned cost factors using
+the target's arithmetic, bandwidth and synchronization rates. Matmul residual
+norm combines count the partial fan-in over their requested output region,
+including scalar vector lanes in the reduction work. Unknown shapes
+remain explicitly heuristic. These estimates do not include allocation-induced
+WAR barriers or post-distribution fusion savings and are not measured latency.
+
+Operation-cost bandwidths are per chip. Per-block traffic is multiplied only
+by executing physical `b` axes, excluding exclusive block owners; `c`/`d`
+axes represent independent chip bandwidth budgets. `chip_aggregate_memory_*`
+factors already sum the active block traffic on the busiest chip. Masked MoE
+traffic uses `max_chip_active_elements`, preserving ragged and staged shard
+geometry rather than averaging full-mesh traffic across chips. Arithmetic
+factors remain per executing block, and communication stays separately priced.
+The unit and H800 operation-cost identities are version 2 for these semantics.
+
+Distribution providers use operation-owned forward and inverse type relations.
+`distributed_output_type_candidates` lifts available input contracts;
+`infer_distributed_input_types` projects a requested output into input tuples,
+and forward inference must reproduce that exact output. Same-type scalar/vector
+binary and unary ops share this contract instead of enumerating a fixed tensor
+axis. Broadcasting remains explicit, partial nonlinear work is rejected, and
+dtype/lane changes cannot be invented to satisfy an output demand. Pointwise
+input domains are joined by exact type, not expanded as a Cartesian product.
+Before CP-SAT, a monotone worklist propagates new producer layouts and consumer
+demands through declared provider relations and structural tuples. Real reshard
+edges, costs, capability checks and function ABIs remain explicit. Policy v10
+requires fresh proposals; old catalogs are not silently reinterpreted.
+
+`LowerVectorizationContracts` preserves byte-view chains connecting native
+computations, including a scalar Bitcast over a vector Reshape. Such a physical
+chain is no longer reconstructed as a scalar schedule plus a new Unpack.
+SplitStages retain their coordinate-mapping order, while `SBPPartial.axes` is a
+canonical owner set. Collective enumeration and MatMul K-axis validation must
+not confuse these two contracts.
+
+`FreezePreDistributionConstants` now outlines all proven constant islands before
+the distribution proposal, after packing/function-boundary propagation. This is
+the default pipeline, not a model-specific option: source kinds, purity,
+determinism and constant-evaluation contracts determine the boundary. The search
+sees opaque `const_asset` leaves and still selects every runtime layout and
+reshard edge; offline Slice/Concat/Pack interiors do not generate candidates.
+No weight payload is loaded. `pre-distribution-freeze` produces the editable,
+resumable `distribution_constants_frozen` checkpoint.
+
+After distribution is materialized, `post-distribution-thaw` explicitly restores
+ordinary constant expressions (`distribution_constants_open`), retaining the
+chosen runtime graph and boundary types. Recipe-local names are renamed only
+when necessary to avoid collisions; physical layout changes use explicit
+Boxing edges rather than rewriting the types of internal expressions. Constant
+physical vector computations remain intact during vector-contract lowering.
+The existing ConstantCSE, LiftConstantParameterExpressions and final
+FreezeConstantIslands then absorb new constant adapters and caller expressions
+into closed readonly-data recipes. Default Dataflow/EGraph rewriters still
+reject frozen IR; no frozen-phase checks or offline passes are bypassed.
+Existing open distribution proposals retain their saved selection surface when
+resumed. New plans must be selected from their own compact proposal.
+
+`AutoDistributedPass` finishes with `fuse-attention-gate`, after distributed
+boundary propagation and vector-contract lowering. Its `attention_gate_fused`
+checkpoint already contains legal private attention-combine/sigmoid/multiply
+epilogues, before constant freezing or tutorial-local fusion passes. This stage
+uses the selected distributed types, not microkernel decisions. Shared or
+exported attention results remain unfused. The later `FuseDistributedOps` pass
+also recognizes the pattern so older frozen checkpoints can still resume;
+recognition is idempotent.
+
+### Tensor views and alignment contracts
+
+Qwen3.5's default importer now exposes `nn.qkv_parallel_linear` plus a separate
+gate projection. The checkpoint's per-head query/gate interleaving is decoded
+with ordinary constant Reshape/Slice operations outside the reusable decoder.
+Q/K/V therefore use the existing packed-QKV distribution, fused-RHS and kernel
+selection path without activation slices. Existing explicitly requested flat
+QKVG imports remain a distinct representation, not an alias for QKVParallel.
+
+Contiguous same-owner Slice/SliceToShape values can become
+`F.tir.buffer_subspan(value, offsets=..., shape=...)`. Contiguity is proved in
+both logical and local-shard coordinates, including vector elements. The view
+retains a typed MemSpan, source lifetime, byte offset and owner stride; it is
+not a byte-preserving reinterpretation of the entire parent allocation.
+Non-contiguous slices, changed ownership, mandatory snapshot writes, explicit
+copy-placement constraints and unsupported escaping result ABIs retain a real
+materialization.
+
+Storage decisions precede implementation selection:
+
+```text
+CanonicalizePackedQKVWeights
+PlanTIRAlignments       -> aligned_tir
+LowerTensorSubspans     -> tensor_subspans_lowered
+ProposeTIRMicroKernels
+SelectTIRMicroKernels
+FinalizeTIRPackage / PlanFunctionMemory / Bufferize
+```
+
+`T.prim_parameter(..., alignment_bytes=...)` records the semantic storage ABI.
+Planning covers the alignment requirements of currently legal implementation
+interfaces, independent of candidate preferences or selection records. This
+conservative common ABI preserves those implementation options. Explicitly
+declared contracts remain authoritative. A different storage tradeoff requires
+replanning before the subspan boundary, not changing a later microkernel pick.
+Microkernel proposal/application only admit implementations satisfying the
+contract; they neither strengthen it nor change copy/view decisions.
+
+Alignment requirements propagate through aliases and reusable function inputs
+and results. Allocation realizes them for every owner, padding compact owner
+strides when necessary. Subspans preserve the parent's stride. Python IR,
+buffer-plan verification, specialization and generated call ABIs retain these
+facts. Legacy parameters without an alignment field keep their existing
+transfer ABI when resumed; new compilation commits the contract before views.
+
+### Source-runtime numerical contracts
+
+Import may explicitly select a versioned numerical profile. The default
+`nncase` preserves the existing import. Full-model Qwen3 BF16 also supports
+`vllm-493bd8323-inductor-level3`, describing that revision/configuration's
+normalization, residual, rotary-table and activation rounding boundaries:
+
+```sh
+python -m triton.flagmega import --model /path/to/checkpoint --full-model \
+  --numerical-profile vllm-493bd8323-inductor-level3 --output imported.py
+```
+
+The Python API is `import_model(..., numerical_profile=...)`;
+`apply_numerical_profile(module, profile)` supports trusted imported checkpoints.
+Unsupported profiles, changing an existing contract, and applying a profile to
+lowered IR are errors. `compile --input` respects the saved contract; an explicit
+conflicting `--numerical-profile` is rejected. The pinned profile currently
+requires the reusable `decode_layer` full-model importer, not the legacy
+hidden-output layer importer. This is not a numerical-equivalence claim for
+arbitrary vLLM revisions or settings.
+
+Qwen3.5 MoE's default import keeps the hidden/residual, gate and MoE dataflow
+in BF16. Router/logits MatMul producers directly declare FP32 outputs; import
+does not manufacture activation Casts to reproduce a source runtime's rounding.
+Normalization's immutable `1 + w` preparation still uses FP32 constant
+expressions, which the normal constant-lifting/freezing pipeline evaluates
+offline. The optional `vllm-ae10e855a-inductor-level3` profile explicitly restores
+its wider residual ABI and projection rounding for compatibility experiments;
+it is not the default required by tutorial 02.
+
+Profiles are frontend semantics, not codegen model switches. Ordinary
+TargetIndependent passes fuse BF16 projections with FP32 GLU intermediates and
+FP32 Q/K normalization/RoPE using explicit operation attributes. They preserve
+projection/table/final rounding boundaries and cache effects, including values
+returned by functions. CLI compilation and edit/resume need no tutorial imports
+or agent intervention to obtain these fusions. Generic correctness fixes and
+optimizations live here; workload/hardware selection strategies may remain local.
+
+Local fusions are Pattern-based rules grouped in dataflow fixed points:
+`DecomposeComplexOps` includes normalization decomposition, wide GLU, final
+NormApply casts and QKV/RoPE/cache formation; `FuseDistributedOps` groups the
+gather/reduce normalization variants. Patterns bind shared operands and
+private users; callbacks check type/layout, rounding and effect-order legality.
+`is_unary_chain` captures arbitrary-length view chains in both dataflow and
+e-graph matching. Multi-output/effectful region edits are dataflow transactions,
+not e-graph equalities. Late rules use `rewrite_constants=False` to keep frozen
+assets and recipes opaque. Legacy fusion stage names resolve to their grouped
+stage for checkpoint resume.
+
+`QKVRoPEWithCache` requires materialized Q/K tensors and two mandatory FP32
+statistics operands. `NormStats` and any collective are separate IR nodes,
+visible before AutoDistribution; no ten-input or gather/reduce-RoPE form remains.
+`rotary_dim` uses scalar coordinates independent of vector lanes (omitting it
+keeps full-head rotation). RoPE and QKVRoPEWithCache permit head-dimension
+sharding only when every rotary pair belongs to one owner. The type relation
+checks staged contiguous/block-cyclic ownership; incompatible inputs need an
+explicit reshard before the op. Candidate generation lifts target splits of
+rotary groups or paired halves and prices stats, collective and apply work
+separately. The device implementation neither selects ownership nor reads
+another owner's Q/K elements. Full-head normalization, the untouched normalized
+tail, cache writes and sequence advancement remain part of the contract.
+
+`NTT.AddNormStats` (`F.ntt.add_norm_stats`) adds two values and returns the
+rounded sum plus additive normalization statistics. Its first input may be
+materialized or Sum-partial; it does not perform a matrix multiplication or
+require a MatMul producer. `NTT.MatMulNormStats` is the distinct operation that
+also performs the projection. The former `MatMulNormStatsCombine` name is not
+an alias; regenerate old checkpoints from an earlier stage when resuming.
+
+`FormAddNormStats` handles equal-shaped additions before AutoDistribution,
+including residuals whose producer is not a MatMul. Layout search jointly
+prices private, layout-compatible packed MatMul/AddNormStats regions using
+the same typed rule as `LowerAddNormStats`. The fused operation owns local
+projection/add/statistics work; statistics collectives and value publication
+remain explicit and separately priced. Cost dumps distinguish standalone
+candidate prices from the joint price actually charged, including static
+function invocation counts. Shared/escaping projections, layout-changing
+edges, and edited or non-analytic candidate costs receive no fusion discount.
+For a multi-result producer, a value publication and a statistics reduction
+share the same input-completion barrier. Search charges that barrier once per
+invocation, including callee returns, while retaining each reduction's data
+transfer and arithmetic costs. Independent producers never share completion.
+PyNTT applies its canonical-storage view proof to callee-owned return values
+as well as internal uses, rather than requiring an artificial copy at every
+function return. This does not grant canonical provenance to an unknown
+function parameter or turn a Partial reduction into a view.
+
+`HoistCallInvariantExpressions` is a normal TargetIndependent pass with its own
+Before/After checkpoints. It lifts pure expressions of identical immutable SSA
+arguments across repeated calls, computes them once per caller, and refines the
+shared callee ABI. It does not move state reads or infer equal values from names
+or types. Mixed-dtype NormApply vectorization and MatMulNormStats fusion
+respect the declared projection output dtype and residual conversion chain. Generic distributed
+inference exposes target-owned leaf layouts at logical-argument use sites,
+allowing shard-local casts without changing the originator's external ABI.
+
+`NormApply.output_dtype` expresses a final conversion separately from input
+arithmetic/rounding precision. Normalization still rounds in the input dtype
+before converting its output; the ordinary private-output cast rule and both
+gather/reduce normalization forms preserve this contract. Optional in-place
+aliases require compatible physical types, including in reusable callees.
+`MatMulNormStats.addend_cast_dtypes` similarly records an ordered residual
+conversion chain executed before addition. The packed-matmul lowering can fold
+private cast chains with identical endpoint shard types into this epilogue,
+removing intermediate buffers without removing numerical rounding or crossing
+communication boundaries. Both attributes are omitted for the original default
+contract and round-trip through executable Python IR.
+
+`F.math.matmul(..., output_data_type="float32")` selects a true FP32 projection
+from narrow inputs; vectorization, packing, normalization fusion and codegen
+carry that attribute. The evaluator and kernel do not materialize a BF16 result
+before widening it. Missing output dtype preserves the original implicit dtype.
+Under the current relaxed target-independent policy, a private BF16 MatMul
+followed by a widening Cast can become an FP32-output MatMul; this deliberately
+removes the BF16 result rounding and is not an exact-arithmetic equality.
+
+Wider vector elements preserve logical coordinates by splitting packets. With
+a 16-byte packet, eight narrow elements become `f32<2,4>` at the same outer shape,
+not `f32<4>` at twice the outer extent. Repeated vector axes map both components
+to the same logical axis. AutoVectorize offers coherent region defaults through
+shape-preserving dataflow and declared reusable-call ABIs, so residual Add/Norm
+can directly consume this producer layout; explicit agent selections remain
+authoritative and round-trip in Python proposals.
+
+## Codegen backends: Triton and C++ (FTT)
+
+The SM90 Triton package planner also accepts an experimental
+`kernel_program_partition` tuple in module metadata. Each target-owned request
+contains `symbol`, ordered entry `calls`, and `num_warps`. Supply it before TIR
+packaging, using the actual selected call identities. The requests must cover
+the complete executable entry in order. Each distinct entry gets its own layout/helper
+namespace and launch resource contract; the generated source records those
+contracts and the runtime checks them against the manifest and TIR request.
+Requests without target support fail explicitly.
+
+Version 1 launches programs serially on the caller's stream, preserving the
+existing buffer plan. Kernel completion replaces incoming block/grid ordering;
+cross-chip device rendezvous remains explicit. A different physical grid needs
+a task-to-owner storage ABI and is rejected by this version. Concurrent programs
+require a dependency DAG and a new lifetime plan; adding streams to the serial
+plan is insufficient. Loop regions remain structured, with their original
+iter-argument/yield semantics and separate numerical acceptance requirements.
+
+For SM90 straight-line entry regions, an explicit `depends_on` tuple on **every**
+request selects experimental `flagmega.kernel-programs/v3-dag-completion`; roots
+use `()`. Supply complete legalized entry calls before packaging/bufferization:
+legalization can introduce executable scalar/reference loads. Missing, duplicate
+or foreign call identities are rejected before allocation. Lifetimes include
+every unordered reader/writer's program, allowing reuse after ordered joins.
+Private callee frames can retire at program completion; a result actually backed
+by a frame retains its lifetime. Public results and forwarded state/input
+pointers do not keep unrelated private scratch alive. Codegen independently
+rejects unordered physical read/write hazards. A minimum chain cover of the declared partial order assigns streams,
+including forks after a common prefix; unordered programs use distinct streams.
+Stable branch streams own separate prepared scratch; events enforce dependencies,
+output publication and reuse by the next request. Runtime checks joint rounded
+residency over the maximum weighted antichain for each resource, including actual
+stream ordering. Serial prefixes do not add to a later concurrent frontier's
+footprint. Complete four-warp groups are required and writable external aliases
+are rejected.
+Peer-access programs terminate with a device rendezvous: local kernel retirement
+does not prove another chip has finished reading reusable storage. The source
+and manifest record `device_completion`, verified against typed physical effects;
+these programs require cooperative grid residency. A leading memory fence can
+be removed only when every range's preceding accesses are covered by a globally
+completed ancestor. New producer publication and explicit fences remain intact.
+Unordered device rendezvous require distinct channels and are rejected by this
+version. Existing v2 artifacts retain their original launch contract.
+Before capture, it gives all programs one preferred shared-memory carveout,
+computed from their joint footprint and the device's physical shared capacity.
+This avoids a cache-preference switch between small default-cache kernels and
+larger shared-preferring kernels introducing device synchronization. The setting
+is a CUDA preference, not a promise of concurrent execution; runtime failures
+are explicit and actual overlap still needs measurement. Independent
+peer-access programs require separate distributed synchronization channels and
+are rejected by this initial version. Loop cuts and changing the physical grid
+still require their own execution/owner contracts. This is infrastructure for
+measured phase scheduling, not an enabled full-model performance policy.
+
+Reusable graph functions can expose phase boundaries before allocation with
+`FunctionStage` and `outline_function_stages` from `passes.functions`. An
+explicit partition covers the complete owned SSA body; the transformation moves
+each body node once, creates typed live-in/live-out formals, and replaces every
+direct call with calls to the same stage functions. Global readonly roots keep
+their identity. State effects and mutable reference accesses stay in the first
+stage; later stages contain pure tensor work. Changed signatures invalidate
+positional boundary-layout proofs. Allocation, physical ABI and synchronization
+must run again from this legal graph checkpoint. Structured loop bodies and
+already allocated checkpoints are rejected. A target still supplies the entry
+program partition and dependency graph; graph-function reuse alone does not
+establish reuse of the generated GPU entry binaries.
+
+Single-function DAG programs use `flagmega.kernel-programs/v4-functions` to
+separate reusable GPU entry definitions from their invocation IDs. Entry
+identity includes the callee, launch geometry, physical scope strides and the
+positions/scopes of retained fences. Calls with the same identity resolve the
+same JIT function; their parameter pointers, scalar values, descriptor origins
+and immutable offset-table rows remain per-invocation runtime bindings. Root
+primitive programs retain their own entries. Scalar values and call-record
+alignment do not specialize a new binary for each layer. Source function pool
+ABIs and duplicate-formal proofs remain intact; CTA-local frame selection stays
+inside the wrapper and host pointer projection creates views without copying.
+Descriptor bindings are recorded while constructing their typed resources,
+never recovered from generated pointer expressions. The runtime rebuilds the
+entry projection from physical TIR to reject forged offsets, sources or callees,
+and projects dynamic external arguments/descriptors on each launch. Sharing
+code never shares per-invocation prepared scratch or weakens v3 completion,
+stream, alias and joint-residency requirements. Runtime-indexed views that
+cannot be addressed from the root ABI and invented loop induction arguments
+are rejected explicitly. Existing v1/v2/v3 artifacts remain loadable.
+
+A target may declare `tasks_per_owner` for a flat program grid whose selected
+callees prove a complete, disjoint partition of every owner's output. Physical
+CTAs are ordered by owner, then task; an added block task axis preserves the
+logical storage coordinates while full-grid fences use the physical CTA index.
+The partitioned FP8 WGMMA Down implementation supports this contract when its
+local output width equals `tasks_per_owner * output_tile_n`. Each task retains
+the complete K reduction and writes one output tile. CTA-private pool slices,
+internal grid barriers and partial axis-group barriers are rejected. The
+runtime reconstructs the task partition and physical grid from typed TIR, so
+changing a manifest cannot authorize duplicated owners or missing writes.
+
+Optional input donation inside reusable functions requires legality at every
+call site. For a DAG entry, every other reader must precede the donating call
+in the declared partial order, or precede it within the same program. An
+unordered reader keeps the formal borrowed, including through views and nested
+wrappers. Ordered calls retain legal in-place reuse even though concurrent
+allocation intervals can extend beyond a syntactic last use to cover unordered
+programs.
+
+For simultaneous allocation roots, a feasible layout matching the aligned
+live-peak lower bound proves optimal high water and zero reuse conflicts. The
+allocator can use that certificate without CP-SAT search, including post-budget
+peak reclamation. Tail padding is placed above high water when a matching
+witness exists. Non-simultaneous roots retain the established SAT path because
+equal-peak placements can change incidental reuse hazards; larger alignment
+holes also require search when the bound is not attained.
+
+Selected, bufferized TIR can be emitted as Triton Python (the default) or as
+C++. `write_artifact(..., codegen_backend="cpp")` selects the second; the CLI
+and tutorials keep the Triton default. The manifest records which backend
+produced an artifact, and the runtime dispatches on it, so the choice is a
+property of the artifact rather than of the calling process.
+
+Both backends consume the *same* package descriptor. The buffer plan, the call
+ABI, the event schedule, and the index/predicate algebra are facts about the
+artifact, not about a language: the same offsets address the same bytes
+whichever kernel loads them. `codegen/cpp/renderer.py` therefore extends
+`describe_tir_package` rather than re-deriving it, and
+`codegen/cpp/expressions.py` translates the renderer's expression strings into
+C++ through a Python AST walk. Two operators differ and are handled explicitly:
+`//` is floor division (valid as `/` only because every operand is a
+non-negative index, which the translator proves per expression), and `&`/`|`
+are Triton's elementwise boolean operators. Anything outside that grammar
+raises, so a new renderer construct surfaces as a codegen error instead of
+wrong arithmetic.
+
+The emitted source is built against **FTT** (FlagMega Tensor Template), a small
+C++20 header library under `codegen/cpp/ftt/include/ftt`, modelled on nncase's
+NTT and scoped to what the FlagMega IR emits. Two deliberate differences from
+NTT: shapes are always fixed, because the IR resolves every extent before a
+codegen package plan exists; and tensors are views only, because generated
+kernels never allocate. Arch dispatch follows NTT's pattern — `ftt.h` includes
+`arch/<name>/{arch_types,primitive_ops}.h`, and adding a target means adding a
+sibling directory rather than touching the layers above. Iluvatar BI-V150 is
+the first arch.
+
+A package is entirely C++ or entirely Triton. A kernel family without a C++
+template raises at compile time; it does not fall back per kernel. The same
+applies to descriptor features the C++ templates do not implement — a
+warp-specialized producer/consumer pipeline, a fused epilogue, an intermediate
+addend cast, a host tensor descriptor — each of which would otherwise change
+results or the schedule silently.
+
+Thread mapping differs by necessity. A Triton kernel walks vector tiles; a C++
+kernel walks one scalar index per thread, strided by the block size, with the
+tile loop bound becoming the loop bound and the data-dependent part of the mask
+becoming a branch. Reductions that Triton expresses as `tl.sum` over a tile
+become either thread-local accumulators (where each thread owns an output
+element) or a shared-memory combine (where the whole CTA reduces one value).
+Reduction *order* therefore differs from the Triton backend, which is visible
+in the low bits of a bf16 statistic; rounding *boundaries* are preserved
+exactly, because those are where each kernel agrees with its reference
+implementation.
+
+A C++ package is compiled ahead of time by the vendor device compiler into one
+shared library and launched through the plain-C ABI in `<ftt/runtime.h>`:
+`flagmega_launch(void **arguments, void *stream)` takes the artifact's runtime
+binding signature as a flat array of device addresses. The library is a hashed
+artifact section like the generated source, so a stale or hand-edited `.so` is
+rejected at load time, and it reports its own argument count and ABI version so
+a mismatch against the manifest is caught before a launch reads past the array.
+Because the vendor compiler does not expose per-kernel register/shared/spill
+counters through this path, a C++ artifact's `resource_report` is `None` rather
+than a contract that was never evaluated.
+
+Validated on BI-V150: the full 28-layer Qwen3-1.7B batch-1 decode model
+compiles and runs through the C++ backend and produces **token-identical**
+output to the Triton backend (checked on a 9-token and a 47-token greedy
+generation). Measured decode latency was lower than the Triton path in that
+configuration, but the Triton path carries tuned kernel selections this
+tutorial profile does not, so that is not a backend performance claim.
+
+## Standalone text serving
+
+```sh
+python -m triton.flagmega.serving.chat_cli --artifact "$ARTIFACT" \
+  --checkpoint "$CHECKPOINT" --n-predict 128 --metrics-file .local/chat.jsonl
+```
+
+This path does not import vLLM or use a Transformers model forward. It loads
+tokenizer/config files from the checkpoint and executes a full-vocabulary,
+single-token paged-attention artifact for both prompt ingestion and generation.
+Prefill is explicitly a compiled-token causal scan, not batched prefill.
+The stored numerical-profile name does not introduce a source-runtime dependency.
+
+The interaction conventions follow the [llama.cpp CLI](https://github.com/ggml-org/llama.cpp/tree/master/tools/cli):
+system prompts, tokenizer chat templates, streaming replies, and per-response
+timings. Use `/reset`, `/stats`, `/help`, `/exit`, or multiline input ending in
+`\`. `--prompt` runs one turn; `--interactive` continues afterward. Raw prompt
+or token-file completion, greedy or seeded temperature/top-k/top-p sampling,
+EOS handling, and explicit context limits are supported. No implicit history
+truncation or context shifting is performed.
+
+Metrics separate loading/JIT/graph preparation, prompt evaluation, cached tokens,
+TTFT, decode mean/median/p95 latency, decode throughput, total generation time,
+and output throughput. JSONL also records memory usage and artifact/serving-source
+identities. Decode counts exclude the first output token produced by prefill.
+Interactive callbacks are timed; human input wait and setup are not. CUDA Graph
+is the default; `--no-cuda-graph` selects eager execution explicitly.
+
+## Latest validated state
+
+The development workspace validated Qwen3-1.7B on NVIDIA H800, including a
+complete first-layer path and the full 28-layer decode model, batch 1. This is
+not an acceptance claim for Qwen3.8-27B FP8, all shapes or other backends.
+
+- Single-layer three-step CPU/GPU reference checks passed: tokens
+  `2176 / 25 / 2096`, minimum logits cosine `0.9999839067`.
+- Full-model three-step nncase reference checks passed: tokens `25 / 220 / 16`,
+  minimum cosine `0.9996560216`; logits were byte-identical before and after the
+  final warp-allocation cleanup.
+- Final full-model resources: 12 physical warps, 143 registers/thread,
+  172268 bytes shared, 331776 bytes global scratch; zero reported spill-store,
+  spill-load, stack and local-memory bytes.
+- The final executable instruction section is 261888 bytes, identical to the
+  previously measured 12-warp diagnostic variant. The isolated 9-to-12-warp
+  comparison used three rounds of 500 samples per variant/context, contexts
+  1/128/1024, shared addresses, alternating order and a 256 MiB cache flush.
+  Median changes ranged from -0.373% to +0.143%; no material regression was
+  observed in that experiment. This is not a universal zero-overhead claim.
+
+Latest targeted validation before publication:
+
+| Validation | Result |
+| --- | --- |
+| FlagMega codegen/runtime and target implementation-model tests | 760 passed |
+| TLE MLIR suite + native allocator test | 101 + 1 passed |
+| Targeted TLE Python/GPU tests | 72 passed, 1 skipped |
+| Publication CLI, namespace, template and sampling smoke checks | 30 passed |
+| Selected native MLIR/LLVM tests | 205 passed, 13 pre-existing failures; unchanged failure set |
+| Single-layer/full-model artifacts | Manifest, IR, readonly data and three-step references passed |
+
+These numbers are targeted results, not a claim that the entire Triton test
+matrix is green. Tests are under `python/test/flagmega`, `python/test/tle` and
+`third_party/tle/{test,unittest}`. For example:
+
+```sh
+python -m pytest python/test/flagmega/codegen python/test/flagmega/runtime \
+  python/test/flagmega/targets/nvidia/test_implementation_model.py -q
+lit -v build/cmake.linux-x86_64-cpython-3.10/third_party/tle/test \
+  build/cmake.linux-x86_64-cpython-3.10/test/Conversion/allocate_warp_groups.mlir
+```
+
+## Local development records
+
+The original workspace keeps designs, iteration audits, ablation evidence,
+benchmark inputs/results and v364 artifacts under ignored `build/flagmega/`.
+Its latest records are `nncase_alignment_audit.md`,
+`flagtree_change_necessity_audit.md`, `subwarpgroup_performance_v363.md` and
+`subwarpgroup_cleanup_v364.md`. These local records, model weights, generated
+binaries and retired-test archives are not included in the Git push. This
+README provides a version-controlled summary; fresh checkouts must generate
+their own artifacts using the source and an appropriate checkpoint.

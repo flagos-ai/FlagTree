@@ -19,20 +19,17 @@ def _matmul_module(make_op_module, lhs_shape=(8, 8), rhs_shape=(8, 8), *, dtype=
     )
 
 
-def test_matmul_rule_enumerates_reference_rank_two_coupled_candidates(make_op_module):
+def test_matmul_rule_enumerates_nncase_rank_two_coupled_candidates(make_op_module):
     module = _matmul_module(make_op_module, (5, 7), (7, 10))
     candidates = VectorizeMatMul().candidates(module.node_map["root"], module)
     assert [candidate.id for candidate in candidates] == [
-        "vectorization.matmul.n",
-        "vectorization.matmul.mn",
+        "vectorization.matmul.n", "vectorization.matmul.mn",
         "vectorization.matmul.mkn",
     ]
     by_id = {candidate.id: candidate for candidate in candidates}
     assert by_id["vectorization.matmul.mn"].facts == {
-        "lhs_padding": [3, 0],
-        "rhs_padding": [0, 6],
-        "output_padding": [3, 6],
-        "egraph_equivalent": True,
+        "lhs_padding": [3, 0], "rhs_padding": [0, 6],
+        "output_padding": [3, 6], "egraph_equivalent": True,
     }
 
 
@@ -61,11 +58,7 @@ def test_matmul_rule_maps_axes_through_transpose(make_op_module, attrs, expected
 @pytest.mark.parametrize("output_data_type", [None, "float32"])
 @pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
 def test_each_matmul_candidate_rewrites_and_evaluates_equivalently(
-    make_op_module,
-    rewrite_candidate,
-    kind,
-    output_data_type,
-    dtype,
+    make_op_module, rewrite_candidate, kind, output_data_type, dtype,
 ):
     module = _matmul_module(make_op_module, dtype=dtype, output_data_type=output_data_type)
     _, result, rewritten = rewrite_candidate(module, VectorizeMatMul(), f"vectorization.matmul.{kind}")
@@ -90,10 +83,7 @@ def test_matmul_n_candidate_pads_rhs_and_slices_output(make_op_module, rewrite_c
     assert candidate.facts["rhs_padding"] == [0, 6]
     assert result.replacement.op == "tensors.slice_to_shape"
     assert [node.op for node in result.prefix_nodes] == [
-        "tensors.pad",
-        "tensors.pack",
-        "math.vectorized_matmul",
-        "tensors.unpack",
+        "tensors.pad", "tensors.pack", "math.vectorized_matmul", "tensors.unpack",
     ]
 
     lhs = torch.randn(5, 7, dtype=torch.bfloat16)
@@ -107,8 +97,7 @@ def test_matmul_n_candidate_pads_rhs_and_slices_output(make_op_module, rewrite_c
 
 def test_matmul_rule_rejects_unsupported_dtype_lane_and_effect(make_op_module):
     int32 = make_op_module(
-        "math.matmul",
-        (fm.tensor_type("int32", (8, 8)), fm.tensor_type("int32", (8, 8))),
+        "math.matmul", (fm.tensor_type("int32", (8, 8)), fm.tensor_type("int32", (8, 8))),
     )
     assert VectorizeMatMul().candidates(int32.node_map["root"], int32) == ()
 
@@ -121,19 +110,11 @@ def test_matmul_rule_rejects_unsupported_dtype_lane_and_effect(make_op_module):
 def test_matmul_rule_filters_dynamic_axes_and_static_padding_with_dynamic_shape(make_op_module):
     n = fm.dim("n", minimum=1, maximum=64)
     exact = _matmul_module(make_op_module, (n * 8, 8), (8, 8))
-    assert {
-        candidate.parameters["kind"]
-        for candidate in VectorizeMatMul().candidates(
-            exact.node_map["root"],
-            exact,
-        )
-    } == {"n", "mn", "mkn"}
+    assert {candidate.parameters["kind"] for candidate in VectorizeMatMul().candidates(
+        exact.node_map["root"], exact,
+    )} == {"n", "mn", "mkn"}
 
     unproven = _matmul_module(make_op_module, (n, 7), (7, 10))
-    assert {
-        candidate.parameters["kind"]
-        for candidate in VectorizeMatMul().candidates(
-            unproven.node_map["root"],
-            unproven,
-        )
-    } == {"n"}
+    assert {candidate.parameters["kind"] for candidate in VectorizeMatMul().candidates(
+        unproven.node_map["root"], unproven,
+    )} == {"n"}

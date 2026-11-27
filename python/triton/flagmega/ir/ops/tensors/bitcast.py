@@ -10,7 +10,7 @@ from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.dim_expr import try_div_exactly
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.distributed_type import SBPSplit, scale_split_units
-from triton.flagmega.ir.model import DistributedType, IRType, Node, TensorLayout, tensor_type
+from triton.flagmega.ir.model import DistributedType, IRType, Node, TensorLayout, TensorType, tensor_type
 from triton.flagmega.ir.ops.core import (
     OpCost,
     OpDefinition,
@@ -39,7 +39,7 @@ class Bitcast(OpDefinition):
     const_evaluable = True
     numpy_materializable = True
     value = input_parameter(is_tensor())
-    byte_preserving_input_parameters = (value, )
+    byte_preserving_input_parameters = (value,)
     dtype = attribute_parameter()
 
     @classmethod
@@ -61,8 +61,10 @@ class Bitcast(OpDefinition):
             if not shape:
                 extent = try_div_exactly(scaled_bytes, target_dtype.itemsize)
                 if extent is None:
-                    raise IRSchemaError("F.tensors.bitcast cannot reinterpret a scalar into a "
-                                        "larger element type.")
+                    raise IRSchemaError(
+                        "F.tensors.bitcast cannot reinterpret a scalar into a "
+                        "larger element type."
+                    )
                 shape = [extent]
             else:
                 extent = try_div_exactly(
@@ -70,22 +72,29 @@ class Bitcast(OpDefinition):
                     target_dtype.itemsize,
                 )
                 if extent is None:
-                    raise IRSchemaError("F.tensors.bitcast requires the final logical extent "
-                                        "to preserve an integral number of target elements.")
+                    raise IRSchemaError(
+                        "F.tensors.bitcast requires the final logical extent "
+                        "to preserve an integral number of target elements."
+                    )
                 shape[-1] = extent
         result = tensor_type(target_dtype, shape)
         if not isinstance(source_type, DistributedType):
             return result
         if source_type.partial is not None:
-            raise IRSchemaError("F.tensors.bitcast does not support partial distributed values.")
+            raise IRSchemaError(
+                "F.tensors.bitcast does not support partial distributed values."
+            )
         policies = list(source_type.axis_policies)
         if policies and source.dtype.itemsize != target_dtype.itemsize:
             last = len(policies) - 1
             if isinstance(policies[last], SBPSplit):
-                scaled = scale_split_units(policies[last], source.dtype.itemsize, target_dtype.itemsize)
+                scaled = scale_split_units(
+                    policies[last], source.dtype.itemsize, target_dtype.itemsize)
                 if scaled is None:
-                    raise IRSchemaError("F.tensors.bitcast cannot preserve the final-axis split "
-                                        "unit for the requested element type.")
+                    raise IRSchemaError(
+                        "F.tensors.bitcast cannot preserve the final-axis split "
+                        "unit for the requested element type."
+                    )
                 policies[last] = scaled
         return DistributedType(result, tuple(policies), source_type.placement, exclusive=source_type.exclusive)
 
@@ -99,10 +108,16 @@ class Bitcast(OpDefinition):
 
         source_outer = tuple(int(value.shape[index]) for index in range(source.rank))
         if source.rank == 0:
-            target_outer = () if target.rank == 0 else (source.dtype.itemsize // target.dtype.itemsize, )
+            target_outer = () if target.rank == 0 else (
+                source.dtype.itemsize // target.dtype.itemsize,
+            )
         else:
             target_outer = list(source_outer)
-            target_outer[-1] = (target_outer[-1] * source.dtype.itemsize // target.dtype.itemsize)
+            target_outer[-1] = (
+                target_outer[-1]
+                * source.dtype.itemsize
+                // target.dtype.itemsize
+            )
             target_outer = tuple(target_outer)
         lanes = target.dtype.lanes if isinstance(target.dtype, VectorType) else ()
         return reinterpreted.reshape((*target_outer, *lanes))
@@ -115,10 +130,14 @@ class Bitcast(OpDefinition):
         reinterpreted = value.view(context.storage_dtype(target.dtype))
         source_outer = tuple(int(value.shape[index]) for index in range(source.rank))
         if source.rank == 0:
-            target_outer = () if target.rank == 0 else (source.dtype.itemsize // target.dtype.itemsize, )
+            target_outer = () if target.rank == 0 else (
+                source.dtype.itemsize // target.dtype.itemsize,
+            )
         else:
             target_outer = list(source_outer)
-            target_outer[-1] = (target_outer[-1] * source.dtype.itemsize // target.dtype.itemsize)
+            target_outer[-1] = (
+                target_outer[-1] * source.dtype.itemsize // target.dtype.itemsize
+            )
             target_outer = tuple(target_outer)
         lanes = target.dtype.lanes if isinstance(target.dtype, VectorType) else ()
         return reinterpreted.reshape((*target_outer, *lanes))
@@ -129,12 +148,13 @@ class Bitcast(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(flops=0, bytes_read=0, bytes_written=0, notes=("bitcast-view", ))
+        return OpCost(flops=0, bytes_read=0, bytes_written=0, notes=("bitcast-view",))
 
     @classmethod
     def zero_copy_input_index(cls, inputs, attrs, return_type):
         if len(inputs) != 1 or any(
-                tensor_of(value).layout != TensorLayout() for value in (inputs[0].type, return_type)):
+            tensor_of(value).layout != TensorLayout() for value in (inputs[0].type, return_type)
+        ):
             return None
         return 0
 

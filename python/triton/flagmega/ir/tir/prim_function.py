@@ -53,7 +53,9 @@ class PrimParameter(TIRNode):
         if len({value.name for value in self.buffers}) != len(self.buffers):
             raise IRSchemaError(f"PrimParameter {self.name!r} has duplicate buffer names.")
         alignment = self.alignment_bytes
-        if alignment is not None and (type(alignment) is not int or alignment <= 0 or alignment & (alignment - 1)):
+        if alignment is not None and (
+            type(alignment) is not int or alignment <= 0 or alignment & (alignment - 1)
+        ):
             raise IRSchemaError("PrimParameter alignment_bytes must be a positive power of two or None.")
         if alignment is not None and any(buffer.mem_span.buffer.alignment < alignment for buffer in self.buffers):
             raise IRSchemaError(f"PrimParameter {self.name!r} buffers violate its alignment contract.")
@@ -133,22 +135,24 @@ def validate_callable_signature(signature):
         }[parameter.role]
         if next_phase < phase:
             raise IRSchemaError(
-                f"PrimFunction {signature.name!r} ABI parameters must be ordered inputs, outputs, workspaces.")
+                f"PrimFunction {signature.name!r} ABI parameters must be ordered inputs, outputs, workspaces."
+            )
         phase = next_phase
     parameter_map = signature.parameter_map
     for result in signature.results.values:
         storage = parameter_map.get(result.storage)
         if storage is None or storage.role not in {
-                PrimParameterRole.INPUT,
-                PrimParameterRole.INOUT,
-                PrimParameterRole.OUTPUT,
+            PrimParameterRole.INPUT,
+            PrimParameterRole.INOUT,
+            PrimParameterRole.OUTPUT,
         }:
             raise IRSchemaError(
                 f"PrimFunction {signature.name!r} result storage {result.storage!r} is not an input/output ABI parameter."
             )
         if storage.type != result.type:
             raise IRSchemaError(
-                f"PrimFunction {signature.name!r} result type does not match storage {result.storage!r}.")
+                f"PrimFunction {signature.name!r} result type does not match storage {result.storage!r}."
+            )
 
 
 __all__ = ["PrimFunction", "PrimParameter", "PrimParameterRole"]

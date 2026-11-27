@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""reference RoPE computes in FP32 and rounds only its final result."""
+"""nncase RoPE computes in FP32 and rounds only its final result."""
 
 import pytest
 import torch

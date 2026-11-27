@@ -8,23 +8,25 @@ from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType
 from triton.flagmega.runtime import load
 
-_AUX_PIPELINE = ("tir.dense_matmul.tensor_descriptor_smem_pipeline_aux_gemv")
+_AUX_PIPELINE = (
+    "tir.dense_matmul.tensor_descriptor_smem_pipeline_aux_gemv"
+)
 
 
 def _checkpoint(weights):
     return MemoryCheckpoint(
         {},
-        {name: TensorInfo(name, DType.BFLOAT16, (128, 128), "memory")
-         for name in weights},
+        {
+            name: TensorInfo(name, DType.BFLOAT16, (128, 128), "memory")
+            for name in weights
+        },
         weights,
     )
 
 
 @pytest.mark.parametrize("reusable", (False, True), ids=("direct", "reusable"))
 def test_auxiliary_pipeline_matches_torch_on_sm90(
-    tmp_path,
-    compile_pipeline_module,
-    reusable,
+    tmp_path, compile_pipeline_module, reusable,
 ):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
@@ -35,7 +37,9 @@ def test_auxiliary_pipeline_matches_torch_on_sm90(
     if reusable:
         weights = {
             "first_weight": first_weight,
-            "second_weight": torch.randn((128, 128), dtype=torch.bfloat16) / 8,
+            "second_weight": torch.randn(
+                (128, 128), dtype=torch.bfloat16
+            ) / 8,
         }
     artifact = write_artifact(
         compile_pipeline_module(

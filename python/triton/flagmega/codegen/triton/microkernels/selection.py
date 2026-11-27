@@ -47,13 +47,12 @@ class TritonMicroKernelSelectionPolicy:
             point_id = self.point_id(function.name)
             if point_id in existing:
                 continue
-            proposal = provider.propose(
-                TIRMicroKernelContext(
-                    module,
-                    function,
-                    dispatch,
-                    target.triton_implementation_model,
-                ))
+            proposal = provider.propose(TIRMicroKernelContext(
+                module,
+                function,
+                dispatch,
+                target.triton_implementation_model,
+            ))
             if proposal is None:
                 continue
             candidates = []
@@ -99,7 +98,10 @@ class TritonMicroKernelSelectionPolicy:
             point_id = self.point_id(function.name)
             record = selection_map.get(point_id)
             if record is None:
-                if (dispatch.microkernel is None and self.registry.provider_for(dispatch.semantic_op) is not None):
+                if (
+                    dispatch.microkernel is None
+                    and self.registry.provider_for(dispatch.semantic_op) is not None
+                ):
                     raise IRVerificationError(
                         f"TIR microkernel point {point_id!r} has no selection record.",
                         stage=module.stage,
@@ -107,8 +109,13 @@ class TritonMicroKernelSelectionPolicy:
                 functions.append(function)
                 continue
             point = point_map[point_id]
-            candidate = next(value for value in point.candidates if value.id == record.candidate_id)
-            implementation = target.triton_implementation_model.implementation(candidate.id)
+            candidate = next(
+                value for value in point.candidates
+                if value.id == record.candidate_id
+            )
+            implementation = target.triton_implementation_model.implementation(
+                candidate.id
+            )
             if implementation is None:
                 raise IRVerificationError(
                     f"TIR microkernel selection {candidate.id!r} is absent from the "
@@ -118,18 +125,25 @@ class TritonMicroKernelSelectionPolicy:
             expected_facts = dict(implementation.facts)
             if implementation.requires:
                 expected_facts["requires"] = implementation.requires
-            if (dict(candidate.parameters) != dict(implementation.parameters)
-                    or dict(candidate.facts) != expected_facts):
+            if (
+                dict(candidate.parameters) != dict(implementation.parameters)
+                or dict(candidate.facts) != expected_facts
+            ):
                 raise IRVerificationError(
                     f"TIR microkernel candidate {candidate.id!r} was edited away from "
                     "the active implementation catalog; add a named implementation "
                     "variant instead.",
                     stage=module.stage,
                 )
-            if (dispatch.microkernel is not None and dispatch.microkernel.implementation != implementation.id):
-                raise CodegenError(f"PrimFunction @{function.name} already materializes microkernel "
-                                   f"{dispatch.microkernel.implementation!r}, but its selection record "
-                                   f"chooses {implementation.id!r}.")
+            if (
+                dispatch.microkernel is not None
+                and dispatch.microkernel.implementation != implementation.id
+            ):
+                raise CodegenError(
+                    f"PrimFunction @{function.name} already materializes microkernel "
+                    f"{dispatch.microkernel.implementation!r}, but its selection record "
+                    f"chooses {implementation.id!r}."
+                )
             selected = TIRMicroKernelSelection(
                 implementation=implementation.id,
                 family=implementation.family,
@@ -146,22 +160,25 @@ class TritonMicroKernelSelectionPolicy:
                 selected,
                 stage=module.stage,
             )
-            effects = tuple((name,
-                             implementation_memory_effect(
-                                 effect,
-                                 selected.facts,
-                                 is_result=name in dispatch.outputs,
-                                 parameter_name=name,
-                                 input_names=dispatch.arguments,
-                                 stage=module.stage,
-                                 node_id=function.name,
-                             )) for name, effect in dispatch.memory_effect_map.items())
+            effects = tuple(
+                (name, implementation_memory_effect(
+                    effect, selected.facts, is_result=name in dispatch.outputs,
+                    parameter_name=name, input_names=dispatch.arguments,
+                    stage=module.stage, node_id=function.name,
+                ))
+                for name, effect in dispatch.memory_effect_map.items()
+            )
             rewritten = replace(
                 dispatch,
                 microkernel=selected,
-                memory_effects=(dispatch.memory_effects
-                                if effects == tuple(dispatch.memory_effect_map.items()) else effects),
-                shared_workspace_buffers=materialize_shared_workspace_buffers(function, selected),
+                memory_effects=(
+                    dispatch.memory_effects
+                    if effects == tuple(dispatch.memory_effect_map.items())
+                    else effects
+                ),
+                shared_workspace_buffers=materialize_shared_workspace_buffers(
+                    function, selected
+                ),
             )
             functions.append(replace_kernel_dispatch(function, rewritten))
         return replace_kernel_callables(module, functions)

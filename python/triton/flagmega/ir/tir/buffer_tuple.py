@@ -22,7 +22,9 @@ class BufferTuple(TIRValue):
             raise IRSchemaError("BufferTuple requires buffers and an aggregate IRType.")
         leaves = _leaf_types(self.value_type)
         if len(leaves) != len(self.buffers) or any(
-                logical_type(buffer.type) != logical_type(leaf) for buffer, leaf in zip(self.buffers, leaves)):
+            logical_type(buffer.type) != logical_type(leaf)
+            for buffer, leaf in zip(self.buffers, leaves)
+        ):
             raise IRSchemaError("BufferTuple buffers do not match its logical IRType leaves.")
 
     @property
@@ -35,7 +37,7 @@ __all__ = ["BufferTuple"]
 
 def _leaf_types(value_type):
     if isinstance(value_type, (TensorType, DistributedType)):
-        return (value_type, )
+        return (value_type,)
     if isinstance(value_type, RefType):
         return tuple(leaf for _, field in value_type.fields for leaf in _leaf_types(field))
     if isinstance(value_type, TupleType):

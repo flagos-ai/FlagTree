@@ -27,7 +27,8 @@ except ImportError:  # Range-copy assembly is also available without Unix ioctls
 from triton.flagmega.errors import ArtifactError
 from triton.flagmega.importer.checkpoint import Checkpoint, TensorByteRange
 from triton.flagmega.evaluator import (
-    iter_numpy_materialized_constant_assets, )
+    iter_numpy_materialized_constant_assets,
+)
 from triton.flagmega.evaluator.numpy_backend import NumpyStorageReader, materialize_numpy_recipe
 from triton.flagmega.ir import IRModule, verify_buffer_plan, verify_module
 from triton.flagmega.ir import DistributedBufferStorageKind, VectorType
@@ -41,26 +42,20 @@ from triton.flagmega.ir.ops.core import get_definition
 from triton.flagmega.ir.types import data_type_to_data
 from triton.flagmega.artifacts.manifest import hash_file, write_json_atomic
 from triton.flagmega.artifacts.source_layout import (
-    SOURCE_LAYOUT_SCHEMA,
-    SOURCE_LAYOUT_DIGEST,
-    prepare_programs,
-    program_ranges,
-    content_digest,
-    validate_source_layout,
+    SOURCE_LAYOUT_SCHEMA, SOURCE_LAYOUT_DIGEST, prepare_programs,
+    program_ranges, content_digest, validate_source_layout,
 )
 from triton.flagmega.artifacts.source_verification import (
-    file_identity,
-    remember_snapshot_digest,
-    verified_source_digest,
+    file_identity, remember_snapshot_digest, verified_source_digest,
 )
+
 
 RDATA_INDEX_SCHEMA = "flagmega.rdata-index/v4"
 RDATA_INDEX_SCHEMA_V3 = "flagmega.rdata-index/v3"
 RDATA_INDEX_SCHEMA_V2 = "flagmega.rdata-index/v2"
 # v1 lacks ``segment_sha256``.  Such an image can only be verified whole.
 RDATA_INDEX_SCHEMA_V1 = "flagmega.rdata-index/v1"
-_SUPPORTED_RDATA_INDEX_SCHEMAS = frozenset(
-    {SOURCE_LAYOUT_SCHEMA, RDATA_INDEX_SCHEMA, RDATA_INDEX_SCHEMA_V3, RDATA_INDEX_SCHEMA_V2, RDATA_INDEX_SCHEMA_V1})
+_SUPPORTED_RDATA_INDEX_SCHEMAS = frozenset({SOURCE_LAYOUT_SCHEMA, RDATA_INDEX_SCHEMA, RDATA_INDEX_SCHEMA_V3, RDATA_INDEX_SCHEMA_V2, RDATA_INDEX_SCHEMA_V1})
 RDATA_SEGMENT_DIGEST_KIND = "sha256-segments/v1"
 RDATA_CHUNK_DIGEST_KIND = "sha256-chunks/v1"
 RDATA_COMPOSITE_DIGEST_KINDS = frozenset({RDATA_SEGMENT_DIGEST_KIND, RDATA_CHUNK_DIGEST_KIND, SOURCE_LAYOUT_DIGEST})
@@ -73,7 +68,6 @@ _HASH_CHUNK_BYTES = 8 * 1024 * 1024
 _ZERO_HASH_CHUNK = bytes(_HASH_CHUNK_BYTES)
 _FICLONE = 0x40049409
 _FICLONERANGE = 0x4020940D
-
 
 def _aliases_rdata_owner(buffer) -> bool:
     """True when ``buffer`` is a view over bytes another rdata buffer owns.
@@ -103,12 +97,14 @@ def _source_tensor(checkpoint, buffer, module=None):
     elements, which is why a permutation-invariant comparison cannot tell them
     apart, yet every consumer of the wrong order reads mismatched weights.
     """
-    keys = getattr(buffer, "fused_weight_keys", ()) or (buffer.weight_key, )
+    keys = getattr(buffer, "fused_weight_keys", ()) or (buffer.weight_key,)
     if len(keys) == 1:
         return checkpoint.load_tensor(keys[0], device="cpu")
     if module is None:
-        raise ArtifactError(f"Fused readonly buffer {buffer.id!r} cannot be assembled without "
-                            "the module that declares its parameter-bank field program.")
+        raise ArtifactError(
+            f"Fused readonly buffer {buffer.id!r} cannot be assembled without "
+            "the module that declares its parameter-bank field program."
+        )
     return _replay_bank_field(checkpoint, buffer, module)
 
 
@@ -128,19 +124,31 @@ def _replay_bank_field(checkpoint, buffer, module):
 
     group = str(buffer.rdata_group or buffer.source_node or "")
     node = next(
-        (value for value in module.nodes if value.attrs.get("schema") is not None and group.startswith(f"{value.id}.")),
+        (
+            value
+            for value in module.nodes
+            if value.attrs.get("schema") is not None and group.startswith(f"{value.id}.")
+        ),
         None,
     )
     if node is None:
-        raise ArtifactError(f"Fused readonly buffer {buffer.id!r} names no parameter bank.")
+        raise ArtifactError(
+            f"Fused readonly buffer {buffer.id!r} names no parameter bank."
+        )
     name = group[len(node.id) + 1:]
     index = next(
-        (ordinal for ordinal, field in enumerate(node.attrs["schema"].fields) if field.name == name),
+        (
+            ordinal
+            for ordinal, field in enumerate(node.attrs["schema"].fields)
+            if field.name == name
+        ),
         None,
     )
     if index is None:
-        raise ArtifactError(f"Fused readonly buffer {buffer.id!r} matches no parameter-bank "
-                            f"field (looked for {name!r}).")
+        raise ArtifactError(
+            f"Fused readonly buffer {buffer.id!r} matches no parameter-bank "
+            f"field (looked for {name!r})."
+        )
     import torch
 
     context = EvaluationContext(
@@ -174,8 +182,7 @@ def pack_rdata(
         from triton.flagmega.artifacts.materialized_source import prove_output_reuse, require
         prove_output_reuse(module, readonly_source)
         key_data = _rdata_cache_key_data(module, checkpoint)
-        require(key_data is not None and key_data["checkpoint"] == readonly_source.checkpoint_identity,
-                "writer checkpoint identity differs")
+        require(key_data is not None and key_data["checkpoint"] == readonly_source.checkpoint_identity, "writer checkpoint identity differs")
     if cache_dir is not None:
         cache_key = _rdata_cache_key(module, checkpoint)
         if cache_key is not None:
@@ -188,17 +195,15 @@ def pack_rdata(
                 readonly_source=readonly_source,
                 require_reflink=require_reflink,
             )
-    return _pack_rdata_uncached(module, checkpoint, output_dir, readonly_source=readonly_source,
-                                require_reflink=require_reflink)
+    return _pack_rdata_uncached(module, checkpoint, output_dir,
+                                readonly_source=readonly_source, require_reflink=require_reflink)
 
 
 def _pack_rdata_uncached(
     module: IRModule,
     checkpoint: Checkpoint,
     output_dir: str | Path,
-    *,
-    readonly_source=None,
-    require_reflink=False,
+    *, readonly_source=None, require_reflink=False,
 ) -> dict[str, object]:
     plan = verify_buffer_plan(module)
     destination = Path(output_dir)
@@ -206,7 +211,11 @@ def _pack_rdata_uncached(
     # A view denotes bytes another buffer owns, so it names that buffer's
     # checkpoint tensor without claiming it. Packing a view double-counts the
     # tensor and trips the uniqueness check below.
-    buffers = [buffer for buffer in plan.buffers if buffer.storage == "rdata" and not _aliases_rdata_owner(buffer)]
+    buffers = [
+        buffer
+        for buffer in plan.buffers
+        if buffer.storage == "rdata" and not _aliases_rdata_owner(buffer)
+    ]
     by_key = {}
     seen_keys: set[str] = set()
     for buffer in buffers:
@@ -221,7 +230,11 @@ def _pack_rdata_uncached(
     index_path = destination / "rdata.index.json"
     temporary_image = image_path.with_name(f".{image_path.name}.{os.getpid()}.tmp")
     entries = []
-    recipe_output_order = tuple(output for recipe in module.constant_recipes for output in recipe.outputs)
+    recipe_output_order = tuple(
+        output
+        for recipe in module.constant_recipes
+        for output in recipe.outputs
+    )
     recipe_outputs = frozenset(recipe_output_order)
     requested_outputs = recipe_outputs & set(by_key)
     direct_ranges: dict[str, TensorByteRange] = {}
@@ -236,8 +249,10 @@ def _pack_rdata_uncached(
             byte_range = tensor_byte_range(source_key)
             if byte_range is not None:
                 if not isinstance(byte_range, TensorByteRange):
-                    raise ArtifactError(f"Checkpoint tensor_byte_range({source_key!r}) returned "
-                                        f"{type(byte_range).__name__}, expected TensorByteRange or None.")
+                    raise ArtifactError(
+                        f"Checkpoint tensor_byte_range({source_key!r}) returned "
+                        f"{type(byte_range).__name__}, expected TensorByteRange or None."
+                    )
                 direct_ranges[output] = byte_range
     evaluated_outputs = requested_outputs - set(direct_ranges)
     ordered_buffers = sorted(
@@ -245,19 +260,30 @@ def _pack_rdata_uncached(
         key=lambda value: (value.offset, value.id),
     )
     programs, sources = prepare_programs(module, checkpoint, ordered_buffers, destination,
-                                         readonly_source=readonly_source, require_reflink=require_reflink)
+                                        readonly_source=readonly_source, require_reflink=require_reflink)
     buffer_by_id = {buffer.id: buffer for buffer in ordered_buffers}
     virtual_outputs = {buffer_by_id[program["buffer"]].weight_key for program in programs}
     for program in programs:
         program["ranges"] = [list(pair) for pair in program_ranges(buffer_by_id[program["buffer"]])]
     evaluated_outputs -= virtual_outputs
-    evaluation_order = tuple(output for output in recipe_output_order if output in evaluated_outputs)
-    buffer_evaluation_order = tuple(buffer.weight_key
-                                    for buffer in ordered_buffers
-                                    if buffer.weight_key in evaluated_outputs)
+    evaluation_order = tuple(
+        output for output in recipe_output_order if output in evaluated_outputs
+    )
+    buffer_evaluation_order = tuple(
+        buffer.weight_key
+        for buffer in ordered_buffers
+        if buffer.weight_key in evaluated_outputs
+    )
     can_hash_while_writing = evaluation_order == buffer_evaluation_order
-    chip_count = (launch_chip_count(module) if any(
-        buffer.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_CHIP for buffer in buffers) else 1)
+    chip_count = (
+        launch_chip_count(module)
+        if any(
+            buffer.distributed_storage_kind
+            is DistributedBufferStorageKind.COMPACT_PER_CHIP
+            for buffer in buffers
+        )
+        else 1
+    )
     segment_nbytes = plan.rdata_bytes
     image_nbytes = segment_nbytes * chip_count
     try:
@@ -270,39 +296,21 @@ def _pack_rdata_uncached(
             segment_chunks = None
             if chip_count > 1 or programs:
                 entries, segment_chunks = _pack_chip_segments(
-                    stream,
-                    module,
-                    checkpoint,
-                    ordered_buffers,
-                    direct_ranges,
-                    evaluated_outputs,
-                    recipe_outputs,
-                    segment_nbytes,
-                    chip_count,
+                    stream, module, checkpoint, ordered_buffers, direct_ranges,
+                    evaluated_outputs, recipe_outputs, segment_nbytes, chip_count,
                     virtual_outputs=virtual_outputs,
                     require_reflink=require_reflink or readonly_source is not None,
                     virtual_ranges=[tuple(pair) for program in programs for pair in program["ranges"]],
                 )
             elif can_hash_while_writing:
                 entries, payload_hash = _pack_in_offset_order(
-                    stream,
-                    module,
-                    checkpoint,
-                    ordered_buffers,
-                    direct_ranges,
-                    evaluated_outputs,
-                    recipe_outputs,
-                    image_nbytes,
+                    stream, module, checkpoint, ordered_buffers, direct_ranges,
+                    evaluated_outputs, recipe_outputs, image_nbytes,
                 )
             else:
                 entries = _pack_with_post_hash(
-                    stream,
-                    module,
-                    checkpoint,
-                    by_key,
-                    direct_ranges,
-                    evaluated_outputs,
-                    recipe_outputs,
+                    stream, module, checkpoint, by_key, direct_ranges,
+                    evaluated_outputs, recipe_outputs,
                 )
             stream.flush()
             os.fsync(stream.fileno())
@@ -311,11 +319,14 @@ def _pack_rdata_uncached(
         if programs:
             segment_hashes = None
         elif segment_chunks is not None:
-            segment_hashes = [_chunk_segment_digest(chunks, segment_nbytes) for chunks in segment_chunks]
+            segment_hashes = [_chunk_segment_digest(chunks, segment_nbytes)
+                              for chunks in segment_chunks]
         elif payload_hash is None:
             # Segment digests cover every payload byte, including padding.
             # A second whole-image chain and per-entry chains add no coverage.
-            segment_hashes = _segment_digests(temporary_image, segment_nbytes, chip_count)
+            segment_hashes = _segment_digests(
+                temporary_image, segment_nbytes, chip_count
+            )
         else:
             # Written and hashed in offset order, which only happens for a
             # single-segment image: its segment digest is the image digest.
@@ -331,25 +342,15 @@ def _pack_rdata_uncached(
             pass
         raise
     index = {
-        "schema":
-        SOURCE_LAYOUT_SCHEMA if programs else
-        (RDATA_INDEX_SCHEMA if segment_chunks is not None else RDATA_INDEX_SCHEMA_V3),
-        "image":
-        image_path.name,
-        "nbytes":
-        image_nbytes,
-        "segment_nbytes":
-        segment_nbytes,
-        "chip_count":
-        chip_count,
-        "alignment":
-        plan.alignment,
-        "digest_kind":
-        SOURCE_LAYOUT_DIGEST if programs else (RDATA_CHUNK_DIGEST_KIND if segment_chunks is not None else "sha256"),
-        "segment_sha256":
-        segment_hashes,
-        "entries":
-        entries,
+        "schema": SOURCE_LAYOUT_SCHEMA if programs else (RDATA_INDEX_SCHEMA if segment_chunks is not None else RDATA_INDEX_SCHEMA_V3),
+        "image": image_path.name,
+        "nbytes": image_nbytes,
+        "segment_nbytes": segment_nbytes,
+        "chip_count": chip_count,
+        "alignment": plan.alignment,
+        "digest_kind": SOURCE_LAYOUT_DIGEST if programs else (RDATA_CHUNK_DIGEST_KIND if segment_chunks is not None else "sha256"),
+        "segment_sha256": segment_hashes,
+        "entries": entries,
     }
     if segment_chunks is not None:
         index["segment_chunks"] = segment_chunks
@@ -358,9 +359,7 @@ def _pack_rdata_uncached(
         index.update(programs=programs, sources=sources)
     if readonly_source is not None:
         from triton.flagmega.artifacts.materialized_source import prove_output_reuse
-        index["materialized_sources"] = [
-            {**readonly_source.table, "bindings": prove_output_reuse(module, readonly_source)["bindings"]}
-        ]
+        index["materialized_sources"] = [{**readonly_source.table, "bindings": prove_output_reuse(module, readonly_source)["bindings"]}]
         index["materialized_checkpoint_identity"] = readonly_source.checkpoint_identity
     index["sha256"] = content_digest(index) if programs else _segment_content_digest(index)
     write_json_atomic(index_path, index)
@@ -368,19 +367,19 @@ def _pack_rdata_uncached(
 
 
 def _pack_chip_segments(
-        stream,
-        module,
-        checkpoint,
-        buffers,
-        direct_ranges,
-        evaluated_outputs,
-        recipe_outputs,
-        segment_nbytes,
-        chip_count,
-        *,
-        virtual_outputs=frozenset(),
-        virtual_ranges=None,
-        require_reflink=False,
+    stream,
+    module,
+    checkpoint,
+    buffers,
+    direct_ranges,
+    evaluated_outputs,
+    recipe_outputs,
+    segment_nbytes,
+    chip_count,
+    *,
+    virtual_outputs=frozenset(),
+    virtual_ranges=None,
+    require_reflink=False,
 ):
     """Write one chip-local image segment per launch chip.
 
@@ -403,8 +402,10 @@ def _pack_chip_segments(
         sharded = buffer.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_CHIP
         array = _as_numpy_array(source, buffer) if sharded else _tensor_buffer(source)
         if not sharded and array.nbytes != buffer.nbytes:
-            raise ArtifactError(f"Checkpoint tensor {buffer.weight_key!r} has {array.nbytes} bytes; "
-                                f"IR requires {buffer.nbytes}.")
+            raise ArtifactError(
+                f"Checkpoint tensor {buffer.weight_key!r} has {array.nbytes} bytes; "
+                f"IR requires {buffer.nbytes}."
+            )
 
         def write_chip(chip):
             writer = _MappedChunkWriter(image, chip * segment_nbytes)
@@ -423,12 +424,10 @@ def _pack_chip_segments(
         with result_lock:
             entries_by_key[buffer.weight_key] = _rdata_entry(buffer)
 
-    recipes = [
-        recipe for recipe in module.constant_recipes if any(output in evaluated_outputs for output in recipe.outputs)
-    ]
+    recipes = [recipe for recipe in module.constant_recipes
+               if any(output in evaluated_outputs for output in recipe.outputs)]
     with image, ThreadPoolExecutor(max_workers=max(chip_count, workers),
-                                   thread_name_prefix="flagmega-rdata-write") as writer_pool:
-
+                            thread_name_prefix="flagmega-rdata-write") as writer_pool:
         def materialize(recipe):
             if failed.is_set():
                 return
@@ -449,7 +448,8 @@ def _pack_chip_segments(
                 failed.set()
                 raise
 
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="flagmega-rdata-recipe") as recipe_pool:
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix="flagmega-rdata-recipe") as recipe_pool:
             # Closed recipes have no inter-recipe data dependencies. Physical
             # output ranges were verified before any worker starts.
             list(recipe_pool.map(materialize, recipes))
@@ -472,9 +472,8 @@ def _pack_chip_segments(
     if set(entries_by_key) != set(buffer_by_key):
         raise ArtifactError("Rdata packing did not cover every planned buffer.")
     if virtual_ranges is None:
-        virtual_ranges = [
-            pair for buffer in buffers if buffer.weight_key in virtual_outputs for pair in program_ranges(buffer)
-        ]
+        virtual_ranges = [pair for buffer in buffers if buffer.weight_key in virtual_outputs
+                          for pair in program_ranges(buffer)]
     for chunks in segment_chunks:
         chunks.sort(key=lambda chunk: chunk["offset"])
         cursor = 0
@@ -530,14 +529,12 @@ def _recipe_storage_budget(recipe, buffers, chip_count):
     from triton.flagmega.ir.ops.core import tensor_nbytes
     from triton.flagmega.ir.distributed_inference import tensor_of
     from triton.flagmega.ir.model import DistributedType, TensorType, TupleType
-
     def size(value_type):
         if isinstance(value_type, (TensorType, DistributedType)):
             return tensor_nbytes(tensor_of(value_type)) or 0
         if isinstance(value_type, TupleType):
             return sum(size(item) for item in value_type.fields)
         return 0
-
     views = {"builtin.weight", "distributed.sharded_view", "tensors.reshape", "tensors.bitcast"}
     intermediates = sum(size(node.type) for node in recipe.nodes if node.op not in views)
     # Each chip writer may hold a dense owner component while the recipe's
@@ -568,8 +565,10 @@ def _write_chip_sharded_buffer(stream, buffer, array, chip, segment_base):
         piece = _extract_local_shard(array, descriptor, buffer.component_shape)
         raw = _tensor_buffer(piece)
         if raw.nbytes != buffer.nbytes:
-            raise ArtifactError(f"Chip-local shard for {buffer.weight_key!r} has {raw.nbytes} bytes; "
-                                f"IR requires {buffer.nbytes}.")
+            raise ArtifactError(
+                f"Chip-local shard for {buffer.weight_key!r} has {raw.nbytes} bytes; "
+                f"IR requires {buffer.nbytes}."
+            )
         stream.seek(segment_base + buffer.offset + owner * stride)
         _write_all(stream, raw)
 
@@ -588,9 +587,13 @@ def _extract_local_shard(array, descriptor, component_shape):
             # than a model-sized Python index list plus a fancy-index gather.
             selected = result[(slice(None), ) * axis_index + (window, )]
         else:
-            indices = [int(axis.map_local_to_global(index).fixed_value) for index in range(active)]
+            indices = [
+                int(axis.map_local_to_global(index).fixed_value)
+                for index in range(active)
+            ]
             selected = numpy.take(result, indices, axis=axis_index) if indices else numpy.take(
-                result, [], axis=axis_index)
+                result, [], axis=axis_index
+            )
         if active != capacity:
             shape = list(selected.shape)
             shape[axis_index] = capacity
@@ -603,7 +606,9 @@ def _extract_local_shard(array, descriptor, component_shape):
         result = selected
     expected = (*tuple(int(value) for value in component_shape), *tuple(array.shape[len(descriptor.axes):]))
     if tuple(result.shape) != expected:
-        raise ArtifactError(f"Chip-local shard shape {tuple(result.shape)} does not match expected {expected}.")
+        raise ArtifactError(
+            f"Chip-local shard shape {tuple(result.shape)} does not match expected {expected}."
+        )
     return numpy.ascontiguousarray(result)
 
 
@@ -655,10 +660,15 @@ def _rdata_cache_key(module: IRModule, checkpoint: Checkpoint) -> str | None:
 def _rdata_cache_key_data(module: IRModule, checkpoint: Checkpoint) -> dict | None:
     plan = verify_buffer_plan(module)
     buffers = sorted(
-        (value for value in plan.buffers if value.storage == "rdata" and not _aliases_rdata_owner(value)),
+        (value for value in plan.buffers
+         if value.storage == "rdata" and not _aliases_rdata_owner(value)),
         key=lambda value: (value.offset, value.id),
     )
-    recipe_by_output = {output: recipe for recipe in module.constant_recipes for output in recipe.outputs}
+    recipe_by_output = {
+        output: recipe
+        for recipe in module.constant_recipes
+        for output in recipe.outputs
+    }
     checkpoint_keys: set[str] = set()
     recipe_fingerprints = []
     for buffer in buffers:
@@ -673,7 +683,11 @@ def _rdata_cache_key_data(module: IRModule, checkpoint: Checkpoint) -> dict | No
             "output": key,
             "fingerprint": recipe.fingerprint,
         })
-        checkpoint_keys.update(str(node.attrs["key"]) for node in recipe.nodes if node.op == "builtin.weight")
+        checkpoint_keys.update(
+            str(node.attrs["key"])
+            for node in recipe.nodes
+            if node.op == "builtin.weight"
+        )
     identity_of = getattr(checkpoint, "cache_identity", None)
     if not callable(identity_of):
         return None
@@ -681,50 +695,35 @@ def _rdata_cache_key_data(module: IRModule, checkpoint: Checkpoint) -> dict | No
     if identity is None:
         return None
     key_data = {
-        "schema":
-        RDATA_CACHE_SCHEMA,
-        "materializer":
-        RDATA_MATERIALIZER_ABI,
-        **({
-            "source_layout": SOURCE_LAYOUT_DIGEST
-        } if callable(getattr(checkpoint, "source_file_digest", None)) else {}),
-        "alignment":
-        plan.alignment,
-        "nbytes":
-        plan.rdata_bytes,
-        "chip_count":
-        launch_chip_count(module),
-        "buffers": [{
-            "id":
-            buffer.id,
-            "key":
-            buffer.weight_key,
-            "dtype":
-            data_type_to_data(buffer.dtype),
-            "shape":
-            list(buffer.shape),
-            "offset":
-            buffer.offset,
-            "nbytes":
-            buffer.nbytes,
-            "strides":
-            list(buffer.strides),
-            "distributed_type":
-            None if buffer.distributed_type is None else buffer.distributed_type.to_data(),
-            "storage_kind":
-            buffer.distributed_storage_kind.value,
-            "backing_type":
-            (None if buffer.distributed_backing_type is None else buffer.distributed_backing_type.to_data()),
-            "component_stride_bytes":
-            buffer.component_stride_bytes,
-        } for buffer in buffers],
-        "recipes":
-        sorted(
+        "schema": RDATA_CACHE_SCHEMA,
+        "materializer": RDATA_MATERIALIZER_ABI,
+        **({"source_layout": SOURCE_LAYOUT_DIGEST}
+           if callable(getattr(checkpoint, "source_file_digest", None)) else {}),
+        "alignment": plan.alignment,
+        "nbytes": plan.rdata_bytes,
+        "chip_count": launch_chip_count(module),
+        "buffers": [
+            {
+                "id": buffer.id,
+                "key": buffer.weight_key,
+                "dtype": data_type_to_data(buffer.dtype),
+                "shape": list(buffer.shape),
+                "offset": buffer.offset,
+                "nbytes": buffer.nbytes,
+                "strides": list(buffer.strides),
+                "distributed_type": None if buffer.distributed_type is None else buffer.distributed_type.to_data(),
+                "storage_kind": buffer.distributed_storage_kind.value,
+                "backing_type": (None if buffer.distributed_backing_type is None
+                                 else buffer.distributed_backing_type.to_data()),
+                "component_stride_bytes": buffer.component_stride_bytes,
+            }
+            for buffer in buffers
+        ],
+        "recipes": sorted(
             recipe_fingerprints,
             key=lambda value: (value["output"], value["fingerprint"]),
         ),
-        "checkpoint":
-        identity,
+        "checkpoint": identity,
     }
     return key_data
 
@@ -735,9 +734,7 @@ def _pack_rdata_cached(
     output_dir: str | Path,
     cache_root: Path,
     cache_key: str,
-    *,
-    readonly_source=None,
-    require_reflink=False,
+    *, readonly_source=None, require_reflink=False,
 ) -> dict[str, object]:
     cache_root.mkdir(parents=True, exist_ok=True)
     entry = cache_root / cache_key
@@ -748,8 +745,8 @@ def _pack_rdata_cached(
             dir=cache_root,
         ))
         try:
-            index = _pack_rdata_uncached(module, checkpoint, staging, readonly_source=readonly_source,
-                                         require_reflink=require_reflink)
+            index = _pack_rdata_uncached(module, checkpoint, staging,
+                                         readonly_source=readonly_source, require_reflink=require_reflink)
             image = staging / "rdata.bin"
             index_path = staging / "rdata.index.json"
             manifest = {
@@ -764,8 +761,7 @@ def _pack_rdata_cached(
                 path.chmod(0o444)
             for source in index.get("sources", []):
                 path = staging / source["path"]
-                before = _verified_snapshot_identity(path, source["sha256"], require_existing=readonly_source
-                                                     is not None)
+                before = _verified_snapshot_identity(path, source["sha256"], require_existing=readonly_source is not None)
                 path.chmod(0o444)
                 after = file_identity(path)
                 # Freezing our freshly published snapshot changes ctime, not
@@ -779,7 +775,9 @@ def _pack_rdata_cached(
                 shutil.rmtree(staging)
                 index = _load_rdata_cache_entry(entry, cache_key)
                 if index is None:
-                    raise ArtifactError(f"Concurrent rdata cache entry {entry} is invalid.")
+                    raise ArtifactError(
+                        f"Concurrent rdata cache entry {entry} is invalid."
+                    )
             else:
                 staging = None
         finally:
@@ -814,10 +812,8 @@ def _pack_rdata_cached(
 def _verified_snapshot_identity(path: Path, expected: str, *, require_existing=False) -> tuple[int, ...]:
     """Use an unchanged-file receipt, auditing unknown cache versions once."""
     before = file_identity(path)
-
     def no_fallback(path):
         raise ArtifactError(f"Readonly source has no existing file-version proof: {path}.")
-
     if verified_source_digest(path, expected, no_fallback if require_existing else hash_file) != expected:
         raise ArtifactError(f"Rdata source hash mismatch: {path}.")
     if file_identity(path) != before:
@@ -839,12 +835,17 @@ def _load_rdata_cache_entry(
         index = json.loads(index_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
-    if (not isinstance(manifest, Mapping) or not isinstance(index, dict) or manifest.get("schema") != RDATA_CACHE_SCHEMA
-            or manifest.get("key") != cache_key or index.get("schema") not in _SUPPORTED_RDATA_INDEX_SCHEMAS
-            or manifest.get("image_nbytes") != image_path.stat().st_size
-            or manifest.get("image_nbytes") != index.get("nbytes")
-            or manifest.get("image_sha256") != index.get("sha256")
-            or manifest.get("index_sha256") != hash_file(index_path)):
+    if (
+        not isinstance(manifest, Mapping)
+        or not isinstance(index, dict)
+        or manifest.get("schema") != RDATA_CACHE_SCHEMA
+        or manifest.get("key") != cache_key
+        or index.get("schema") not in _SUPPORTED_RDATA_INDEX_SCHEMAS
+        or manifest.get("image_nbytes") != image_path.stat().st_size
+        or manifest.get("image_nbytes") != index.get("nbytes")
+        or manifest.get("image_sha256") != index.get("sha256")
+        or manifest.get("index_sha256") != hash_file(index_path)
+    ):
         return None
     if index.get("schema") == SOURCE_LAYOUT_SCHEMA:
         try:
@@ -874,8 +875,7 @@ def _clone_file(source: Path, destination: Path, *, require_reflink=False) -> No
                         alias = _bind_clone_destination(temporary, backing)
                         if alias is None:
                             raise
-                        with backing.open("rb", buffering=0) as backing_stream, alias.open("r+b",
-                                                                                           buffering=0) as alias_stream:
+                        with backing.open("rb", buffering=0) as backing_stream, alias.open("r+b", buffering=0) as alias_stream:
                             fcntl.ioctl(alias_stream.fileno(), _FICLONE, backing_stream.fileno())
         except (ImportError, OSError):
             temporary.unlink(missing_ok=True)
@@ -901,10 +901,8 @@ def _overlay_clone_source(source: Path, destination_device: int, *, mountinfo=No
             mountinfo = Path("/proc/self/mountinfo").read_text()
         except OSError:
             return None
-
     def unescape(value):
         return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), value)
-
     source = source.resolve()
     matches = []
     for line in mountinfo.splitlines():
@@ -952,7 +950,6 @@ def _bind_clone_destination(destination, source, *, mountinfo=None):
             continue
         decode = lambda value: re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), value)
         records.append((fields[2], Path(decode(fields[3])), Path(decode(fields[4]))))
-
     def containing(path):
         # Canonicalize the queried path once, rather than once per mount.
         # Large container mount tables made every source snapshot repeat
@@ -966,7 +963,6 @@ def _bind_clone_destination(destination, source, *, mountinfo=None):
                 continue
             matches.append((len(record[2].parts), record, relative))
         return max(matches, key=lambda item: item[0]) if matches else None
-
     source_mount, destination_mount = containing(source), containing(destination)
     if source_mount is None or destination_mount is None or source_mount[1][0] != destination_mount[1][0]:
         return None
@@ -1005,21 +1001,31 @@ def _pack_in_offset_order(
         _hash_zeros(image_hasher, buffer.offset - cursor)
         key = buffer.weight_key
         if key in direct_ranges:
-            entry = _write_rdata_range(stream, buffer, direct_ranges[key], image_hasher=image_hasher)
+            entry = _write_rdata_range(
+                stream, buffer, direct_ranges[key], image_hasher=image_hasher
+            )
         elif key in evaluated_outputs:
             try:
                 materialized_key, tensor = next(materialized)
             except StopIteration as error:
-                raise ArtifactError(f"Constant recipe output {key!r} was not materialized.") from error
+                raise ArtifactError(
+                    f"Constant recipe output {key!r} was not materialized."
+                ) from error
             if materialized_key != key:
-                raise ArtifactError(f"Constant recipe materialization order changed: expected {key!r}, "
-                                    f"got {materialized_key!r}.")
-            entry = _write_rdata_entry(stream, buffer, tensor, image_hasher=image_hasher)
+                raise ArtifactError(
+                    f"Constant recipe materialization order changed: expected {key!r}, "
+                    f"got {materialized_key!r}."
+                )
+            entry = _write_rdata_entry(
+                stream, buffer, tensor, image_hasher=image_hasher
+            )
         elif key in recipe_outputs:
             raise ArtifactError(f"Constant recipe output {key!r} was not materialized.")
         else:
             tensor = _source_tensor(checkpoint, buffer, module)
-            entry = _write_rdata_entry(stream, buffer, tensor, image_hasher=image_hasher)
+            entry = _write_rdata_entry(
+                stream, buffer, tensor, image_hasher=image_hasher
+            )
         entries.append(entry)
         cursor = buffer.offset + buffer.nbytes
     try:
@@ -1044,9 +1050,9 @@ def _pack_with_post_hash(
     entries = []
     written: set[str] = set()
     for key, tensor in iter_numpy_materialized_constant_assets(
-            module,
-            checkpoint,
-            outputs=evaluated_outputs,
+        module,
+        checkpoint,
+        outputs=evaluated_outputs,
     ):
         entries.append(_write_rdata_entry(stream, by_key[key], tensor))
         written.add(key)
@@ -1058,15 +1064,19 @@ def _pack_with_post_hash(
             continue
         if key in recipe_outputs:
             raise ArtifactError(f"Constant recipe output {key!r} was not materialized.")
-        entries.append(_write_rdata_entry(stream, buffer, _source_tensor(checkpoint, buffer, module)))
+        entries.append(
+            _write_rdata_entry(stream, buffer, _source_tensor(checkpoint, buffer, module))
+        )
     return entries
 
 
 def _write_rdata_entry(stream, buffer, tensor, *, image_hasher=None) -> dict[str, object]:
     raw = _tensor_buffer(tensor)
     if raw.nbytes != buffer.nbytes:
-        raise ArtifactError(f"Checkpoint tensor {buffer.weight_key!r} has {raw.nbytes} bytes; "
-                            f"IR requires {buffer.nbytes}.")
+        raise ArtifactError(
+            f"Checkpoint tensor {buffer.weight_key!r} has {raw.nbytes} bytes; "
+            f"IR requires {buffer.nbytes}."
+        )
     stream.seek(buffer.offset)
     _write_all(stream, raw)
     if image_hasher is not None:
@@ -1082,8 +1092,10 @@ def _write_rdata_range(
     image_hasher=None,
 ) -> dict[str, object]:
     if source.nbytes != buffer.nbytes:
-        raise ArtifactError(f"Checkpoint byte range for {buffer.weight_key!r} has {source.nbytes} bytes; "
-                            f"IR requires {buffer.nbytes}.")
+        raise ArtifactError(
+            f"Checkpoint byte range for {buffer.weight_key!r} has {source.nbytes} bytes; "
+            f"IR requires {buffer.nbytes}."
+        )
     remaining = source.nbytes
     scratch = bytearray(min(_HASH_CHUNK_BYTES, max(remaining, 1)))
     scratch_view = memoryview(scratch)
@@ -1095,7 +1107,9 @@ def _write_rdata_range(
                 requested = min(remaining, len(scratch))
                 count = input_stream.readinto(scratch_view[:requested])
                 if count is None or count <= 0:
-                    raise ArtifactError(f"Checkpoint byte range for {buffer.weight_key!r} is truncated.")
+                    raise ArtifactError(
+                        f"Checkpoint byte range for {buffer.weight_key!r} is truncated."
+                    )
                 chunk = scratch_view[:count]
                 _write_all(stream, chunk)
                 if image_hasher is not None:
@@ -1104,8 +1118,10 @@ def _write_rdata_range(
     except ArtifactError:
         raise
     except OSError as error:
-        raise ArtifactError(f"Cannot stream checkpoint bytes for {buffer.weight_key!r} from "
-                            f"{source.path}: {error}.") from error
+        raise ArtifactError(
+            f"Cannot stream checkpoint bytes for {buffer.weight_key!r} from "
+            f"{source.path}: {error}."
+        ) from error
     return _rdata_entry(buffer)
 
 
@@ -1147,7 +1163,8 @@ class _MappedChunkWriter:
             # fsync at the producer boundary retains durable publication.
             self.image.write_at(self.position, chunk)
             self.position += chunk.nbytes
-            self.chunks.append({"offset": offset, "nbytes": chunk.nbytes, "sha256": hashlib.sha256(chunk).hexdigest()})
+            self.chunks.append({"offset": offset, "nbytes": chunk.nbytes,
+                                "sha256": hashlib.sha256(chunk).hexdigest()})
         return raw.nbytes
 
 
@@ -1197,7 +1214,7 @@ class _StripedImage:
                                 os.posix_fallocate(extent.fileno(), 0, size)
                             else:
                                 extent.truncate(size)
-                            array = numpy.memmap(extent, dtype=numpy.uint8, mode="r+", shape=(size, ))
+                            array = numpy.memmap(extent, dtype=numpy.uint8, mode="r+", shape=(size,))
                         value = path, array
                         self.parts[part] = value
             count = min(raw.nbytes - written, self.part_nbytes - offset)
@@ -1237,10 +1254,8 @@ class _StripedImage:
 def _zero_chunks(offset, nbytes):
     for start in range(0, nbytes, _HASH_CHUNK_BYTES):
         count = min(nbytes - start, _HASH_CHUNK_BYTES)
-        yield {
-            "offset": offset + start, "nbytes": count, "sha256":
-            hashlib.sha256(memoryview(_ZERO_HASH_CHUNK)[:count]).hexdigest()
-        }
+        yield {"offset": offset + start, "nbytes": count,
+               "sha256": hashlib.sha256(memoryview(_ZERO_HASH_CHUNK)[:count]).hexdigest()}
 
 
 def _rdata_entry(buffer) -> dict[str, object]:
@@ -1340,8 +1355,10 @@ def verify_rdata(
     """
 
     if segment is not None and not verify_image_bytes:
-        raise ArtifactError("Rdata verification cannot both target a chip segment and defer the "
-                            "payload digest.")
+        raise ArtifactError(
+            "Rdata verification cannot both target a chip segment and defer the "
+            "payload digest."
+        )
     root = Path(path)
     index = read_rdata_index(root)
     image_name = str(index.get("image", ""))
@@ -1399,7 +1416,8 @@ def verify_rdata(
         elif segment is None:
             _verify_image_hashes(image, str(index.get("sha256", "")), ranges)
         else:
-            _verify_segment_hashes(image, index, [] if segment_format else ranges, segment, segment_nbytes, chip_count)
+            _verify_segment_hashes(image, index, [] if segment_format else ranges,
+                                   segment, segment_nbytes, chip_count)
     if module is not None:
         _verify_module_contract(module, index, entries)
     if index.get("schema") == SOURCE_LAYOUT_SCHEMA:
@@ -1423,11 +1441,15 @@ def _verify_segment_hashes(
     """
 
     if segment < 0 or segment >= chip_count:
-        raise ArtifactError(f"Rdata segment {segment} is outside the chip range [0, {chip_count}).")
+        raise ArtifactError(
+            f"Rdata segment {segment} is outside the chip range [0, {chip_count})."
+        )
     digests = index.get("segment_sha256")
     if not isinstance(digests, list) or len(digests) != chip_count:
-        raise ArtifactError("Rdata index does not publish one digest per chip segment; "
-                            "repack the artifact to verify a single segment.")
+        raise ArtifactError(
+            "Rdata index does not publish one digest per chip segment; "
+            "repack the artifact to verify a single segment."
+        )
     # An entry digest is the first component of chip 0 (see
     # ``_write_chip_sharded_buffer``), so it describes segment 0 only; another
     # segment holds that buffer's other shard, which the index does not digest
@@ -1499,9 +1521,8 @@ def _segment_content_digest(index: Mapping[str, object]) -> str:
     count = int(index["chip_count"])
     digests = index.get("segment_sha256")
     if (not isinstance(digests, list) or len(digests) != count
-            or any(not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef"
-                                                                         for char in value)
-                   for value in digests)):
+            or any(not isinstance(value, str) or len(value) != 64
+                   or any(char not in "0123456789abcdef" for char in value) for value in digests)):
         raise ArtifactError("Rdata index must publish one valid digest per chip segment.")
     chunk_format = index.get("schema") == RDATA_INDEX_SCHEMA
     expected_kind = RDATA_CHUNK_DIGEST_KIND if chunk_format else (RDATA_SEGMENT_DIGEST_KIND if count > 1 else "sha256")
@@ -1515,10 +1536,8 @@ def _segment_content_digest(index: Mapping[str, object]) -> str:
             raise ArtifactError("Rdata segment digest does not match its chunk table.")
     if count == 1 and not chunk_format:
         return digests[0]
-    table = {
-        "domain": "flagmega.rdata-segments/v2" if chunk_format else "flagmega.rdata-segments/v1", "chip_count": count,
-        "segment_nbytes": int(index["segment_nbytes"]), "segment_sha256": digests
-    }
+    table = {"domain": "flagmega.rdata-segments/v2" if chunk_format else "flagmega.rdata-segments/v1", "chip_count": count,
+             "segment_nbytes": int(index["segment_nbytes"]), "segment_sha256": digests}
     return hashlib.sha256(json.dumps(table, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -1547,19 +1566,18 @@ def _verify_chunk_hashes(image, index, segment):
     count = int(index["chip_count"])
     if segment is not None and (segment < 0 or segment >= count):
         raise ArtifactError(f"Rdata segment {segment} is outside the chip range [0, {count}).")
-    selected = range(count) if segment is None else (segment, )
+    selected = range(count) if segment is None else (segment,)
     size = int(index["segment_nbytes"])
     windows = ((chip * size + chunk["offset"], chunk["nbytes"], chunk["sha256"])
-               for chip in selected
-               for chunk in index["segment_chunks"][chip])
+               for chip in selected for chunk in index["segment_chunks"][chip])
 
     def verify(window):
         start, nbytes, digest = window
         if _stream_digest(_FileWindow(image, start, nbytes)) != digest:
             raise ArtifactError(f"Rdata image hash does not match its chunk at byte {start}.")
 
-    with ThreadPoolExecutor(max_workers=min(32,
-                                            os.cpu_count() or 1), thread_name_prefix="flagmega-rdata-audit") as worker:
+    with ThreadPoolExecutor(max_workers=min(32, os.cpu_count() or 1),
+                            thread_name_prefix="flagmega-rdata-audit") as worker:
         for _ in worker.map(verify, windows):
             pass
 
@@ -1581,8 +1599,7 @@ def _segment_digests(
     windows = tuple(_FileWindow(image, chip * segment_nbytes, segment_nbytes) for chip in range(chip_count))
     if chip_count == 1:
         return [_stream_digest(windows[0])]
-    with ThreadPoolExecutor(max_workers=min(chip_count,
-                                            os.cpu_count() or 1),
+    with ThreadPoolExecutor(max_workers=min(chip_count, os.cpu_count() or 1),
                             thread_name_prefix="flagmega-rdata-segment") as worker:
         return list(worker.map(_stream_digest, windows))
 
@@ -1608,11 +1625,16 @@ def _verify_image_hashes(
     entry_hashers = [hashlib.sha256() for _ in ranges]
     position = 0
     first_active = 0
-    with image.open("rb") as stream, ThreadPoolExecutor(max_workers=1, thread_name_prefix="flagmega-rdata") as worker:
+    with image.open("rb") as stream, ThreadPoolExecutor(
+        max_workers=1, thread_name_prefix="flagmega-rdata"
+    ) as worker:
         while chunk := stream.read(_HASH_CHUNK_BYTES):
             image_update = worker.submit(image_hasher.update, chunk)
             chunk_end = position + len(chunk)
-            while (first_active < len(ranges) and ranges[first_active][1] <= position):
+            while (
+                first_active < len(ranges)
+                and ranges[first_active][1] <= position
+            ):
                 first_active += 1
             index = first_active
             view = memoryview(chunk)
@@ -1628,9 +1650,13 @@ def _verify_image_hashes(
 
     if image_hasher.hexdigest() != expected_image_hash:
         raise ArtifactError("Rdata image hash does not match its index.")
-    for hasher, (_, _, weight_key, expected_hash) in zip(entry_hashers, ranges, strict=True):
+    for hasher, (_, _, weight_key, expected_hash) in zip(
+        entry_hashers, ranges, strict=True
+    ):
         if hasher.hexdigest() != expected_hash:
-            raise ArtifactError(f"Rdata entry {weight_key!r} hash does not match.")
+            raise ArtifactError(
+                f"Rdata entry {weight_key!r} hash does not match."
+            )
 
 
 def _verify_module_contract(
@@ -1639,10 +1665,16 @@ def _verify_module_contract(
     entries: list[object],
 ) -> None:
     plan = verify_buffer_plan(module)
-    expected_chip_count = (launch_chip_count(module) if any(
-        buffer.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_CHIP
-        for buffer in plan.buffers
-        if buffer.storage == "rdata") else 1)
+    expected_chip_count = (
+        launch_chip_count(module)
+        if any(
+            buffer.distributed_storage_kind
+            is DistributedBufferStorageKind.COMPACT_PER_CHIP
+            for buffer in plan.buffers
+            if buffer.storage == "rdata"
+        )
+        else 1
+    )
     if int(index.get("chip_count", 1)) != expected_chip_count:
         raise ArtifactError("Rdata chip count does not match the module launch contract.")
     if int(index.get("segment_nbytes", index.get("nbytes", -1))) != plan.rdata_bytes:
@@ -1670,7 +1702,8 @@ def _verify_module_contract(
         }
         for field, value in contract.items():
             if entry.get(field) != value:
-                raise ArtifactError(f"Rdata entry {buffer_id!r} field {field!r} does not match the module buffer plan.")
+                raise ArtifactError(
+                    f"Rdata entry {buffer_id!r} field {field!r} does not match the module buffer plan.")
 
 
 def _tensor_buffer(tensor) -> memoryview:
@@ -1686,7 +1719,9 @@ def _tensor_buffer(tensor) -> memoryview:
     except ImportError as error:
         raise ArtifactError("Rdata packing requires PyTorch tensor storage access.") from error
     if not isinstance(tensor, torch.Tensor):
-        raise ArtifactError(f"Checkpoint returned {type(tensor).__name__}, expected ndarray or torch.Tensor.")
+        raise ArtifactError(
+            f"Checkpoint returned {type(tensor).__name__}, expected ndarray or torch.Tensor."
+        )
     contiguous = tensor.detach().cpu().contiguous()
     # The ndarray and memoryview both retain the tensor storage owner. Casting
     # to a flat byte view gives file.write/hashlib the buffer protocol directly

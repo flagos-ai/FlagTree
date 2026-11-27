@@ -26,19 +26,25 @@ from triton.flagmega.targets.amd.capability import (
 )
 from triton.flagmega.targets.selection import CapabilitySelectionPolicy
 from triton.flagmega.passes.auto_distributed.operation_cost import (
-    DistributedOperationCostModel, )
+    DistributedOperationCostModel,
+)
 from triton.flagmega.passes.auto_distributed.reshard_cost import (
-    DistributedReshardCostModel, )
+    DistributedReshardCostModel,
+)
 
 # T0 placeholders — reused from the NVIDIA machine until RDNA policies land.
 from triton.flagmega.targets.portable_triton_implementations import (
-    portable_triton_implementation_model as _placeholder_implementation_model, )
+    portable_triton_implementation_model as _placeholder_implementation_model,
+)
 from triton.flagmega.targets.nvidia.memory import (
-    sm90_bufferization_options as _placeholder_bufferization_options, )
+    sm90_bufferization_options as _placeholder_bufferization_options,
+)
 from triton.flagmega.targets.nvidia.package import (
-    sm90_codegen_package_plan as _placeholder_codegen_package_plan, )
+    sm90_codegen_package_plan as _placeholder_codegen_package_plan,
+)
 from triton.flagmega.targets.nvidia.launch import (
-    sm90_launch_parameters as _placeholder_launch_parameters, )
+    sm90_launch_parameters as _placeholder_launch_parameters,
+)
 from triton.flagmega.targets.nvidia.verifier import verify_sm90_module as _placeholder_verify_module
 from triton.flagmega.targets.nvidia.workspaces import attach_workspace_requirements
 from triton.flagmega.targets.nvidia.shared_layout import verify_shared_workspaces
@@ -64,7 +70,7 @@ class _AmdRdnaMachine:
         # It must stay non-degenerate (at least one block axis extent > 1) or the
         # paged-attention decomposition has no block axis to split across.
         return NttTargetOptions(
-            placements=(Placement((8, 16), "yx", "bb"), ),
+            placements=(Placement((8, 16), "yx", "bb"),),
             vector_lane_bytes=16,
             vector_max_axes=1,
             packing_vector_bytes=16,
@@ -90,8 +96,13 @@ class _AmdRdnaMachine:
         # grid barrier. A caller-supplied model is preserved (its other params
         # survive) -- only the cap is applied -- taking precedence over the
         # machine's own model, then the placeholder default.
-        model = (supplied if supplied is not None else self._implementation_model
-                 if self._implementation_model is not None else _placeholder_implementation_model())
+        model = (
+            supplied
+            if supplied is not None
+            else self._implementation_model
+            if self._implementation_model is not None
+            else _placeholder_implementation_model()
+        )
 
         def _cap_cooperative_warps(impl):
             params = dict(impl.parameters)
@@ -137,7 +148,9 @@ class _AmdRdnaMachine:
         return CapabilitySelectionPolicy()
 
     def annotate_workspaces(self, node, candidates, module, *, mesh_hierarchy):
-        return attach_workspace_requirements(node, candidates, module, mesh_hierarchy=mesh_hierarchy)
+        return attach_workspace_requirements(
+            node, candidates, module, mesh_hierarchy=mesh_hierarchy
+        )
 
     def plan_launch(self, module, kernel_nodes) -> dict[str, object]:
         return _placeholder_launch_parameters(module, kernel_nodes)
@@ -156,16 +169,16 @@ class _AmdRdnaMachine:
         implementation_model,
     ) -> None:
         if module.stage in {
-                "selected_tir",
-                "canonicalized_tir",
-                "microkernel_candidates",
-                "selected_microkernels",
-                "packaged_tir",
-                "memory_placed_tir",
-                "allocated_tir",
-                "scheduled_tir",
-                "synchronized_tir",
-                "bufferized_tir",
+            "selected_tir",
+            "canonicalized_tir",
+            "microkernel_candidates",
+            "selected_microkernels",
+            "packaged_tir",
+            "memory_placed_tir",
+            "allocated_tir",
+            "scheduled_tir",
+            "synchronized_tir",
+            "bufferized_tir",
         }:
             expected = {
                 "target_backend": target_backend,
@@ -193,13 +206,11 @@ class _AmdRdnaMachine:
 
 
 class AmdGfx1100Machine(_AmdRdnaMachine):
-
     def __init__(self, capability: AmdCapability | None = None, *, implementation_model=None) -> None:
         super().__init__(capability or Gfx1100Capability(), implementation_model=implementation_model)
 
 
 class AmdGfx1201Machine(_AmdRdnaMachine):
-
     def __init__(self, capability: AmdCapability | None = None, *, implementation_model=None) -> None:
         super().__init__(capability or Gfx1201Capability(), implementation_model=implementation_model)
 

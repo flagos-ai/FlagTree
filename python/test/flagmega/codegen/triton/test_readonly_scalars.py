@@ -13,16 +13,13 @@ from triton.flagmega.passes.constants import freeze_constant_islands
 
 
 def case(transform=lambda value: value, *, value=1.0, dtype="float32", weight=False):
-
     class Graph(fm.Module):
-
         def forward(self):
             value_type = fm.tensor_type(dtype, (2, 4))
-            literal = (self.weight("unit_scale", value_type, source="unread.safetensors", key="unit_scale",
-                                   id="literal") if weight else fm.F.builtin.splat_const(
-                                       value_type, value, name="literal"))
+            literal = (self.weight("unit_scale", value_type, source="unread.safetensors", key="unit_scale", id="literal")
+                       if weight else fm.F.builtin.splat_const(value_type, value, name="literal"))
             result = transform(literal)
-            self.function("main", (), (result, ))
+            self.function("main", (), (result,))
 
     module = Graph(dialect="nn", stage="frozen_constants", entry="main").build()
     frozen = freeze_constant_islands(module)
@@ -36,11 +33,9 @@ def case(transform=lambda value: value, *, value=1.0, dtype="float32", weight=Fa
     lambda x: fm.F.tensors.reshape(x, shape=(4, 2)),
     lambda x: fm.F.tensors.permute(x, (1, 0)),
     lambda x: fm.F.tensors.broadcast_to(x, shape=(3, 2, 4)),
-    lambda x: fm.F.tensors.slice(x, starts=(1, ), ends=(3, ), axes=(1, )),
-    lambda x: fm.F.distributed.sharded_view(
-        x,
-        fm.DistributedType(x.type, (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ))), fm.Placement(
-            (2, ), "x", "b"))),
+    lambda x: fm.F.tensors.slice(x, starts=(1,), ends=(3,), axes=(1,)),
+    lambda x: fm.F.distributed.sharded_view(x, fm.DistributedType(
+        x.type, (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,))), fm.Placement((2,), "x", "b"))),
 ])
 def test_value_preserving_recipe_views_keep_uniformity(transform):
     module, plan, output = case(transform, value=-0.0)
@@ -53,7 +48,7 @@ def test_value_preserving_recipe_views_keep_uniformity(transform):
     lambda x: fm.F.tensors.cast(x, "bfloat16"),
     lambda x: fm.F.tensors.cast(fm.F.tensors.cast(x, "bfloat16"), "float32"),
     lambda x: fm.F.math.add(x, x),
-    lambda x: fm.F.tensors.pack(x, (2, ), axes=(1, )),
+    lambda x: fm.F.tensors.pack(x, (2,), axes=(1,)),
     lambda x: fm.F.tensors.pad(x, (0, 1), pad_value=0.0),
 ])
 def test_arithmetic_cast_and_packed_storage_are_not_assumed_transparent(transform):
@@ -64,9 +59,8 @@ def test_arithmetic_cast_and_packed_storage_are_not_assumed_transparent(transfor
 def test_runtime_storage_never_inherits_a_literal_proof():
     module, plan, output = case()
     buffer = plan.buffer_map[output]
-    altered = replace(
-        plan,
-        buffers=tuple(replace(value, storage="external") if value.id == output else value for value in plan.buffers))
+    altered = replace(plan, buffers=tuple(replace(value, storage="external") if value.id == output else value
+                                          for value in plan.buffers))
     assert buffer.source_node == output
     assert ReadonlyScalarAnalysis(module, altered).float32_splat(output) is None
 
@@ -91,10 +85,9 @@ def test_weight_named_unit_scale_is_not_a_proven_literal():
 
 
 def test_partial_components_are_not_logical_splat_values():
-
     def partial(value):
-        placement = fm.Placement((2, ), "x", "b")
-        target = fm.DistributedType(value.type, (fm.SBP.broadcast(), ) * 2, placement, fm.SBP.partial((0, )))
+        placement = fm.Placement((2,), "x", "b")
+        target = fm.DistributedType(value.type, (fm.SBP.broadcast(),) * 2, placement, fm.SBP.partial((0,)))
         return fm.F.distributed.boxing(value, target)
 
     module, plan, output = case(partial)

@@ -22,12 +22,17 @@ def program_ancestors(programs):
         if not isinstance(program, Mapping):
             raise IRVerificationError("Execution program dependency entries must be mappings.")
         symbol, dependencies = program.get("symbol"), program.get("depends_on")
-        if (not isinstance(symbol, str) or not symbol or symbol in ancestors
-                or not isinstance(dependencies, (tuple, list)) or any(not isinstance(p, str) or p not in ancestors
-                                                                      for p in dependencies)
-                or len(set(dependencies)) != len(dependencies)):
+        if (
+            not isinstance(symbol, str)
+            or not symbol
+            or symbol in ancestors
+            or not isinstance(dependencies, (tuple, list))
+            or any(not isinstance(p, str) or p not in ancestors for p in dependencies)
+            or len(set(dependencies)) != len(dependencies)
+        ):
             raise IRVerificationError(
-                "Execution program dependencies must be explicit, unique and refer to earlier programs.")
+                "Execution program dependencies must be explicit, unique and refer to earlier programs."
+            )
         ancestors[symbol] = frozenset(dependencies).union(*(ancestors[p] for p in dependencies))
     return ancestors
 
@@ -67,7 +72,7 @@ def _minimum_chain_stream_indices(programs):
             successors[indices[parent]].append(index)
     left_match, right_match = {}, {}
     for origin in range(len(symbols)):
-        pending, visited = deque((origin, )), {origin}
+        pending, visited = deque((origin,)), {origin}
         predecessor = {}
         terminal = None
         while pending and terminal is None:
@@ -130,7 +135,6 @@ def _critical_path_stream_indices(programs, verified_ancestors):
         backward = [a, 0, -cost, len(graph[a])]
         graph[a].append(forward)
         graph[b].append(backward)
-
     for i in range(n):
         edge(src, i, 0)
         edge(n + i, sink, 0)

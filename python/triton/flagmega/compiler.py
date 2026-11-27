@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import time
 from copy import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from triton.flagmega.diagnostics import DiagnosticSession, DumpFlags, StageReport
@@ -23,6 +23,11 @@ from triton.flagmega.selection import SelectionPlan, apply_plan
 from triton.flagmega.stages import get_stage, stage_names
 from triton.flagmega.targets import get_target
 from triton.flagmega.passes.auto_distributed.proposal_analysis import PROPOSAL_ANALYSIS
+from triton.flagmega.passes.shape_bucket import (
+    module_dimension_symbols,
+    shape_bucket_declaration,
+    shape_bucket_segments,
+)
 
 
 @dataclass(frozen=True)
@@ -33,7 +38,6 @@ class CompileResult:
 
 
 class Compiler:
-
     def __init__(self, options: CompileOptions | None = None) -> None:
         self.options = options or CompileOptions()
         if self.options.effective_dump_flags and self.options.work_dir is None:
@@ -42,13 +46,21 @@ class Compiler:
         if self.options.placement is not None:
             configure = getattr(self.target, "with_placement", None)
             if configure is None:
-                raise StageError(f"Target {self.target.name!r} does not support explicit placements.")
+                raise StageError(
+                    f"Target {self.target.name!r} does not support explicit placements."
+                )
             self.target = configure(self.options.placement)
         if self.options.bufferize_opt_level is not None:
             configure = getattr(self.target, "with_bufferize_opt_level", None)
             if configure is None:
                 raise StageError(f"Target {self.target.name!r} does not support bufferize optimization levels.")
             self.target = configure(self.options.bufferize_opt_level)
+        protocol = self.options.heterogeneous_protocol
+        if protocol is not None:
+            configure = getattr(self.target, "with_heterogeneous_protocol", None)
+            if configure is None:
+                raise StageError(f"Target {self.target.name!r} has no heterogeneous planning contract.")
+            self.target = configure(protocol)
         if self.options.codegen_backend is not None:
             # Bind after target configuration, which may reconstruct the target.
             # Registered targets are shared; this belongs to one invocation.
@@ -112,9 +124,35 @@ class Compiler:
             )
         return CompileResult(result, (report, ), checkpoint)
 
+    def _select_shape_bucket_segment(self, module: IRModule) -> IRModule:
+        """Apply ``CompileOptions.shape_bucket_segment`` to the declaration."""
+
+        index = self.options.shape_bucket_segment
+        if index is None:
+            return module
+        declaration = shape_bucket_declaration(module)
+        if declaration is None:
+            raise StageError(
+                "CompileOptions.shape_bucket_segment requires a module with a "
+                "shape-bucket ('shape_bucket') metadata declaration.", stage=module.stage)
+        segments = shape_bucket_segments(declaration)
+        if index >= len(segments):
+            raise StageError(
+                f"shape_bucket_segment {index} is outside the declared range "
+                f"0..{len(segments) - 1}.")
+        binding = module.metadata.get("shape_bucket_binding")
+        if binding is not None and int(binding["segment"]) != index:
+            raise StageError(
+                f"Module is already specialized to shape-bucket segment "
+                f"{binding['segment']}; it cannot be re-specialized to {index}.",
+                stage=module.stage)
+        selected = {**dict(module.metadata["shape_bucket"]), "segment": index}
+        return replace(module, metadata={**dict(module.metadata), "shape_bucket": selected})
+
     def compile(self, module: IRModule, *, stop_after: str | None = None) -> CompileResult:
         verify_module(module)
         self._verify_bufferize_level(module)
+        module = self._select_shape_bucket_segment(module)
         if stop_after is not None:
             # An agent's misspelled boundary must not run the remaining
             # pipeline and freeze decisions it intended to edit.
@@ -143,6 +181,19 @@ class Compiler:
                 break
             if current.stage not in group.active_stages:
                 continue
+            members = expand_pipeline_passes(group, self.target)
+            # The static import path keeps its exact pass inventory: a module
+            # that neither declares a bucket nor carries a symbolic dimension
+            # has nothing to bind, so the specialization pass is not even
+            # entered (and its dumps do not renumber existing passes).
+            if (shape_bucket_declaration(current) is None
+                    and not module_dimension_symbols(current)
+                    and "bind-shape-buckets" not in stop_stages
+                    and "shape_buckets_bound" not in stop_stages):
+                members = tuple(
+                    member for member in members
+                    if member.stage != "bind-shape-buckets"
+                )
             manager_name = f"{self._pass_manager_index:02d}_{group.name}"
             self._pass_manager_index += 1
             pass_manager = PassManager(
@@ -151,20 +202,18 @@ class Compiler:
             )
             simulated_stage = current.stage
             review_stage: str | None = None
-            for member in expand_pipeline_passes(group, self.target):
+            for member in members:
                 stage = get_stage(member.stage)
                 if not stage.accepts(simulated_stage):
                     continue
-                pass_manager.add(
-                    FunctionalPass(
-                        member.name,
-                        lambda value, selected_stage=stage: selected_stage.run(value, self.target),
-                        # Only the proposal annotation pass preserves this graph.
-                        # An intervening agent pass invalidates it by default;
-                        # another compile/resume owns a fresh AnalysisManager.
-                        preserves=frozenset({PROPOSAL_ANALYSIS})
-                        if stage.name == "propose-distribution" else frozenset(),
-                    ))
+                pass_manager.add(FunctionalPass(
+                    member.name,
+                    lambda value, selected_stage=stage: selected_stage.run(value, self.target),
+                    # Only the proposal annotation pass preserves this graph.
+                    # An intervening agent pass invalidates it by default;
+                    # another compile/resume owns a fresh AnalysisManager.
+                    preserves=frozenset({PROPOSAL_ANALYSIS}) if stage.name == "propose-distribution" else frozenset(),
+                ))
                 simulated_stage = stage.output_stage
                 if stage.output_stage in stop_stages:
                     stopped = True
@@ -199,7 +248,7 @@ class Compiler:
             if stopped:
                 break
         if not stopped and current.stage != "bufferized_tir":
-            raise StageError(f"No pipeline group accepts stage {current.stage!r}.")
+            raise StageError(f"No nncase-shaped pipeline group accepts stage {current.stage!r}.")
         checkpoint = None
         if self.options.work_dir is not None:
             checkpoint = emit_module(current, self.options.work_dir / "final.py")

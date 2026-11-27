@@ -14,9 +14,7 @@ def _run(module):
 
 
 def test_pack_is_distributed_to_every_concat_input():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="vectorized", entry="main")
 
@@ -25,8 +23,8 @@ def test_pack_is_distributed_to_every_concat_input():
             lhs = self.input("lhs", value_type, id="lhs")
             rhs = self.input("rhs", value_type, id="rhs")
             joined = fm.F.tensors.concat(lhs, rhs, axis=1, name="joined")
-            output = fm.F.tensors.pack(joined, (8, ), axes=(1, ), name="output")
-            self.function("main", (lhs, rhs), (output, ))
+            output = fm.F.tensors.pack(joined, (8,), axes=(1,), name="output")
+            self.function("main", (lhs, rhs), (output,))
 
     original = Graph().build()
     result = _run(original)
@@ -48,19 +46,17 @@ def test_pack_is_distributed_to_every_concat_input():
 
 
 def test_concat_moves_before_unpack_and_packs_scalar_siblings():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="vectorized", entry="main")
 
         def forward(self):
-            vector_type = fm.tensor_type(fm.vector_type("bfloat16", (8, )), (2, 1))
+            vector_type = fm.tensor_type(fm.vector_type("bfloat16", (8,)), (2, 1))
             vector = self.input("vector", vector_type, id="vector")
             scalar = self.input("scalar", fm.tensor_type("bfloat16", (2, 8)), id="scalar")
-            unpacked = fm.F.tensors.unpack(vector, axes=(1, ), name="unpacked")
+            unpacked = fm.F.tensors.unpack(vector, axes=(1,), name="unpacked")
             output = fm.F.tensors.concat(unpacked, scalar, axis=1, name="output")
-            self.function("main", (vector, scalar), (output, ))
+            self.function("main", (vector, scalar), (output,))
 
     original = Graph().build()
     result = _run(original)

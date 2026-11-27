@@ -27,14 +27,14 @@ def graph(
         levels,
     )
     b = fm.SBP.broadcast()
-    tensor = fm.tensor_type(fm.vector_type("float32" if mode == "roundtrip" else "bfloat16", (8, )), (1, 32))
+    tensor = fm.tensor_type(fm.vector_type("float32" if mode == "roundtrip" else "bfloat16", (8,)), (1, 32))
     owner_axis = levels.index("c") if remote else 1
     x_type = fm.DistributedType(
         tensor,
-        (b, b) if exclusive else (b, fm.SBP.split_contiguous((owner_axis, ), 32 // mesh.hierarchy[owner_axis])),
+        (b, b) if exclusive else (b, fm.SBP.split_contiguous((owner_axis,), 32 // mesh.hierarchy[owner_axis])),
         mesh,
-        partial=fm.SBP.partial((0, )) if partial else None,
-        exclusive=fm.SBP.exclusive((0, )) if exclusive else None,
+        partial=fm.SBP.partial((0,)) if partial else None,
+        exclusive=fm.SBP.exclusive((0,)) if exclusive else None,
     )
     if identity:
         x_type = fm.DistributedType(tensor, (b, b), mesh)
@@ -45,23 +45,24 @@ def graph(
     if remote:
         producer = make_node("math.add", "owned", (x, x), {}, {})
         nodes.append(producer)
-    copy = make_node("distributed.force_boxing", "copy", (producer, ), {"new_type": destination}, {})
+    copy = make_node("distributed.force_boxing", "copy", (producer,), {"new_type": destination}, {})
     nodes.append(copy)
     value = copy
     if mode == "roundtrip":
-        value = make_node("tensors.cast", "narrow", (value, ), {"dtype": fm.vector_type("bfloat16", (8, ))}, {})
+        value = make_node("tensors.cast", "narrow", (value,), {"dtype": fm.vector_type("bfloat16", (8,))}, {})
         nodes.append(value)
     if mode == "scalar_view":
-        value = make_node("tensors.bitcast", "scalar_view", (value, ), {"dtype": "bfloat16"}, {})
+        value = make_node("tensors.bitcast", "scalar_view", (value,), {"dtype": "bfloat16"}, {})
         nodes.append(value)
     elif mode == "owner_view":
         axis = levels.index("b") if remote else 1
-        view_type = replace(destination, axis_policies=(b, fm.SBP.split_contiguous((axis, ),
-                                                                                   32 // mesh.hierarchy[axis])))
-        value = make_node("distributed.sharded_view", "owner_view", (value, ), {"new_type": view_type}, {})
+        view_type = replace(
+            destination, axis_policies=(b, fm.SBP.split_contiguous((axis,), 32 // mesh.hierarchy[axis]))
+        )
+        value = make_node("distributed.sharded_view", "owner_view", (value,), {"new_type": view_type}, {})
         nodes.append(value)
-    dtype = "float32" if mode == "scalar_view" else fm.vector_type("float32", (8, ))
-    result = make_node("tensors.cast", "result", (value, ), {"dtype": dtype}, {})
+    dtype = "float32" if mode == "scalar_view" else fm.vector_type("float32", (8,))
+    result = make_node("tensors.cast", "result", (value,), {"dtype": dtype}, {})
     nodes.append(result)
     outputs = [result.id]
     if exported:
@@ -75,10 +76,11 @@ def graph(
             "distributed",
             "frozen_constants",
             tuple(nodes),
-            (fm.Function("main", ("x", ), tuple(outputs)), ),
+            (fm.Function("main", ("x",), tuple(outputs)),),
             "main",
             metadata={"auto_distribution": {"placement": mesh.to_data()}},
-        ))
+        )
+    )
 
 
 @pytest.mark.parametrize("mode", ["direct", "scalar_view", "owner_view", "roundtrip"])
@@ -119,8 +121,8 @@ def test_numeric_copy_does_not_cross_an_unproven_boundary(reason):
 def test_scalar_bit_reinterpretation_is_not_numeric_lane_regrouping():
     source = graph("direct")
     copy = source.node_map["copy"]
-    bits = make_node("tensors.bitcast", "bits", (copy, ), {"dtype": fm.vector_type("float16", (8, ))}, {})
-    wide = make_node("tensors.cast", "result", (bits, ), {"dtype": fm.vector_type("float32", (8, ))}, {})
+    bits = make_node("tensors.bitcast", "bits", (copy,), {"dtype": fm.vector_type("float16", (8,))}, {})
+    wide = make_node("tensors.cast", "result", (bits,), {"dtype": fm.vector_type("float32", (8,))}, {})
     source = fm.verify_module(replace(source, nodes=(*source.nodes[:-1], bits, wide)))
     result = fm.verify_module(DataflowPass("Fuse", fusion_rules()).run(source))
     assert result.node_map["result"].op == "tensors.cast"
@@ -129,7 +131,7 @@ def test_scalar_bit_reinterpretation_is_not_numeric_lane_regrouping():
 def test_shared_lane_view_preserves_the_unconverted_public_value():
     source = graph("scalar_view")
     fn = source.functions[0]
-    source = fm.verify_module(replace(source, functions=(replace(fn, outputs=(*fn.outputs, "scalar_view")), )))
+    source = fm.verify_module(replace(source, functions=(replace(fn, outputs=(*fn.outputs, "scalar_view")),)))
     result = fm.verify_module(DataflowPass("Fuse", fusion_rules()).run(source))
     assert result.node_map["result"].op == "tensors.cast"
 
@@ -151,7 +153,6 @@ def test_device_copy_conversion_preserves_inputs_guards_and_rounding(mode, tmp_p
     mesh = source.node_map["x"].type.placement
 
     class Target(NvidiaSm90Target):
-
         def pre_post_ops_rules(self):
             return fusion_rules() if self.fused else ()
 
@@ -165,7 +166,7 @@ def test_device_copy_conversion_preserves_inputs_guards_and_rounding(mode, tmp_p
         kind = fm.logical_type(kind)
         shape = tuple(d.fixed_value for d in kind.shape) + tuple(getattr(kind.dtype, "lanes", ()))
         dtype = getattr(torch, getattr(kind.dtype, "elem_type", kind.dtype).value)
-        raw = torch.full((prod(shape) + 32, ), 123, dtype=dtype, device="cuda")
+        raw = torch.full((prod(shape) + 32,), 123, dtype=dtype, device="cuda")
         guards.append(raw)
         return raw[16:-16].reshape(shape)
 
@@ -175,10 +176,12 @@ def test_device_copy_conversion_preserves_inputs_guards_and_rounding(mode, tmp_p
             c.target = Target().with_placement(mesh)
             c.target.fused = fused
             m = c.compile(source).module
-            assert (not any(k.dispatch.semantic_op in {"tensors.cast", "ntt.vectorized_cast"}
-                            for k in m.kernel_definitions)) == fused
-            r = load(write_artifact(m, tmp_path / str(fused), target="nvidia-sm90", emit_executable=True),
-                     device="cuda:0")
+            assert (
+                not any(k.dispatch.semantic_op in {"tensors.cast", "ntt.vectorized_cast"} for k in m.kernel_definitions)
+            ) == fused
+            r = load(
+                write_artifact(m, tmp_path / str(fused), target="nvidia-sm90", emit_executable=True), device="cuda:0"
+            )
             runtimes.append(r)
             binding = r.buffer_plan.function_map[m.entry]
             values = {}

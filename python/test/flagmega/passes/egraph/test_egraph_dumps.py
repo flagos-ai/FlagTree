@@ -13,11 +13,11 @@ from triton.flagmega.rules import RewriteRule
 
 def _module():
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
-    value_type = fm.tensor_type("float32", (4, ))
+    value_type = fm.tensor_type("float32", (4,))
     lhs = builder.var("lhs", value_type, id="lhs")
     rhs = builder.var("rhs", value_type, id="rhs")
     output = builder.call("math.add", (lhs, rhs), value_type, id="output")
-    builder.function("main", (lhs, rhs), (output, ))
+    builder.function("main", (lhs, rhs), (output,))
     return fm.verify_module(builder.build(entry="main"))
 
 
@@ -30,7 +30,7 @@ def test_egraph_lifecycle_rewrite_cost_and_pick_dumps(tmp_path):
         lambda node, _module: replace(node, inputs=tuple(reversed(node.inputs))),
     )
 
-    result = PassManager("dump", dumper=dumper).add(EGraphRulesPass("Rules", (rule, ))).run(_module())
+    result = PassManager("dump", dumper=dumper).add(EGraphRulesPass("Rules", (rule,))).run(_module())
 
     assert result.executed == ("EGraphConstructPass", "Rules", "EGraphExtractPass")
     construct = tmp_path / "00_EGraphConstructPass"
@@ -48,10 +48,14 @@ def test_egraph_lifecycle_rewrite_cost_and_pick_dumps(tmp_path):
     assert "PICK" in (extract / "Costs" / "Pick.dot").read_text(encoding="utf-8")
     assert "model: structural-unit/v1" in (extract / "Costs" / "Pick.txt").read_text(encoding="utf-8")
     manifest = json.loads((tmp_path / "artifacts.json").read_text(encoding="utf-8"))
-    pick = next(value for value in manifest["artifacts"]
-                if value["relative_path"].endswith("02_EGraphExtractPass/Costs/Pick.txt"))
+    pick = next(
+        value for value in manifest["artifacts"]
+        if value["relative_path"].endswith("02_EGraphExtractPass/Costs/Pick.txt")
+    )
     assert pick["kind"] == "selection-report"
-    assert pick["sha256"] == hashlib.sha256((extract / "Costs" / "Pick.txt").read_bytes()).hexdigest()
+    assert pick["sha256"] == hashlib.sha256(
+        (extract / "Costs" / "Pick.txt").read_bytes()
+    ).hexdigest()
     assert (construct / "Before" / "main.py").is_file()
     assert (extract / "After" / "main.py").is_file()
 

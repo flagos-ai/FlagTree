@@ -63,7 +63,7 @@ class ConstAsset(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         size = tensor_nbytes(node.type) if hasattr(node.type, "shape") else None
-        return OpCost(bytes_read=size, notes=("frozen-constant-asset", ))
+        return OpCost(bytes_read=size, notes=("frozen-constant-asset",))
 
     @classmethod
     def python_call(cls, node: Node) -> PythonCall:
@@ -74,7 +74,7 @@ class ConstAsset(OpDefinition):
         }
         if node.metadata:
             keywords["metadata"] = node.metadata
-        return PythonCall("F.builtin.const_asset", (node.type, ), keywords)
+        return PythonCall("F.builtin.const_asset", (node.type,), keywords)
 
 
 __all__ = ["ConstAsset"]

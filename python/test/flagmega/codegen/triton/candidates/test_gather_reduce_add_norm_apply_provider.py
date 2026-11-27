@@ -6,7 +6,6 @@ from triton.flagmega.targets import NvidiaSm90Target
 
 
 class _Graph(fm.Module):
-
     def __init__(self, *, use_mean=False):
         super().__init__(dialect="ntt", stage="frozen_constants", entry="main")
         self.use_mean = use_mean
@@ -25,8 +24,8 @@ class _Graph(fm.Module):
             fm.SBP.partial((0, 1)),
         )
         parameter_type = fm.DistributedType(
-            fm.tensor_type("bfloat16", (16, )),
-            (fm.SBP.broadcast(), ),
+            fm.tensor_type("bfloat16", (16,)),
+            (fm.SBP.broadcast(),),
             placement,
         )
         partial = self.input("partial", partial_type, id="partial")
@@ -43,7 +42,7 @@ class _Graph(fm.Module):
             use_mean=self.use_mean,
             name="result",
         )
-        self.function("main", (partial, residual, scale, bias), (result, ))
+        self.function("main", (partial, residual, scale, bias), (result,))
 
 
 def test_provider_uses_portable_collective_contract_and_private_workspace():
@@ -58,12 +57,18 @@ def test_provider_uses_portable_collective_contract_and_private_workspace():
     assert candidate.parameters["owner_count"] == 15
     assert candidate.facts["internal_grid_barriers"] == 1
     assert candidate.facts["private_norm_stats_workspace"] is True
-    assert tuple(workspace["name"] for workspace in candidate.parameters["workspaces"]) == ("norm_stats_partials", )
-    assert candidate.parameters["workspaces"][0]["type"].shape == (fm.dim(1), fm.dim(15))
+    assert tuple(
+        workspace["name"] for workspace in candidate.parameters["workspaces"]
+    ) == ("norm_stats_partials",)
+    assert candidate.parameters["workspaces"][0]["type"].shape == (
+        fm.dim(1), fm.dim(15)
+    )
 
 
 def test_mean_variant_allocates_two_statistics_components():
     proposed = NvidiaSm90Target().propose_tir(_Graph(use_mean=True).build())
     point = next(point for point in proposed.selection_points if point.id == "tir.result")
 
-    assert point.candidates[0].parameters["workspaces"][0]["type"].shape == (fm.dim(2), fm.dim(15))
+    assert point.candidates[0].parameters["workspaces"][0]["type"].shape == (
+        fm.dim(2), fm.dim(15)
+    )

@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""distribution candidates for explicit normalization dataflow."""
+"""nncase-shaped distribution candidates for explicit normalization dataflow."""
 
 from __future__ import annotations
 
@@ -40,8 +40,7 @@ class NormStatsCandidateProvider(DistributedCandidateProviderBase):
     is_exhaustive = True
 
     def _enumerate_candidates(
-        self,
-        context: DistributedCandidateContext,
+        self, context: DistributedCandidateContext,
     ) -> tuple[DistributedCandidate, ...]:
         node = context.source_call
         value = tensor_of(context.module.node_map[node.inputs[0]].type)
@@ -49,28 +48,37 @@ class NormStatsCandidateProvider(DistributedCandidateProviderBase):
         for input_type in _candidate_distributed_inputs(context, 0, value):
             input_node = _typed_node("<norm_stats_input>", input_type)
             try:
-                output_type = NormStats.infer_type((input_node, ), node.attrs)
+                output_type = NormStats.infer_type((input_node,), node.attrs)
             except IRSchemaError:
                 continue
             assert isinstance(output_type, DistributedType)
-            factors = NormStats.cost_factors((input_node, ), node.attrs, output_type)
-            results.append(
-                DistributedCandidate(
-                    distributed_candidate_id(node.id, "norm_stats", output_type, (input_type, )),
-                    output_type,
-                    (input_type, ),
-                    (_local_elements(input_type) if factors is None else context.operation_cost_model.get_latency(
-                        factors, output_type)),
-                    "norm-stats-additive-sbp",
-                    objective_model=("flagmega.norm-stats-local-work/v1"
-                                     if factors is None else context.operation_cost_model.identity),
-                    objective_evidence=(
-                        "additive-statistics",
-                        "partial-on-reduced-split",
-                        "op-definition-cost-factors",
-                        "hierarchical-target-latency",
-                    ),
-                ))
+            factors = NormStats.cost_factors((input_node,), node.attrs, output_type)
+            results.append(DistributedCandidate(
+                distributed_candidate_id(
+                    node.id, "norm_stats", output_type, (input_type,)
+                ),
+                output_type,
+                (input_type,),
+                (
+                    _local_elements(input_type)
+                    if factors is None
+                    else context.operation_cost_model.get_latency(
+                        factors, output_type
+                    )
+                ),
+                "norm-stats-additive-sbp",
+                objective_model=(
+                    "flagmega.norm-stats-local-work/v1"
+                    if factors is None
+                    else context.operation_cost_model.identity
+                ),
+                objective_evidence=(
+                    "additive-statistics",
+                    "partial-on-reduced-split",
+                    "op-definition-cost-factors",
+                    "hierarchical-target-latency",
+                ),
+            ))
         return tuple(results)
 
 
@@ -80,8 +88,7 @@ class NormApplyCandidateProvider(DistributedCandidateProviderBase):
     is_exhaustive = True
 
     def _enumerate_candidates(
-        self,
-        context: DistributedCandidateContext,
+        self, context: DistributedCandidateContext,
     ) -> tuple[DistributedCandidate, ...]:
         node = context.source_call
         module = context.module
@@ -93,7 +100,7 @@ class NormApplyCandidateProvider(DistributedCandidateProviderBase):
         for input_type in _candidate_distributed_inputs(context, 0, value):
             policies = input_type.axis_policies
             partial_stats = NormStats.infer_type(
-                (_typed_node("<norm_apply_input>", input_type), ),
+                (_typed_node("<norm_apply_input>", input_type),),
                 {"axis": axis, "use_mean": bool(node.attrs["use_mean"])},
             )
             assert isinstance(partial_stats, DistributedType)
@@ -101,15 +108,11 @@ class NormApplyCandidateProvider(DistributedCandidateProviderBase):
             suffix_policies = tuple(policies[axis:])
             try:
                 scale_type = DistributedType(
-                    scale,
-                    suffix_policies,
-                    context.placement,
+                    scale, suffix_policies, context.placement,
                     exclusive=input_type.exclusive,
                 )
                 bias_type = DistributedType(
-                    bias,
-                    suffix_policies,
-                    context.placement,
+                    bias, suffix_policies, context.placement,
                     exclusive=input_type.exclusive,
                 )
                 inputs = (
@@ -122,28 +125,35 @@ class NormApplyCandidateProvider(DistributedCandidateProviderBase):
             except IRSchemaError:
                 continue
             factors = NormApply.cost_factors(inputs, node.attrs, output_type)
-            results.append(
-                DistributedCandidate(
-                    distributed_candidate_id(
-                        node.id,
-                        "norm_apply",
-                        output_type,
-                        tuple(item.type for item in inputs),
-                    ),
+            results.append(DistributedCandidate(
+                distributed_candidate_id(
+                    node.id,
+                    "norm_apply",
                     output_type,
                     tuple(item.type for item in inputs),
-                    (_local_elements(input_type) if factors is None else context.operation_cost_model.get_latency(
-                        factors, output_type)),
-                    "norm-apply-compatible-sbp",
-                    objective_model=("flagmega.norm-apply-local-work/v1"
-                                     if factors is None else context.operation_cost_model.identity),
-                    objective_evidence=(
-                        "materialized-statistics",
-                        "suffix-parameter-policy",
-                        "op-definition-cost-factors",
-                        "hierarchical-target-latency",
-                    ),
-                ))
+                ),
+                output_type,
+                tuple(item.type for item in inputs),
+                (
+                    _local_elements(input_type)
+                    if factors is None
+                    else context.operation_cost_model.get_latency(
+                        factors, output_type
+                    )
+                ),
+                "norm-apply-compatible-sbp",
+                objective_model=(
+                    "flagmega.norm-apply-local-work/v1"
+                    if factors is None
+                    else context.operation_cost_model.identity
+                ),
+                objective_evidence=(
+                    "materialized-statistics",
+                    "suffix-parameter-policy",
+                    "op-definition-cost-factors",
+                    "hierarchical-target-latency",
+                ),
+            ))
         return tuple(results)
 
 
@@ -155,8 +165,7 @@ class GatedNormApplyCandidateProvider(DistributedCandidateProviderBase):
     is_exhaustive = True
 
     def _enumerate_candidates(
-        self,
-        context: DistributedCandidateContext,
+        self, context: DistributedCandidateContext,
     ) -> tuple[DistributedCandidate, ...]:
         node = context.source_call
         module = context.module
@@ -169,7 +178,7 @@ class GatedNormApplyCandidateProvider(DistributedCandidateProviderBase):
         for input_type in _candidate_distributed_inputs(context, 0, value):
             policies = input_type.axis_policies
             partial_stats = NormStats.infer_type(
-                (_typed_node("<gated_norm_apply_input>", input_type), ),
+                (_typed_node("<gated_norm_apply_input>", input_type),),
                 {"axis": axis, "use_mean": bool(node.attrs["use_mean"])},
             )
             assert isinstance(partial_stats, DistributedType)
@@ -177,23 +186,17 @@ class GatedNormApplyCandidateProvider(DistributedCandidateProviderBase):
             suffix_policies = tuple(policies[axis:])
             try:
                 scale_type = DistributedType(
-                    scale,
-                    suffix_policies,
-                    context.placement,
+                    scale, suffix_policies, context.placement,
                     exclusive=input_type.exclusive,
                 )
                 bias_type = DistributedType(
-                    bias,
-                    suffix_policies,
-                    context.placement,
+                    bias, suffix_policies, context.placement,
                     exclusive=input_type.exclusive,
                 )
                 # The gate is elementwise over the whole value, so it can only
                 # be read under the input's own policies.
                 gate_type = DistributedType(
-                    gate,
-                    policies,
-                    context.placement,
+                    gate, policies, context.placement,
                     exclusive=input_type.exclusive,
                 )
                 inputs = (
@@ -207,29 +210,36 @@ class GatedNormApplyCandidateProvider(DistributedCandidateProviderBase):
             except IRSchemaError:
                 continue
             factors = GatedNormApply.cost_factors(inputs, node.attrs, output_type)
-            results.append(
-                DistributedCandidate(
-                    distributed_candidate_id(
-                        node.id,
-                        "gated_norm_apply",
-                        output_type,
-                        tuple(item.type for item in inputs),
-                    ),
+            results.append(DistributedCandidate(
+                distributed_candidate_id(
+                    node.id,
+                    "gated_norm_apply",
                     output_type,
                     tuple(item.type for item in inputs),
-                    (_local_elements(input_type) if factors is None else context.operation_cost_model.get_latency(
-                        factors, output_type)),
-                    "gated-norm-apply-compatible-sbp",
-                    objective_model=("flagmega.gated-norm-apply-local-work/v1"
-                                     if factors is None else context.operation_cost_model.identity),
-                    objective_evidence=(
-                        "materialized-statistics",
-                        "suffix-parameter-policy",
-                        "elementwise-gate-policy",
-                        "op-definition-cost-factors",
-                        "hierarchical-target-latency",
-                    ),
-                ))
+                ),
+                output_type,
+                tuple(item.type for item in inputs),
+                (
+                    _local_elements(input_type)
+                    if factors is None
+                    else context.operation_cost_model.get_latency(
+                        factors, output_type
+                    )
+                ),
+                "gated-norm-apply-compatible-sbp",
+                objective_model=(
+                    "flagmega.gated-norm-apply-local-work/v1"
+                    if factors is None
+                    else context.operation_cost_model.identity
+                ),
+                objective_evidence=(
+                    "materialized-statistics",
+                    "suffix-parameter-policy",
+                    "elementwise-gate-policy",
+                    "op-definition-cost-factors",
+                    "hierarchical-target-latency",
+                ),
+            ))
         return tuple(results)
 
 
@@ -239,32 +249,31 @@ class BindNormStatsCandidateProvider(DistributedCandidateProviderBase):
     is_exhaustive = True
 
     def _enumerate_candidates(
-        self,
-        context: DistributedCandidateContext,
+        self, context: DistributedCandidateContext,
     ) -> tuple[DistributedCandidate, ...]:
         node = context.source_call
         value = tensor_of(context.module.node_map[node.inputs[0]].type)
         results: list[DistributedCandidate] = []
         for input_type in _candidate_distributed_inputs(context, 0, value):
-            expected = NormStats.infer_type((_typed_node("<bind_norm_stats_input>", input_type), ), node.attrs)
+            expected = NormStats.infer_type(
+                (_typed_node("<bind_norm_stats_input>", input_type),), node.attrs)
             assert isinstance(expected, DistributedType)
             materialized = replace(expected, partial=None)
-            results.append(
-                DistributedCandidate(
-                    distributed_candidate_id(
-                        node.id,
-                        "bind_norm_stats",
-                        materialized,
-                        (input_type, materialized),
-                    ),
+            results.append(DistributedCandidate(
+                distributed_candidate_id(
+                    node.id,
+                    "bind_norm_stats",
                     materialized,
                     (input_type, materialized),
-                    0,
-                    "bind-materialized-norm-stats-sbp",
-                    objective_kind="analytic",
-                    objective_model="flagmega.semantic-zero/v1",
-                    objective_evidence=("constraint-only-op", ),
-                ))
+                ),
+                materialized,
+                (input_type, materialized),
+                0,
+                "bind-materialized-norm-stats-sbp",
+                objective_kind="analytic",
+                objective_model="flagmega.semantic-zero/v1",
+                objective_evidence=("constraint-only-op",),
+            ))
         return tuple(results)
 
 
@@ -310,8 +319,9 @@ class AddNormStatsCandidateProvider(DistributedCandidateProviderBase):
         # the edge realization inserts and costs Boxing before the local
         # add/statistics fusion. Its private residual is owner-local.
         for value in addend_types:
-            if (isinstance(value, DistributedType) and value.placement == context.placement and value.partial is None
-                    and tensor_of(value) == expected_tensors[0] and value not in input_types):
+            if (isinstance(value, DistributedType) and value.placement == context.placement
+                    and value.partial is None and tensor_of(value) == expected_tensors[0]
+                    and value not in input_types):
                 input_types.append(value)
         for addend_type in addend_types:
             if tensor_of(addend_type) != expected_tensors[0]:
@@ -405,8 +415,13 @@ def _candidate_distributed_inputs(
     values: list[DistributedType] = []
     if input_index < len(context.available_input_types):
         for value in context.available_input_types[input_index]:
-            if (isinstance(value, DistributedType) and value.tensor == tensor and value.placement == context.placement
-                    and value.partial is None and value not in values):
+            if (
+                isinstance(value, DistributedType)
+                and value.tensor == tensor
+                and value.placement == context.placement
+                and value.partial is None
+                and value not in values
+            ):
                 values.append(value)
     for value in context.leaf_candidate_types(tensor):
         if value not in values:
@@ -414,13 +429,20 @@ def _candidate_distributed_inputs(
     # E is a value-ownership candidate for replicated normalization inputs.
     # Keep it restricted to physical block axes; non-block mesh ownership
     # would require a backend-specific device-group launch contract.
-    block_axes = tuple(axis for axis in range(context.placement.rank) if context.placement.is_physical_block_axis(axis))
+    block_axes = tuple(
+        axis for axis in range(context.placement.rank)
+        if context.placement.is_physical_block_axis(axis)
+    )
     if block_axes:
         for count in range(1, len(block_axes) + 1):
             for exclusive_axes in combinations(block_axes, count):
                 for value in tuple(values):
-                    if (isinstance(value, DistributedType) and value.partial is None and value.exclusive is None
-                            and all(policy == SBP.broadcast() for policy in value.axis_policies)):
+                    if (
+                        isinstance(value, DistributedType)
+                        and value.partial is None
+                        and value.exclusive is None
+                        and all(policy == SBP.broadcast() for policy in value.axis_policies)
+                    ):
                         exclusive = replace(
                             value,
                             exclusive=SBP.exclusive(exclusive_axes),

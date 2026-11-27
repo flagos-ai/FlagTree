@@ -56,7 +56,10 @@ def _replicated(context: DistributedCandidateContext, cost: int) -> DistributedC
     return DistributedCandidate(
         f"distribution.{node.id}.replicated",
         broadcast_ir_type(node.type, context.placement),
-        tuple(broadcast_ir_type(context.module.node_map[value].type, context.placement) for value in node.inputs),
+        tuple(
+            broadcast_ir_type(context.module.node_map[value].type, context.placement)
+            for value in node.inputs
+        ),
         cost,
         "broadcast-replicated",
     )
@@ -83,23 +86,25 @@ class BroadcastCandidateProvider(DistributedCandidateProviderBase):
     ) -> tuple[DistributedCandidate, ...]:
         work = max(_ir_type_bytes(context.source_call.type), 1)
         candidate = _replicated(context, min(work, 2_000_000_000))
-        return (DistributedCandidate(
-            candidate.id,
-            candidate.return_type,
-            candidate.input_types,
-            candidate.operation_cost,
-            "explicit-broadcast-inference",
-            candidate.target_op,
-            candidate.objective_kind,
-            "flagmega.explicit-broadcast-work/v1",
-            ("registered-broadcast-provider", ),
-        ), )
+        return (
+            DistributedCandidate(
+                candidate.id,
+                candidate.return_type,
+                candidate.input_types,
+                candidate.operation_cost,
+                "explicit-broadcast-inference",
+                candidate.target_op,
+                candidate.objective_kind,
+                "flagmega.explicit-broadcast-work/v1",
+                ("registered-broadcast-provider",),
+            ),
+        )
 
 
 class EmbeddingCandidateProvider(DistributedCandidateProviderBase):
     """Project a decode embedding's feature layout through the table lookup.
 
-    This is the rank-general equivalent of the reference ``GatherCandidateProvider``
+    This is the rank-general equivalent of nncase's ``GatherCandidateProvider``
     for ``gather(weight, indices, axis=0)``.  The vocabulary axis must remain
     broadcast because every owner may observe any token id.  Output axes that
     originate in ``indices`` also remain broadcast; the trailing embedding
@@ -122,8 +127,7 @@ class EmbeddingCandidateProvider(DistributedCandidateProviderBase):
         weight = tensor_of(module.node_map[node.inputs[1]].type)
         output = tensor_of(node.type)
         if (weight.rank != 2 or output.rank != indices.rank + 1 or output.shape[:-1] != indices.shape
-                or output.shape[-1] * prod(node.attrs.get("output_lanes", ())) != matrix_width(
-                    weight, node.attrs.get("weight_encoding"))):
+                or output.shape[-1] * prod(node.attrs.get("output_lanes", ())) != matrix_width(weight, node.attrs.get("weight_encoding"))):
             return ()
 
         work = max(_tensor_bytes(output), 1)
@@ -178,7 +182,7 @@ class EmbeddingCandidateProvider(DistributedCandidateProviderBase):
                         objective_kind="analytic",
                         objective_model="flagmega.embedding-gather-bytes/v1",
                         objective_evidence=(
-                            "reference-gather-output-layout-projection",
+                            "nncase-gather-output-layout-projection",
                             "feature-local-bytes",
                             "vocabulary-axis-broadcast",
                         ),
@@ -230,15 +234,31 @@ def _packed_qkv_local_shape_cost(
     shape advantage pays for its actual collective boundary.
     """
 
-    local_input = (local_tensor_type(input_type) if isinstance(input_type, DistributedType) else tensor_of(input_type))
+    local_input = (
+        local_tensor_type(input_type)
+        if isinstance(input_type, DistributedType)
+        else tensor_of(input_type)
+    )
     local_outputs = tuple(
-        local_tensor_type(field) if isinstance(field, DistributedType) else tensor_of(field)
-        for field in output_type.fields)
-    if (not local_input.shape or not local_input.shape[-1].is_fixed
-            or any(not output.shape or not output.shape[-1].is_fixed for output in local_outputs)):
+        local_tensor_type(field)
+        if isinstance(field, DistributedType)
+        else tensor_of(field)
+        for field in output_type.fields
+    )
+    if (
+        not local_input.shape
+        or not local_input.shape[-1].is_fixed
+        or any(not output.shape or not output.shape[-1].is_fixed for output in local_outputs)
+    ):
         return min(local_mac_work, 2_000_000_000)
-    local_k = (local_input.shape[-1].fixed_value * getattr(local_input.dtype, "lane_count", 1))
-    local_ns = tuple(output.shape[-1].fixed_value * getattr(output.dtype, "lane_count", 1) for output in local_outputs)
+    local_k = (
+        local_input.shape[-1].fixed_value
+        * getattr(local_input.dtype, "lane_count", 1)
+    )
+    local_ns = tuple(
+        output.shape[-1].fixed_value * getattr(output.dtype, "lane_count", 1)
+        for output in local_outputs
+    )
     imbalance = sum(abs(local_k - local_n) for local_n in local_ns)
     return min(local_mac_work + imbalance, 2_000_000_000)
 
@@ -258,10 +278,14 @@ _PACKED_QKV_OBJECTIVE = {
 
 
 def _mesh_axis_combinations(placement: Placement) -> tuple[tuple[int, ...], ...]:
-    """Match the reference non-empty placement-axis combination enumeration."""
+    """Match nncase's non-empty placement-axis combination enumeration."""
 
-    return tuple(axes for count in range(1, placement.rank + 1) for axes in combinations(range(placement.rank), count)
-                 if _shard_count(placement, axes) > 1)
+    return tuple(
+        axes
+        for count in range(1, placement.rank + 1)
+        for axes in combinations(range(placement.rank), count)
+        if _shard_count(placement, axes) > 1
+    )
 
 
 def _shard_count(placement: Placement, hierarchy_axes: tuple[int, ...]) -> int:
@@ -313,13 +337,21 @@ class MatMulCandidateProvider(DistributedCandidateProviderBase):
         transpose_b = bool(node.attrs.get("transpose_b", True)) if node.op == "math.matmul" else True
         value_k_axis = 0 if transpose_a else 1
         scalar_packed = node.op == "math.packed_dense_matmul"
-        packed_layout = (str(node.attrs.get("packed_layout")) if scalar_packed else None)
+        packed_layout = (
+            str(node.attrs.get("packed_layout"))
+            if scalar_packed else None
+        )
         packed_n_lane = 1
         packed_k_lane = 1
         mesh_interleaved = False
         if packed_layout is not None:
-            packed_n_lane, packed_k_lane, mesh_interleaved = parse_k_major_layout(packed_layout)
-        elif (node.op == "math.packed_block_scaled_matmul" and isinstance(weight.dtype, VectorType)):
+            packed_n_lane, packed_k_lane, mesh_interleaved = parse_k_major_layout(
+                packed_layout
+            )
+        elif (
+            node.op == "math.packed_block_scaled_matmul"
+            and isinstance(weight.dtype, VectorType)
+        ):
             packed_k_lane = weight.dtype.lane_count
         output_n_lane = (getattr(output.dtype, "lane_count", 1)
                          if node.op in {"math.block_scaled_matmul", "math.packed_block_scaled_matmul"} else 1)
@@ -337,60 +369,77 @@ class MatMulCandidateProvider(DistributedCandidateProviderBase):
         if not mesh_interleaved:
             for hierarchy_axes in _mesh_axis_combinations(placement):
                 for output_policy in context.split_candidates(
-                        output,
-                        output.rank - 1,
-                        hierarchy_axes,
-                        purpose="output",
+                    output,
+                    output.rank - 1,
+                    hierarchy_axes,
+                    purpose="output",
                 ):
-                    weight_n_policy = (scale_split_units(output_policy, output_n_lane, packed_n_lane)
-                                       if scalar_packed or output_n_lane != 1 else output_policy)
+                    weight_n_policy = (
+                        scale_split_units(output_policy, output_n_lane, packed_n_lane)
+                        if scalar_packed or output_n_lane != 1
+                        else output_policy
+                    )
                     if weight_n_policy is None:
                         continue
                     weight_policies = [SBP.broadcast() for _ in weight.shape]
                     weight_policies[weight_n_axis] = weight_n_policy
-                    if not is_distributable(weight, tuple(weight_policies), placement):
+                    if not is_distributable(
+                        weight, tuple(weight_policies), placement
+                    ):
                         continue
-                    output_splits.append((hierarchy_axes, output_policy, weight_n_policy))
+                    output_splits.append(
+                        (hierarchy_axes, output_policy, weight_n_policy)
+                    )
 
             for output_index, (
-                    hierarchy_axes,
-                    output_policy,
-                    weight_n_policy,
+                hierarchy_axes,
+                output_policy,
+                weight_n_policy,
             ) in enumerate(output_splits):
                 output_inputs = list(original_inputs)
                 output_inputs[0] = broadcast_type(value, placement)
                 weight_policies = [SBP.broadcast() for _ in weight.shape]
                 weight_policies[weight_n_axis] = weight_n_policy
-                output_inputs[1] = DistributedType(weight, tuple(weight_policies), placement)
+                output_inputs[1] = DistributedType(
+                    weight, tuple(weight_policies), placement
+                )
                 for index in range(2, len(output_inputs)):
-                    output_inputs[index] = broadcast_ir_type(output_inputs[index], placement)
+                    output_inputs[index] = broadcast_ir_type(
+                        output_inputs[index], placement
+                    )
                 output_type = DistributedType(
                     output,
-                    tuple(output_policy if axis == output.rank - 1 else SBP.broadcast() for axis in range(output.rank)),
+                    tuple(
+                        output_policy if axis == output.rank - 1 else SBP.broadcast()
+                        for axis in range(output.rank)
+                    ),
                     placement,
                 )
-                values.append(
-                    DistributedCandidate(
-                        _candidate_id(
-                            node.id,
-                            f"variant_{output_index}.output_split",
-                            hierarchy_axes,
-                            placement,
-                        ),
-                        output_type,
-                        tuple(output_inputs),
-                        max(work // _shard_count(placement, hierarchy_axes), 1),
-                        "matmul-output-sbp",
-                    ))
+                values.append(DistributedCandidate(
+                    _candidate_id(
+                        node.id,
+                        f"variant_{output_index}.output_split",
+                        hierarchy_axes,
+                        placement,
+                    ),
+                    output_type,
+                    tuple(output_inputs),
+                    max(work // _shard_count(placement, hierarchy_axes), 1),
+                    "matmul-output-sbp",
+                ))
 
         if mesh_interleaved:
             for hierarchy_axes in _mesh_axis_combinations(placement):
-                if (not weight.shape[weight_n_axis].is_fixed
-                        or weight.shape[weight_n_axis].fixed_value != _shard_count(placement, hierarchy_axes)):
+                if (
+                    not weight.shape[weight_n_axis].is_fixed
+                    or weight.shape[weight_n_axis].fixed_value
+                    != _shard_count(placement, hierarchy_axes)
+                ):
                     continue
                 output_inputs = list(original_inputs)
                 output_inputs[0] = broadcast_type(value, placement)
-                output_inputs[1] = split_type(weight, weight_n_axis, placement, hierarchy_axes)
+                output_inputs[1] = split_type(
+                    weight, weight_n_axis, placement, hierarchy_axes)
                 output_type = split_type(
                     output,
                     output.rank - 1,
@@ -398,61 +447,73 @@ class MatMulCandidateProvider(DistributedCandidateProviderBase):
                     hierarchy_axes,
                     block_size=packed_n_lane,
                 )
-                values.append(
-                    DistributedCandidate(
-                        _candidate_id(
-                            node.id,
-                            f"mesh_interleaved_n{packed_n_lane}_output_split",
-                            hierarchy_axes,
-                            placement,
-                        ),
-                        output_type,
-                        tuple(output_inputs),
-                        max(work // _shard_count(placement, hierarchy_axes), 1),
-                        "matmul-mesh-interleaved-output-sbp",
-                    ))
+                values.append(DistributedCandidate(
+                    _candidate_id(
+                        node.id,
+                        f"mesh_interleaved_n{packed_n_lane}_output_split",
+                        hierarchy_axes,
+                        placement,
+                    ),
+                    output_type,
+                    tuple(output_inputs),
+                    max(work // _shard_count(placement, hierarchy_axes), 1),
+                    "matmul-mesh-interleaved-output-sbp",
+                ))
 
-        if (node.op in {"math.matmul", "math.packed_dense_matmul"} and not mesh_interleaved and value.rank == 2
-                and output.rank == 2):
-            # reference permits a packed/logical MatMul to consume disjoint mesh
+        if (
+            node.op in {"math.matmul", "math.packed_dense_matmul"}
+            and not mesh_interleaved
+            and value.rank == 2
+            and output.rank == 2
+        ):
+            # nncase permits a packed/logical MatMul to consume disjoint mesh
             # axes for output-N and reduction-K at the same time.  This is the
             # regular 2-D tensor-parallel form: the output remains split on one
             # hierarchy subset and partial-Sum on another.
             reduction_splits: list[tuple[tuple[int, ...], SBPSplit, SBPSplit]] = []
             for reduction_axes in _mesh_axis_combinations(placement):
                 for input_k_policy in context.split_candidates(
-                        value,
-                        value_k_axis,
-                        reduction_axes,
-                        purpose="reduction",
+                    value,
+                    value_k_axis,
+                    reduction_axes,
+                    purpose="reduction",
                 ):
-                    weight_k_policy = (scale_split_units(input_k_policy, 1, packed_k_lane)
-                                       if node.op == "math.packed_dense_matmul" else input_k_policy)
+                    weight_k_policy = (
+                        scale_split_units(input_k_policy, 1, packed_k_lane)
+                        if node.op == "math.packed_dense_matmul"
+                        else input_k_policy
+                    )
                     if weight_k_policy is None:
                         continue
-                    reduction_splits.append((reduction_axes, input_k_policy, weight_k_policy))
+                    reduction_splits.append(
+                        (reduction_axes, input_k_policy, weight_k_policy)
+                    )
             for reduction_index, (
-                    reduction_axes,
-                    input_k_policy,
-                    weight_k_policy,
+                reduction_axes,
+                input_k_policy,
+                weight_k_policy,
             ) in enumerate(reduction_splits):
                 for output_index, (
-                        output_axes,
-                        output_policy,
-                        weight_n_policy,
+                    output_axes,
+                    output_policy,
+                    weight_n_policy,
                 ) in enumerate(output_splits):
                     if set(reduction_axes) & set(output_axes):
                         continue
                     hybrid_inputs = list(original_inputs)
                     input_policies = [SBP.broadcast() for _ in value.shape]
                     input_policies[value_k_axis] = input_k_policy
-                    hybrid_inputs[0] = DistributedType(value, tuple(input_policies), placement)
+                    hybrid_inputs[0] = DistributedType(
+                        value, tuple(input_policies), placement
+                    )
                     weight_policies = [SBP.broadcast() for _ in weight.shape]
                     weight_policies[weight_k_axis] = weight_k_policy
                     weight_policies[weight_n_axis] = weight_n_policy
-                    hybrid_inputs[1] = DistributedType(weight, tuple(weight_policies), placement)
+                    hybrid_inputs[1] = DistributedType(
+                        weight, tuple(weight_policies), placement)
                     for index in range(2, len(hybrid_inputs)):
-                        hybrid_inputs[index] = broadcast_ir_type(hybrid_inputs[index], placement)
+                        hybrid_inputs[index] = broadcast_ir_type(
+                            hybrid_inputs[index], placement)
                     output_policies = [SBP.broadcast() for _ in output.shape]
                     output_policies[output.rank - 1] = output_policy
                     hybrid_output = DistributedType(
@@ -462,64 +523,89 @@ class MatMulCandidateProvider(DistributedCandidateProviderBase):
                         partial=SBPPartial(reduction_axes),
                     )
                     fallback = max(
-                        work // (_shard_count(placement, reduction_axes) * _shard_count(placement, output_axes)),
+                        work // (
+                            _shard_count(placement, reduction_axes)
+                            * _shard_count(placement, output_axes)
+                        ),
                         1,
                     )
-                    values.append(
-                        DistributedCandidate(
-                            _candidate_id(
-                                node.id,
-                                ("output_" + str(output_index) + "_reduction_" + str(reduction_index)),
-                                tuple((*reduction_axes, *output_axes)),
-                                placement,
+                    values.append(DistributedCandidate(
+                        _candidate_id(
+                            node.id,
+                            (
+                                "output_"
+                                + str(output_index)
+                                + "_reduction_"
+                                + str(reduction_index)
                             ),
-                            hybrid_output,
-                            tuple(hybrid_inputs),
-                            fallback,
-                            "matmul-output-K-sbp-partial",
-                        ))
-        if (not mesh_interleaved and value.rank == 2 and (weight.rank == 2 or scalar_packed)):
+                            tuple((*reduction_axes, *output_axes)),
+                            placement,
+                        ),
+                        hybrid_output,
+                        tuple(hybrid_inputs),
+                        fallback,
+                        "matmul-output-K-sbp-partial",
+                    ))
+        if (
+            not mesh_interleaved
+            and value.rank == 2
+            and (weight.rank == 2 or scalar_packed)
+        ):
             reduction_splits = []
             for hierarchy_axes in _mesh_axis_combinations(placement):
                 for input_k_policy in context.split_candidates(
-                        value,
-                        value_k_axis,
-                        hierarchy_axes,
-                        purpose="reduction",
+                    value,
+                    value_k_axis,
+                    hierarchy_axes,
+                    purpose="reduction",
                 ):
-                    if (node.op in {
+                    if (
+                        node.op in {
                             "math.block_scaled_matmul",
                             "math.packed_block_scaled_matmul",
-                    } and not _is_scale_group_aligned_reduction(
+                        }
+                        and not _is_scale_group_aligned_reduction(
                             node,
                             value,
                             value_k_axis,
                             input_k_policy,
                             placement,
-                    )):
+                        )
+                    ):
                         continue
-                    weight_k_policy = scale_split_units(input_k_policy, 1, packed_k_lane)
+                    weight_k_policy = scale_split_units(
+                        input_k_policy, 1, packed_k_lane
+                    )
                     if weight_k_policy is None:
                         continue
                     weight_policies = [SBP.broadcast() for _ in weight.shape]
                     weight_policies[weight_k_axis] = weight_k_policy
-                    if not is_distributable(weight, tuple(weight_policies), placement):
+                    if not is_distributable(
+                        weight, tuple(weight_policies), placement
+                    ):
                         continue
-                    reduction_splits.append((hierarchy_axes, input_k_policy, weight_k_policy))
+                    reduction_splits.append(
+                        (hierarchy_axes, input_k_policy, weight_k_policy)
+                    )
             for reduction_index, (
-                    hierarchy_axes,
-                    input_k_policy,
-                    weight_k_policy,
+                hierarchy_axes,
+                input_k_policy,
+                weight_k_policy,
             ) in enumerate(reduction_splits):
                 reduction_inputs = list(original_inputs)
                 input_policies = [SBP.broadcast() for _ in value.shape]
                 input_policies[value_k_axis] = input_k_policy
-                reduction_inputs[0] = DistributedType(value, tuple(input_policies), placement)
+                reduction_inputs[0] = DistributedType(
+                    value, tuple(input_policies), placement
+                )
                 weight_policies = [SBP.broadcast() for _ in weight.shape]
                 weight_policies[weight_k_axis] = weight_k_policy
-                reduction_inputs[1] = DistributedType(weight, tuple(weight_policies), placement)
+                reduction_inputs[1] = DistributedType(
+                    weight, tuple(weight_policies), placement
+                )
                 for index in range(2, len(reduction_inputs)):
-                    reduction_inputs[index] = broadcast_ir_type(reduction_inputs[index], placement)
+                    reduction_inputs[index] = broadcast_ir_type(
+                        reduction_inputs[index], placement)
                 partial = DistributedType(
                     output,
                     tuple(SBP.broadcast() for _ in output.shape),
@@ -527,26 +613,23 @@ class MatMulCandidateProvider(DistributedCandidateProviderBase):
                     partial=SBPPartial(hierarchy_axes),
                 )
                 fallback = max(work // _shard_count(placement, hierarchy_axes), 1)
-                values.append(
-                    DistributedCandidate(
-                        _candidate_id(
-                            node.id,
-                            f"variant_{reduction_index}.reduction_split",
-                            hierarchy_axes,
-                            placement,
-                        ),
-                        partial,
-                        tuple(reduction_inputs),
-                        fallback,
-                        "matmul-K-sbp-partial",
-                    ))
+                values.append(DistributedCandidate(
+                    _candidate_id(
+                        node.id,
+                        f"variant_{reduction_index}.reduction_split",
+                        hierarchy_axes,
+                        placement,
+                    ),
+                    partial,
+                    tuple(reduction_inputs),
+                    fallback,
+                    "matmul-K-sbp-partial",
+                ))
         if node.attrs.get("reduction_order", "relaxed") in ("mma_k16", SPLIT_K4_REDUCTION_ORDER):
             # Independent M/N work preserves an ordered K accumulator;
             # independently completed K sums change its rounding order.
-            values = [
-                candidate for candidate in values
-                if candidate.input_types[0].axis_policies[value_k_axis] == SBP.broadcast()
-            ]
+            values = [candidate for candidate in values
+                      if candidate.input_types[0].axis_policies[value_k_axis] == SBP.broadcast()]
         return tuple(values)
 
 
@@ -557,7 +640,7 @@ def _is_scale_group_aligned_reduction(
     split: SBPSplit,
     placement: Placement,
 ) -> bool:
-    """Apply the reference legality rule for dynamic block-FP8 K sharding."""
+    """Apply nncase's legality rule for dynamic block-FP8 K sharding."""
 
     if not split.is_contiguous:
         return False
@@ -573,7 +656,7 @@ def _is_scale_group_aligned_reduction(
 
 
 class PackedQKVParallelLinearCandidateProvider(DistributedCandidateProviderBase):
-    """Couple Q/K/V K/N policies like the reference packed-QKV provider."""
+    """Couple Q/K/V K/N policies like nncase's packed-QKV provider."""
 
     op_names = frozenset({"ntt.packed_qkv_parallel_linear"})
     allows_partial_inputs = False
@@ -595,12 +678,21 @@ class PackedQKVParallelLinearCandidateProvider(DistributedCandidateProviderBase)
             return ()
         n_vector = n_vectors[0]
         input_tensor = tensor_of(module.node_map[node.inputs[0]].type)
-        weights = tuple(tensor_of(module.node_map[input_id].type) for input_id in node.inputs[1:4])
-        if any(not isinstance(weight.dtype, VectorType) or weight.dtype.lanes[0] != n_vector for weight in weights):
+        weights = tuple(
+            tensor_of(module.node_map[input_id].type)
+            for input_id in node.inputs[1:4]
+        )
+        if any(
+            not isinstance(weight.dtype, VectorType)
+            or weight.dtype.lanes[0] != n_vector
+            for weight in weights
+        ):
             return ()
-        k_lane_products = tuple(weight.dtype.lanes[1] * weight.dtype.lanes[2]
-                                for weight in weights
-                                if isinstance(weight.dtype, VectorType))
+        k_lane_products = tuple(
+            weight.dtype.lanes[1] * weight.dtype.lanes[2]
+            for weight in weights
+            if isinstance(weight.dtype, VectorType)
+        )
         if len(k_lane_products) != 3:
             return ()
         tails = tuple(module.node_map[input_id].type for input_id in node.inputs[4:13])
@@ -610,51 +702,67 @@ class PackedQKVParallelLinearCandidateProvider(DistributedCandidateProviderBase)
         )
         placement = context.placement
         replicated = _replicated(context, work)
-        candidates = [
-            replace(
-                replicated,
-                operation_cost=_packed_qkv_local_shape_cost(
-                    replicated.input_types[0],
-                    replicated.return_type,
-                    work,
-                ),
-                **_PACKED_QKV_OBJECTIVE,
-            )
-        ]
+        candidates = [replace(
+            replicated,
+            operation_cost=_packed_qkv_local_shape_cost(
+                replicated.input_types[0],
+                replicated.return_type,
+                work,
+            ),
+            **_PACKED_QKV_OBJECTIVE,
+        )]
 
-        output_splits: list[tuple[tuple[int, ...], tuple[SBPSplit, SBPSplit, SBPSplit]]] = []
+        output_splits: list[
+            tuple[tuple[int, ...], tuple[SBPSplit, SBPSplit, SBPSplit]]
+        ] = []
         for output_axes in _mesh_axis_combinations(placement):
             per_output_policies = tuple(
-                context.split_candidates(output, 1, output_axes, purpose="output") for output in output_fields)
+                context.split_candidates(
+                    output, 1, output_axes, purpose="output"
+                )
+                for output in output_fields
+            )
             for output_policies in cartesian_product(*per_output_policies):
-                if (not _have_coupled_qkv_output_policies(output_policies) or not all(
+                if (
+                    not _have_coupled_qkv_output_policies(output_policies)
+                    or not all(
                         is_distributable(
                             output,
                             (SBP.broadcast(), output_policy),
                             placement,
-                        ) and is_distributable(
+                        )
+                        and is_distributable(
                             weight,
                             (SBP.broadcast(), output_policy),
                             placement,
-                        ) for output, weight, output_policy in zip(output_fields, weights, output_policies))):
+                        )
+                        for output, weight, output_policy in zip(
+                            output_fields, weights, output_policies
+                        )
+                    )
+                ):
                     continue
                 output_splits.append((output_axes, output_policies))
 
         for output_index, (output_axes, output_policies) in enumerate(output_splits):
-            output_types = TupleType(
-                tuple(
-                    DistributedType(
-                        output,
-                        (SBP.broadcast(), output_policy),
-                        placement,
-                    ) for output, output_policy in zip(output_fields, output_policies)))
-            inputs = (
-                broadcast_type(input_tensor, placement),
-                *(DistributedType(
-                    weight,
+            output_types = TupleType(tuple(
+                DistributedType(
+                    output,
                     (SBP.broadcast(), output_policy),
                     placement,
-                ) for weight, output_policy in zip(weights, output_policies)),
+                )
+                for output, output_policy in zip(output_fields, output_policies)
+            ))
+            inputs = (
+                broadcast_type(input_tensor, placement),
+                *(
+                    DistributedType(
+                        weight,
+                        (SBP.broadcast(), output_policy),
+                        placement,
+                    )
+                    for weight, output_policy in zip(weights, output_policies)
+                ),
                 *_qkv_tail_types(
                     tails,
                     placement,
@@ -663,65 +771,85 @@ class PackedQKVParallelLinearCandidateProvider(DistributedCandidateProviderBase)
                 ),
             )
             local_work = max(work // _shard_count(placement, output_axes), 1)
-            candidates.append(
-                DistributedCandidate(
-                    _candidate_id(
-                        node.id,
-                        f"variant_{output_index}.output_split",
-                        output_axes,
-                        placement,
-                    ),
-                    output_types,
-                    tuple(inputs),
-                    _packed_qkv_local_shape_cost(inputs[0], output_types, local_work),
-                    "packed-qkv-output-sbp",
-                    **_PACKED_QKV_OBJECTIVE,
-                ))
+            candidates.append(DistributedCandidate(
+                _candidate_id(
+                    node.id,
+                    f"variant_{output_index}.output_split",
+                    output_axes,
+                    placement,
+                ),
+                output_types,
+                tuple(inputs),
+                _packed_qkv_local_shape_cost(inputs[0], output_types, local_work),
+                "packed-qkv-output-sbp",
+                **_PACKED_QKV_OBJECTIVE,
+            ))
 
         if (node.attrs.get("reduction_order", "relaxed") == "relaxed"
                 and all(isinstance(value, NoneType) for value in tails[:3])):
-            reduction_splits: list[tuple[tuple[int, ...], SBPSplit, tuple[SBPSplit, ...]]] = []
+            reduction_splits: list[
+                tuple[tuple[int, ...], SBPSplit, tuple[SBPSplit, ...]]
+            ] = []
             for reduction_axes in _mesh_axis_combinations(placement):
-                for input_k_policy in context.split_candidates(input_tensor, 1, reduction_axes, purpose="reduction"):
+                for input_k_policy in context.split_candidates(
+                    input_tensor, 1, reduction_axes, purpose="reduction"
+                ):
                     weight_k_policies = tuple(
-                        scale_split_units(input_k_policy, 1, lane_product) for lane_product in k_lane_products)
+                        scale_split_units(input_k_policy, 1, lane_product)
+                        for lane_product in k_lane_products
+                    )
                     if any(policy is None for policy in weight_k_policies):
                         continue
-                    typed_weight_k_policies = tuple(policy for policy in weight_k_policies
-                                                    if isinstance(policy, SBPSplit))
+                    typed_weight_k_policies = tuple(
+                        policy
+                        for policy in weight_k_policies
+                        if isinstance(policy, SBPSplit)
+                    )
                     if len(typed_weight_k_policies) != 3 or not all(
-                            is_distributable(
-                                weight,
-                                (weight_k_policy, SBP.broadcast()),
-                                placement,
-                            ) for weight, weight_k_policy in zip(weights, typed_weight_k_policies)):
+                        is_distributable(
+                            weight,
+                            (weight_k_policy, SBP.broadcast()),
+                            placement,
+                        )
+                        for weight, weight_k_policy in zip(
+                            weights, typed_weight_k_policies
+                        )
+                    ):
                         continue
-                    reduction_splits.append((reduction_axes, input_k_policy, typed_weight_k_policies))
+                    reduction_splits.append(
+                        (reduction_axes, input_k_policy, typed_weight_k_policies)
+                    )
 
             for reduction_index, (
-                    reduction_axes,
-                    input_k_policy,
-                    weight_k_policies,
+                reduction_axes,
+                input_k_policy,
+                weight_k_policies,
             ) in enumerate(reduction_splits):
-                output_types = TupleType(
-                    tuple(
-                        DistributedType(
-                            output,
-                            (SBP.broadcast(), SBP.broadcast()),
-                            placement,
-                            partial=SBPPartial(reduction_axes),
-                        ) for output in output_fields))
+                output_types = TupleType(tuple(
+                    DistributedType(
+                        output,
+                        (SBP.broadcast(), SBP.broadcast()),
+                        placement,
+                        partial=SBPPartial(reduction_axes),
+                    )
+                    for output in output_fields
+                ))
                 inputs = (
                     DistributedType(
                         input_tensor,
                         (SBP.broadcast(), input_k_policy),
                         placement,
                     ),
-                    *(DistributedType(
-                        weight,
-                        (weight_k_policy, SBP.broadcast()),
-                        placement,
-                    ) for weight, weight_k_policy in zip(weights, weight_k_policies)),
+                    *(
+                        DistributedType(
+                            weight,
+                            (weight_k_policy, SBP.broadcast()),
+                            placement,
+                        )
+                        for weight, weight_k_policy in zip(
+                            weights, weight_k_policies
+                        )
+                    ),
                     *_qkv_tail_types(
                         tails,
                         placement,
@@ -733,45 +861,57 @@ class PackedQKVParallelLinearCandidateProvider(DistributedCandidateProviderBase)
                         partial=True,
                     ),
                 )
-                local_work = max(work // _shard_count(placement, reduction_axes), 1)
-                candidates.append(
-                    DistributedCandidate(
-                        _candidate_id(
-                            node.id,
-                            f"variant_{reduction_index}.reduction_split",
-                            reduction_axes,
-                            placement,
-                        ),
-                        output_types,
-                        tuple(inputs),
-                        _packed_qkv_local_shape_cost(inputs[0], output_types, local_work),
-                        "packed-qkv-K-sbp-partial",
-                        **_PACKED_QKV_OBJECTIVE,
-                    ))
+                local_work = max(
+                    work // _shard_count(placement, reduction_axes), 1
+                )
+                candidates.append(DistributedCandidate(
+                    _candidate_id(
+                        node.id,
+                        f"variant_{reduction_index}.reduction_split",
+                        reduction_axes,
+                        placement,
+                    ),
+                    output_types,
+                    tuple(inputs),
+                    _packed_qkv_local_shape_cost(
+                        inputs[0], output_types, local_work
+                    ),
+                    "packed-qkv-K-sbp-partial",
+                    **_PACKED_QKV_OBJECTIVE,
+                ))
 
-                for output_index, (output_axes, output_policies) in enumerate(output_splits):
+                for output_index, (output_axes, output_policies) in enumerate(
+                    output_splits
+                ):
                     if set(reduction_axes).intersection(output_axes):
                         continue
-                    hybrid_outputs = TupleType(
-                        tuple(
-                            DistributedType(
-                                output,
-                                (SBP.broadcast(), output_policy),
-                                placement,
-                                partial=SBPPartial(reduction_axes),
-                            ) for output, output_policy in zip(output_fields, output_policies)))
+                    hybrid_outputs = TupleType(tuple(
+                        DistributedType(
+                            output,
+                            (SBP.broadcast(), output_policy),
+                            placement,
+                            partial=SBPPartial(reduction_axes),
+                        )
+                        for output, output_policy in zip(
+                            output_fields, output_policies
+                        )
+                    ))
                     hybrid_inputs = (
                         DistributedType(
                             input_tensor,
                             (SBP.broadcast(), input_k_policy),
                             placement,
                         ),
-                        *(DistributedType(
-                            weight,
-                            (weight_k_policy, output_policy),
-                            placement,
-                        ) for weight, weight_k_policy, output_policy in zip(weights, weight_k_policies, output_policies)
-                          ),
+                        *(
+                            DistributedType(
+                                weight,
+                                (weight_k_policy, output_policy),
+                                placement,
+                            )
+                            for weight, weight_k_policy, output_policy in zip(
+                                weights, weight_k_policies, output_policies
+                            )
+                        ),
                         *_qkv_tail_types(
                             tails,
                             placement,
@@ -780,23 +920,32 @@ class PackedQKVParallelLinearCandidateProvider(DistributedCandidateProviderBase)
                         ),
                     )
                     local_work = max(
-                        work // (_shard_count(placement, reduction_axes) * _shard_count(placement, output_axes)),
+                        work // (
+                            _shard_count(placement, reduction_axes)
+                            * _shard_count(placement, output_axes)
+                        ),
                         1,
                     )
-                    candidates.append(
-                        DistributedCandidate(
-                            _candidate_id(
-                                node.id,
-                                ("output_" + str(output_index) + "_reduction_" + str(reduction_index)),
-                                tuple((*reduction_axes, *output_axes)),
-                                placement,
+                    candidates.append(DistributedCandidate(
+                        _candidate_id(
+                            node.id,
+                            (
+                                "output_"
+                                + str(output_index)
+                                + "_reduction_"
+                                + str(reduction_index)
                             ),
-                            hybrid_outputs,
-                            tuple(hybrid_inputs),
-                            _packed_qkv_local_shape_cost(hybrid_inputs[0], hybrid_outputs, local_work),
-                            "packed-qkv-output-K-sbp-partial",
-                            **_PACKED_QKV_OBJECTIVE,
-                        ))
+                            tuple((*reduction_axes, *output_axes)),
+                            placement,
+                        ),
+                        hybrid_outputs,
+                        tuple(hybrid_inputs),
+                        _packed_qkv_local_shape_cost(
+                            hybrid_inputs[0], hybrid_outputs, local_work
+                        ),
+                        "packed-qkv-output-K-sbp-partial",
+                        **_PACKED_QKV_OBJECTIVE,
+                    ))
         return tuple(_target_qkv_cost(context, candidate) for candidate in candidates)
 
 
@@ -804,21 +953,22 @@ def _target_qkv_cost(context, candidate):
     from triton.flagmega.ir import get_definition
 
     definition = get_definition(context.source_call.op)
-    inputs = tuple(
-        Node(f"<qkv-cost-{index}>", "builtin.var", (), value, attrs={"name": f"arg{index}"})
-        for index, value in enumerate(candidate.input_types))
+    inputs = tuple(Node(f"<qkv-cost-{index}>", "builtin.var", (), value, attrs={"name": f"arg{index}"})
+                   for index, value in enumerate(candidate.input_types))
     factors = definition.cost_factors(inputs, context.source_call.attrs, candidate.return_type)
     if factors is None:
         # Unbounded shapes retain their explicitly heuristic estimate; no
         # unavailable physical throughput is advertised as an analytic cost.
-        return replace(candidate, objective_kind="heuristic",
-                       objective_evidence=(*candidate.objective_evidence, "unbounded-shape-no-target-cost-factors"))
+        return replace(candidate, objective_kind="heuristic", objective_evidence=(
+            *candidate.objective_evidence, "unbounded-shape-no-target-cost-factors"))
     return replace(candidate, operation_cost=context.operation_cost_model.get_latency(factors, candidate.return_type),
                    objective_kind="analytic", objective_model=context.operation_cost_model.identity,
                    objective_evidence=("op-definition-cost-factors", "hierarchical-target-latency", "coupled-qkv-work"))
 
 
-class PackedQKVParallelLinearCombineCandidateProvider(DistributedCandidateProviderBase):
+class PackedQKVParallelLinearCombineCandidateProvider(
+    DistributedCandidateProviderBase
+):
     """Materialize all three Q/K/V partials through one collective boundary."""
 
     op_names = frozenset({"ntt.packed_qkv_parallel_linear_combine"})
@@ -845,9 +995,8 @@ class PackedQKVParallelLinearCombineCandidateProvider(DistributedCandidateProvid
         return candidates
 
     def try_get_input_type_tuples(self, context, return_type):
-        return tuple(
-            DistributedCandidateTuple(c.input_types, c.reason)
-            for c in self._candidates_for_return(context, return_type))
+        return tuple(DistributedCandidateTuple(c.input_types, c.reason)
+                     for c in self._candidates_for_return(context, return_type))
 
     def create_candidate(self, context, return_type, inputs):
         return next(c for c in self._candidates_for_return(context, return_type)
@@ -859,30 +1008,27 @@ class PackedQKVParallelLinearCombineCandidateProvider(DistributedCandidateProvid
     ) -> tuple[DistributedCandidate, ...]:
         if len(context.available_input_types) != 1:
             return ()
-        return tuple(
-            candidate for source in dict.fromkeys(context.available_input_types[0])
-            if (candidate := self._candidate(context, source, _packed_qkv_materialized_type(source))) is not None)
+        return tuple(candidate for source in dict.fromkeys(context.available_input_types[0])
+                     if (candidate := self._candidate(context, source, _packed_qkv_materialized_type(source)))
+                     is not None)
 
     def _candidate(self, context, input_type, output_type):
         node = context.source_call
         expected = node.attrs.get("output_type")
-        if (output_type is None or not _same_tuple_tensors(output_type, expected)
-                or not can_materialize_packed_qkv(input_type, output_type)):
+        if (
+            output_type is None
+            or not _same_tuple_tensors(output_type, expected)
+            or not can_materialize_packed_qkv(input_type, output_type)
+        ):
             return None
         communication = _packed_qkv_combine_cost(
-            input_type,
-            output_type,
-            context.reshard_cost_model.grid_synchronization_cost,
+            input_type, output_type, context.reshard_cost_model.grid_synchronization_cost,
         )
         candidate = DistributedCandidate(
-            distributed_candidate_id(node.id, "packed-qkv-combine-sbp", output_type, (input_type, )),
-            output_type,
-            (input_type, ),
-            min(communication, 2_000_000_000),
-            "packed-qkv-combine-sbp",
-            target_op=node.op,
-            objective_kind="analytic",
-            objective_model="flagmega.packed-qkv-combine-distribution/v2",
+            distributed_candidate_id(node.id, "packed-qkv-combine-sbp", output_type, (input_type,)),
+            output_type, (input_type,), min(communication, 2_000_000_000),
+            "packed-qkv-combine-sbp", target_op=node.op,
+            objective_kind="analytic", objective_model="flagmega.packed-qkv-combine-distribution/v2",
             objective_evidence=("coupled-three-field-sum-partial-materialization", "local-output-by-partial-fan-in"),
             target_attrs={"output_type": output_type},
         )
@@ -912,14 +1058,17 @@ def _packed_qkv_combine_cost(
     output_type: TupleType,
     grid_synchronization_cost: int,
 ) -> int:
-    """Port the reference local-state read/write cost for QKV partial reduction."""
+    """Port nncase's local-state read/write cost for QKV partial reduction."""
 
     if input_type == output_type:
         return 0
     total = 0
     for input_field, output_field in zip(input_type.fields, output_type.fields):
-        if (not isinstance(input_field, DistributedType) or not isinstance(output_field, DistributedType)
-                or input_field.partial is None):
+        if (
+            not isinstance(input_field, DistributedType)
+            or not isinstance(output_field, DistributedType)
+            or input_field.partial is None
+        ):
             return 2_000_000_000
         local_bytes = _tensor_bytes(local_tensor_type(output_field))
         fan_in = _shard_count(input_field.placement, input_field.partial.axes)
@@ -935,7 +1084,10 @@ def _same_tuple_tensors(lhs: IRType, rhs: IRType) -> bool:
         return False
     if len(lhs.fields) != len(rhs.fields):
         return False
-    return all(tensor_of(left) == tensor_of(right) for left, right in zip(lhs.fields, rhs.fields))
+    return all(
+        tensor_of(left) == tensor_of(right)
+        for left, right in zip(lhs.fields, rhs.fields)
+    )
 
 
 def _qkv_tail_types(
@@ -954,14 +1106,18 @@ def _qkv_tail_types(
         if index < 3:
             if partial:
                 raise ValueError("Partial packed-QKV candidates cannot carry biases.")
-            values.append(DistributedType(tensor, (output_policies[index], ), placement))
+            values.append(DistributedType(
+                tensor, (output_policies[index],), placement
+            ))
         else:
             values.append(broadcast_type(tensor, placement))
     return tuple(values)
 
 
-def _have_coupled_qkv_output_policies(policies: tuple[SBPSplit, SBPSplit, SBPSplit], ) -> bool:
-    """Match the reference coupling rule without forcing equal block sizes.
+def _have_coupled_qkv_output_policies(
+    policies: tuple[SBPSplit, SBPSplit, SBPSplit],
+) -> bool:
+    """Match nncase's coupling rule without forcing equal block sizes.
 
     Q, K, and V may have different logical extents.  Their block-cyclic
     policies are coupled when they traverse the same placement stages; each
@@ -971,12 +1127,20 @@ def _have_coupled_qkv_output_policies(policies: tuple[SBPSplit, SBPSplit, SBPSpl
 
     reference = policies[0]
     return all(
-        len(policy.stages) == len(reference.stages) and all(left.hierarchy_axes == right.hierarchy_axes and (
-            isinstance(left.distribution, BlockCyclicSplit) and isinstance(right.distribution, BlockCyclicSplit)
-            or isinstance(left.distribution, ContiguousSplit) and isinstance(right.distribution, ContiguousSplit)
-            and left.distribution == right.distribution)
-                                                            for left, right in zip(policy.stages, reference.stages))
-        for policy in policies[1:])
+        len(policy.stages) == len(reference.stages)
+        and all(
+            left.hierarchy_axes == right.hierarchy_axes
+            and (
+                isinstance(left.distribution, BlockCyclicSplit)
+                and isinstance(right.distribution, BlockCyclicSplit)
+                or isinstance(left.distribution, ContiguousSplit)
+                and isinstance(right.distribution, ContiguousSplit)
+                and left.distribution == right.distribution
+            )
+            for left, right in zip(policy.stages, reference.stages)
+        )
+        for policy in policies[1:]
+    )
 
 
 class MatMulGluCandidateProvider(DistributedCandidateProviderBase):
@@ -1000,16 +1164,19 @@ class MatMulGluCandidateProvider(DistributedCandidateProviderBase):
         gate = tensor_of(original_inputs[1])
         up = tensor_of(original_inputs[2])
         weight_n_axis = 1 if node.op == "nn.packed_dense_matmul_glu" else 0
-        n_lane = (parse_k_major_layout(str(node.attrs["packed_layout"]))[0]
-                  if node.op == "nn.packed_dense_matmul_glu" else 1)
+        n_lane = (
+            parse_k_major_layout(str(node.attrs["packed_layout"]))[0]
+            if node.op == "nn.packed_dense_matmul_glu"
+            else 1
+        )
         values = [_replicated(context, work)]
         split_index = 0
         for hierarchy_axes in _mesh_axis_combinations(placement):
             for output_policy in context.split_candidates(
-                    output,
-                    output.rank - 1,
-                    hierarchy_axes,
-                    purpose="output",
+                output,
+                output.rank - 1,
+                hierarchy_axes,
+                purpose="output",
             ):
                 weight_n_policy = scale_split_units(output_policy, 1, n_lane)
                 if weight_n_policy is None:
@@ -1020,25 +1187,32 @@ class MatMulGluCandidateProvider(DistributedCandidateProviderBase):
                     continue
                 inputs = list(original_inputs)
                 inputs[0] = broadcast_type(value, placement)
-                inputs[1] = DistributedType(gate, tuple(weight_policies), placement)
-                inputs[2] = DistributedType(up, tuple(weight_policies), placement)
+                inputs[1] = DistributedType(
+                    gate, tuple(weight_policies), placement
+                )
+                inputs[2] = DistributedType(
+                    up, tuple(weight_policies), placement
+                )
                 for index in range(3, len(inputs)):
-                    inputs[index] = broadcast_type(tensor_of(inputs[index]), placement)
+                    inputs[index] = broadcast_type(
+                        tensor_of(inputs[index]), placement
+                    )
                 output_policies = [SBP.broadcast() for _ in output.shape]
                 output_policies[output.rank - 1] = output_policy
-                values.append(
-                    DistributedCandidate(
-                        _candidate_id(
-                            node.id,
-                            f"variant_{split_index}.output_split",
-                            hierarchy_axes,
-                            placement,
-                        ),
-                        DistributedType(output, tuple(output_policies), placement),
-                        tuple(inputs),
-                        max(work // _shard_count(placement, hierarchy_axes), 1),
-                        "matmul-glu-output-sbp",
-                    ))
+                values.append(DistributedCandidate(
+                    _candidate_id(
+                        node.id,
+                        f"variant_{split_index}.output_split",
+                        hierarchy_axes,
+                        placement,
+                    ),
+                    DistributedType(
+                        output, tuple(output_policies), placement
+                    ),
+                    tuple(inputs),
+                    max(work // _shard_count(placement, hierarchy_axes), 1),
+                    "matmul-glu-output-sbp",
+                ))
                 split_index += 1
         return tuple(values)
 
@@ -1055,7 +1229,6 @@ class BinaryCandidateProvider(TypeInferenceCandidateProvider):
         "math.vectorized_binary",
         "ntt.vectorized_add_norm_stats",
     })
-
     def __init__(self):
         super().__init__(self.op_names)
 
@@ -1228,7 +1401,7 @@ def _gdn_direct_partial_candidates(
     work: int,
     reason: str,
 ) -> tuple[DistributedCandidate, ...]:
-    """Reuse legal upstream Sum-partial values, using providers."""
+    """Reuse legal upstream Sum-partial values, matching nncase's providers."""
 
     if len(context.available_input_types) != len(base_inputs):
         return ()
@@ -1244,21 +1417,26 @@ def _gdn_direct_partial_candidates(
         policy = available.axis_policies[tensor_axis]
         split_axes = set(policy.hierarchy_axes) if hasattr(policy, "hierarchy_axes") else set()
         partial_axes = set(available.partial.axes)
-        if (any(not isinstance(item, type(SBP.broadcast()))
+        if (
+            any(
+                not isinstance(item, type(SBP.broadcast()))
                 for index, item in enumerate(available.axis_policies)
-                if index != tensor_axis) or split_axes & partial_axes or split_axes | partial_axes != all_axes):
+                if index != tensor_axis
+            )
+            or split_axes & partial_axes
+            or split_axes | partial_axes != all_axes
+        ):
             continue
         inputs = list(base_inputs)
         inputs[source_input_index] = available
         axes = "_".join(str(axis) for axis in available.partial.axes)
-        result.append(
-            DistributedCandidate(
-                f"distribution.{context.source_call.id}.partial_{axes}.direct",
-                materialized_return,
-                tuple(inputs),
-                max(work // placement.size, 1),
-                reason,
-            ))
+        result.append(DistributedCandidate(
+            f"distribution.{context.source_call.id}.partial_{axes}.direct",
+            materialized_return,
+            tuple(inputs),
+            max(work // placement.size, 1),
+            reason,
+        ))
     return tuple(result)
 
 

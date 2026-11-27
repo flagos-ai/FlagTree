@@ -11,19 +11,20 @@ from triton.flagmega.codegen.triton.tir_package import _mesh_context
 
 
 @pytest.mark.parametrize("hierarchy,levels", [
-    ((2, 4), "bb"),
-    ((2, 2, 2), "bbb"),
-    ((1, 1, 8), "cdb"),
+    ((2, 4), "bb"), ((2, 2, 2), "bbb"), ((1, 1, 8), "cdb"),
 ])
 @pytest.mark.parametrize("distributed", [True, False])
 def test_scalar_mesh_coordinates_are_direct_and_keep_int64(hierarchy, levels, distributed):
-    context = _mesh_context({"hierarchy": hierarchy, "hierarchy_levels": levels, "name": "abc"[:len(hierarchy)]})
+    context = _mesh_context({"hierarchy": hierarchy, "hierarchy_levels": levels,
+                             "name": "abc"[:len(hierarchy)]})
     source = TritonTemplateRegistry().environment.from_string(
         '{% import "entrypoints/_common.py.jinja" as entry with context %}\n'
-        'def coordinates():\n{{ entry.mesh_coordinates() }}\n').render(**context, distributed_entry=distributed)
+        'def coordinates():\n{{ entry.mesh_coordinates() }}\n'
+    ).render(**context, distributed_entry=distributed)
     assert "rematerialize_index" not in source
     tree = ast.parse(source)
-    assignments = {node.targets[0].id: node.value for node in ast.walk(tree) if isinstance(node, ast.Assign)}
+    assignments = {node.targets[0].id: node.value for node in ast.walk(tree)
+                   if isinstance(node, ast.Assign)}
     for axis, level in enumerate(levels):
         value = assignments[f"shard_coord{axis}"]
         assert isinstance(value, ast.Call)

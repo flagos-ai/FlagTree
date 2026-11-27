@@ -21,6 +21,7 @@ from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.passes.tir.bufferize.planner import BufferizationOptions
 from triton.flagmega.passes.tir.bufferize.policy import NttBufferizationPolicy
 
+
 CHIP_COUNT = 4
 
 
@@ -30,18 +31,19 @@ def _chip_sharded_module():
     placement = fm.Placement((CHIP_COUNT, 2), "cx", "cb")
     distributed = fm.DistributedType(
         fm.tensor_type("float32", (16, 4)),
-        (fm.SBP.split_contiguous((0, )), fm.SBP.split_contiguous((1, ))),
+        (fm.SBP.split_contiguous((0,)), fm.SBP.split_contiguous((1,))),
         placement,
     )
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
     weight = builder.weight("weight", distributed, source="memory", key="weight", id="weight")
-    builder.function("main", (), (weight, ))
+    builder.function("main", (), (weight,))
     module = replace(
         builder.build(entry="main"),
         metadata={"launch_contract": {"grid_mesh": placement.to_data()}},
     )
-    return NttBufferizationPolicy(replace(BufferizationOptions.generic(alignment=4),
-                                          rdata_chip_sharding=True)).bufferize(module)
+    return NttBufferizationPolicy(
+        replace(BufferizationOptions.generic(alignment=4), rdata_chip_sharding=True)
+    ).bufferize(module)
 
 
 def _pack(tmp_path):
@@ -154,13 +156,15 @@ def test_every_segment_digest_is_published_and_matches_its_bytes(tmp_path):
 
 def test_a_single_chip_image_publishes_its_whole_image_digest(tmp_path):
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
-    value_type = fm.tensor_type("float32", (8, ))
+    value_type = fm.tensor_type("float32", (8,))
     weight = builder.weight("weight", value_type, source="memory", key="weight", id="weight")
-    builder.function("main", (), (weight, ))
-    module = NttBufferizationPolicy(BufferizationOptions.generic(alignment=4)).bufferize(builder.build(entry="main"))
+    builder.function("main", (), (weight,))
+    module = NttBufferizationPolicy(BufferizationOptions.generic(alignment=4)).bufferize(
+        builder.build(entry="main")
+    )
     checkpoint = MemoryCheckpoint(
         {},
-        {"weight": TensorInfo("weight", fm.DType.FLOAT32, (8, ), "memory")},
+        {"weight": TensorInfo("weight", fm.DType.FLOAT32, (8,), "memory")},
         {"weight": torch.arange(8, dtype=torch.float32)},
     )
     index = pack_rdata(module, checkpoint, tmp_path)

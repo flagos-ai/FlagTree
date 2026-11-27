@@ -18,39 +18,46 @@ def _call(family, variant):
         outputs = []
         start = 0
         for index, capacity in enumerate((128, 64, 64)):
-            outputs.append(
-                dict(result=f"Y{index}", local_n_capacity=capacity, active="True", result_offset="qkv_local_n_offsets",
-                     weight_group_start=start))
+            outputs.append(dict(result=f"Y{index}", local_n_capacity=capacity,
+                                active="True", result_offset="qkv_local_n_offsets",
+                                weight_group_start=start))
             start += capacity // 8
-        return dict(family=family, variant=variant, symbol="run", signature="X, W, Y0, Y1, Y2", source="X", weight="W",
-                    source_offset="qkv_local_k_offsets", source_active="True", local_m=1, local_k_capacity=512,
-                    tile_n=512, block_k=64, k_lane=16, n_lane=8, weight_owner_stride=512 * 256,
-                    weight_k_group_stride=256 * 16, weight_n_group_stride=128, outputs=outputs,
-                    output_type="tl.float32")
-    call = dict(family=family, variant=variant, symbol="run", local_m=1, local_m_capacity=1, local_n_capacity=128,
-                local_k_capacity=512, source="X", weight="W", source_active="True", result_active="True", result="Y",
+        return dict(family=family, variant=variant, symbol="run", signature="X, W, Y0, Y1, Y2",
+                    source="X", weight="W", source_offset="qkv_local_k_offsets",
+                    source_active="True", local_m=1, local_k_capacity=512, tile_n=512, block_k=64,
+                    k_lane=16, n_lane=8, weight_owner_stride=512 * 256,
+                    weight_k_group_stride=256 * 16, weight_n_group_stride=128,
+                    outputs=outputs, output_type="tl.float32")
+    call = dict(family=family, variant=variant, symbol="run", local_m=1, local_m_capacity=1,
+                local_n_capacity=128, local_k_capacity=512, source="X", weight="W",
+                source_active="True", result_active="True", result="Y",
                 global_n="dense_local_n_offsets", global_k="dense_local_k_offsets",
                 source_offset="dense_local_k_offsets", result_offset="dense_local_n_offsets",
-                weight_offset=_packed_offset("dense_global_n", "dense_global_k"), output_type="tl.float32", tile_n=128,
-                block_k=64, signature="X, W, Y")
+                weight_offset=_packed_offset("dense_global_n", "dense_global_k"),
+                output_type="tl.float32", tile_n=128, block_k=64,
+                signature="X, W, Y")
     if family == "dense_matmul_glu":
-        call.update(signature="X, W, U, Y", block_k=32, global_n="dense_glu_local_n_offsets",
-                    global_k="dense_glu_local_k_offsets", source_offset="dense_glu_local_k_offsets",
-                    result_offset="dense_glu_local_n_offsets", gate_weight="W", up_weight="U",
+        call.update(signature="X, W, U, Y", block_k=32,
+                    global_n="dense_glu_local_n_offsets", global_k="dense_glu_local_k_offsets",
+                    source_offset="dense_glu_local_k_offsets", result_offset="dense_glu_local_n_offsets",
+                    gate_weight="W", up_weight="U",
                     gate_weight_offset=_packed_offset("dense_glu_global_n", "dense_glu_global_k"),
-                    up_weight_offset=_packed_offset("dense_glu_global_n", "dense_glu_global_k"), gate_clamp_max=None,
-                    up_clamp=None, output_type="tl.bfloat16")
+                    up_weight_offset=_packed_offset("dense_glu_global_n", "dense_glu_global_k"),
+                    gate_clamp_max=None, up_clamp=None, output_type="tl.bfloat16")
     elif variant == "packed_k_major_gemv_norm_stats":
-        call.update(signature="X, W, R, Y, S", tile_n=64, block_k=128, residual="R",
-                    residual_offset="dense_local_n_offsets", addend_cast_types=[], projection_type="tl.float32",
-                    result_writer_active="True", stats="S", stats_offset="0", stats_writer_active="True")
+        call.update(signature="X, W, R, Y, S", tile_n=64, block_k=128,
+                    residual="R", residual_offset="dense_local_n_offsets", addend_cast_types=[],
+                    projection_type="tl.float32", result_writer_active="True",
+                    stats="S", stats_offset="0", stats_writer_active="True")
     return call
 
 
 def _render(call, corex, warps):
     return TritonTemplateRegistry().render_kernel(
-        KernelTemplateSpec(call["family"], call["variant"], "corex" if corex else None, "bi_v150" if corex else None),
-        dict(render_calls=[call], num_warps=warps, distributed_entry=False, mesh_hierarchy=(1, 1)),
+        KernelTemplateSpec(call["family"], call["variant"],
+                           "corex" if corex else None, "bi_v150" if corex else None),
+        dict(render_calls=[call], num_warps=warps, distributed_entry=False,
+             mesh_hierarchy=(1, 1)),
     ).source
 
 
@@ -62,8 +69,7 @@ def _render(call, corex, warps):
     ("dense_matmul_glu", "packed_k_major_gemv"),
 ])
 @pytest.mark.parametrize("seed,masked_tail", [(7, False), (32, False), (41, False), (71, True)])
-def test_aligned_packed_gemv_preserves_all_results(tmp_path, family, variant, seed, masked_tail, qkv_n_lane=8,
-                                                   source_active=True, output_width=None):
+def test_aligned_packed_gemv_preserves_all_results(tmp_path, family, variant, seed, masked_tail, qkv_n_lane=8, source_active=True, output_width=None):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or not getattr(torch, "corex", False):
         pytest.skip("requires an Iluvatar COREX GPU")
@@ -117,7 +123,7 @@ def test_aligned_packed_gemv_preserves_all_results(tmp_path, family, variant, se
         else:
             output = [torch.empty(capacity, device="cuda")]
             arguments = (x, w, *output)
-        module.run[(1, )](*arguments, num_warps=warps, enable_fp_fusion=False)
+        module.run[(1,)](*arguments, num_warps=warps, enable_fp_fusion=False)
         torch.cuda.synchronize()
         results.append(output)
     for before, aligned in zip(*results):
@@ -127,25 +133,15 @@ def test_aligned_packed_gemv_preserves_all_results(tmp_path, family, variant, se
 @pytest.mark.parametrize("seed,masked_tail", [(7, False), (32, False), (41, False), (71, True)])
 def test_batched_qkv_n4_groups_preserve_original_results(tmp_path, seed, masked_tail):
     test_aligned_packed_gemv_preserves_all_results(
-        tmp_path,
-        "qkv_parallel_linear",
-        "packed_fused_gemv",
-        seed,
-        masked_tail,
-        qkv_n_lane=4,
+        tmp_path, "qkv_parallel_linear", "packed_fused_gemv", seed, masked_tail, qkv_n_lane=4,
     )
 
 
 @pytest.mark.parametrize("qkv_n_lane", [4, 8])
 def test_batched_qkv_inactive_source_masks_nonfinite_weights(tmp_path, qkv_n_lane):
     test_aligned_packed_gemv_preserves_all_results(
-        tmp_path,
-        "qkv_parallel_linear",
-        "packed_fused_gemv",
-        7,
-        False,
-        qkv_n_lane=qkv_n_lane,
-        source_active=False,
+        tmp_path, "qkv_parallel_linear", "packed_fused_gemv", 7, False,
+        qkv_n_lane=qkv_n_lane, source_active=False,
     )
 
 
@@ -165,10 +161,6 @@ def test_batched_qkv_selection_preserves_other_template_contracts(variant):
 @pytest.mark.parametrize("seed,masked_tail,width", [(7, False, 256), (32, True, 280), (41, False, 512)])
 def test_projection_n256_rows_preserve_original_k64_tree(tmp_path, seed, masked_tail, width):
     test_aligned_packed_gemv_preserves_all_results(
-        tmp_path,
-        "dense_matmul",
-        "split_k_n_packed_k_major_gemv",
-        seed,
-        masked_tail,
+        tmp_path, "dense_matmul", "split_k_n_packed_k_major_gemv", seed, masked_tail,
         output_width=width,
     )

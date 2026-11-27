@@ -25,7 +25,6 @@ from triton.flagmega.passes.tir.plan_function_memory import plan_function_memory
 
 
 class NttBufferizationPolicy:
-
     def __init__(self, options: BufferizationOptions, *, synchronization_protocol_provider=None) -> None:
         self.options = options
         self.synchronization_protocol_provider = synchronization_protocol_provider
@@ -73,60 +72,60 @@ class NttBufferizationPolicy:
         nodes: list[Node] = []
         for node in module.nodes:
             if node.op == "builtin.weight":
-                nodes.append(
-                    replace(
-                        node,
-                        op="tir.buffer",
-                        attrs={**dict(node.attrs), "storage": "rdata", "alignment": plan.alignment},
-                        metadata={**dict(node.metadata), "bufferized_from": "builtin.weight"},
-                    ))
+                nodes.append(replace(
+                    node,
+                    op="tir.buffer",
+                    attrs={**dict(node.attrs), "storage": "rdata", "alignment": plan.alignment},
+                    metadata={**dict(node.metadata), "bufferized_from": "builtin.weight"},
+                ))
             elif node.op == "builtin.const_asset":
                 asset_name = self._constant_asset_name(module, node)
-                nodes.append(
-                    replace(
-                        node,
-                        op="tir.buffer",
-                        attrs={
-                            "name": asset_name,
-                            "source": "constant_recipe",
-                            "key": node.id,
-                            "storage": "rdata",
-                            "alignment": plan.alignment,
-                        },
-                        metadata={
-                            **dict(node.metadata),
-                            "bufferized_from": "builtin.const_asset",
-                            "constant_recipe": str(node.attrs["recipe"]),
-                            "constant_output": str(node.attrs["output"]),
-                        },
-                    ))
+                nodes.append(replace(
+                    node,
+                    op="tir.buffer",
+                    attrs={
+                        "name": asset_name,
+                        "source": "constant_recipe",
+                        "key": node.id,
+                        "storage": "rdata",
+                        "alignment": plan.alignment,
+                    },
+                    metadata={
+                        **dict(node.metadata),
+                        "bufferized_from": "builtin.const_asset",
+                        "constant_recipe": str(node.attrs["recipe"]),
+                        "constant_output": str(node.attrs["output"]),
+                    },
+                ))
             elif node.op == "distributed.sharded_view":
                 # Distribution materialization uses this node to carry the
                 # logical coordinate map into buffer planning.  Once every
                 # value has a concrete MemSpan, retain that information as a
                 # TIR buffer view instead of leaking a distributed-dialect op
                 # into bufferized TIR or silently erasing the alias.
-                nodes.append(
-                    replace(
-                        node,
-                        op="tir.buffer_view",
-                        attrs={"alias_kind": "sharded_view"},
-                        metadata={
-                            **dict(node.metadata),
-                            "bufferized_from": "distributed.sharded_view",
-                        },
-                    ))
+                nodes.append(replace(
+                    node,
+                    op="tir.buffer_view",
+                    attrs={"alias_kind": "sharded_view"},
+                    metadata={
+                        **dict(node.metadata),
+                        "bufferized_from": "distributed.sharded_view",
+                    },
+                ))
             else:
                 nodes.append(node)
         metadata = {
             **dict(module.metadata),
-            "buffer_plan":
-            plan.to_data(),
+            "buffer_plan": plan.to_data(),
             "kernel_sequence": [
-                node.id
-                for node in nodes
-                if node.op == "tir.kernel" or (node.op == "tir.call" and (function := module.kernel_callable_map.get(
-                    str(node.attrs.get("callee", "")))) is not None and kernel_dispatch_of(function) is not None)
+                node.id for node in nodes
+                if node.op == "tir.kernel" or (
+                    node.op == "tir.call"
+                    and (
+                        function := module.kernel_callable_map.get(str(node.attrs.get("callee", "")))
+                    ) is not None
+                    and kernel_dispatch_of(function) is not None
+                )
             ],
         }
         return replace(module, nodes=tuple(nodes), metadata=metadata)
@@ -134,13 +133,14 @@ class NttBufferizationPolicy:
     def plan_memory_synchronization(self, module: IRModule) -> IRModule:
         plan = verify_buffer_plan(module)
         synchronization = plan_memory_synchronization(module, plan)
-        materialized = materialize_memory_synchronization(module, synchronization)
-        return replace(
-            materialized, metadata={
-                **dict(module.metadata),
-                "memory_synchronization": synchronization.to_data(),
-                "synchronization": [value.to_data() for value in synchronization.events],
-            })
+        materialized = materialize_memory_synchronization(
+            module, synchronization
+        )
+        return replace(materialized, metadata={
+            **dict(module.metadata),
+            "memory_synchronization": synchronization.to_data(),
+            "synchronization": [value.to_data() for value in synchronization.events],
+        })
 
     @staticmethod
     def _constant_asset_name(module: IRModule, asset: Node) -> str:
@@ -154,7 +154,10 @@ class NttBufferizationPolicy:
                 continue
             reachable.add(node_id)
             pending.extend(recipe.node_map[node_id].inputs)
-        weights = [node for node in recipe.nodes if node.id in reachable and node.op == "builtin.weight"]
+        weights = [
+            node for node in recipe.nodes
+            if node.id in reachable and node.op == "builtin.weight"
+        ]
         if len(weights) == 1:
             return str(weights[0].attrs["name"])
         return asset.id

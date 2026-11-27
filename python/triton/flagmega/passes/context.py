@@ -30,8 +30,7 @@ class RunPassContext:
         object.__setattr__(
             self,
             "properties",
-            MappingProxyType({str(key): value
-                              for key, value in self.properties.items()}),
+            MappingProxyType({str(key): value for key, value in self.properties.items()}),
         )
 
     def require_analysis(self, name: str) -> object:

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Descriptor-driven FlagMega op definitions.
 
-This mirrors the reference useful ``ParameterInfo`` contract in native Python. Each
+This mirrors nncase's useful ``ParameterInfo`` contract in native Python. Each
 op declares named input/attribute parameters in its own class body;
 ``@op_definition`` derives the schema, arity checking, visitor dispatch and
 Python emission metadata. Public ``F`` APIs are ordinary handwritten source.
@@ -72,7 +72,7 @@ _MISSING = object()
 
 
 class ParameterInfo:
-    """Named op parameter, analogous to reference ``ParameterInfo``.
+    """Named op parameter, analogous to nncase ``ParameterInfo``.
 
     Indices are assigned from class declaration order by ``@op_definition``;
     op authors never maintain integer positions or min/max arity separately.
@@ -92,27 +92,40 @@ class ParameterInfo:
     ) -> None:
         self.kind = ParameterKind(kind)
         # Python stores constructor properties in ``Node.attrs`` and call
-        # operands in ``Node.inputs``.  the reference ``ParameterKind`` is an
+        # operands in ``Node.inputs``.  nncase's ``ParameterKind`` is an
         # orthogonal semantic distinction: an operand can still be an
         # Attribute (for example a Dimension-valued layer id) and therefore
         # must terminate AutoDistributed instead of acquiring an SBP type.
         # Keep both facts instead of overloading the storage classification.
-        self.parameter_kind = ParameterKind(self.kind if parameter_kind is None else parameter_kind)
+        self.parameter_kind = ParameterKind(
+            self.kind if parameter_kind is None else parameter_kind
+        )
         self._name = name
         self.type_pattern = type_pattern or is_ir_type()
         self.default = default
         self.variadic = bool(variadic)
         self.positional = bool(positional)
-        self.memory_effect = normalize_memory_effect(MemoryEffect.READ if (
-            memory_effect is _MISSING and self.kind is ParameterKind.INPUT and self.parameter_kind is
-            ParameterKind.INPUT) else MemoryEffect.NONE if memory_effect is _MISSING else memory_effect)
+        self.memory_effect = normalize_memory_effect(
+            MemoryEffect.READ
+            if (
+                memory_effect is _MISSING
+                and self.kind is ParameterKind.INPUT
+                and self.parameter_kind is ParameterKind.INPUT
+            )
+            else MemoryEffect.NONE
+            if memory_effect is _MISSING
+            else memory_effect
+        )
         self.owner: type[OpDefinition] | None = None
         self.index: int | None = None
         self.input_index: int | None = None
         self._declared_name: str | None = None
         if self.kind != ParameterKind.INPUT and self.variadic:
             raise ValueError("Only input parameters can be variadic.")
-        if (self.kind == ParameterKind.ATTRIBUTE and self.parameter_kind != ParameterKind.ATTRIBUTE):
+        if (
+            self.kind == ParameterKind.ATTRIBUTE
+            and self.parameter_kind != ParameterKind.ATTRIBUTE
+        ):
             raise ValueError("Node attributes must use ParameterKind.ATTRIBUTE.")
         if self.kind != ParameterKind.INPUT and self.memory_effect != MemoryEffect.NONE:
             raise ValueError("Only input parameters can carry memory effects.")
@@ -135,7 +148,7 @@ class ParameterInfo:
 
     @property
     def pattern(self) -> TypePattern:
-        """alias for the parameter type contract."""
+        """nncase-compatible alias for the parameter type contract."""
 
         return self.type_pattern
 
@@ -268,13 +281,17 @@ class OpCost:
 
     @property
     def unknown_factors(self) -> tuple[str, ...]:
-        return tuple(name for name, value in (
-            ("flops", self.flops),
-            ("bytes_read", self.bytes_read),
-            ("bytes_written", self.bytes_written),
-            ("communication_bytes", self.communication_bytes),
-            ("synchronizations", self.synchronizations),
-        ) if value is None)
+        return tuple(
+            name
+            for name, value in (
+                ("flops", self.flops),
+                ("bytes_read", self.bytes_read),
+                ("bytes_written", self.bytes_written),
+                ("communication_bytes", self.communication_bytes),
+                ("synchronizations", self.synchronizations),
+            )
+            if value is None
+        )
 
     @property
     def is_complete(self) -> bool:
@@ -290,7 +307,7 @@ class OpCostFactors:
     """Target-aggregatable execution factors for one candidate call.
 
     ``OpCost`` remains the architecture-independent metric/coverage record.
-    These factors mirror the reference executable cost-factor vocabulary: an op
+    These factors mirror nncase's executable cost-factor vocabulary: an op
     definition computes them from its candidate operand/result types, while a
     target machine decides how bandwidth, latency, parallel blocks and
     synchronization turn them into one search objective.
@@ -406,7 +423,9 @@ class OpDefinition:
         storage-bit rather than semantic arithmetic.
         """
 
-        raise NumpyMaterializationUnsupported(f"{cls.op_name} has no NumPy materializer.")
+        raise NumpyMaterializationUnsupported(
+            f"{cls.op_name} has no NumPy materializer."
+        )
 
     @classmethod
     def construct(
@@ -443,7 +462,7 @@ class OpDefinition:
 
     @classmethod
     def infer_call_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
-        """Infer a call type, including broadcast lifting.
+        """Infer a call type, including nncase-style broadcast lifting.
 
         Most op definitions only need to describe their logical tensor
         semantics.  When all distributed input leaves are broadcast on one
@@ -465,8 +484,11 @@ class OpDefinition:
         )
 
         placement = broadcast_placement_of(*(value.type for value in inputs))
-        if (cls.supports_broadcast_lifting and placement is not None
-                and (result is None or not contains_distributed(result))):
+        if (
+            cls.supports_broadcast_lifting
+            and placement is not None
+            and (result is None or not contains_distributed(result))
+        ):
             logical_inputs = tuple(
                 Node(
                     id=value.id,
@@ -476,7 +498,9 @@ class OpDefinition:
                     effect=value.effect,
                     attrs=value.attrs,
                     metadata=value.metadata,
-                ) for value in inputs)
+                )
+                for value in inputs
+            )
             from triton.flagmega.ir.op_fusion import semantic_inputs
             cls.verify_parameter_types(semantic_inputs(cls, logical_inputs, attrs))
             logical_result = cls.infer_type(logical_inputs, attrs)
@@ -499,7 +523,10 @@ class OpDefinition:
         for parameter in cls.input_parameters:
             if parameter.variadic:
                 variadic_seen = True
-                reserved = sum(item.positional and item.name not in values for item in cls.attribute_parameters)
+                reserved = sum(
+                    item.positional and item.name not in values
+                    for item in cls.attribute_parameters
+                )
                 take = len(remaining) - reserved
                 if take < 0:
                     take = 0
@@ -554,8 +581,9 @@ class OpDefinition:
         raise IRSchemaError(f"{cls.op_name} does not implement type inference.")
 
     @classmethod
-    def distributed_input_type_tuples(cls, choices: Sequence[Sequence[IRType]],
-                                      attrs: Mapping[str, object]) -> Iterator[tuple[IRType, ...]]:
+    def distributed_input_type_tuples(
+        cls, choices: Sequence[Sequence[IRType]], attrs: Mapping[str, object]
+    ) -> Iterator[tuple[IRType, ...]]:
         """Enumerate input relations from the provider's available contracts.
 
         Coupled operations may join equivalent ownership keys instead of
@@ -568,14 +596,16 @@ class OpDefinition:
         return product(*choices)
 
     @classmethod
-    def distributed_output_type_candidates(cls, choices: Sequence[Sequence[IRType]], output_type: IRType,
-                                           attrs: Mapping[str, object]) -> tuple[IRType, ...]:
+    def distributed_output_type_candidates(
+        cls, choices: Sequence[Sequence[IRType]], output_type: IRType, attrs: Mapping[str, object]
+    ) -> tuple[IRType, ...]:
         """Lift known input contracts to possible outputs; inference verifies them."""
         return ()
 
     @classmethod
-    def infer_distributed_input_types(cls, output_type: IRType, logical_input_types: Sequence[IRType],
-                                      attrs: Mapping[str, object]) -> tuple[tuple[IRType, ...], ...] | None:
+    def infer_distributed_input_types(
+        cls, output_type: IRType, logical_input_types: Sequence[IRType], attrs: Mapping[str, object]
+    ) -> tuple[tuple[IRType, ...], ...] | None:
         """Invert a requested output contract. None means no inverse is declared.
 
         An empty tuple rejects this output. Returned input tuples may require
@@ -598,9 +628,10 @@ class OpDefinition:
         inputs = tuple(module.node_map[value] for value in node.inputs)
         try:
             attrs = cls.normalize_attrs(node.attrs)
-            distributed_semantic = (not node.op.startswith("distributed.")
-                                    and (contains_distributed(node.type)
-                                         or any(contains_distributed(value.type) for value in inputs)))
+            distributed_semantic = (
+                not node.op.startswith("distributed.")
+                and (contains_distributed(node.type) or any(contains_distributed(value.type) for value in inputs))
+            )
             distributed_inferred = False
             if distributed_semantic:
                 actual_error: Exception | None = None
@@ -623,8 +654,7 @@ class OpDefinition:
                     if actual_error is not None:
                         detail = str(actual_error)
                     raise IRSchemaError(
-                        f"{node.op} distributed candidate {node.metadata['distributed_candidate']!r} is illegal: {detail}."
-                    )
+                        f"{node.op} distributed candidate {node.metadata['distributed_candidate']!r} is illegal: {detail}.")
             if distributed_semantic:
                 logical_inputs = tuple(
                     Node(
@@ -635,7 +665,9 @@ class OpDefinition:
                         effect=value.effect,
                         attrs=value.attrs,
                         metadata=value.metadata,
-                    ) for value in inputs)
+                    )
+                    for value in inputs
+                )
                 from triton.flagmega.ir.op_fusion import semantic_inputs
                 cls.verify_parameter_types(semantic_inputs(cls, logical_inputs, attrs))
                 inferred_type = cls.infer_type(logical_inputs, attrs)
@@ -702,14 +734,11 @@ class OpDefinition:
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(notes=("not-modeled", ))
+        return OpCost(notes=("not-modeled",))
 
     @classmethod
     def zero_copy_input_index(
-        cls,
-        inputs: Sequence[Node],
-        attrs: Mapping[str, object],
-        return_type: IRType,
+        cls, inputs: Sequence[Node], attrs: Mapping[str, object], return_type: IRType,
     ) -> int | None:
         """Prove a read-only byte alias for a verified typed operation.
 
@@ -747,13 +776,16 @@ class OpDefinition:
             attrs=attrs,
         )
         metric = cls.cost(synthetic)
-        if all(value is None for value in (
+        if all(
+            value is None
+            for value in (
                 metric.flops,
                 metric.bytes_read,
                 metric.bytes_written,
                 metric.communication_bytes,
                 metric.synchronizations,
-        )):
+            )
+        ):
             return None
         return OpCostFactors(
             cpu_cycles=metric.flops or 0,
@@ -780,7 +812,6 @@ class OpDefinition:
             keywords,
         )
 
-
 def op_definition(
     op_name: str,
     *,
@@ -796,7 +827,10 @@ def op_definition(
         if (namespace is None) != (functional_name is None):
             raise ValueError("Functional namespace and name must be provided together.")
         declared_parameters = tuple(
-            (name, value) for name, value in definition.__dict__.items() if isinstance(value, ParameterInfo))
+            (name, value)
+            for name, value in definition.__dict__.items()
+            if isinstance(value, ParameterInfo)
+        )
         reserved_names = {
             "pre_ops",
             "post_ops",
@@ -815,8 +849,9 @@ def op_definition(
         }
         conflicting = sorted(name for name, _ in declared_parameters if name in reserved_names)
         if conflicting:
-            raise TypeError(f"Op {op_name!r} declares reserved ParameterInfo fields {conflicting}; "
-                            "use a different Python field name and pass the IR name explicitly.")
+            raise TypeError(
+                f"Op {op_name!r} declares reserved ParameterInfo fields {conflicting}; "
+                "use a different Python field name and pass the IR name explicitly.")
         parameters = tuple(value for _, value in declared_parameters)
         input_parameters = tuple(value for value in parameters if value.kind == ParameterKind.INPUT)
         attribute_parameters = tuple(value for value in parameters if value.kind == ParameterKind.ATTRIBUTE)
@@ -841,17 +876,35 @@ def op_definition(
             )
             if parameter.kind == ParameterKind.INPUT and not parameter.variadic:
                 input_index += 1
-        inplace_input_parameters = tuple(definition.__dict__.get("inplace_input_parameters", ()))
-        if any(parameter not in input_parameters or parameter.variadic for parameter in inplace_input_parameters):
-            raise TypeError(f"Op {op_name!r} inplace_input_parameters must contain its own "
-                            "non-variadic input ParameterInfo fields.")
-        inplace_output_parameters = tuple(definition.__dict__.get("inplace_output_parameters", ()))
-        if any(parameter is not None and (parameter not in input_parameters or parameter.variadic)
-               for parameter in inplace_output_parameters):
-            raise TypeError(f"Op {op_name!r} inplace_output_parameters must contain None or "
-                            "its own non-variadic input ParameterInfo fields.")
-        byte_preserving_input_parameters = tuple(definition.__dict__.get("byte_preserving_input_parameters", ()))
-        reference_view_input_parameters = tuple(definition.__dict__.get("reference_view_input_parameters", ()))
+        inplace_input_parameters = tuple(
+            definition.__dict__.get("inplace_input_parameters", ())
+        )
+        if any(
+            parameter not in input_parameters or parameter.variadic
+            for parameter in inplace_input_parameters
+        ):
+            raise TypeError(
+                f"Op {op_name!r} inplace_input_parameters must contain its own "
+                "non-variadic input ParameterInfo fields."
+            )
+        inplace_output_parameters = tuple(
+            definition.__dict__.get("inplace_output_parameters", ())
+        )
+        if any(
+            parameter is not None
+            and (parameter not in input_parameters or parameter.variadic)
+            for parameter in inplace_output_parameters
+        ):
+            raise TypeError(
+                f"Op {op_name!r} inplace_output_parameters must contain None or "
+                "its own non-variadic input ParameterInfo fields."
+            )
+        byte_preserving_input_parameters = tuple(
+            definition.__dict__.get("byte_preserving_input_parameters", ())
+        )
+        reference_view_input_parameters = tuple(
+            definition.__dict__.get("reference_view_input_parameters", ())
+        )
         if (len(set(reference_view_input_parameters)) != len(reference_view_input_parameters) or any(
                 parameter not in input_parameters or parameter.variadic or parameter.memory_effect != MemoryEffect.NONE
                 for parameter in reference_view_input_parameters)):
@@ -860,10 +913,14 @@ def op_definition(
         result_memory_effects = tuple(definition.result_memory_effects)
         if any(not isinstance(effect, MemoryEffect) for effect in result_memory_effects):
             raise TypeError(f"Op {op_name!r} result_memory_effects must be typed MemoryEffects.")
-        if len(byte_preserving_input_parameters) > 1 or any(parameter not in input_parameters or parameter.variadic
-                                                            for parameter in byte_preserving_input_parameters):
-            raise TypeError(f"Op {op_name!r} byte_preserving_input_parameters must contain "
-                            "at most one of its own non-variadic input ParameterInfo fields.")
+        if len(byte_preserving_input_parameters) > 1 or any(
+            parameter not in input_parameters or parameter.variadic
+            for parameter in byte_preserving_input_parameters
+        ):
+            raise TypeError(
+                f"Op {op_name!r} byte_preserving_input_parameters must contain "
+                "at most one of its own non-variadic input ParameterInfo fields."
+            )
         definition.op_name = op_name
         definition.namespace = namespace
         definition.functional_name = functional_name
@@ -887,7 +944,6 @@ def op_definition(
         return definition
 
     return decorate
-
 
 def get_definition(op_name: str) -> type[OpDefinition]:
     _ensure_registered()

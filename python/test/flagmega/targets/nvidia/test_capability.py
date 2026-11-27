@@ -15,7 +15,9 @@ def _block_fp8_module() -> fm.IRModule:
     scale = fm.tensor_type("float32", (1, 1))
     lhs = builder.var("lhs", activation, id="lhs")
     rhs = builder.weight("rhs", weight, source="weights", key="rhs", id="rhs")
-    rhs_scale = builder.weight("rhs_scale", scale, source="weights", key="rhs_scale", id="rhs_scale")
+    rhs_scale = builder.weight(
+        "rhs_scale", scale, source="weights", key="rhs_scale", id="rhs_scale"
+    )
     result = builder.call(
         "math.block_scaled_matmul",
         (lhs, rhs, rhs_scale),
@@ -23,7 +25,7 @@ def _block_fp8_module() -> fm.IRModule:
         id="result",
         attrs={"weight_block_n": 128, "weight_block_k": 128},
     )
-    builder.function("main", (lhs, ), (result, ))
+    builder.function("main", (lhs,), (result,))
     return builder.build(entry="main")
 
 
@@ -43,7 +45,6 @@ def test_capability_schema_round_trips_and_derives_features():
         "cooperative_grid",
         "grid_sync",
         "mma_v3",
-        "ptx",
     })
     assert loaded.missing(("tma", "fp8_mma")) == ("fp8_mma", "tma")
 
@@ -66,7 +67,7 @@ def test_tir_proposal_filters_unsupported_candidates_and_repairs_default():
     proposed = target.propose_tir(_block_fp8_module())
     point = next(value for value in proposed.selection_points if value.id == "tir.result")
 
-    assert tuple(value.id for value in point.candidates) == ("tir.block_fp8.simt", )
+    assert tuple(value.id for value in point.candidates) == ("tir.block_fp8.simt",)
     assert point.default_candidate == "tir.block_fp8.simt"
     assert proposed.selection_map[point.id].candidate_id == "tir.block_fp8.simt"
     target.verify(proposed)
@@ -77,12 +78,12 @@ def test_verifier_rejects_agent_inserted_unsupported_candidate():
     candidate = fm.Candidate(
         "tir.unit.tma",
         {"family": "unit", "variant": "tma"},
-        {"requires": ("tma", )},
+        {"requires": ("tma",)},
     )
     point = fm.SelectionPoint(
         "tir.unit",
         "tir",
-        (candidate, ),
+        (candidate,),
         candidate.id,
         owner="unit",
     )
@@ -92,7 +93,7 @@ def test_verifier_rejects_agent_inserted_unsupported_candidate():
         (),
         (),
         "main",
-        selection_points=(point, ),
+        selection_points=(point,),
     )
 
     with pytest.raises(IRVerificationError, match="unavailable features.*tma"):

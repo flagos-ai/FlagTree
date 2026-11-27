@@ -117,17 +117,17 @@ def specialize_persistent_state_abi(module: IRModule, state_pairs) -> IRModule:
             redirected[public.id] = result.id
 
     outputs = tuple(redirected.get(value, value) for value in entry.outputs)
-    metadata = redirect_entry_abi(module.metadata, redirected, known_values=(*entry.parameters, *outputs),
-                                  stage=module.stage)
+    metadata = redirect_entry_abi(module.metadata, redirected,
+                                  known_values=(*entry.parameters, *outputs), stage=module.stage)
     changed_types = {value for value in seen_inputs if changed[value].type != nodes[value].type}
     points = tuple(point for point in module.selection_points
                    if not (point.kind == "distribution" and point.owner in changed_types))
     point_ids = {point.id for point in points}
-    result = replace(
-        module, nodes=tuple(changed.get(node.id, node) for node in module.nodes), functions=tuple(
-            replace(function, outputs=outputs) if function.name == entry.name else function
-            for function in module.functions), metadata=metadata, selection_points=points,
-        selections=tuple(record for record in module.selections if record.point_id in point_ids))
+    result = replace(module, nodes=tuple(changed.get(node.id, node) for node in module.nodes),
+                     functions=tuple(replace(function, outputs=outputs) if function.name == entry.name else function
+                                     for function in module.functions), metadata=metadata,
+                     selection_points=points,
+                     selections=tuple(record for record in module.selections if record.point_id in point_ids))
     # The graph's selections describe materialized distributions. Preserve all
     # unaffected decisions; drop only points whose owners became dead adapters.
     return verify_module(remove_unused_functions(result))

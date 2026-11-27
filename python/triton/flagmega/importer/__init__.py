@@ -18,6 +18,8 @@ from triton.flagmega.importer.source import (
     source_location_of,
 )
 from triton.flagmega.importer.model import apply_numerical_profile, import_model, import_model_layer, importer_registry
+from triton.flagmega.importer.qwen3_5_mtp import Qwen35MTPImporter, import_qwen35_mtp
+from triton.flagmega.importer.dflash import DFlashImporter, import_dflash
 from triton.flagmega.importer.numerics import VLLM_INDUCTOR_LEVEL3, VLLM_AE10_INDUCTOR_LEVEL3
 from triton.flagmega.importer.registry import ModelImporterRegistry, ModelImporterSpec
 from triton.flagmega.importer.qwen3 import (
@@ -26,13 +28,6 @@ from triton.flagmega.importer.qwen3 import (
     Qwen3ModelImporter,
     import_qwen3_layer,
     import_qwen3_model,
-)
-from triton.flagmega.importer.llama3 import (
-    Llama3LayerConfig,
-    Llama3LayerImporter,
-    Llama3ModelImporter,
-    import_llama3_layer,
-    import_llama3_model,
 )
 from triton.flagmega.importer.qwen3_5 import Qwen35Layer0Importer, Qwen35LayerConfig, import_qwen3_8_layer0
 from triton.flagmega.importer.qwen3_5_moe import Qwen35MoeConfig, Qwen35MoeImporter
@@ -51,6 +46,10 @@ __all__ = [
     "Qwen3ModelImporter",
     "Qwen35Layer0Importer",
     "Qwen35LayerConfig",
+    "Qwen35MTPImporter",
+    "import_qwen35_mtp",
+    "DFlashImporter",
+    "import_dflash",
     "Qwen35MoeConfig",
     "Qwen35MoeImporter",
     "TensorInfo",
@@ -67,9 +66,4 @@ __all__ = [
     "import_qwen3_layer",
     "import_qwen3_model",
     "import_qwen3_8_layer0",
-    "Llama3LayerConfig",
-    "Llama3LayerImporter",
-    "Llama3ModelImporter",
-    "import_llama3_layer",
-    "import_llama3_model",
 ]

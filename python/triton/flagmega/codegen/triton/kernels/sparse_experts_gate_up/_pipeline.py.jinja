@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% macro helpers(call) %}
+{% macro helpers(call) %}
 {{ call.symbol }}__weight_layout = tl.constexpr(tle.gpu.BlockEncoding(
     [1, 1], [1, 32], [{{ call.consumer_warps }}, 1], [1, 0],
 ))

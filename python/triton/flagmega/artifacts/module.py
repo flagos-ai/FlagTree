@@ -27,9 +27,7 @@ from triton.flagmega.artifacts.manifest import (
 from triton.flagmega.artifacts.rdata import RDATA_COMPOSITE_DIGEST_KINDS, pack_rdata, verify_rdata
 from triton.flagmega.artifacts.source_layout import SOURCE_LAYOUT_DIGEST
 from triton.flagmega.artifacts.program_sources import (
-    PROGRAM_SOURCE_KIND,
-    program_source_records,
-    program_source_section_name,
+    PROGRAM_SOURCE_KIND, program_source_records, program_source_section_name,
 )
 from triton.flagmega.codegen.triton import render_triton_package
 from triton.flagmega.codegen.triton.diagnostics import dump_schedules
@@ -49,17 +47,19 @@ from triton.flagmega.ir.model import _to_data
 if TYPE_CHECKING:
     from triton.flagmega.diagnostics import Dumper
 
+
 ARTIFACT_VERSION = 2
 
 # Codegen backends an executable artifact can be emitted through. Both consume
 # the same selected, bufferized TIR; they differ only in what they emit and how
 # the runtime launches it.
-CODEGEN_BACKENDS = ("triton", )
+CODEGEN_BACKENDS = ("triton", "cpp")
 
 # Section kind per backend, so a manifest states which one produced it and
 # `load_artifact` can require the right sections.
 _CODEGEN_SECTION_KINDS = {
     "triton": "codegen.triton-python/v1",
+    "cpp": "codegen.cpp-source/v1",
 }
 
 
@@ -77,6 +77,8 @@ def write_artifact(
     checkpoint: Checkpoint | None = None,
     emit_executable: bool = False,
     codegen_backend: str = "triton",
+    cpp_max_registers: int | None = None,
+    cpp_operator_profile: str | None = None,
     triton_trace=None,
     readonly_layout_policy=None,
     dumper: Dumper | None = None,
@@ -91,17 +93,28 @@ def write_artifact(
     """
     if type(require_reflink) is not bool:
         raise TypeError("require_reflink must be a bool")
+    from triton.flagmega.codegen.cpp.build import validate_cpp_max_registers
+    validate_cpp_max_registers(
+        cpp_max_registers, target=target, codegen_backend=codegen_backend,
+        emit_executable=emit_executable)
+    if cpp_operator_profile is not None:
+        from triton.flagmega.codegen.cpp.operator_profile import validate_option
+        validate_option(cpp_operator_profile, target=target, codegen_backend=codegen_backend,
+                        emit_executable=emit_executable)
     if triton_trace is not None:
         from triton.flagmega.codegen.triton.trace_config import validate_option
-        validate_option(triton_trace, target=target, codegen_backend=codegen_backend, emit_executable=emit_executable)
+        validate_option(triton_trace, target=target, codegen_backend=codegen_backend,
+                        emit_executable=emit_executable)
     if readonly_layout_policy is not None:
         from triton.flagmega.codegen.readonly_layout_policy import validate_option
         validate_option(readonly_layout_policy, target=target, codegen_backend=codegen_backend,
                         emit_executable=emit_executable)
     verify_module(module)
     if codegen_backend not in CODEGEN_BACKENDS:
-        raise ArtifactError(f"Unknown codegen backend {codegen_backend!r}; "
-                            f"expected one of {list(CODEGEN_BACKENDS)}.")
+        raise ArtifactError(
+            f"Unknown codegen backend {codegen_backend!r}; "
+            f"expected one of {list(CODEGEN_BACKENDS)}."
+        )
     plan = None
     if module.stage == "bufferized_tir":
         from triton.flagmega.ir import verify_buffer_plan
@@ -122,13 +135,19 @@ def write_artifact(
     # both producers together rather than putting serialization on the weight
     # materialization critical path. Publish the manifest only after both join.
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="flagmega-assets") as worker:
-        rdata_future = (worker.submit(pack_rdata, module, checkpoint, destination /
-                                      "assets", cache_dir=rdata_cache_dir, readonly_source=readonly_source,
-                                      require_reflink=require_reflink) if checkpoint is not None else None)
+        rdata_future = (
+            worker.submit(pack_rdata, module, checkpoint, destination / "assets",
+                          cache_dir=rdata_cache_dir, readonly_source=readonly_source,
+                          require_reflink=require_reflink)
+            if checkpoint is not None else None
+        )
         final_ir = emit_module(module, ir_dir / "final.py")
-        codegen = (_render_codegen_package(module, destination, triton_trace=triton_trace,
-                                           readonly_layout_policy=readonly_layout_policy, dumper=dumper)
-                   if emit_executable else None)
+        codegen = (
+            _render_codegen_package(module, destination, target=target, codegen_backend=codegen_backend,
+                                    cpp_max_registers=cpp_max_registers, cpp_operator_profile=cpp_operator_profile,
+                                    triton_trace=triton_trace, readonly_layout_policy=readonly_layout_policy, dumper=dumper)
+            if emit_executable else None
+        )
         rdata = rdata_future.result() if rdata_future is not None else None
     if plan is not None and not emit_executable:
         dump_schedules(module, dumper)
@@ -159,36 +178,41 @@ def write_artifact(
             ),
         ))
         for index, source in enumerate(rdata.get("sources", [])):
-            sections.append(
-                record_section(
-                    destination,
-                    destination / "assets" / source["path"],
-                    name=f"rdata.source.{index}",
-                    kind="rdata.source/v1",
-                    known_sha256=source["sha256"],
-                    known_nbytes=source["nbytes"],
-                ))
-    if codegen is not None:
-        sections.append(
-            record_section(
-                destination,
-                destination / str(codegen["source"]),
-                name="codegen.source",
-                kind=_CODEGEN_SECTION_KINDS[codegen_backend],
+            sections.append(record_section(
+                destination, destination / "assets" / source["path"],
+                name=f"rdata.source.{index}", kind="rdata.source/v1",
+                known_sha256=source["sha256"], known_nbytes=source["nbytes"],
             ))
+    if codegen is not None:
+        sections.append(record_section(
+            destination,
+            destination / str(codegen["source"]),
+            name="codegen.source",
+            kind=_CODEGEN_SECTION_KINDS[codegen_backend],
+        ))
         for record in program_source_records(codegen):
-            sections.append(
-                record_section(destination, resolve_artifact_path(destination, record["source"]),
-                               name=program_source_section_name(record), kind=PROGRAM_SOURCE_KIND))
+            sections.append(record_section(
+                destination, resolve_artifact_path(destination, record["source"]),
+                name=program_source_section_name(record), kind=PROGRAM_SOURCE_KIND))
         if codegen.get("triton_readonly_layout") is not None:
-            sections.append(
-                record_section(destination, destination / codegen["triton_readonly_layout"]["file"],
-                               name="codegen.readonly_layout", kind="flagmega.triton-readonly-layout/v1"))
+            sections.append(record_section(
+                destination, destination / codegen["triton_readonly_layout"]["file"],
+                name="codegen.readonly_layout", kind="flagmega.triton-readonly-layout/v1"))
         if codegen.get("triton_trace") is not None:
             for field in ("config", "dictionary"):
-                sections.append(
-                    record_section(destination, destination / codegen["triton_trace"][field + "_file"],
-                                   name=f"diagnostic.trace.{field}", kind=f"diagnostic.trace-{field}/v1"))
+                sections.append(record_section(
+                    destination, destination / codegen["triton_trace"][field + "_file"],
+                    name=f"diagnostic.trace.{field}", kind=f"diagnostic.trace-{field}/v1"))
+        # A C++ package is only loadable through its built library, so the
+        # library is a verified section too: a hand-edited or stale .so is
+        # rejected at load time exactly as a stale generated source is.
+        if codegen_backend == "cpp":
+            sections.append(record_section(
+                destination,
+                destination / str(codegen["library"]),
+                name="codegen.library",
+                kind="codegen.cpp-library/v1",
+            ))
     manifest = {
         "flagmega_artifact_version": ARTIFACT_VERSION,
         "schema": ARTIFACT_SCHEMA,
@@ -225,18 +249,26 @@ def _render_codegen_package(
     module: IRModule,
     destination: Path,
     *,
+    target: str,
+    codegen_backend: str,
+    cpp_max_registers: int | None = None,
+    cpp_operator_profile: str | None = None,
     triton_trace=None,
     readonly_layout_policy=None,
     dumper: Dumper | None,
 ) -> dict[str, object]:
-    return render_triton_package(module, destination, dumper=dumper, triton_trace=triton_trace,
-                                 readonly_layout_policy=readonly_layout_policy)
+    if codegen_backend == "triton":
+        return render_triton_package(module, destination, dumper=dumper, triton_trace=triton_trace,
+                                     readonly_layout_policy=readonly_layout_policy)
+    from triton.flagmega.codegen.cpp import render_cpp_package_artifact
+
+    return render_cpp_package_artifact(
+        module, destination, target=target, cpp_max_registers=cpp_max_registers, cpp_operator_profile=cpp_operator_profile, dumper=dumper
+    )
 
 
 def refresh_artifact_codegen(
-    path: str | Path,
-    *,
-    dumper: Dumper | None = None,
+    path: str | Path, *, dumper: Dumper | None = None,
     kernel_rewrite: Callable[[IRModule], Sequence[KernelDefinition]] | None = None,
 ) -> Path:
     """Re-render kernels while retaining the artifact's closed readonly snapshot.
@@ -255,7 +287,8 @@ def refresh_artifact_codegen(
     manifest_path = artifact / "artifact.json"
     before = manifest_path.read_bytes() if manifest_path.is_file() else None
     manifest, module = load_artifact(artifact, verify_rdata_payload=False)
-    if (manifest.get("status") != "executable" or manifest.get("codegen_backend", "triton") != "triton"
+    if (manifest.get("status") != "executable"
+            or manifest.get("codegen_backend", "triton") != "triton"
             or manifest.get("flagmega_artifact_version") != ARTIFACT_VERSION):
         raise ArtifactError("Codegen refresh requires a current executable Triton artifact.")
     if manifest.get("codegen", {}).get("triton_trace") is not None:
@@ -271,9 +304,8 @@ def refresh_artifact_codegen(
                 raise ArtifactError("Kernel rewrite must preserve the complete kernel ABI.")
             for value in definitions:
                 old = originals[value.name]
-                expected = replace(
-                    old, dispatch=replace(old.dispatch, microkernel=value.dispatch.microkernel,
-                                          semantic_attrs=value.dispatch.semantic_attrs))
+                expected = replace(old, dispatch=replace(old.dispatch, microkernel=value.dispatch.microkernel,
+                                                         semantic_attrs=value.dispatch.semantic_attrs))
                 if (value != expected
                         or value.dispatch.microkernel.shared_workspaces != old.dispatch.microkernel.shared_workspaces
                         or value.dispatch.microkernel.transfer_pipeline != old.dispatch.microkernel.transfer_pipeline):
@@ -291,18 +323,17 @@ def refresh_artifact_codegen(
                 destination = resolve_artifact_path(artifact, f"ir/{file.name}")
                 os.replace(file, destination)
                 replacement_sections[name] = record_section(artifact, destination, name=name, kind=kind).to_data()
-            manifest = {
-                **manifest, "semantic_hash": module.semantic_hash, "final_ir":
-                replacement_sections["ir.python"]["path"], "final_text": replacement_sections["ir.text"]["path"]
-            }
+            manifest = {**manifest, "semantic_hash": module.semantic_hash,
+                        "final_ir": replacement_sections["ir.python"]["path"],
+                        "final_text": replacement_sections["ir.text"]["path"]}
         codegen = render_triton_package(module, staging, dumper=dumper)
         source = resolve_artifact_path(staging, str(codegen["source"]))
         relative = f"codegen/{codegen['source_sha256']}.py"
         destination = resolve_artifact_path(artifact, relative)
         destination.parent.mkdir(parents=True, exist_ok=True)
         os.replace(source, destination)
-        replacement_sections["codegen.source"] = record_section(artifact, destination, name="codegen.source",
-                                                                kind=_CODEGEN_SECTION_KINDS["triton"]).to_data()
+        replacement_sections["codegen.source"] = record_section(
+            artifact, destination, name="codegen.source", kind=_CODEGEN_SECTION_KINDS["triton"]).to_data()
         program_records = []
         for record in program_source_records(codegen):
             staged_source = resolve_artifact_path(staging, record["source"])
@@ -311,19 +342,19 @@ def refresh_artifact_codegen(
             program_destination.parent.mkdir(parents=True, exist_ok=True)
             if not program_destination.exists():
                 os.replace(staged_source, program_destination)
-            section = record_section(artifact, program_destination, name=program_source_section_name(record),
-                                     kind=PROGRAM_SOURCE_KIND)
+            section = record_section(
+                artifact, program_destination, name=program_source_section_name(record),
+                kind=PROGRAM_SOURCE_KIND)
             if section.sha256 != record["source_sha256"]:
                 raise ArtifactError("Existing program source differs from the rendered source identity.")
             replacement_sections[program_source_section_name(record)] = section.to_data()
             program_records.append({**record, "source": program_relative})
-        codegen = {**codegen, "source": relative, **({"program_sources": program_records} if program_records else {})}
-        sections = [
-            replacement_sections.get(value["name"], value)
-            for value in manifest["sections"]
-            if not value["name"].startswith("codegen.program.")
-        ]
-        sections.extend(value for name, value in replacement_sections.items() if name.startswith("codegen.program."))
+        codegen = {**codegen, "source": relative,
+                   **({"program_sources": program_records} if program_records else {})}
+        sections = [replacement_sections.get(value["name"], value) for value in manifest["sections"]
+                    if not value["name"].startswith("codegen.program.")]
+        sections.extend(value for name, value in replacement_sections.items()
+                        if name.startswith("codegen.program."))
         if manifest_path.read_bytes() != before:
             raise ArtifactError("Artifact manifest changed during codegen refresh; refusing to overwrite it.")
         write_json_atomic(manifest_path, {**manifest, "codegen": codegen, "sections": sections})
@@ -355,14 +386,19 @@ def load_artifact(
         raise ArtifactError("FlagMega artifact manifest must be a JSON object.")
     version = manifest.get("flagmega_artifact_version")
     if version == 1:
-        return _load_legacy_v1(artifact, manifest, verify_rdata_payload=verify_rdata_payload)
+        return _load_legacy_v1(
+            artifact, manifest, verify_rdata_payload=verify_rdata_payload
+        )
     if version != ARTIFACT_VERSION or manifest.get("schema") != ARTIFACT_SCHEMA:
-        raise ArtifactError(f"Unsupported FlagMega artifact version/schema {version!r}/{manifest.get('schema')!r}.")
+        raise ArtifactError(
+            f"Unsupported FlagMega artifact version/schema {version!r}/{manifest.get('schema')!r}.")
     sections = parse_sections(manifest.get("sections"))
     rdata_descriptor = manifest.get("rdata")
-    deferred_hashes = (frozenset({
-        "rdata.image", *(section.name for section in sections if section.kind == "rdata.source/v1")
-    }) if rdata_descriptor is not None else frozenset())
+    deferred_hashes = (
+        frozenset({"rdata.image", *(section.name for section in sections if section.kind == "rdata.source/v1")})
+        if rdata_descriptor is not None
+        else frozenset()
+    )
     verify_sections(artifact, sections, defer_hashes=deferred_hashes)
     by_name = section_map(sections)
     required = {"ir.python": "ir.python/v1", "ir.text": "ir.text/v1"}
@@ -374,9 +410,13 @@ def load_artifact(
     # Older v2 artifacts predate the backend field; they are all Triton.
     codegen_backend = str(manifest.get("codegen_backend", "triton"))
     if codegen_backend not in CODEGEN_BACKENDS:
-        raise ArtifactError(f"Artifact declares unknown codegen backend {codegen_backend!r}.")
+        raise ArtifactError(
+            f"Artifact declares unknown codegen backend {codegen_backend!r}."
+        )
     if manifest.get("status") == "executable":
         required["codegen.source"] = _CODEGEN_SECTION_KINDS[codegen_backend]
+        if codegen_backend == "cpp":
+            required["codegen.library"] = "codegen.cpp-library/v1"
     elif manifest.get("status") != "compiler_ir":
         raise ArtifactError(f"Unsupported artifact status {manifest.get('status')!r}.")
     require_sections(by_name, required)
@@ -441,11 +481,8 @@ def load_artifact(
             validate_layout_section(artifact, codegen, by_name, module.semantic_hash)
         records = program_source_records(codegen)
         expected_programs = {program_source_section_name(record): record for record in records}
-        actual_programs = {
-            name: section
-            for name, section in by_name.items()
-            if name.startswith("codegen.program.") or section.kind == PROGRAM_SOURCE_KIND
-        }
+        actual_programs = {name: section for name, section in by_name.items()
+                           if name.startswith("codegen.program.") or section.kind == PROGRAM_SOURCE_KIND}
         if set(actual_programs) != set(expected_programs):
             raise ArtifactError("Artifact program source sections do not match its declared source files.")
         if codegen_backend != "triton" and records:
@@ -455,6 +492,16 @@ def load_artifact(
             if (section.kind != PROGRAM_SOURCE_KIND or section.path != record["source"]
                     or section.sha256 != record["source_sha256"]):
                 raise ArtifactError("Artifact program source descriptor does not match its source section.")
+        if codegen_backend == "cpp":
+            library = by_name["codegen.library"]
+            if (
+                str(codegen.get("library")) != library.path
+                or codegen.get("library_sha256") != library.sha256
+            ):
+                raise ArtifactError(
+                    "Artifact codegen descriptor does not match its built "
+                    "library section."
+                )
     elif codegen is not None:
         raise ArtifactError("compiler_ir artifact cannot contain a codegen descriptor.")
     return manifest, module
@@ -506,7 +553,9 @@ def _load_legacy_v1(
         if not isinstance(rdata, Mapping):
             raise ArtifactError("Legacy artifact rdata descriptor must be an object.")
         index_path = resolve_artifact_path(artifact, str(rdata.get("index", "")))
-        index = verify_rdata(index_path.parent, module=module, verify_image_bytes=verify_rdata_payload)
+        index = verify_rdata(
+            index_path.parent, module=module, verify_image_bytes=verify_rdata_payload
+        )
         if index["sha256"] != rdata.get("sha256") or index["nbytes"] != rdata.get("nbytes"):
             raise ArtifactError("FlagMega artifact rdata summary does not match its verified index.")
     codegen = manifest.get("codegen")

@@ -19,13 +19,11 @@ def test_scalar_elementwise_catalog_schedules_a_tensor_tile(variant):
 
 
 def test_unpacked_cast_keeps_scalar_ir_but_emits_parallel_tile(tmp_path):
-
     class Graph(fm.Module):
-
         def forward(self):
-            value = self.input("value", fm.tensor_type("bfloat16", (4096, )), id="value")
+            value = self.input("value", fm.tensor_type("bfloat16", (4096,)), id="value")
             result = fm.F.tensors.cast(value, fm.DType.FLOAT32, name="cast")
-            self.function("main", (value, ), (result, ))
+            self.function("main", (value,), (result,))
 
     module = Graph(dialect="nn", stage="frozen_constants", entry="main").build()
     lowered = Compiler().compile(module).module

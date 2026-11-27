@@ -2,18 +2,18 @@
 # SPDX-License-Identifier: MIT
 
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
-    _call_runtime_arguments, )
+    _call_runtime_arguments,
+)
 
 
 def _parameter(storage: str, runtime_argument: str):
     return {
-        "formal":
-        storage,
+        "formal": storage,
         "buffers": ({
             "runtime_argument": runtime_argument,
             "runtime_value_kind": "pointer",
             "abi": {"storage": storage, "pooled": True},
-        }, ),
+        },),
     }
 
 

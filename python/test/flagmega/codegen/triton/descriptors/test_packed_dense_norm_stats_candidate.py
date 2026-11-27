@@ -7,28 +7,41 @@ import pytest
 from triton.flagmega import ir as fm
 from triton.flagmega.targets import NvidiaSm90Target
 
-_IMPLEMENTATION = ("tir.dense_matmul."
-                   "packed_tensor_descriptor_smem_pipeline_gemv_norm_stats")
-_TABLE_IMPLEMENTATION = ("tir.dense_matmul."
-                         "packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats")
-_PORTABLE_IMPLEMENTATION = ("tir.dense_matmul.packed_k_major_gemv_norm_stats")
-_STAGED_IMPLEMENTATION = ("tir.dense_matmul."
-                          "packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats_lhs8192")
+
+_IMPLEMENTATION = (
+    "tir.dense_matmul."
+    "packed_tensor_descriptor_smem_pipeline_gemv_norm_stats"
+)
+_TABLE_IMPLEMENTATION = (
+    "tir.dense_matmul."
+    "packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats"
+)
+_PORTABLE_IMPLEMENTATION = (
+    "tir.dense_matmul.packed_k_major_gemv_norm_stats"
+)
+_STAGED_IMPLEMENTATION = (
+    "tir.dense_matmul."
+    "packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats_lhs8192"
+)
 
 
 def _module(
-        *,
-        rows: int = 1,
-        reduction_extent: int = 2048,
-        output_extent: int = 2048,
-        output_mesh_axes: tuple[int, ...] = (0, 1),
-        output_block: int | None = None,
+    *,
+    rows: int = 1,
+    reduction_extent: int = 2048,
+    output_extent: int = 2048,
+    output_mesh_axes: tuple[int, ...] = (0, 1),
+    output_block: int | None = None,
 ) -> fm.IRModule:
     if reduction_extent % 16 or output_extent % 8:
         raise ValueError("Test shapes must preserve the K16/N8 packing atoms.")
     placement = fm.Placement((8, 16), "yx", "bb")
     broadcast = fm.SBP.broadcast()
-    output_policy = (fm.SBP.split_contiguous(output_mesh_axes) if output_mesh_axes else broadcast)
+    output_policy = (
+        fm.SBP.split_contiguous(output_mesh_axes)
+        if output_mesh_axes
+        else broadcast
+    )
     if output_block is not None:
         output_policy = fm.SBP.split_block_cyclic(output_mesh_axes, output_block)
     lhs_type = fm.DistributedType(
@@ -46,7 +59,7 @@ def _module(
     )
     value_type = fm.DistributedType(
         fm.tensor_type(
-            fm.vector_type("bfloat16", (8, )),
+            fm.vector_type("bfloat16", (8,)),
             (rows, output_extent // 8),
         ),
         (broadcast, output_policy),
@@ -68,8 +81,8 @@ def _module(
         value_type,
         metadata={
             "selected_vectorization": "vectorization.last_axis",
-            "selected_vector_axes": (1, ),
-            "selected_vector_lanes": (8, ),
+            "selected_vector_axes": (1,),
+            "selected_vector_lanes": (8,),
         },
     )
     norm_consumer = fm.Node(
@@ -80,8 +93,8 @@ def _module(
         attrs={"axis": 1, "epsilon": 1e-6, "use_mean": False},
         metadata={
             "selected_vectorization": "vectorization.norm_apply.reduction_axis",
-            "selected_vector_axes": (1, ),
-            "selected_vector_lanes": (8, ),
+            "selected_vector_axes": (1,),
+            "selected_vector_lanes": (8,),
         },
     )
     result = fm.Node(
@@ -99,13 +112,13 @@ def _module(
         metadata={
             "matmul_vectorization": {
                 "selected_vectorization": "vectorization.matmul.n",
-                "selected_vector_axes": (1, ),
-                "selected_vector_lanes": (8, ),
+                "selected_vector_axes": (1,),
+                "selected_vector_lanes": (8,),
             },
             "residual_add": residual_add.id,
             "residual_input": addend.id,
             "norm_consumer": norm_consumer.id,
-            "projection_adapters": ("projection_view", ),
+            "projection_adapters": ("projection_view",),
         },
     )
     return fm.IRModule(
@@ -120,7 +133,11 @@ def _module(
 def _candidate_ids(module: fm.IRModule) -> set[str]:
     proposed = NvidiaSm90Target().propose_tir(module)
     point = next(
-        (value for value in proposed.selection_points if value.id == "tir.result"),
+        (
+            value
+            for value in proposed.selection_points
+            if value.id == "tir.result"
+        ),
         None,
     )
     return set() if point is None else {candidate.id for candidate in point.candidates}
@@ -131,7 +148,9 @@ def test_packed_norm_stats_owner_table_is_the_reviewed_default_for_full_mesh_n_t
     point = next(value for value in proposed.selection_points if value.id == "tir.result")
 
     assert point.default_candidate == _TABLE_IMPLEMENTATION
-    candidate = next(value for value in point.candidates if value.id == _TABLE_IMPLEMENTATION)
+    candidate = next(
+        value for value in point.candidates if value.id == _TABLE_IMPLEMENTATION
+    )
     assert candidate.parameters["packed_layout"] == "k_major_n8_k16"
     assert candidate.parameters["epilogue"] == "residual_norm_stats"
     assert candidate.parameters["owner_count"] == 128
@@ -146,7 +165,9 @@ def test_packed_norm_stats_owner_table_is_the_reviewed_default_for_full_mesh_n_t
 def test_packed_norm_stats_owner_descriptor_table_is_a_typed_candidate():
     proposed = NvidiaSm90Target().propose_tir(_module())
     point = next(value for value in proposed.selection_points if value.id == "tir.result")
-    candidate = next(value for value in point.candidates if value.id == _TABLE_IMPLEMENTATION)
+    candidate = next(
+        value for value in point.candidates if value.id == _TABLE_IMPLEMENTATION
+    )
 
     assert point.default_candidate == _TABLE_IMPLEMENTATION
     assert candidate.parameters["descriptor_kind"] == "table"
@@ -169,11 +190,15 @@ def test_table_rejects_non_affine_cyclic_n_but_keeps_local_simt_candidate():
 
 
 def test_packed_norm_stats_pipeline_rejects_an_incomplete_k_tile():
-    assert _IMPLEMENTATION not in _candidate_ids(_module(reduction_extent=1536))
+    assert _IMPLEMENTATION not in _candidate_ids(
+        _module(reduction_extent=1536)
+    )
 
 
 def test_packed_norm_stats_pipeline_requires_every_placement_owner_to_own_n():
-    assert _IMPLEMENTATION not in _candidate_ids(_module(output_mesh_axes=(0, )))
+    assert _IMPLEMENTATION not in _candidate_ids(
+        _module(output_mesh_axes=(0,))
+    )
 
 
 def test_packed_norm_stats_has_portable_local_shard_candidate_for_broadcast_output():
@@ -181,7 +206,9 @@ def test_packed_norm_stats_has_portable_local_shard_candidate_for_broadcast_outp
     point = next(value for value in proposed.selection_points if value.id == "tir.result")
 
     assert point.default_candidate == _PORTABLE_IMPLEMENTATION
-    candidate = next(value for value in point.candidates if value.id == _PORTABLE_IMPLEMENTATION)
+    candidate = next(
+        value for value in point.candidates if value.id == _PORTABLE_IMPLEMENTATION
+    )
     assert candidate.parameters["statistics_kind"] == "local_shard"
     assert candidate.parameters["output_partition_axes"] == ()
     assert candidate.facts["portable_triton"] is True

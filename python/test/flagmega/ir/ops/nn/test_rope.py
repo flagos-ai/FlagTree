@@ -11,7 +11,6 @@ from triton.flagmega import pattern_match as pm
 
 
 class _RoPEGraph(fm.Module):
-
     def __init__(self):
         super().__init__(dialect="high_level", stage="imported", entry="main")
 
@@ -20,7 +19,7 @@ class _RoPEGraph(fm.Module):
         cos = self.input("cos", fm.tensor_type("float32", (1, 1, 4)))
         sin = self.input("sin", fm.tensor_type("float32", (1, 1, 4)))
         result = fm.F.nn.rope(value, cos, sin, name="rope")
-        self.function("main", (value, cos, sin), (result, ))
+        self.function("main", (value, cos, sin), (result,))
 
 
 def test_rope_broadcasts_position_pair_and_rotates_half_dimensions():
@@ -29,20 +28,23 @@ def test_rope_broadcasts_position_pair_and_rotates_half_dimensions():
     cos = torch.full((1, 1, 4), 0.5, dtype=torch.float32)
     sin = torch.full((1, 1, 4), 0.25, dtype=torch.float32)
 
-    result = TorchEvaluator(DictWeightResolver({})).run(module, {"value": value, "cos": cos, "sin": sin})[0]
+    result = TorchEvaluator(DictWeightResolver({})).run(
+        module, {"value": value, "cos": cos, "sin": sin})[0]
 
     rotated = torch.cat((-value[..., 2:], value[..., :2]), dim=-1)
     expected = (value.float() * cos.float() + rotated.float() * sin.float()).to(value.dtype)
     torch.testing.assert_close(result, expected)
     assert result.dtype == torch.bfloat16
-    assert pm.try_match_root(module.node_map["rope"], pm.F.nn.is_rope(call_name="rope"), module) is not None
+    assert pm.try_match_root(
+        module.node_map["rope"], pm.F.nn.is_rope(call_name="rope"), module
+    ) is not None
 
 
 def test_rope_preserves_head_sharding_with_replicated_rotary_tables():
     placement = fm.Placement((8, 16), "yx", "bb")
     value_type = fm.DistributedType(
         fm.tensor_type("bfloat16", (1, 16, 128)),
-        (fm.SBP.broadcast(), fm.SBP.split_contiguous((1, ), 1), fm.SBP.broadcast()),
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((1,), 1), fm.SBP.broadcast()),
         placement,
     )
     rotary_type = fm.DistributedType(
@@ -60,10 +62,10 @@ def test_rope_preserves_head_sharding_with_replicated_rotary_tables():
 
 
 def test_rope_rejects_sharding_that_requires_cross_owner_pairs():
-    placement = fm.Placement((8, ), "b", "b")
+    placement = fm.Placement((8,), "b", "b")
     value_type = fm.DistributedType(
         fm.tensor_type("bfloat16", (1, 16, 128)),
-        (fm.SBP.broadcast(), fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 16)),
+        (fm.SBP.broadcast(), fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 16)),
         placement,
     )
     rotary_type = fm.DistributedType(
@@ -81,14 +83,14 @@ def test_rope_rejects_sharding_that_requires_cross_owner_pairs():
 
 @pytest.mark.parametrize("rotary_dim,block", [(None, 8), (64, 4)])
 def test_rope_preserves_pair_local_head_dimension_splits(rotary_dim, block):
-    placement = fm.Placement((8, ), "x", "b")
+    placement = fm.Placement((8,), "x", "b")
     broad = fm.SBP.broadcast()
     value_type = fm.DistributedType(
         fm.tensor_type("bfloat16", (1, 3, 128)),
-        (broad, broad, fm.SBP.split_block_cyclic((0, ), block)),
-        placement,
+        (broad, broad, fm.SBP.split_block_cyclic((0,), block)), placement,
     )
-    table = fm.DistributedType(fm.tensor_type("float32", (1, 1, rotary_dim or 128)), (broad, ) * 3, placement)
+    table = fm.DistributedType(fm.tensor_type("float32", (1, 1, rotary_dim or 128)),
+                               (broad,) * 3, placement)
     assert fm.get_definition("nn.rope").infer_type(
         (_typed("value", value_type), _typed("cos", table), _typed("sin", table)),
         {"rotary_dim": rotary_dim},

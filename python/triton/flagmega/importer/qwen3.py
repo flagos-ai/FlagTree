@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Qwen3 dense decoder-layer importer aligned with the reference Qwen3 path."""
+"""Qwen3 dense decoder-layer importer aligned with nncase's Qwen3 path."""
 
 from __future__ import annotations
 
@@ -57,35 +57,33 @@ def _validate_execution(execution_phase: str, num_tokens: int) -> int:
     """Return the validated token count; decode must be exactly one token."""
     if type(num_tokens) is not int or num_tokens <= 0:
         raise ImporterError("num_tokens must be a positive integer.")
-    if execution_phase != "prefill" and num_tokens != 1:
+    if execution_phase == "verify":
+        if not 2 <= num_tokens <= 8:
+            raise ImporterError("verify requires two to eight token rows.")
+    elif execution_phase != "prefill" and num_tokens != 1:
         raise ImporterError("decode-1 requires exactly one token.")
     return num_tokens
 
 
-def _build_rotary_embedding(builder, *, prefix, value, state, config, inverse_frequencies=None):
+def _build_rotary_embedding(builder, *, prefix, value, state, config, inverse_frequencies=()):
     """Token-step position embeddings shared by all decoder invocations."""
-
     def node_id(suffix):
         return f"{prefix}_{suffix}" if prefix else suffix
 
     tokens = value.type.shape[0].fixed_value
     rotary_type = tensor_type(DType.FLOAT32, (tokens, 1, config.head_dim))
-    attrs = {
-        "head_dim": config.head_dim,
-        "theta": config.rope_theta,
-        "attention_scaling": 1.0,
-    }
-    if inverse_frequencies:
-        # Scaled-RoPE models (for example Llama 3.x) pin the exact FP32
-        # frequency table instead of deriving it from theta alone.
-        attrs["inverse_frequencies"] = tuple(float(value) for value in inverse_frequencies)
     rotary = builder.call(
         "nn.rotary_embedding",
         [value, state],
         TupleType((rotary_type, rotary_type)),
         id=node_id("rotary_embedding"),
         effect=effect("read", "paged_attention_kv_cache"),
-        attrs=attrs,
+        attrs={
+            "head_dim": config.head_dim,
+            "theta": config.rope_theta,
+            "attention_scaling": 1.0,
+            **({"inverse_frequencies": tuple(inverse_frequencies)} if inverse_frequencies else {}),
+        },
     )
     cosine = builder.call(
         "builtin.get_item",
@@ -122,9 +120,9 @@ def _build_attention_dataflow(
     output_id: str | None = None,
     updated_state_id: str | None = None,
     position_embeddings=None,
-    inverse_frequencies=None,
+    inverse_frequencies=(),
 ):
-    """Build QKV projections, position encoding, attention, and cache updates."""
+    """Build nncase's QKV/RoPE/cache/PagedAttention/O-projection boundaries."""
 
     def node_id(suffix: str) -> str:
         return f"{prefix}_{suffix}" if prefix else suffix
@@ -195,37 +193,39 @@ def _build_attention_dataflow(
     query = projection("query", 0, config.num_attention_heads)
     key = projection("key", 1, config.num_key_value_heads)
     value_slots = projection("value", 2, config.num_key_value_heads)
-    if q_norm_weight is not None:
-        query = builder.call(
-            "nn.rms_norm",
-            [query, q_norm_weight],
-            query.type,
-            id=node_id("query_norm"),
-            attrs={"epsilon": config.epsilon, "weight_bias": 0.0},
-        )
-    if k_norm_weight is not None:
-        key = builder.call(
-            "nn.rms_norm",
-            [key, k_norm_weight],
-            key.type,
-            id=node_id("key_norm"),
-            attrs={"epsilon": config.epsilon, "weight_bias": 0.0},
-        )
-    cosine, sine = (_build_rotary_embedding(builder, prefix=prefix, value=value, state=state, config=config,
-                                            inverse_frequencies=inverse_frequencies)
-                    if position_embeddings is None else position_embeddings)
-    query = builder.call("nn.rope", [query, cosine, sine], query.type, id=node_id("query_rope"))
-    key = builder.call("nn.rope", [key, cosine, sine], key.type, id=node_id("key_rope"))
+    query = builder.call(
+        "nn.rms_norm",
+        [query, q_norm_weight],
+        query.type,
+        id=node_id("query_norm"),
+        attrs={"epsilon": config.epsilon, "weight_bias": 0.0},
+    )
+    key = builder.call(
+        "nn.rms_norm",
+        [key, k_norm_weight],
+        key.type,
+        id=node_id("key_norm"),
+        attrs={"epsilon": config.epsilon, "weight_bias": 0.0},
+    )
+    cosine, sine = (
+        _build_rotary_embedding(builder, prefix=prefix, value=value, state=state, config=config,
+                                inverse_frequencies=inverse_frequencies)
+        if position_embeddings is None else position_embeddings
+    )
+    query = builder.call(
+        "nn.rope", [query, cosine, sine], query.type, id=node_id("query_rope"))
+    key = builder.call(
+        "nn.rope", [key, cosine, sine], key.type, id=node_id("key_rope"))
 
     cache_config = paged_attention_state_config_from_type(state.type)
     attention_layout = ("seq", "head", "dim")
     cache_pack_attrs = {
-        "lanes": (cache_config.lanes, ),
-        "axes": (attention_layout.index("dim"), ),
+        "lanes": (cache_config.lanes,),
+        "axes": (attention_layout.index("dim"),),
     }
 
     def cache_pack(role: str, tensor):
-        packed_type = Pack.infer_type((tensor, ), cache_pack_attrs)
+        packed_type = Pack.infer_type((tensor,), cache_pack_attrs)
         return builder.call(
             "tensors.pack",
             [tensor],
@@ -267,16 +267,16 @@ def _build_attention_dataflow(
         id=node_id("paged_attention"),
         effect=effect("read", "paged_attention_kv_cache"),
         attrs={
-            "scale": config.head_dim**-0.5,
+            "scale": config.head_dim ** -0.5,
             "layout": attention_layout,
             "hidden_size": config.query_size,
         },
     )
-    unpack_attrs = {"axes": (attention_layout.index("dim"), )}
+    unpack_attrs = {"axes": (attention_layout.index("dim"),)}
     attended = builder.call(
         "tensors.unpack",
         [attended],
-        Unpack.infer_type((attended, ), unpack_attrs),
+        Unpack.infer_type((attended,), unpack_attrs),
         id=node_id("paged_attention_unpacked"),
         attrs=unpack_attrs,
     )
@@ -297,10 +297,16 @@ def _build_attention_dataflow(
     return output, updated_state
 
 
+def _reject_native_profile(profile):
+    if profile is not None:
+        raise ImporterError("Qwen3 native_compute_profile is not available on this branch.")
+    return None
+
+
 class Qwen3LayerImporter:
     """Import the first dense Qwen3 decoder layer for one-token decode.
 
-    The entry boundary intentionally matches the reference no-lm-head regression:
+    The entry boundary intentionally matches the nncase no-lm-head regression:
     token embedding, decoder layer, final RMSNorm and FP32 hidden output.
     """
 
@@ -314,10 +320,12 @@ class Qwen3LayerImporter:
         revision: str | None = None,
         execution_phase: str = "decode-1",
         num_tokens: int = 1,
+        native_compute_profile: str | None = None,
     ) -> None:
         if layer != 0:
             raise ImporterError("Qwen3 single-layer P0 currently imports exactly layer 0.")
         self.execution_phase = execution_phase
+        self.native_compute_profile = _reject_native_profile(native_compute_profile)
         self.num_tokens = _validate_execution(execution_phase, num_tokens)
         self.checkpoint = DirectoryCheckpoint(checkpoint) if isinstance(checkpoint, str) else checkpoint
         self.layer = layer
@@ -333,6 +341,7 @@ class Qwen3LayerImporter:
             self.config.head_dim,
             block_size=block_size,
             num_blocks=num_blocks,
+            cache_dtype=DType.BFLOAT16,
         )
 
     def import_module(self) -> IRModule:
@@ -365,12 +374,7 @@ class Qwen3LayerImporter:
                     "block_size": self.block_size,
                     "num_blocks": self.num_blocks,
                     "cache_layout": [
-                        "NumBlocks",
-                        "NumLayers",
-                        "KV",
-                        "BlockSize",
-                        "NumKVHeads",
-                        "HeadDim",
+                        "NumBlocks", "NumLayers", "KV", "BlockSize", "NumKVHeads", "HeadDim",
                     ],
                     "vectorized_axes": ["HeadDim"],
                     "lanes": [8],
@@ -387,8 +391,9 @@ class Qwen3LayerImporter:
 
         def weight_at(name: str, key: str, shape: tuple[int, ...]):
             info = self._require_tensor(key, shape, DType.BFLOAT16)
-            return builder.weight(name, tensor_type(info.dtype, info.shape), source=info.source, key=key,
-                                  id="w_" + name.replace(".", "_"))
+            return builder.weight(
+                name, tensor_type(info.dtype, info.shape), source=info.source, key=key,
+                id="w_" + name.replace(".", "_"))
 
         def weight(name: str, shape: tuple[int, ...]):
             return weight_at(name, self.layer_prefix + name, shape)
@@ -398,11 +403,13 @@ class Qwen3LayerImporter:
             self.model_prefix + "embed_tokens.weight",
             (config.vocab_size, config.hidden_size),
         )
-        hidden = builder.call("nn.embedding", [input_ids, embedding_weight], hidden_type, id="token_embedding",
-                              attrs={"padding_idx": config.padding_idx})
+        hidden = builder.call(
+            "nn.embedding", [input_ids, embedding_weight], hidden_type,
+            id="token_embedding", attrs={"padding_idx": config.padding_idx})
         input_norm_weight = weight("input_layernorm.weight", (config.hidden_size, ))
-        normalized = builder.call("nn.rms_norm", [hidden, input_norm_weight], hidden_type, id="input_norm",
-                                  attrs={"epsilon": config.epsilon, "weight_bias": 0.0})
+        normalized = builder.call(
+            "nn.rms_norm", [hidden, input_norm_weight], hidden_type,
+            id="input_norm", attrs={"epsilon": config.epsilon, "weight_bias": 0.0})
 
         q_weight = weight("self_attn.q_proj.weight", (config.query_size, config.hidden_size))
         k_weight = weight("self_attn.k_proj.weight", (config.kv_size, config.hidden_size))
@@ -410,10 +417,12 @@ class Qwen3LayerImporter:
         q_norm_weight = weight("self_attn.q_norm.weight", (config.head_dim, ))
         k_norm_weight = weight("self_attn.k_norm.weight", (config.head_dim, ))
         o_weight = weight("self_attn.o_proj.weight", (config.hidden_size, config.query_size))
-        layer_id = builder.call("builtin.scalar_const", [], tensor_type(DType.INT32, []), id="layer_id",
-                                attrs={"value": self.layer})
-        advance_sequence = builder.call("builtin.scalar_const", [], tensor_type(DType.BOOL, []), id="advance_sequence",
-                                        attrs={"value": True})
+        layer_id = builder.call(
+            "builtin.scalar_const", [], tensor_type(DType.INT32, []),
+            id="layer_id", attrs={"value": self.layer})
+        advance_sequence = builder.call(
+            "builtin.scalar_const", [], tensor_type(DType.BOOL, []),
+            id="advance_sequence", attrs={"value": True})
         attention_output, updated_state = _build_attention_dataflow(
             builder,
             prefix="self_attention",
@@ -431,33 +440,39 @@ class Qwen3LayerImporter:
             output_id="attention_output",
             updated_state_id="updated_state",
         )
-        after_attention = builder.call("math.add", [hidden, attention_output], hidden_type, id="after_attention")
+        after_attention = builder.call(
+            "math.add", [hidden, attention_output], hidden_type, id="after_attention")
 
         post_norm_weight = weight("post_attention_layernorm.weight", (config.hidden_size, ))
-        mlp_input = builder.call("nn.rms_norm", [after_attention, post_norm_weight], hidden_type,
-                                 id="post_attention_norm", attrs={"epsilon": config.epsilon, "weight_bias": 0.0})
+        mlp_input = builder.call(
+            "nn.rms_norm", [after_attention, post_norm_weight], hidden_type,
+            id="post_attention_norm", attrs={"epsilon": config.epsilon, "weight_bias": 0.0})
         gate_weight = weight("mlp.gate_proj.weight", (config.intermediate_size, config.hidden_size))
         up_weight = weight("mlp.up_proj.weight", (config.intermediate_size, config.hidden_size))
-        mlp_gate_up = builder.call("nn.dense_matmul_glu", [mlp_input, gate_weight, up_weight], intermediate_type,
-                                   id="mlp_gate_up",
-                                   attrs=get_definition("nn.dense_matmul_glu").normalize_attrs({"activation": "silu"}))
+        mlp_gate_up = builder.call(
+            "nn.dense_matmul_glu", [mlp_input, gate_weight, up_weight], intermediate_type,
+            id="mlp_gate_up", attrs=get_definition("nn.dense_matmul_glu").normalize_attrs({"activation": "silu"}))
         down_weight = weight("mlp.down_proj.weight", (config.hidden_size, config.intermediate_size))
-        mlp_output = builder.call("math.matmul", [mlp_gate_up, down_weight], hidden_type, id="mlp_down",
-                                  attrs={"transpose_a": False, "transpose_b": True})
-        decoder_output = builder.call("math.add", [after_attention, mlp_output], hidden_type, id="decoder_output")
+        mlp_output = builder.call(
+            "math.matmul", [mlp_gate_up, down_weight], hidden_type,
+            id="mlp_down", attrs={"transpose_a": False, "transpose_b": True})
+        decoder_output = builder.call(
+            "math.add", [after_attention, mlp_output], hidden_type, id="decoder_output")
 
-        final_norm_weight = weight_at("norm.weight", self.model_prefix + "norm.weight", (config.hidden_size, ))
-        final_hidden = builder.call("nn.rms_norm", [decoder_output, final_norm_weight], hidden_type, id="final_norm",
-                                    attrs={"epsilon": config.epsilon, "weight_bias": 0.0})
-        output = builder.call("tensors.cast", [final_hidden], output_type, id="output",
-                              attrs={"dtype": DType.FLOAT32.value})
+        final_norm_weight = weight_at(
+            "norm.weight", self.model_prefix + "norm.weight", (config.hidden_size, ))
+        final_hidden = builder.call(
+            "nn.rms_norm", [decoder_output, final_norm_weight], hidden_type,
+            id="final_norm", attrs={"epsilon": config.epsilon, "weight_bias": 0.0})
+        output = builder.call(
+            "tensors.cast", [final_hidden], output_type, id="output",
+            attrs={"dtype": DType.FLOAT32.value})
         builder.function("main", [input_ids, state], [output, updated_state])
-        return verify_module(
-            attach_import_source_locations(
-                builder.build(entry="main"),
-                architecture="Qwen3ForCausalLM",
-                revision=self.revision,
-            ))
+        return verify_module(attach_import_source_locations(
+            builder.build(entry="main"),
+            architecture="Qwen3ForCausalLM",
+            revision=self.revision,
+        ))
 
     def _require_tensor(self, key: str, shape: tuple[int, ...], dtype: DType) -> TensorInfo:
         info = self.checkpoint.tensor_info(key)
@@ -498,8 +513,6 @@ class Qwen3LayerImporter:
             padding_idx=_optional_int(config.get("pad_token_id")),
             tie_word_embeddings=bool(config.get("tie_word_embeddings", False)),
         )
-        if result.query_size != result.hidden_size:
-            raise ImporterError("Qwen3 P0 requires num_attention_heads * head_dim == hidden_size.")
         if result.num_attention_heads % result.num_key_value_heads:
             raise ImporterError("Qwen3 attention heads must be divisible by KV heads.")
         if result.epsilon <= 0 or result.rope_theta <= 0:
@@ -526,20 +539,30 @@ class Qwen3ModelImporter:
         revision: str | None = None,
         execution_phase: str = "decode-1",
         num_tokens: int = 1,
+        native_compute_profile: str | None = None,
     ) -> None:
         self.execution_phase = execution_phase
+        self.native_compute_profile = _reject_native_profile(native_compute_profile)
         self.num_tokens = _validate_execution(execution_phase, num_tokens)
-        self.checkpoint = (DirectoryCheckpoint(checkpoint) if isinstance(checkpoint, str) else checkpoint)
+        self.checkpoint = (
+            DirectoryCheckpoint(checkpoint) if isinstance(checkpoint, str) else checkpoint
+        )
         self.block_size = block_size
         self.num_blocks = num_blocks
         self.revision = revision
         self.config = Qwen3LayerImporter._parse_config(self.checkpoint.config)
         self.layer_prefixes = tuple(
             Qwen3LayerImporter._discover_layer_prefix(self.checkpoint.keys, layer)
-            for layer in range(self.config.num_hidden_layers))
-        model_prefixes = {prefix[:-len(f"layers.{layer}.")] for layer, prefix in enumerate(self.layer_prefixes)}
+            for layer in range(self.config.num_hidden_layers)
+        )
+        model_prefixes = {
+            prefix[:-len(f"layers.{layer}.")]
+            for layer, prefix in enumerate(self.layer_prefixes)
+        }
         if len(model_prefixes) != 1:
-            raise ImporterError(f"Qwen3 decoder layers do not share one model namespace: {sorted(model_prefixes)}.")
+            raise ImporterError(
+                f"Qwen3 decoder layers do not share one model namespace: {sorted(model_prefixes)}."
+            )
         self.model_prefix = next(iter(model_prefixes))
         self.state_config = PagedAttentionStateConfig(
             self.config.num_hidden_layers,
@@ -547,6 +570,7 @@ class Qwen3ModelImporter:
             self.config.head_dim,
             block_size=block_size,
             num_blocks=num_blocks,
+            cache_dtype=DType.BFLOAT16,
         )
 
     def import_module(self) -> IRModule:
@@ -561,8 +585,11 @@ class Qwen3ModelImporter:
                 "num_layers": config.num_hidden_layers,
                 "mode": self.execution_phase,
                 "tokens_per_call": self.num_tokens,
-                "output_boundary":
-                ("logits_fp32" if self.execution_phase == "prefill" else "logits_fp32_and_greedy_token"),
+                "output_boundary": (
+                    "logits_fp32"
+                    if self.execution_phase == "prefill"
+                    else "logits_fp32_and_greedy_token"
+                ),
                 "revision": self.revision,
                 "layer_prefixes": self.layer_prefixes,
                 "model_prefix": self.model_prefix,
@@ -581,12 +608,7 @@ class Qwen3ModelImporter:
                     "block_size": self.block_size,
                     "num_blocks": self.num_blocks,
                     "cache_layout": [
-                        "NumBlocks",
-                        "NumLayers",
-                        "KV",
-                        "BlockSize",
-                        "NumKVHeads",
-                        "HeadDim",
+                        "NumBlocks", "NumLayers", "KV", "BlockSize", "NumKVHeads", "HeadDim",
                     ],
                     "vectorized_axes": ["HeadDim"],
                     "lanes": [8],
@@ -601,7 +623,9 @@ class Qwen3ModelImporter:
         token_type = tensor_type(DType.INT32, [1])
         state_type = self.state_config.ref_type
         input_ids = builder.var("input_ids", tensor_type(DType.INT32, [tokens]), id="input_ids")
-        state = builder.var("paged_attention_kv_cache", state_type, id="paged_attention_kv_cache")
+        state = builder.var(
+            "paged_attention_kv_cache", state_type, id="paged_attention_kv_cache"
+        )
         entry_state = state
 
         def weight_at(
@@ -619,7 +643,11 @@ class Qwen3ModelImporter:
                 source=info.source,
                 key=key,
                 id=node_id,
-                metadata=({} if rdata_group is None else {"rdata_group": dict(rdata_group)}),
+                metadata=(
+                    {}
+                    if rdata_group is None
+                    else {"rdata_group": dict(rdata_group)}
+                ),
             )
 
         embedding_weight = weight_at(
@@ -644,35 +672,41 @@ class Qwen3ModelImporter:
                 metadata={"function_parameter": "decode_layer"},
             )
 
-        # reference/HuggingFace: positions belong to the token step and are
+        # nncase/HuggingFace: positions belong to the token step and are
         # shared across layers. Cache writes do not advance the step until
         # the final decoder call, so this read must precede that call chain.
         position_embeddings = _build_rotary_embedding(
-            builder,
-            prefix="main",
-            value=hidden,
-            state=state,
-            config=config,
+            builder, prefix="main", value=hidden, state=state, config=config,
         )
         decode_cos = decode_parameter("rotary_cos", position_embeddings[0].type)
         decode_sin = decode_parameter("rotary_sin", position_embeddings[1].type)
 
         decode_hidden = decode_parameter("hidden", hidden_type)
         decode_state = decode_parameter("state", state_type)
-        decode_input_norm_weight = decode_parameter("input_norm_weight",
-                                                    tensor_type(DType.BFLOAT16, [config.hidden_size]))
-        decode_q_weight = decode_parameter("q_weight",
-                                           tensor_type(DType.BFLOAT16, [config.query_size, config.hidden_size]))
-        decode_k_weight = decode_parameter("k_weight", tensor_type(DType.BFLOAT16,
-                                                                   [config.kv_size, config.hidden_size]))
-        decode_v_weight = decode_parameter("v_weight", tensor_type(DType.BFLOAT16,
-                                                                   [config.kv_size, config.hidden_size]))
-        decode_q_norm_weight = decode_parameter("q_norm_weight", tensor_type(DType.BFLOAT16, [config.head_dim]))
-        decode_k_norm_weight = decode_parameter("k_norm_weight", tensor_type(DType.BFLOAT16, [config.head_dim]))
-        decode_o_weight = decode_parameter("o_weight",
-                                           tensor_type(DType.BFLOAT16, [config.hidden_size, config.query_size]))
-        decode_post_norm_weight = decode_parameter("post_norm_weight", tensor_type(DType.BFLOAT16,
-                                                                                   [config.hidden_size]))
+        decode_input_norm_weight = decode_parameter(
+            "input_norm_weight", tensor_type(DType.BFLOAT16, [config.hidden_size])
+        )
+        decode_q_weight = decode_parameter(
+            "q_weight", tensor_type(DType.BFLOAT16, [config.query_size, config.hidden_size])
+        )
+        decode_k_weight = decode_parameter(
+            "k_weight", tensor_type(DType.BFLOAT16, [config.kv_size, config.hidden_size])
+        )
+        decode_v_weight = decode_parameter(
+            "v_weight", tensor_type(DType.BFLOAT16, [config.kv_size, config.hidden_size])
+        )
+        decode_q_norm_weight = decode_parameter(
+            "q_norm_weight", tensor_type(DType.BFLOAT16, [config.head_dim])
+        )
+        decode_k_norm_weight = decode_parameter(
+            "k_norm_weight", tensor_type(DType.BFLOAT16, [config.head_dim])
+        )
+        decode_o_weight = decode_parameter(
+            "o_weight", tensor_type(DType.BFLOAT16, [config.hidden_size, config.query_size])
+        )
+        decode_post_norm_weight = decode_parameter(
+            "post_norm_weight", tensor_type(DType.BFLOAT16, [config.hidden_size])
+        )
         decode_gate_weight = decode_parameter(
             "gate_weight",
             tensor_type(DType.BFLOAT16, [config.intermediate_size, config.hidden_size]),
@@ -685,8 +719,12 @@ class Qwen3ModelImporter:
             "down_weight",
             tensor_type(DType.BFLOAT16, [config.hidden_size, config.intermediate_size]),
         )
-        decode_layer_id = decode_parameter("layer_id", tensor_type(DType.INT32, []))
-        decode_advance_sequence = decode_parameter("advance_sequence", tensor_type(DType.BOOL, []))
+        decode_layer_id = decode_parameter(
+            "layer_id", tensor_type(DType.INT32, [])
+        )
+        decode_advance_sequence = decode_parameter(
+            "advance_sequence", tensor_type(DType.BOOL, [])
+        )
         decode_parameters = (
             decode_hidden,
             decode_state,
@@ -782,17 +820,35 @@ class Qwen3ModelImporter:
                     },
                 )
 
-            input_norm_weight = layer_weight("input_layernorm.weight", (config.hidden_size, ))
-            q_weight = layer_weight("self_attn.q_proj.weight", (config.query_size, config.hidden_size))
-            k_weight = layer_weight("self_attn.k_proj.weight", (config.kv_size, config.hidden_size))
-            v_weight = layer_weight("self_attn.v_proj.weight", (config.kv_size, config.hidden_size))
-            q_norm_weight = layer_weight("self_attn.q_norm.weight", (config.head_dim, ))
-            k_norm_weight = layer_weight("self_attn.k_norm.weight", (config.head_dim, ))
-            o_weight = layer_weight("self_attn.o_proj.weight", (config.hidden_size, config.query_size))
-            post_norm_weight = layer_weight("post_attention_layernorm.weight", (config.hidden_size, ))
-            gate_weight = layer_weight("mlp.gate_proj.weight", (config.intermediate_size, config.hidden_size))
-            up_weight = layer_weight("mlp.up_proj.weight", (config.intermediate_size, config.hidden_size))
-            down_weight = layer_weight("mlp.down_proj.weight", (config.hidden_size, config.intermediate_size))
+            input_norm_weight = layer_weight(
+                "input_layernorm.weight", (config.hidden_size,)
+            )
+            q_weight = layer_weight(
+                "self_attn.q_proj.weight", (config.query_size, config.hidden_size)
+            )
+            k_weight = layer_weight(
+                "self_attn.k_proj.weight", (config.kv_size, config.hidden_size)
+            )
+            v_weight = layer_weight(
+                "self_attn.v_proj.weight", (config.kv_size, config.hidden_size)
+            )
+            q_norm_weight = layer_weight("self_attn.q_norm.weight", (config.head_dim,))
+            k_norm_weight = layer_weight("self_attn.k_norm.weight", (config.head_dim,))
+            o_weight = layer_weight(
+                "self_attn.o_proj.weight", (config.hidden_size, config.query_size)
+            )
+            post_norm_weight = layer_weight(
+                "post_attention_layernorm.weight", (config.hidden_size,)
+            )
+            gate_weight = layer_weight(
+                "mlp.gate_proj.weight", (config.intermediate_size, config.hidden_size)
+            )
+            up_weight = layer_weight(
+                "mlp.up_proj.weight", (config.intermediate_size, config.hidden_size)
+            )
+            down_weight = layer_weight(
+                "mlp.down_proj.weight", (config.hidden_size, config.intermediate_size)
+            )
             layer_id = builder.call(
                 "builtin.scalar_const",
                 [],
@@ -844,14 +900,18 @@ class Qwen3ModelImporter:
                 "builtin.get_item",
                 [call],
                 state_type,
-                id=("updated_state" if layer + 1 == config.num_hidden_layers else f"{prefix}_updated_state"),
+                id=(
+                    "updated_state"
+                    if layer + 1 == config.num_hidden_layers
+                    else f"{prefix}_updated_state"
+                ),
                 attrs={"index": 1},
             )
 
         final_norm_weight = weight_at(
             "norm.weight",
             self.model_prefix + "norm.weight",
-            (config.hidden_size, ),
+            (config.hidden_size,),
             node_id="w_norm_weight",
         )
         head_input = hidden
@@ -871,7 +931,7 @@ class Qwen3ModelImporter:
                 [hidden],
                 head_hidden_type,
                 id="prefill_last_hidden",
-                attrs={"starts": (tokens - 1, ), "ends": (tokens, ), "axes": (0, ), "steps": (1, )},
+                attrs={"starts": (tokens - 1,), "ends": (tokens,), "axes": (0,), "steps": (1,)},
             )
         final_hidden = builder.call(
             "nn.rms_norm",
@@ -907,8 +967,12 @@ class Qwen3ModelImporter:
             # Prefill emits only the last token's logits (next-token prediction).
             builder.function("main", [input_ids, entry_state], [logits, state])
         else:
-            next_token = builder.call("nn.greedy_sample", [logits], token_type, id="next_token")
-            builder.function("main", [input_ids, entry_state], [logits, next_token, state])
+            next_token = builder.call(
+                "nn.greedy_sample", [logits], token_type, id="next_token"
+            )
+            builder.function(
+                "main", [input_ids, entry_state], [logits, next_token, state]
+            )
         builder.function(
             "decode_layer",
             decode_parameters,
@@ -919,12 +983,11 @@ class Qwen3ModelImporter:
                 "reusable": True,
             },
         )
-        return verify_module(
-            attach_import_source_locations(
-                builder.build(entry="main"),
-                architecture="Qwen3ForCausalLM",
-                revision=self.revision,
-            ))
+        return verify_module(attach_import_source_locations(
+            builder.build(entry="main"),
+            architecture="Qwen3ForCausalLM",
+            revision=self.revision,
+        ))
 
     def _require_tensor(self, key: str, shape: tuple[int, ...], dtype: DType) -> TensorInfo:
         info = self.checkpoint.tensor_info(key)
@@ -942,9 +1005,11 @@ def import_qwen3_layer(
     block_size: int = 256,
     num_blocks: int = 16,
     revision: str | None = None,
+    native_compute_profile: str | None = None,
 ) -> IRModule:
-    return Qwen3LayerImporter(checkpoint, layer=layer, block_size=block_size, num_blocks=num_blocks,
-                              revision=revision).import_module()
+    return Qwen3LayerImporter(
+        checkpoint, layer=layer, block_size=block_size, num_blocks=num_blocks, revision=revision,
+        native_compute_profile=native_compute_profile).import_module()
 
 
 def import_qwen3_model(
@@ -955,6 +1020,7 @@ def import_qwen3_model(
     revision: str | None = None,
     execution_phase: str = "decode-1",
     num_tokens: int = 1,
+    native_compute_profile: str | None = None,
 ) -> IRModule:
     return Qwen3ModelImporter(
         checkpoint,
@@ -963,6 +1029,7 @@ def import_qwen3_model(
         revision=revision,
         execution_phase=execution_phase,
         num_tokens=num_tokens,
+        native_compute_profile=native_compute_profile,
     ).import_module()
 
 

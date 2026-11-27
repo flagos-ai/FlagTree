@@ -54,15 +54,12 @@ def test_cuda_bf16_f32_result_preserves_tensor_core_operands():
     generator = torch.Generator(device="cuda").manual_seed(1)
     lhs = torch.randn((32, 2048), generator=generator, device="cuda", dtype=torch.bfloat16)
     rhs = torch.randn((2048, 2048), generator=generator, device="cuda", dtype=torch.bfloat16)
-
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("x", fm.tensor_type("bfloat16", lhs.shape))
             w = self.input("w", fm.tensor_type("bfloat16", rhs.shape))
             y = fm.F.math.matmul(x, w, output_data_type="float32", reduction_order="mma_k16")
-            self.function("main", (x, w), (y, ))
-
+            self.function("main", (x, w), (y,))
     source = Graph(dialect="high_level", stage="imported", entry="main").build()
     actual, = TorchEvaluator(DictWeightResolver({})).run(source, {"x": lhs, "w": rhs})
     expected = torch.mm(lhs, rhs, out_dtype=torch.float32)

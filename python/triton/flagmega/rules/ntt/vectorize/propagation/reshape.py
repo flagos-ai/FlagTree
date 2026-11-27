@@ -42,7 +42,8 @@ def _map_lane_axes(
     mapped: list[int] = []
     for source_axis, lane in zip(source_axes, lanes):
         candidates = [
-            axis for axis, stride in enumerate(target_strides)
+            axis
+            for axis, stride in enumerate(target_strides)
             if stride == source_strides[source_axis] and target_shape[axis] != 1
         ]
         selected = next(
@@ -58,8 +59,11 @@ def _map_lane_axes(
 
 def _pack_contract(node: Node, rank: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
     lanes = tuple(int(value) for value in node.attrs["lanes"])
-    raw_axes = (tuple(int(value) for value in node.attrs["axes"]) if "axes" in node.attrs else
-                (int(node.attrs["axis"]), ) * len(lanes))
+    raw_axes = (
+        tuple(int(value) for value in node.attrs["axes"])
+        if "axes" in node.attrs
+        else (int(node.attrs["axis"]),) * len(lanes)
+    )
     return normalize_axes(raw_axes, rank), lanes
 
 
@@ -68,10 +72,13 @@ def _unpack_contract(node: Node, module: IRModule):
     if not isinstance(vector.type, TensorType) or not isinstance(vector.type.dtype, VectorType):
         return None
     axis_count = len(tuple(node.attrs["axes"])) if "axes" in node.attrs else len(vector.type.dtype.lanes)
-    raw_axes = (tuple(int(value) for value in node.attrs["axes"]) if "axes" in node.attrs else
-                (int(node.attrs["axis"]), ) * axis_count)
+    raw_axes = (
+        tuple(int(value) for value in node.attrs["axes"])
+        if "axes" in node.attrs
+        else (int(node.attrs["axis"]),) * axis_count
+    )
     axes = normalize_axes(raw_axes, vector.type.rank)
-    return vector, axes, vector.type.dtype.lanes[:len(axes)]
+    return vector, axes, vector.type.dtype.lanes[: len(axes)]
 
 
 def _make(node_id, op, inputs, attrs, metadata):
@@ -94,8 +101,11 @@ def _pack_reshape_plan(node: Node, module: IRModule):
     if reshape.op != "tensors.reshape":
         return None
     source = module.node_map[reshape.inputs[0]]
-    if (not isinstance(source.type, TensorType) or not isinstance(reshape.type, TensorType)
-            or not isinstance(node.type, TensorType)):
+    if (
+        not isinstance(source.type, TensorType)
+        or not isinstance(reshape.type, TensorType)
+        or not isinstance(node.type, TensorType)
+    ):
         return None
     input_shape = _fixed_shape(source.type)
     output_shape = _fixed_shape(reshape.type)
@@ -120,14 +130,14 @@ def _pack_reshape(node: Node, module: IRModule) -> RewriteResult:
     packed = _make(
         f"{node.id}.propagated.pack",
         "tensors.pack",
-        (source, ),
+        (source,),
         {"axes": input_axes, "lanes": lanes},
         propagation_helper_metadata(node, node.id, "propagated-pack"),
     )
     replacement = _make(
         node.id,
         "tensors.reshape",
-        (packed, ),
+        (packed,),
         {"shape": packed_shape},
         propagation_result_metadata(
             reshape,
@@ -138,7 +148,7 @@ def _pack_reshape(node: Node, module: IRModule) -> RewriteResult:
             internal_role="propagated-reshape",
         ),
     )
-    return RewriteResult(replacement, (packed, ))
+    return RewriteResult(replacement, (packed,))
 
 
 def _reshape_unpack_plan(node: Node, module: IRModule):
@@ -177,7 +187,7 @@ def _reshape_unpack(node: Node, module: IRModule) -> RewriteResult:
     reshaped = _make(
         f"{node.id}.propagated.reshape",
         "tensors.reshape",
-        (vector, ),
+        (vector,),
         {"shape": vector_output_shape},
         propagation_result_metadata(
             node,
@@ -191,7 +201,7 @@ def _reshape_unpack(node: Node, module: IRModule) -> RewriteResult:
     replacement = _make(
         node.id,
         "tensors.unpack",
-        (reshaped, ),
+        (reshaped,),
         {"axes": output_axes},
         propagation_result_metadata(
             node,
@@ -201,14 +211,15 @@ def _reshape_unpack(node: Node, module: IRModule) -> RewriteResult:
             rule="ReshapeDevectorizePropagation",
         ),
     )
-    return RewriteResult(replacement, (reshaped, ))
+    return RewriteResult(replacement, (reshaped,))
 
 
 def reshape_propagation_rules() -> tuple[RewriteRule, ...]:
     return (
-        RewriteRule("VectorizeReshapePropagation", _pack_reshape_matches, _pack_reshape, root_ops=("tensors.pack", )),
-        RewriteRule("ReshapeDevectorizePropagation", _reshape_unpack_matches, _reshape_unpack,
-                    root_ops=("tensors.reshape", )),
+        RewriteRule("VectorizeReshapePropagation", _pack_reshape_matches, _pack_reshape, root_ops=("tensors.pack",)),
+        RewriteRule(
+            "ReshapeDevectorizePropagation", _reshape_unpack_matches, _reshape_unpack, root_ops=("tensors.reshape",)
+        ),
     )
 
 

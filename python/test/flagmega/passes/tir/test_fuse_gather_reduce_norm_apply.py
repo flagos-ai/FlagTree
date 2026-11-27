@@ -17,7 +17,9 @@ def _graph(*, extra_stats_user=False, reduce_op=fm.ReduceOp.SUM, zero_bias=False
         (broadcast, split),
         placement,
     )
-    parameter_type = fm.DistributedType(fm.tensor_type("bfloat16", (8, )), (split, ), placement)
+    parameter_type = fm.DistributedType(
+        fm.tensor_type("bfloat16", (8,)), (split,), placement
+    )
     materialized_type = fm.DistributedType(
         fm.tensor_type("float32", (1, 1, 1)),
         (broadcast, broadcast, broadcast),
@@ -31,9 +33,10 @@ def _graph(*, extra_stats_user=False, reduce_op=fm.ReduceOp.SUM, zero_bias=False
     )
 
     class Graph(fm.Module):
-
         def __init__(self):
-            super().__init__(dialect="ntt", stage="frozen_constants", entry="main")
+            super().__init__(
+                dialect="ntt", stage="frozen_constants", entry="main"
+            )
 
         def forward(self):
             partial = self.input("partial", partial_type, id="partial")
@@ -41,12 +44,18 @@ def _graph(*, extra_stats_user=False, reduce_op=fm.ReduceOp.SUM, zero_bias=False
             scale = self.input("scale", parameter_type, id="scale")
             parameters = [partial, value, scale]
             if zero_bias:
-                dense_zero = fm.F.builtin.splat_const(parameter_type.tensor, 0.0, name="dense_zero")
-                bias = fm.F.distributed.sharded_view(dense_zero, parameter_type, name="bias")
+                dense_zero = fm.F.builtin.splat_const(
+                    parameter_type.tensor, 0.0, name="dense_zero"
+                )
+                bias = fm.F.distributed.sharded_view(
+                    dense_zero, parameter_type, name="bias"
+                )
             else:
                 bias = self.input("bias", parameter_type, id="bias")
                 parameters.append(bias)
-            materialized = fm.F.distributed.boxing(partial, materialized_type, name="materialized")
+            materialized = fm.F.distributed.boxing(
+                partial, materialized_type, name="materialized"
+            )
             output = fm.F.nn.norm_apply(
                 value,
                 materialized,
@@ -58,11 +67,11 @@ def _graph(*, extra_stats_user=False, reduce_op=fm.ReduceOp.SUM, zero_bias=False
                 name="output",
                 metadata={
                     "selected_vectorization": "vectorization.norm_apply.reduction_axis",
-                    "selected_vector_axes": (-1, ),
-                    "selected_vector_lanes": (8, ),
+                    "selected_vector_axes": (-1,),
+                    "selected_vector_lanes": (8,),
                 },
             )
-            outputs = (output, materialized) if extra_stats_user else (output, )
+            outputs = (output, materialized) if extra_stats_user else (output,)
             self.function("main", tuple(parameters), outputs)
 
     return Graph().build()
@@ -94,7 +103,9 @@ def test_keeps_materialization_with_an_additional_exact_value_user():
 
 
 def test_keeps_non_sum_partial_materialization():
-    module = fuse_gather_reduce_norm_apply(_graph(reduce_op=fm.ReduceOp.MAX))
+    module = fuse_gather_reduce_norm_apply(
+        _graph(reduce_op=fm.ReduceOp.MAX)
+    )
 
     assert module.node_map["output"].op == "nn.norm_apply"
     assert module.node_map["materialized"].op == "distributed.boxing"
@@ -103,10 +114,10 @@ def test_keeps_non_sum_partial_materialization():
 @pytest.mark.parametrize("round_before_scale", [False, True])
 def test_fusion_preserves_normalization_rounding(round_before_scale, tmp_path):
     source = _graph()
-    source = replace(
-        source, nodes=tuple(
-            replace(node, attrs={**node.attrs, "round_before_scale": round_before_scale}) if node.op ==
-            "nn.norm_apply" else node for node in source.nodes))
+    source = replace(source, nodes=tuple(
+        replace(node, attrs={**node.attrs, "round_before_scale": round_before_scale})
+        if node.op == "nn.norm_apply" else node for node in source.nodes
+    ))
     result = fuse_gather_reduce_norm_apply(source)
     assert result.node_map["output"].attrs["round_before_scale"] is round_before_scale
     assert fm.load_module(fm.emit_module(result, tmp_path / "fused.py")) == result

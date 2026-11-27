@@ -17,9 +17,10 @@ def validate_function_offset_tables(raw, *, existing_names):
             raise ArtifactError("Function offset table specs must be mappings.")
         name = spec.get("name")
         values = spec.get("values")
-        if (not isinstance(name, str) or not name.isidentifier() or name in names or spec.get("dtype") != "int64"
-                or not isinstance(values, (tuple, list)) or not values
-                or any(type(value) is not int or not -(2**63) <= value < 2**63 for value in values)):
+        if (not isinstance(name, str) or not name.isidentifier() or name in names
+                or spec.get("dtype") != "int64" or not isinstance(values, (tuple, list))
+                or not values or any(type(value) is not int or not -(2**63) <= value < 2**63
+                                     for value in values)):
             raise ArtifactError("Invalid function offset table name, dtype or signed-i64 payload.")
         names.add(name)
         specs.append({"name": name, "dtype": "int64", "values": tuple(values)})

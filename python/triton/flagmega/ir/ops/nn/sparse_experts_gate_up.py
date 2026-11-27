@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Selected expert gate/up projections and SwiGLU, following reference stages."""
+"""Selected expert gate/up projections and SwiGLU, following nncase stages."""
 
 from math import isfinite
 
@@ -120,7 +120,7 @@ class SparseExpertsGateUp(OpDefinition):
                 "router_expert_ids": (token, route),
                 "gate_weight": (broadcast, scalar_intermediate, broadcast),
                 "up_weight": (broadcast, scalar_intermediate, broadcast),
-                **{name: (broadcast, ) * tensor_of(types[name]).rank
+                **{name: (broadcast,) * tensor_of(types[name]).rank
                    for name in scale_names},
             })
         role_axes(token, route, intermediate_policy)
@@ -157,13 +157,13 @@ def evaluate_gate_up(values, q_type, output_type, attrs, context):
         for route in range(ids.shape[1]):
             expert = int(ids[token, route])
             gate = scaled_projection(q[token, route], gate_weight[expert], values["gate_input_scale"][expert],
-                                     values["gate_proj_scale"][expert], block_n=int(attrs["weight_block_n"]),
-                                     block_k=int(attrs["weight_block_k"]),
+                                     values["gate_proj_scale"][expert],
+                                     block_n=int(attrs["weight_block_n"]), block_k=int(attrs["weight_block_k"]),
                                      activation_quantization=attrs.get("activation_quantization", "dynamic_fp8"),
                                      reduction_order=attrs.get("reduction_order", "relaxed"))
             up = scaled_projection(q[token, route], up_weight[expert], values["up_input_scale"][expert],
-                                   values["up_proj_scale"][expert], block_n=int(attrs["weight_block_n"]),
-                                   block_k=int(attrs["weight_block_k"]),
+                                   values["up_proj_scale"][expert],
+                                   block_n=int(attrs["weight_block_n"]), block_k=int(attrs["weight_block_k"]),
                                    activation_quantization=attrs.get("activation_quantization", "dynamic_fp8"),
                                    reduction_order=attrs.get("reduction_order", "relaxed"))
             if attrs["round_projections"]:

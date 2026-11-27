@@ -25,8 +25,8 @@ def _silu_module() -> fm.IRModule:
     builder = fm.IRBuilder(dialect="high_level", stage="packed")
     value_type = fm.tensor_type("bfloat16", (1, 128))
     value = builder.var("value", value_type, id="value")
-    output = builder.call("math.silu", (value, ), value_type, id="output")
-    builder.function("main", (value, ), (output, ))
+    output = builder.call("math.silu", (value,), value_type, id="output")
+    builder.function("main", (value,), (output,))
     return builder.build(entry="main")
 
 
@@ -54,12 +54,12 @@ def test_unknown_compute_op_cannot_use_silent_broadcast_fallback():
     value = fm.Node("value", "builtin.var", (), value_type, attrs={"name": "value"})
     # GatedDeltaNet must be decomposed before AutoDistribution and therefore
     # deliberately has no provider at this stage.
-    unknown = fm.Node("output", "nn.gated_delta_net", (value.id, ), value_type)
+    unknown = fm.Node("output", "nn.gated_delta_net", (value.id,), value_type)
     module = fm.IRModule(
         "high_level",
         "packed",
         (value, unknown),
-        (fm.Function("main", (value.id, ), (unknown.id, )), ),
+        (fm.Function("main", (value.id,), (unknown.id,)),),
         "main",
     )
 
@@ -98,15 +98,15 @@ def test_all_current_semantic_families_are_explicitly_classified():
         "tensors.slice_to_shape",
     }.issubset(names)
     for op_name in (
-            "nn.rms_norm",
-            "nn.rope",
-            "nn.update_paged_attention_kv_cache",
-            "ntt.vectorized_cast",
-            "ntt.vectorized_rope",
-            "tensors.pack",
-            "tensors.bitcast",
-            "tensors.reshape",
-            "tensors.unpack",
+        "nn.rms_norm",
+        "nn.rope",
+        "nn.update_paged_attention_kv_cache",
+        "ntt.vectorized_cast",
+        "ntt.vectorized_rope",
+        "tensors.pack",
+        "tensors.bitcast",
+        "tensors.reshape",
+        "tensors.unpack",
     ):
         assert isinstance(registry.try_get(op_name), TypeInferenceCandidateProvider)
     assert registry.try_get("nn.paged_attention") is None

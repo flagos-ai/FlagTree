@@ -6,10 +6,8 @@ from dataclasses import replace
 
 from triton.flagmega.ir import get_definition
 from .realization import (
-    DistributedReshardRealization,
-    DistributedReshardRealizationContext,
-    DistributedReshardSourceKind,
-    DistributedReshardUsageKind,
+    DistributedReshardRealization, DistributedReshardRealizationContext,
+    DistributedReshardSourceKind, DistributedReshardUsageKind,
 )
 
 
@@ -26,12 +24,10 @@ def publication_origin(graph, node_id, path=()):
         definition = get_definition(node.op)
         indexes = set()
         for candidate in graph.bucket_map[node_id].candidates:
-            inputs = tuple(
-                replace(graph.module.node_map[value], type=value_type)
-                for value, value_type in zip(node.inputs, candidate.input_types))
+            inputs = tuple(replace(graph.module.node_map[value], type=value_type)
+                           for value, value_type in zip(node.inputs, candidate.input_types))
             index = definition.zero_copy_input_index(inputs, node.attrs, candidate.return_type)
-            if index is not None and not _input_preserves_publication(graph, node.inputs[index],
-                                                                      candidate.input_types[index]):
+            if index is not None and not _input_preserves_publication(graph, node.inputs[index], candidate.input_types[index]):
                 index = None
             indexes.add(index)
         if len(indexes) == 1 and None not in indexes:
@@ -51,8 +47,8 @@ def _input_preserves_publication(graph, source_id, required):
         source = producer.return_type
         if source == required:
             continue
-        context = DistributedReshardRealizationContext(source, required, DistributedReshardSourceKind.INTERNAL,
-                                                       DistributedReshardUsageKind.INTERNAL)
+        context = DistributedReshardRealizationContext(
+            source, required, DistributedReshardSourceKind.INTERNAL, DistributedReshardUsageKind.INTERNAL)
         if graph.realization_analysis.classify(context) is not DistributedReshardRealization.SHARDED_VIEW:
             return False
         if getattr(source, "exclusive", None) != getattr(required, "exclusive", None):
@@ -69,9 +65,8 @@ def shared_publication(graph, site, plan):
     if source_node.op in {"builtin.var", "builtin.weight", "builtin.const_asset"}:
         return None
     source_type = graph.bucket_map[site.producer_id].candidates[site.producer_index].return_type
-    context = DistributedReshardRealizationContext(source_type, plan.step_types[0],
-                                                   DistributedReshardSourceKind.INTERNAL,
-                                                   DistributedReshardUsageKind(site.usage))
+    context = DistributedReshardRealizationContext(
+        source_type, plan.step_types[0], DistributedReshardSourceKind.INTERNAL, DistributedReshardUsageKind(site.usage))
     realization = graph.realization_analysis.classify(context)
     cost = graph.reshard_cost_model.shared_publication_cost(context, realization)
     if not cost:

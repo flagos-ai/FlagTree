@@ -23,8 +23,7 @@ def _mesh():
             {"placement_axis": 0, "name": "block_y", "size": 8, "level": "b"},
             {"placement_axis": 1, "name": "block_x", "size": 16, "level": "b"},
         ),
-        "mesh_axes_repr":
-        "[('block_y', 8), ('block_x', 16)]",
+        "mesh_axes_repr": "[('block_y', 8), ('block_x', 16)]",
     }
 
 
@@ -37,7 +36,7 @@ def test_axis_group_descriptor_and_barrier_are_rendered_from_tir_event():
         "execution_kind": "local_shard",
         "barrier_before": True,
         "barrier_scope": "grid",
-        "barrier_axis_group_axes": (0, ),
+        "barrier_axis_group_axes": (0,),
         "symbol": "_unit",
         "arguments": "",
     }]
@@ -62,9 +61,9 @@ def test_axis_group_descriptor_and_barrier_are_rendered_from_tir_event():
         "key": "0x8",
         "axis_names_repr": "('block_y',)",
         "shape_repr": "(8,)",
-        "axes": (0, ),
-        "shape": (8, ),
-    }, )
+        "axes": (0,),
+        "shape": (8,),
+    },)
     assert "FLAGMEGA_GRID_AXIS_GROUP_0x8 = tl.constexpr(" in source
     assert ".axis_group(\n        ('block_y',),\n        group_shape=(8,)," in source
     assert "tle.distributed_barrier(FLAGMEGA_GRID_AXIS_GROUP_0x8)" in source
@@ -74,7 +73,7 @@ def test_axis_group_rejects_non_block_placement_axes():
     events = [{
         "kind": "barrier",
         "scope": "grid",
-        "axis_group_axes": (2, ),
+        "axis_group_axes": (2,),
     }]
 
     with pytest.raises(CodegenError, match="not physical block axes"):

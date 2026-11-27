@@ -31,37 +31,32 @@ def _abi(
         strides.append(stride)
         stride *= extent
     return {
-        "storage":
-        "workspace",
-        "storage_kind":
-        storage_kind,
-        "pool_byte_offset":
-        0,
-        "scalar_dtype":
-        dtype,
-        "scalar_itemsize":
-        itemsize,
-        "logical_shape":
-        shape,
-        "local_capacity_shape":
-        local_shape,
-        "active_shape_expressions":
-        tuple(str(value) for value in local_shape),
-        "logical_coordinate_expressions": (tuple(logical_coordinates) if logical_coordinates is not None else tuple(
-            f"local_coord_{axis}" for axis in range(len(shape)))),
-        "scalar_storage_strides":
-        tuple(value * lanes for value in reversed(strides)),
-        "scalar_lane_shape": () if lanes == 1 else (lanes, ),
-        "scalar_lane_count":
-        lanes,
-        "component_stride_scalar_elements":
-        owner_stride,
-        "coordinate_space":
-        coordinate_space,
+        "storage": "workspace",
+        "storage_kind": storage_kind,
+        "pool_byte_offset": 0,
+        "scalar_dtype": dtype,
+        "scalar_itemsize": itemsize,
+        "logical_shape": shape,
+        "local_capacity_shape": local_shape,
+        "active_shape_expressions": tuple(str(value) for value in local_shape),
+        "logical_coordinate_expressions": (
+            tuple(logical_coordinates)
+            if logical_coordinates is not None
+            else tuple(f"local_coord_{axis}" for axis in range(len(shape)))
+        ),
+        "scalar_storage_strides": tuple(
+            value * lanes for value in reversed(strides)
+        ),
+        "scalar_lane_shape": () if lanes == 1 else (lanes,),
+        "scalar_lane_count": lanes,
+        "component_stride_scalar_elements": owner_stride,
+        "coordinate_space": coordinate_space,
         "distributed_type": {
             "placement": {"hierarchy": (2, 1)},
             "axis_policies": tuple({"kind": "broadcast"} for _ in shape),
-            "partial": ({"axes": (0, ), "reduce_op": "sum"} if partial else None),
+            "partial": (
+                {"axes": (0,), "reduce_op": "sum"} if partial else None
+            ),
         },
     }
 
@@ -74,7 +69,7 @@ def _parameter(formal, abi):
             "actual": formal,
             "runtime_argument": formal,
             "abi": abi,
-        }, ),
+        },),
     }
 
 
@@ -93,7 +88,9 @@ def _raw():
         owner_stride=16,
         partial=True,
     )
-    result = _abi((1, 2, 2), lanes=4, dtype="bfloat16", itemsize=2)
+    result = _abi(
+        (1, 2, 2), lanes=4, dtype="bfloat16", itemsize=2
+    )
     return {
         "semantic_attrs": {
             "layout": ("seq", "head", "dim"),
@@ -106,7 +103,7 @@ def _raw():
             _parameter("sum_state", stats),
             _parameter("acc_state", accumulator),
         ),
-        "outputs": (_parameter("result", result), ),
+        "outputs": (_parameter("result", result),),
         "workspaces": (),
     }
 
@@ -128,22 +125,16 @@ def test_plain_and_gated_templates_do_not_duplicate_each_others_functions():
     gate["scalar_storage_strides"] = (700, 400, 32)
     gated_raw = {**raw, "inputs": (*raw["inputs"], _parameter("gate", gate))}
     calls = [
-        {
-            **_paged_attention_combine_call(raw), "family": "paged_attention_combine", "variant": "decode", "symbol":
-            "plain_combine", "signature": "maximum, total, accumulator, output", "noinline": True
-        },
-        {
-            **_paged_attention_gated_combine_call(gated_raw), "family": "paged_attention_gated_combine", "variant":
-            "decode", "symbol": "gated_combine", "signature": "maximum, total, accumulator, gate, output", "noinline":
-            True
-        },
+        {**_paged_attention_combine_call(raw), "family": "paged_attention_combine", "variant": "decode",
+         "symbol": "plain_combine", "signature": "maximum, total, accumulator, output", "noinline": True},
+        {**_paged_attention_gated_combine_call(gated_raw), "family": "paged_attention_gated_combine", "variant": "decode",
+         "symbol": "gated_combine", "signature": "maximum, total, accumulator, gate, output", "noinline": True},
     ]
     assert "400" in calls[1]["gate_offset"]
     assert "32" in calls[1]["gate_offset"]
     registry = TritonTemplateRegistry()
-    source = "\n".join(
-        registry.environment.get_template(f"kernels/{family}/decode.py.jinja").render(
-            render_calls=calls, distributed_entry=False, mesh_hierarchy=(2, 1), mesh_x=1, mesh_y=2)
+    source = "\n".join(registry.environment.get_template(f"kernels/{family}/decode.py.jinja").render(
+        render_calls=calls, distributed_entry=False, mesh_hierarchy=(2, 1), mesh_x=1, mesh_y=2)
         for family in ("paged_attention_combine", "paged_attention_gated_combine"))
     assert source.count("def plain_combine(") == 1
     assert source.count("def gated_combine(") == 1
@@ -163,7 +154,7 @@ def test_rendered_vector_result_loop_covers_scalar_head_dimension():
     source = TritonTemplateRegistry().render(
         "kernels/paged_attention_combine/decode.py.jinja",
         {
-            "render_calls": (call, ),
+            "render_calls": (call,),
             "distributed_entry": True,
             "mesh_axis_names": ("y", "x"),
             "mesh_hierarchy": (2, 1),
@@ -173,7 +164,9 @@ def test_rendered_vector_result_loop_covers_scalar_head_dimension():
     compile(source, "paged_attention_combine_call_graph.py", "exec")
     assert "tl.range(0, 16, 8)" in source
     assert "% 4" in source
-    annotation = source.rsplit("def _flagmega_test_attention_combine", 1)[0].rstrip().splitlines()[-1]
+    annotation = source.rsplit(
+        "def _flagmega_test_attention_combine", 1
+    )[0].rstrip().splitlines()[-1]
     assert annotation == "@triton.jit(noinline=True)"
 
 
@@ -190,14 +183,16 @@ def test_local_shard_wrapper_keeps_op_boundary_without_entry_synchronization():
     source = TritonTemplateRegistry().render(
         "kernels/paged_attention_combine/decode.py.jinja",
         {
-            "render_calls": (call, ),
+            "render_calls": (call,),
             "distributed_entry": True,
             "mesh_axis_names": ("y", "x"),
             "mesh_hierarchy": (2, 1),
         },
     )
 
-    annotation = source.rsplit("def _flagmega_test_local_wrapper", 1)[0].rstrip().splitlines()[-1]
+    annotation = source.rsplit(
+        "def _flagmega_test_local_wrapper", 1
+    )[0].rstrip().splitlines()[-1]
     assert annotation == "@triton.jit(noinline=True)"
 
 
@@ -215,7 +210,7 @@ def test_dim_sharded_output_uses_global_dimension_for_broadcast_partial_state():
         dtype="bfloat16",
         itemsize=2,
     )
-    raw["outputs"] = (_parameter("result", result), )
+    raw["outputs"] = (_parameter("result", result),)
 
     call = _paged_attention_combine_call(raw)
 
@@ -223,44 +218,34 @@ def test_dim_sharded_output_uses_global_dimension_for_broadcast_partial_state():
     assert "shard_y" in call["partial_accumulator_offset"]
 
 
+
 def _resharded_heads_call(cyclic, gated):
     # BI-V150-style 4x4 mesh: the result splits 16 heads over both mesh axes,
     # while the partial state splits them 4-way over axis 1 only.
     mesh = (4, 4)
-    source_split = {
-        "kind":
-        "split", "stages": [{
-            "hierarchy_axes": (1, ), "distribution":
-            ({"kind": "block_cyclic", "block_size": 1}
-             if cyclic else {"kind": "contiguous", "granularity": {"kind": "fixed", "value": 4}})
-        }]
-    }
-    stats = _abi((1, 16, 1), local_shape=(1, 4, 1), storage_kind="compact_per_owner", coordinate_space="local",
-                 owner_stride=4, partial=True)
-    accumulator = _abi((1, 16, 8), local_shape=(1, 4, 8), storage_kind="compact_per_owner", coordinate_space="local",
-                       owner_stride=32, partial=True)
+    source_split = {"kind": "split", "stages": [{"hierarchy_axes": (1,), "distribution": (
+        {"kind": "block_cyclic", "block_size": 1} if cyclic else
+        {"kind": "contiguous", "granularity": {"kind": "fixed", "value": 4}})}]}
+    stats = _abi((1, 16, 1), local_shape=(1, 4, 1), storage_kind="compact_per_owner",
+                 coordinate_space="local", owner_stride=4, partial=True)
+    accumulator = _abi((1, 16, 8), local_shape=(1, 4, 8), storage_kind="compact_per_owner",
+                       coordinate_space="local", owner_stride=32, partial=True)
     for abi in (stats, accumulator):
         abi["distributed_type"]["placement"]["hierarchy"] = mesh
-        abi["distributed_type"]["axis_policies"] = ({"kind": "broadcast"}, source_split, {"kind": "broadcast"})
+        abi["distributed_type"]["axis_policies"] = (
+            {"kind": "broadcast"}, source_split, {"kind": "broadcast"})
     stats["scalar_storage_strides"] = (4, 1, 1)
     accumulator["scalar_storage_strides"] = (32, 8, 1)
-    result = _abi(
-        (1, 16, 2), local_shape=(1, 1, 2), lanes=4, dtype="bfloat16", itemsize=2,
-        logical_coordinates=("local_coord_0", "local_coord_1 + shard_coord_0 * 4 + shard_coord_1", "local_coord_2"))
+    result = _abi((1, 16, 2), local_shape=(1, 1, 2), lanes=4, dtype="bfloat16", itemsize=2,
+                  logical_coordinates=("local_coord_0", "local_coord_1 + shard_coord_0 * 4 + shard_coord_1", "local_coord_2"))
     result["distributed_type"]["placement"]["hierarchy"] = mesh
-    result["distributed_type"]["axis_policies"] = ({"kind": "broadcast"}, {
-        "kind":
-        "split", "stages": [{
-            "hierarchy_axes": (0, 1), "distribution":
-            {"kind": "contiguous", "granularity": {"kind": "fixed", "value": 1}}
-        }]
-    }, {"kind": "broadcast"})
-    raw = {
-        "semantic_attrs": {"layout": ("seq", "head", "dim"), "split_hierarchy_axis": 0, "split_count":
-                           4}, "parameters": {"elements_per_program": 8}, "inputs":
-        (_parameter("max_state", stats), _parameter("sum_state", stats), _parameter("acc_state", accumulator)),
-        "outputs": (_parameter("result", result), ), "workspaces": ()
-    }
+    result["distributed_type"]["axis_policies"] = (
+        {"kind": "broadcast"}, {"kind": "split", "stages": [{"hierarchy_axes": (0, 1),
+        "distribution": {"kind": "contiguous", "granularity": {"kind": "fixed", "value": 1}}}]}, {"kind": "broadcast"})
+    raw = {"semantic_attrs": {"layout": ("seq", "head", "dim"), "split_hierarchy_axis": 0, "split_count": 4},
+           "parameters": {"elements_per_program": 8}, "inputs": (
+               _parameter("max_state", stats), _parameter("sum_state", stats), _parameter("acc_state", accumulator)),
+           "outputs": (_parameter("result", result),), "workspaces": ()}
     if gated:
         raw["inputs"] = (*raw["inputs"], _parameter("gate", result))
     return mesh, (_paged_attention_gated_combine_call(raw) if gated else _paged_attention_combine_call(raw))
@@ -298,11 +283,9 @@ def test_combine_resharded_heads_reads_source_owner_and_local_head(tmp_path, cyc
     family = "paged_attention_gated_combine" if gated else "paged_attention_combine"
     call.update(family=family, variant="decode", symbol="run",
                 signature="max_state, sum_state, acc_state, result" + (", gate" if gated else ""))
-    body = TritonTemplateRegistry().render(
-        f"kernels/{family}/decode.py.jinja", {
-            "render_calls": [call], "distributed_entry": True, "mesh_hierarchy": mesh, "mesh_axis_names":
-            ("block_y", "block_x")
-        })
+    body = TritonTemplateRegistry().render(f"kernels/{family}/decode.py.jinja", {
+        "render_calls": [call], "distributed_entry": True,
+        "mesh_hierarchy": mesh, "mesh_axis_names": ("block_y", "block_x")})
     path = tmp_path / "attention_reshard.py"
     path.write_text('''import triton
 import triton.language as tl
@@ -323,7 +306,7 @@ FLAGMEGA_GRID_MESH = tl.constexpr(tle.device_mesh({"block": [("block_y",4),("blo
     args = (maximum, total, partial, output)
     if gated:
         args = (*args, torch.zeros_like(output))
-    module.run[(16, )](*args)
+    module.run[(16,)](*args)
     expected = (torch.arange(16, device="cuda")[:, None] * 16 + torch.arange(8, device="cuda") + 3).bfloat16()
     if gated:
         expected *= .5
@@ -335,25 +318,22 @@ def _dim_sharded_source_call(gated):
     # over axis 1. Stats have a unit Dim extent, so they live on owner 2 * part,
     # while accumulator dim d lives on owner 2 * part + d % 2.
     mesh = (2, 2)
-    dim_split = {
-        "kind": "split", "stages":
-        [{"hierarchy_axes": (1, ), "distribution": {"kind": "block_cyclic", "block_size": 1}}]
-    }
-    stats = _abi((1, 1, 1), storage_kind="compact_per_owner", coordinate_space="local", owner_stride=1, partial=True)
-    accumulator = _abi((1, 1, 8), local_shape=(1, 1, 4), storage_kind="compact_per_owner", coordinate_space="local",
-                       owner_stride=4, partial=True)
+    dim_split = {"kind": "split", "stages": [{"hierarchy_axes": (1,), "distribution": {
+        "kind": "block_cyclic", "block_size": 1}}]}
+    stats = _abi((1, 1, 1), storage_kind="compact_per_owner", coordinate_space="local",
+                 owner_stride=1, partial=True)
+    accumulator = _abi((1, 1, 8), local_shape=(1, 1, 4), storage_kind="compact_per_owner",
+                       coordinate_space="local", owner_stride=4, partial=True)
     accumulator["scalar_storage_strides"] = (4, 4, 1)
     result = _abi((1, 1, 8), local_shape=(1, 1, 4), dtype="bfloat16", itemsize=2,
                   logical_coordinates=("local_coord_0", "local_coord_1", "local_coord_2 * 2 + shard_coord_1"))
     for abi in (stats, accumulator, result):
         abi["distributed_type"]["placement"]["hierarchy"] = mesh
         abi["distributed_type"]["axis_policies"] = ({"kind": "broadcast"}, {"kind": "broadcast"}, dim_split)
-    raw = {
-        "semantic_attrs": {"layout": ("seq", "head", "dim"), "split_hierarchy_axis": 0, "split_count":
-                           2}, "parameters": {"elements_per_program": 4}, "inputs":
-        (_parameter("max_state", stats), _parameter("sum_state", stats), _parameter("acc_state", accumulator)),
-        "outputs": (_parameter("result", result), ), "workspaces": ()
-    }
+    raw = {"semantic_attrs": {"layout": ("seq", "head", "dim"), "split_hierarchy_axis": 0, "split_count": 2},
+           "parameters": {"elements_per_program": 4}, "inputs": (
+               _parameter("max_state", stats), _parameter("sum_state", stats), _parameter("acc_state", accumulator)),
+           "outputs": (_parameter("result", result),), "workspaces": ()}
     if gated:
         raw["inputs"] = (*raw["inputs"], _parameter("gate", result))
     return mesh, (_paged_attention_gated_combine_call(raw) if gated else _paged_attention_combine_call(raw))
@@ -395,11 +375,9 @@ def test_combine_dim_sharded_states_merge_on_gpu(tmp_path, gated):
     family = "paged_attention_gated_combine" if gated else "paged_attention_combine"
     call.update(family=family, variant="decode", symbol="run",
                 signature="max_state, sum_state, acc_state, result" + (", gate" if gated else ""))
-    body = TritonTemplateRegistry().render(
-        f"kernels/{family}/decode.py.jinja", {
-            "render_calls": [call], "distributed_entry": True, "mesh_hierarchy": mesh, "mesh_axis_names":
-            ("block_y", "block_x")
-        })
+    body = TritonTemplateRegistry().render(f"kernels/{family}/decode.py.jinja", {
+        "render_calls": [call], "distributed_entry": True,
+        "mesh_hierarchy": mesh, "mesh_axis_names": ("block_y", "block_x")})
     path = tmp_path / "attention_dim_sharded.py"
     path.write_text('''import triton
 import triton.language as tl
@@ -411,13 +389,13 @@ FLAGMEGA_GRID_MESH = tl.constexpr(tle.device_mesh({"block": [("block_y",2),("blo
     spec.loader.exec_module(module)
     maximum = torch.zeros((4, 1), device="cuda", dtype=torch.float32)
     total = torch.ones_like(maximum)
-    partial = torch.tensor([[0, 32, 64, 96], [16, 48, 80, 112], [2, 34, 66, 98], [18, 50, 82, 114]], device="cuda",
-                           dtype=torch.float32)
+    partial = torch.tensor([[0, 32, 64, 96], [16, 48, 80, 112], [2, 34, 66, 98], [18, 50, 82, 114]],
+                           device="cuda", dtype=torch.float32)
     output = torch.full((1, 1, 8), -100., device="cuda", dtype=torch.bfloat16)
     args = (maximum, total, partial, output)
     if gated:
         args = (*args, torch.zeros_like(output))
-    module.run[(4, )](*args)
+    module.run[(4,)](*args)
     expected = torch.tensor([1, 17, 33, 49, 65, 81, 97, 113], device="cuda", dtype=torch.float32)
     if gated:
         expected *= .5

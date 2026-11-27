@@ -15,32 +15,29 @@ def schedule():
     stages, handoffs, consumers, producers = [], [], [], []
     for index in (1, 2):
         stem = f'instance_{index}'
-        stages.append(
-            dict(
-                id=stem, call='reusable_leaf',
-                channels=[dict(reader_name=stem + '_reader', writer_name=stem + '_writer')], consumer_workspaces=[],
-                auxiliary_consumer=None, workspaces=[
-                    dict(offset_bytes=(index - 1) * 16, nbytes=16, alignment_bytes=16, allocation_alignment_bytes=16)
-                ]))
-        handoffs.append(
-            dict(id=stem + '_handoff', pipe_name=stem + '_handoff_pipe', reader_name=stem + '_handoff_reader',
-                 writer_name=stem + '_handoff_writer', semantic=True, repeated=False, wrap_around=False))
-        consumers.append(
-            dict(kind='function_call', call=f'call_{index}',
-                 endpoint_bindings={'leaf_reader': stem + '_reader', 'handoff_writer': stem + '_handoff_writer'}))
-        producers.append(
-            dict(kind='function_call', call=f'call_{index}',
-                 endpoint_bindings={'leaf_writer': stem + '_writer', 'handoff_reader': stem + '_handoff_reader'}))
-    return dict(stages=stages, handoffs=handoffs, consumer_events=consumers, producer_events=producers,
-                auxiliary_events=[], trip_scoped_closes=[], trip_scoped_drains=[])
+        stages.append(dict(id=stem, call='reusable_leaf',
+            channels=[dict(reader_name=stem+'_reader', writer_name=stem+'_writer')],
+            consumer_workspaces=[], auxiliary_consumer=None,
+            workspaces=[dict(offset_bytes=(index-1)*16, nbytes=16,
+                             alignment_bytes=16, allocation_alignment_bytes=16)]))
+        handoffs.append(dict(id=stem+'_handoff', pipe_name=stem+'_handoff_pipe',
+            reader_name=stem+'_handoff_reader', writer_name=stem+'_handoff_writer',
+            semantic=True, repeated=False, wrap_around=False))
+        consumers.append(dict(kind='function_call', call=f'call_{index}',
+            endpoint_bindings={'leaf_reader':stem+'_reader', 'handoff_writer':stem+'_handoff_writer'}))
+        producers.append(dict(kind='function_call', call=f'call_{index}',
+            endpoint_bindings={'leaf_writer':stem+'_writer', 'handoff_reader':stem+'_handoff_reader'}))
+    return dict(stages=stages, handoffs=handoffs, consumer_events=consumers,
+                producer_events=producers, auxiliary_events=[],
+                trip_scoped_closes=[], trip_scoped_drains=[])
 
 
 @pytest.mark.parametrize('index', (0, 1))
 def test_complete_invocation_retains_only_its_own_handoff(monkeypatch, index):
     # Physical allocation is validated independently; this regression targets
     # the endpoint ownership proof before projection chooses any allocation.
-    shared = SimpleNamespace(name='shared', allocation_bytes=lambda n: n)
-    monkeypatch.setattr(fm, 'verify_buffer_plan', lambda module: SimpleNamespace(memory_spaces=[shared]))
+    shared = SimpleNamespace(name='shared', allocation_bytes=lambda n:n)
+    monkeypatch.setattr(fm, 'verify_buffer_plan', lambda module:SimpleNamespace(memory_spaces=[shared]))
     original = schedule()
     before = deepcopy(original)
     segment = [original['consumer_events'][index]]

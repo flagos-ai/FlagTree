@@ -1,0 +1,8 @@
+from triton.flagmega.codegen.triton.r007_first_region_kernels import first_region_s as _r007_s
+{% for call in render_calls %}
+{% if call.family == 'r007_first_region' and call.arm == 's' %}
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+    _r007_s({{ call.pointers | join(', ') }})
+{% endif %}
+{% endfor %}

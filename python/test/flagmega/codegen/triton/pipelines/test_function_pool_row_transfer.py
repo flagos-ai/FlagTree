@@ -11,9 +11,10 @@ from python.test.flagmega.codegen.triton.pipelines.test_function_pool_alignment 
 
 
 def row_abi():
-    return dict(local_capacity_shape=(1, 128), scalar_lane_count=1, scalar_itemsize=2, scalar_storage_strides=(128, 1),
-                pooled=False, alignment_bytes=1, pool_byte_offset=0, coordinate_space="canonical_global",
-                distributed_type=None)
+    return dict(local_capacity_shape=(1, 128), scalar_lane_count=1,
+                scalar_itemsize=2, scalar_storage_strides=(128, 1),
+                pooled=False, alignment_bytes=1, pool_byte_offset=0,
+                coordinate_space="canonical_global", distributed_type=None)
 
 
 def test_closed_pool_proof_allows_formal_without_relabeling_storage():

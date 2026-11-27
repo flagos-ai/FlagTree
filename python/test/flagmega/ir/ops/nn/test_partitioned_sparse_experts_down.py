@@ -15,10 +15,9 @@ from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 
 
 class PartitionedProjection(fm.Module):
-
-    def __init__(self, *, packed=False, lanes=(), rounded=False, mode="dynamic_fp8_ue8m0", partitions=4, tokens=1,
-                 routes=2, hidden=16, reduction=128, block=128, combine=False, experts=3, consumer_lanes=(),
-                 scalar_consumer=False, large=False, constants=False):
+    def __init__(self, *, packed=False, lanes=(), rounded=False, mode="dynamic_fp8_ue8m0",
+                 partitions=4, tokens=1, routes=2, hidden=16, reduction=128, block=128, combine=False, experts=3,
+                 consumer_lanes=(), scalar_consumer=False, large=False, constants=False):
         super().__init__(dialect="nn", stage="imported", entry="main")
         self.packed, self.lanes, self.rounded, self.mode = packed, lanes, rounded, mode
         self.partitions, self.tokens, self.routes = partitions, tokens, routes
@@ -29,14 +28,12 @@ class PartitionedProjection(fm.Module):
 
     def forward(self):
         p, t, r, n, k = self.partitions, self.tokens, self.routes, self.hidden, self.reduction
-        activation = (fm.tensor_type(fm.vector_type("bfloat16", (2, 2)),
-                                     (t, r, p, k // 4)) if self.packed else fm.tensor_type("bfloat16", (t, r, p, k)))
-        types = {
-            "activations": activation, "router_expert_ids": fm.tensor_type("int32", (t, r)), "down_input_scale":
-            fm.tensor_type("float32",
-                           (self.experts, 1)), "down_weight": fm.tensor_type("float8_e4m3fn", (self.experts, p, n, k)),
-            "down_proj_scale": fm.tensor_type("float32", (self.experts, p, -(-n // self.block), -(-k // self.block)))
-        }
+        activation = (fm.tensor_type(fm.vector_type("bfloat16", (2, 2)), (t, r, p, k // 4)) if self.packed
+                      else fm.tensor_type("bfloat16", (t, r, p, k)))
+        types = {"activations": activation, "router_expert_ids": fm.tensor_type("int32", (t, r)),
+                 "down_input_scale": fm.tensor_type("float32", (self.experts, 1)),
+                 "down_weight": fm.tensor_type("float8_e4m3fn", (self.experts, p, n, k)),
+                 "down_proj_scale": fm.tensor_type("float32", (self.experts, p, -(-n // self.block), -(-k // self.block)))}
         inputs, parameters = {}, []
         for name, kind in types.items():
             if self.constants and name in {"down_weight", "down_proj_scale", "down_input_scale"}:
@@ -44,20 +41,17 @@ class PartitionedProjection(fm.Module):
             else:
                 inputs[name] = self.input(name, kind, id=name)
                 parameters.append(inputs[name])
-        result = fm.F.nn.partitioned_sparse_experts_down(**inputs, weight_block_n=self.block, weight_block_k=self.block,
-                                                         activation_quantization=self.mode,
-                                                         round_projection=self.rounded, output_lanes=self.lanes,
-                                                         name="projection")
-        outputs = (result, )
+        result = fm.F.nn.partitioned_sparse_experts_down(**inputs, weight_block_n=self.block,
+            weight_block_k=self.block, activation_quantization=self.mode,
+            round_projection=self.rounded, output_lanes=self.lanes, name="projection")
+        outputs = (result,)
         if self.consumer_lanes:
-            outputs = tuple(
-                fm.F.tensors.pack(result, self.consumer_lanes, axes=(-1, ) * len(self.consumer_lanes))
-                for _ in range(2))
+            outputs = tuple(fm.F.tensors.pack(result, self.consumer_lanes, axes=(-1,) * len(self.consumer_lanes))
+                            for _ in range(2))
             if self.scalar_consumer:
-                outputs += (result, )
+                outputs += (result,)
         if self.combine:
-            coefficients = self.input("router_expert_weights", fm.tensor_type("float32", (t, r)),
-                                      id="router_expert_weights")
+            coefficients = self.input("router_expert_weights", fm.tensor_type("float32", (t, r)), id="router_expert_weights")
             inputs["router_expert_weights"] = coefficients
             parameters.append(coefficients)
             coefficients = fm.F.tensors.broadcast_to(coefficients, shape=(p, t, r))
@@ -67,19 +61,19 @@ class PartitionedProjection(fm.Module):
             bf16 = fm.vector_type("bfloat16", self.lanes) if self.lanes else fm.DType.BFLOAT16
             fp32 = fm.vector_type("float32", self.lanes) if self.lanes else fm.DType.FLOAT32
             local = fm.F.nn.sparse_experts_combine(projected, coefficients, output_dtype=bf16,
-                                                   round_weighted_output=True, name="local_combine")
+                                                  round_weighted_output=True, name="local_combine")
             local = fm.F.tensors.reshape(local, (p, t, scalar_hidden))
             wide = fm.F.tensors.cast(local, fp32)
             if self.lanes:
-                wide = fm.F.tensors.unpack(wide, axes=(2, ) * len(self.lanes))
-            reduced = fm.F.math.reduce_sum(wide, axes=(0, ), keep_dims=False, output_lanes=self.lanes)
+                wide = fm.F.tensors.unpack(wide, axes=(2,) * len(self.lanes))
+            reduced = fm.F.math.reduce_sum(wide, axes=(0,), keep_dims=False, output_lanes=self.lanes)
             reduced = fm.F.tensors.cast(reduced, bf16)
             outputs = (local, reduced)
         if self.large:
             padding = inputs["activations"]
             for _ in range(20_001):
                 padding = fm.F.math.add(padding, inputs["activations"])
-            outputs += (padding, )
+            outputs += (padding,)
         self.function("main", parameters, outputs)
 
 
@@ -94,10 +88,8 @@ def operands(graph):
     scale = torch.full((graph.experts, p, -(-n // graph.block), -(-k // graph.block)), 1.00390625)
     # Distinct partition scales expose any accidental P/route/N reordering.
     scale *= torch.arange(1, p + 1).float()[None, :, None, None]
-    values = {
-        "activations": value, "router_expert_ids": torch.zeros((t, r), dtype=torch.int32), "down_input_scale":
-        torch.ones((graph.experts, 1)), "down_weight": weight, "down_proj_scale": scale
-    }
+    values = {"activations": value, "router_expert_ids": torch.zeros((t, r), dtype=torch.int32),
+              "down_input_scale": torch.ones((graph.experts, 1)), "down_weight": weight, "down_proj_scale": scale}
     if graph.combine:
         values["router_expert_weights"] = torch.tensor((.3, .7)).expand(t, r).contiguous()
     return values
@@ -129,8 +121,7 @@ def test_route_rounding_precedes_partition_reduction(lanes):
     late = (projections.sum(0) * weights).bfloat16().float().sum().bfloat16()
     assert expected != late, "the fixture must distinguish local and global rounding"
     torch.testing.assert_close(local.reshape(4, 1, 16), expected_local[:, None, None].expand(4, 1, 16), atol=0, rtol=0)
-    torch.testing.assert_close(actual.reshape(1, 16), torch.full((1, 16), expected.item(), dtype=torch.bfloat16),
-                               atol=0, rtol=0)
+    torch.testing.assert_close(actual.reshape(1, 16), torch.full((1, 16), expected.item(), dtype=torch.bfloat16), atol=0, rtol=0)
 
 
 @pytest.mark.parametrize("invalid", ("weight_dtype", "activation_dtype", "partition_shape", "scale_shape",
@@ -152,10 +143,8 @@ def test_schema_rejects_unsupported_partition_contracts(invalid):
         index, kind = replacements[invalid]
         inputs[index] = replace(inputs[index], type=kind)
     else:
-        name, value = {
-            "rounding": ("round_projection", 1), "block": ("weight_block_k", 0), "lanes": ("output_lanes", (3, )),
-            "mode": ("activation_quantization", "unknown")
-        }[invalid]
+        name, value = {"rounding": ("round_projection", 1), "block": ("weight_block_k", 0),
+                       "lanes": ("output_lanes", (3,)), "mode": ("activation_quantization", "unknown")}[invalid]
         attrs[name] = value
     with pytest.raises(IRSchemaError):
         definition.prepare(inputs, attrs)
@@ -167,19 +156,18 @@ def test_distribution_cannot_hide_a_reduction_or_change_partition_owners(invalid
     node = module.node_map["projection"]
     d = fm.get_definition(node.op)
     mesh = fm.Placement((2, 2), "cy", "cb")
-    b, p = fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 1)
-    n = fm.SBP.split_block_cyclic((1, ), 8)
-    k = fm.SBP.split_contiguous((1, ), 64) if invalid == "split_k" else b
-    weight_p = fm.SBP.split_contiguous((1, ), 1) if invalid == "partition_mismatch" else p
+    b, p = fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 1)
+    n = fm.SBP.split_block_cyclic((1,), 8)
+    k = fm.SBP.split_contiguous((1,), 64) if invalid == "split_k" else b
+    weight_p = fm.SBP.split_contiguous((1,), 1) if invalid == "partition_mismatch" else p
     if invalid in {"split_k", "partition_mismatch"}:
         n = b
     if invalid == "overlapping_roles":
-        n = fm.SBP.split_contiguous((0, ), 8)
+        n = fm.SBP.split_contiguous((0,), 8)
         weight_p = b
     policies = ((b, b, p, k), (b, b), (b, b), (b, weight_p, n, k), (b, b, b, b))
-    inputs = tuple(
-        replace(module.node_map[name], type=fm.DistributedType(module.node_map[name].type, policy, mesh))
-        for name, policy in zip(node.inputs, policies, strict=True))
+    inputs = tuple(replace(module.node_map[name], type=fm.DistributedType(module.node_map[name].type, policy, mesh))
+                   for name, policy in zip(node.inputs, policies, strict=True))
     with pytest.raises(IRSchemaError):
         d.prepare(inputs, node.attrs)
 
@@ -199,13 +187,10 @@ def test_both_layout_paths_rebuild_one_shared_packed_producer(large, scalar_cons
     assert not any(node.op == "tensors.pack" for node in rewritten.nodes)
     assert post_function_boundary_pack_propagation(rewritten, target).semantic_hash == rewritten.semantic_hash
     if large:
-        original = replace(original, functions=(replace(original.functions[0],
-                                                        outputs=original.functions[0].outputs[:-1]), ))
-        rewritten = replace(rewritten, functions=(replace(rewritten.functions[0],
-                                                          outputs=rewritten.functions[0].outputs[:-1]), ))
+        original = replace(original, functions=(replace(original.functions[0], outputs=original.functions[0].outputs[:-1]),))
+        rewritten = replace(rewritten, functions=(replace(rewritten.functions[0], outputs=rewritten.functions[0].outputs[:-1]),))
     evaluator = TorchEvaluator(DictWeightResolver({}))
-    for got, expected in zip(evaluator.run(rewritten, operands(graph)), evaluator.run(original, operands(graph)),
-                             strict=True):
+    for got, expected in zip(evaluator.run(rewritten, operands(graph)), evaluator.run(original, operands(graph)), strict=True):
         torch.testing.assert_close(got, expected, atol=0, rtol=0)
 
 
@@ -215,12 +200,10 @@ def test_scalar_and_packed_constructors_resume_in_a_fresh_process(tmp_path):
         module = PartitionedProjection(lanes=lanes).build()
         path = fm.emit_module(module, tmp_path / f"projection-{len(lanes)}.py")
         arguments.extend((str(path), module.semantic_hash))
-    subprocess.run([
-        sys.executable, "-c", '''
+    subprocess.run([sys.executable, "-c", '''
 import sys
 from triton.flagmega import ir as fm
 for path, expected in zip(sys.argv[1::2], sys.argv[2::2]):
     module = fm.load_module(path)
     assert module.semantic_hash == expected
-''', *arguments
-    ], check=True)
+''', *arguments], check=True)

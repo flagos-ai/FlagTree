@@ -10,7 +10,6 @@ from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 
 
 class QKVModule(fm.Module):
-
     def __init__(self, *, partial_scales: bool = False):
         super().__init__(dialect="high_level", stage="imported", entry="main")
         self.partial_scales = partial_scales
@@ -21,7 +20,11 @@ class QKVModule(fm.Module):
         k_weight = self.input("k_weight", fm.tensor_type("bfloat16", (16, 16)))
         v_weight = self.input("v_weight", fm.tensor_type("bfloat16", (16, 16)))
         none = fm.F.builtin.none(name="none")
-        q_input_scale = (self.input("q_input_scale", fm.tensor_type("float32", ())) if self.partial_scales else none)
+        q_input_scale = (
+            self.input("q_input_scale", fm.tensor_type("float32", ()))
+            if self.partial_scales
+            else none
+        )
         parameters = [value, q_weight, k_weight, v_weight]
         if self.partial_scales:
             parameters.append(q_input_scale)
@@ -44,7 +47,7 @@ class QKVModule(fm.Module):
             output_data_type="bfloat16",
             name="qkv",
         )
-        self.function("main", tuple(parameters), (result, ))
+        self.function("main", tuple(parameters), (result,))
 
 
 def test_qkv_parallel_linear_parameter_info_type_and_evaluator_contract():
@@ -57,19 +60,10 @@ def test_qkv_parallel_linear_parameter_info_type_and_evaluator_contract():
         fm.tensor_type("bfloat16", (2, 16)),
     ))
     assert [parameter.name for parameter in fm.get_definition(qkv.op).input_parameters] == [
-        "input",
-        "q_weight",
-        "k_weight",
-        "v_weight",
-        "q_bias",
-        "k_bias",
-        "v_bias",
-        "q_input_scale",
-        "k_input_scale",
-        "v_input_scale",
-        "q_weight_scale",
-        "k_weight_scale",
-        "v_weight_scale",
+        "input", "q_weight", "k_weight", "v_weight",
+        "q_bias", "k_bias", "v_bias",
+        "q_input_scale", "k_input_scale", "v_input_scale",
+        "q_weight_scale", "k_weight_scale", "v_weight_scale",
     ]
 
     generator = torch.Generator().manual_seed(20260902)

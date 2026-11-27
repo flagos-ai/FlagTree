@@ -113,8 +113,11 @@ def sm90_codegen_package_plan(
         # Chip/node axes select the torchrun/FlagCX owner.  They are not
         # CUDA CTAs and must not be multiplied into the per-rank launch grid.
         # Only physical block axes participate in cooperative CUDA launch.
-        grid_hierarchy = tuple(extent for extent, level in zip(hierarchy, levels, strict=True)
-                               if level == "b") if levels else hierarchy
+        grid_hierarchy = tuple(
+            extent
+            for extent, level in zip(hierarchy, levels, strict=True)
+            if level == "b"
+        ) if levels else hierarchy
         if not grid_hierarchy or any(value <= 0 for value in grid_hierarchy):
             raise IRVerificationError(
                 "A cooperative SM90 package requires at least one physical block axis.",

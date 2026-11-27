@@ -34,7 +34,9 @@ class ImportSourceLocation:
     @classmethod
     def from_data(cls, data: Mapping[str, object]) -> ImportSourceLocation:
         if data.get("schema") != SOURCE_LOCATION_SCHEMA:
-            raise ImporterError(f"Unsupported import source schema {data.get('schema')!r}.")
+            raise ImporterError(
+                f"Unsupported import source schema {data.get('schema')!r}."
+            )
         revision = data.get("revision")
         return cls(
             str(data.get("uri", "")),

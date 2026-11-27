@@ -14,8 +14,7 @@ from triton.flagmega.codegen.readonly_layout_policy import ReadonlyLayoutPolicy
 from triton.flagmega.codegen.triton import describe_tir_package
 from triton.flagmega.codegen.triton.renderer import render_triton_package
 from triton.flagmega.codegen.triton.nvidia_readonly_layout import (
-    plan_readonly_layout,
-    validate_layout_data,
+    plan_readonly_layout, validate_layout_data,
 )
 from triton.flagmega.errors import ArtifactError, CodegenError
 
@@ -25,8 +24,8 @@ from .conftest import _packed_glu_descriptor_pipeline_module
 @pytest.fixture(scope="module")
 def readonly_glu_module():
     return _packed_glu_descriptor_pipeline_module(
-        "tir.dense_matmul_glu.packed_tensor_descriptor_table_paired_smem_pipeline_inline_gemv", output_extent=6144,
-        round_activation=False)
+        "tir.dense_matmul_glu.packed_tensor_descriptor_table_paired_smem_pipeline_inline_gemv",
+        output_extent=6144, round_activation=False)
 
 
 def test_owner_layout_emission_preserves_none_and_full_weight_size(readonly_glu_module, tmp_path):
@@ -34,15 +33,14 @@ def test_owner_layout_emission_preserves_none_and_full_weight_size(readonly_glu_
     ordinary = render_triton_package(module, tmp_path / "ordinary")
     explicit_none = render_triton_package(module, tmp_path / "none", readonly_layout_policy=None)
     assert ordinary == explicit_none
-    assert (tmp_path / "ordinary/generated_kernels.py").read_bytes() == (tmp_path /
-                                                                         "none/generated_kernels.py").read_bytes()
+    assert (tmp_path / "ordinary/generated_kernels.py").read_bytes() == (tmp_path / "none/generated_kernels.py").read_bytes()
     selected = render_triton_package(module, tmp_path / "selected", readonly_layout_policy=ReadonlyLayoutPolicy())
     validate_layout_data(selected, module_semantic_hash=module.semantic_hash)
     layout = selected["triton_readonly_layout"]
     assert len(layout["device_layout"]["buffers"]) == 2
     assert all(v["nbytes"] == 25165824 for v in layout["device_layout"]["buffers"])
-    assert all(v["owners"] == 128 and v["component_nbytes"] == 196608 and v["total_nbytes"] == 25165824
-               for v in layout["bindings"])
+    assert all(v["owners"] == 128 and v["component_nbytes"] == 196608
+               and v["total_nbytes"] == 25165824 for v in layout["bindings"])
     descriptors = selected["host_tensor_descriptor_specs"]
     assert descriptors
     for spec in descriptors:
@@ -100,13 +98,16 @@ def test_manifest_descriptor_and_layout_digest_agree(readonly_glu_module, tmp_pa
 
 def test_incompatible_shared_readonly_pool_fails_before_mapping():
     from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
-    instance = SimpleNamespace(codegen={"triton_readonly_device_layout": {"schema": "test"}}, manifest={"rdata": {}})
+    instance = SimpleNamespace(codegen={"triton_readonly_device_layout": {"schema": "test"}},
+                               manifest={"rdata": {}})
     with pytest.raises(ArtifactError, match="Shared readonly.*device layout"):
         GeneratedTirCallGraphModule._load_rdata(instance, None, "cpu", 0, shared_rdata=object())
 
 
-@pytest.mark.parametrize("field,value", [("storage_kind", "compact_per_owner"), ("coordinate_space", "local"),
-                                         ("scalar_dtype", "float16"), ("owner_count", 1)])
+@pytest.mark.parametrize("field,value", [("storage_kind", "compact_per_owner"),
+                                         ("coordinate_space", "local"),
+                                         ("scalar_dtype", "float16"),
+                                         ("owner_count", 1)])
 def test_unproved_physical_geometry_is_rejected_without_mutation(readonly_glu_module, field, value):
     calls = deepcopy(describe_tir_package(readonly_glu_module)["render_calls"])
     call = next(v for v in calls if v["family"] == "dense_matmul_glu")
@@ -125,7 +126,6 @@ def test_artifact_roundtrip_and_runtime_fresh_pool_preserve_canonical_bits(reado
     from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 
     class Checkpoint:
-
         def load_tensor(self, key, *, device="cpu"):
             assert key in {"gate", "up"}
             # Exercise all BF16 bit patterns, byte ordering, owners and origins.
@@ -141,9 +141,8 @@ def test_artifact_roundtrip_and_runtime_fresh_pool_preserve_canonical_bits(reado
     assert (roots["ordinary"] / "artifact.json").read_bytes() == (roots["none"] / "artifact.json").read_bytes()
     canonical_image = (roots["ordinary"] / "assets/rdata.bin").read_bytes()
     assert all((root / "assets/rdata.bin").read_bytes() == canonical_image for root in roots.values())
-    assert all(
-        (root / "assets/rdata.index.json").read_bytes() == (roots["ordinary"] / "assets/rdata.index.json").read_bytes()
-        for root in roots.values())
+    assert all((root / "assets/rdata.index.json").read_bytes()
+               == (roots["ordinary"] / "assets/rdata.index.json").read_bytes() for root in roots.values())
     root = roots["selected"]
     manifest, reloaded = load_artifact(root)
     assert reloaded.semantic_hash == module.semantic_hash
@@ -156,8 +155,8 @@ def test_artifact_roundtrip_and_runtime_fresh_pool_preserve_canonical_bits(reado
         expected = canonical.clone()
         for record in layout["device_layout"]["buffers"]:
             before = canonical.narrow(0, record["offset"], record["nbytes"]).view(*record["shape"])
-            after = actual.narrow(0, record["offset"], record["nbytes"]).view(record["shape"][1], record["shape"][0],
-                                                                              *record["shape"][2:])
+            after = actual.narrow(0, record["offset"], record["nbytes"]).view(
+                record["shape"][1], record["shape"][0], *record["shape"][2:])
             assert torch.equal(after, before.permute(*record["axes"]))
             assert torch.equal(after.permute(1, 0, 2, 3).contiguous(), before)
             expected.narrow(0, record["offset"], record["nbytes"]).copy_(before.permute(*record["axes"]).reshape(-1))

@@ -77,30 +77,45 @@ def cooperative_gate_geometry(types, result_type):
         return local_tensor_type(value) if isinstance(value, DistributedType) else value
 
     def contiguous(value):
-        return value == SBP.broadcast() or (isinstance(value, SBPSplit) and len(value.stages) == 1
-                                            and isinstance(value.stages[0].distribution, ContiguousSplit))
+        return value == SBP.broadcast() or (
+            isinstance(value, SBPSplit)
+            and len(value.stages) == 1
+            and isinstance(value.stages[0].distribution, ContiguousSplit)
+        )
 
     activation, ids = types["dispatched"], types["router_expert_ids"]
     gate, up = types["gate_weight"], types["up_weight"]
     output = logical_type(result_type)
     lanes = output.dtype.lane_count if isinstance(output.dtype, VectorType) else 1
-    if (logical_type(activation).rank != 3 or logical_type(ids).rank != 2 or logical_type(gate).rank != 3
-            or logical_type(up).rank != 3 or output.rank != 3):
+    if (
+        logical_type(activation).rank != 3
+        or logical_type(ids).rank != 2
+        or logical_type(gate).rank != 3
+        or logical_type(up).rank != 3
+        or output.rank != 3
+    ):
         return None
     route = policy(ids, 1)
     row = policy(gate, 1)
     output_row = policy(result_type, 2)
     if isinstance(output_row, SBPSplit):
         output_row = scale_split_units(output_row, lanes, 1)
-    if (not contiguous(route) or not contiguous(row) or policy(activation, 1) != route
-            or policy(result_type, 1) != route or policy(up, 1) != row or output_row != row):
+    if (
+        not contiguous(route)
+        or not contiguous(row)
+        or policy(activation, 1) != route
+        or policy(result_type, 1) != route
+        or policy(up, 1) != row
+        or output_row != row
+    ):
         return None
-    for value, axes in ((activation, (0, 2)), (ids, (0, )), (gate, (0, 2)), (up, (0, 2)), (result_type, (0, ))):
+    for value, axes in ((activation, (0, 2)), (ids, (0,)), (gate, (0, 2)), (up, (0, 2)), (result_type, (0,))):
         if any(policy(value, axis) != SBP.broadcast() for axis in axes):
             return None
     for name, value in types.items():
         if name.endswith("_scale") and any(
-                policy(value, i) != SBP.broadcast() for i in range(logical_type(value).rank)):
+            policy(value, i) != SBP.broadcast() for i in range(logical_type(value).rank)
+        ):
             return None
     hierarchy = tuple(placement.hierarchy) if placement else ()
     levels = placement.hierarchy_levels if placement else ""

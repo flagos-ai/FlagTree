@@ -12,8 +12,9 @@ from triton.flagmega.passes.tir.bufferize import BufferLifetime, SATBufferAlloca
 def test_small_aligned_roots_do_not_spend_the_search_budget_proving_padding(count):
     granularity = 256
     space = MemorySpace("workspace", "device", granularity, 4 * 1024**2, AllocationStrategy.SAT)
-    lifetimes = (BufferLifetime("large", 1024**2, granularity, 0, 0), ) + tuple(
-        BufferLifetime(f"small{i}", 16, granularity, 0, 0) for i in range(count))
+    lifetimes = (BufferLifetime("large", 1024**2, granularity, 0, 0),) + tuple(
+        BufferLifetime(f"small{i}", 16, granularity, 0, 0) for i in range(count)
+    )
     result = SATBufferAllocator(maximum_time_seconds=0.5).allocate(lifetimes, space)
     # Every start is page aligned and all roots are live together. Each
     # small root consumes one page; only the last root's trailing slack
@@ -139,13 +140,19 @@ def test_mixed_alignment_bound_preserves_the_exact_raw_objective(granularity, wi
         alignments = (granularity, granularity * 2, granularity)
         lifetimes = tuple(
             BufferLifetime(str(i), size, alignment, *window)
-            for i, (size, alignment, window) in enumerate(zip(sizes, alignments, windows)))
+            for i, (size, alignment, window) in enumerate(zip(sizes, alignments, windows))
+        )
         upper = sum((size + alignment - 1) // alignment * alignment for size, alignment in zip(sizes, alignments))
         feasible = []
         for offsets in product(*(range(0, upper, a) for a in alignments)):
             overlaps = any(
-                windows[i][0] <= windows[j][1] and windows[j][0] <= windows[i][1] and offsets[i] < offsets[j] +
-                sizes[j] and offsets[j] < offsets[i] + sizes[i] for i in range(3) for j in range(i))
+                windows[i][0] <= windows[j][1]
+                and windows[j][0] <= windows[i][1]
+                and offsets[i] < offsets[j] + sizes[j]
+                and offsets[j] < offsets[i] + sizes[i]
+                for i in range(3)
+                for j in range(i)
+            )
             if not overlaps:
                 feasible.append(max(offset + size for offset, size in zip(offsets, sizes)))
         exact = min(feasible)

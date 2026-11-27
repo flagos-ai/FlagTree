@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Testing hook using ForceBoxing."""
+"""Testing hook matching nncase ForceBoxing."""
 
 from triton.flagmega.ir.ops.core import attribute_parameter, input_parameter, op_definition
 from triton.flagmega.ir.ops.distributed.boxing import Boxing

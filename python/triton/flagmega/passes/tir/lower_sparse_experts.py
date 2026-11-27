@@ -24,20 +24,21 @@ def lower_sparse_experts(module):
         local = make_node(SparseExpertsWeightedSum.op_name, node.id + ".weighted_sum",
                           tuple(source[key] for key in node.inputs), node.attrs, node.metadata)
         if local.type != node.type and not (isinstance(local.type, DistributedType) and local.type.partial is not None):
-            local = make_node(SparseExpertsWeightedSum.op_name, local.id, tuple(source[key] for key in node.inputs),
+            local = make_node(SparseExpertsWeightedSum.op_name, local.id,
+                              tuple(source[key] for key in node.inputs),
                               {**node.attrs, "cast_output": True}, node.metadata)
         prefix = [local]
         if isinstance(local.type, DistributedType) and local.type.partial is not None:
-            local = make_node("distributed.boxing", node.id + ".owner_sum", (local, ),
+            local = make_node("distributed.boxing", node.id + ".owner_sum", (local,),
                               {"new_type": replace(local.type, partial=None)}, node.metadata)
             prefix.append(local)
         if local.type != node.type:
             dtype = tensor_of(node.type).dtype
             if isinstance(dtype, VectorType):
-                local = make_node("ntt.vectorized_cast", node.id, (local, ),
-                                  {"new_type": dtype, "vectorize_axes": (-1, )}, node.metadata)
+                local = make_node("ntt.vectorized_cast", node.id, (local,),
+                                  {"new_type": dtype, "vectorize_axes": (-1,)}, node.metadata)
             else:
-                local = make_node("tensors.cast", node.id, (local, ), {"dtype": dtype}, node.metadata)
+                local = make_node("tensors.cast", node.id, (local,), {"dtype": dtype}, node.metadata)
             prefix.append(local)
         else:
             prefix[-1] = replace(local, id=node.id)
@@ -93,7 +94,6 @@ def _replace_nodes(module, nodes, changed):
     if not changed:
         return module
     invalid = {point.id for point in module.selection_points if point.owner in changed}
-    return verify_module(
-        replace(module, nodes=tuple(nodes),
-                selection_points=tuple(p for p in module.selection_points if p.id not in invalid),
-                selections=tuple(s for s in module.selections if s.point_id not in invalid)))
+    return verify_module(replace(module, nodes=tuple(nodes),
+                                 selection_points=tuple(p for p in module.selection_points if p.id not in invalid),
+                                 selections=tuple(s for s in module.selections if s.point_id not in invalid)))

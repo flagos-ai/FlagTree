@@ -31,7 +31,7 @@ from triton.flagmega.errors import (
     UnsupportedSelectionError,
 )
 from triton.flagmega.ir import IRModule, companion_suffix, emit_module, load_module
-from triton.flagmega.importer import Checkpoint, DirectoryCheckpoint, checkpoint_from_path, import_model, import_model_layer
+from triton.flagmega.importer import Checkpoint, checkpoint_from_path, import_model, import_model_layer
 from triton.flagmega.options import CompileOptions
 from triton.flagmega.options import parse_placement
 from triton.flagmega.selection import emit_plan, load_plan, override_plan
@@ -84,12 +84,11 @@ def _parser() -> argparse.ArgumentParser:
     import_command = subparsers.add_parser("import", help="Import a supported model layer into editable Python IR")
     import_command.add_argument("--model", required=True)
     import_command.add_argument("--revision")
-    import_command.add_argument("--numerical-profile", default="default", help="Explicit importer numerical contract")
+    import_command.add_argument("--numerical-profile", default="nncase", help="Explicit importer numerical contract")
     import_command.add_argument("--layer", type=int, default=0)
     import_command.add_argument("--full-model", action="store_true")
     import_command.add_argument("--mode", choices=("decode-1", "prefill"), default="decode-1")
-    import_command.add_argument("--num-tokens", type=int, default=1,
-                                help="Static prompt token count for prefill import")
+    import_command.add_argument("--num-tokens", type=int, default=1, help="Static prompt token count for prefill import")
     import_command.add_argument("--output", required=True)
     _json_option(import_command)
 
@@ -105,12 +104,10 @@ def _parser() -> argparse.ArgumentParser:
     compile_source.add_argument("--input")
     compile_source.add_argument("--model")
     compile_command.add_argument("--revision")
-    compile_command.add_argument("--numerical-profile",
-                                 help="Importer contract; with --input it must match the saved IR")
+    compile_command.add_argument("--numerical-profile", help="Importer contract; with --input it must match the saved IR")
     compile_command.add_argument("--layer", type=int, default=0)
     compile_command.add_argument("--full-model", action="store_true")
-    compile_command.add_argument("--mode", choices=("decode-1", "prefill"),
-                                 help="Execution phase selected at model import")
+    compile_command.add_argument("--mode", choices=("decode-1", "prefill"), help="Execution phase selected at model import")
     compile_command.add_argument("--num-tokens", type=int, help="Static prompt token count selected at model import")
     compile_command.add_argument(
         "--checkpoint",
@@ -120,8 +117,7 @@ def _parser() -> argparse.ArgumentParser:
     compile_command.add_argument("--stop-after")
     compile_command.add_argument("--emit-executable", action="store_true")
     _codegen_option(compile_command)
-    compile_command.add_argument("--checkpoint-integrity-report",
-                                 help="Completed local checkpoint SHA-256 audit to reuse for unchanged source files")
+    compile_command.add_argument("--checkpoint-integrity-report", help="Completed local checkpoint SHA-256 audit to reuse for unchanged source files")
     compile_rdata_cache = compile_command.add_mutually_exclusive_group()
     compile_rdata_cache.add_argument("--rdata-cache-dir")
     compile_rdata_cache.add_argument("--no-rdata-cache", action="store_true")
@@ -135,8 +131,7 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--checkpoint", help="Checkpoint root used to materialize executable rdata")
         command.add_argument("--emit-executable", action="store_true")
         _codegen_option(command)
-        command.add_argument("--checkpoint-integrity-report",
-                             help="Completed local checkpoint SHA-256 audit to reuse for unchanged source files")
+        command.add_argument("--checkpoint-integrity-report", help="Completed local checkpoint SHA-256 audit to reuse for unchanged source files")
         rdata_cache = command.add_mutually_exclusive_group()
         rdata_cache.add_argument("--rdata-cache-dir")
         rdata_cache.add_argument("--no-rdata-cache", action="store_true")
@@ -165,6 +160,10 @@ def _codegen_option(parser: argparse.ArgumentParser) -> None:
     from triton.flagmega.artifacts.module import CODEGEN_BACKENDS
     parser.add_argument("--codegen-backend", choices=CODEGEN_BACKENDS, default="triton",
                         help="Executable source backend (default: triton)")
+    parser.add_argument("--cpp-operator-profile", choices=("cta-globaltimer-v1", "cta-globaltimer-v2"),
+                        help="Separate eager diagnostic operator timestamps; ordinary timing ineligible")
+    parser.add_argument("--cpp-max-registers", type=int,
+                        help="Optional NVIDIA executable C++ register limit per thread (1..255)")
 
 
 def _compiler_options(parser: argparse.ArgumentParser) -> None:
@@ -194,6 +193,12 @@ def _compiler_options(parser: argparse.ArgumentParser) -> None:
         help="Compatibility alias that adds the compile dump flag",
     )
     parser.add_argument("--require-review", action="store_true")
+    parser.add_argument(
+        "--shape-bucket-segment",
+        type=int,
+        help="Specialize the module's declared shape bucket at this segment index "
+             "(default: the declaration's selection, else its largest bucket)",
+    )
     _json_option(parser)
 
 
@@ -207,6 +212,7 @@ def _options(args: argparse.Namespace) -> CompileOptions:
         bufferize_opt_level=args.bufferize_opt_level,
         placement=args.placement,
         codegen_backend=getattr(args, "codegen_backend", None),
+        shape_bucket_segment=getattr(args, "shape_bucket_segment", None),
     )
 
 
@@ -228,14 +234,16 @@ def _summary(module: IRModule) -> dict[str, object]:
 
 def _selection_points(module: IRModule) -> list[dict[str, object]]:
     selected = module.selection_map
-    return [{
-        "id": point.id,
-        "kind": point.kind,
-        "owner": point.owner,
-        "default": point.default_candidate,
-        "selected": selected.get(point.id).candidate_id if point.id in selected else None,
-        "alternatives": [candidate.to_data() for candidate in point.candidates],
-    } for point in module.selection_points]
+    return [
+        {
+            "id": point.id,
+            "kind": point.kind,
+            "owner": point.owner,
+            "default": point.default_candidate,
+            "selected": selected.get(point.id).candidate_id if point.id in selected else None,
+            "alternatives": [candidate.to_data() for candidate in point.candidates],
+        } for point in module.selection_points
+    ]
 
 
 def _run(args: argparse.Namespace) -> dict[str, Any]:
@@ -349,11 +357,19 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             dump_flags=dump_flags_text(compiler.options.effective_dump_flags),
         )
     if args.command in {"compile", "resume", "replay"}:
+        from triton.flagmega.codegen.cpp.build import validate_cpp_max_registers
+        validate_cpp_max_registers(
+            args.cpp_max_registers, target=args.target, codegen_backend=args.codegen_backend,
+            emit_executable=args.emit_executable)
+        if args.cpp_operator_profile is not None:
+            from triton.flagmega.codegen.cpp.operator_profile import validate_option
+            validate_option(args.cpp_operator_profile, target=args.target,
+                            codegen_backend=args.codegen_backend, emit_executable=args.emit_executable)
         source = ((import_model(args.model, revision=args.revision, numerical_profile=args.numerical_profile
-                                or "default", mode=args.mode or "decode-1",
+                                or "nncase", mode=args.mode or "decode-1",
                                 num_tokens=1 if args.num_tokens is None else args.num_tokens) if args.full_model else
                    import_model_layer(args.model, layer=args.layer, revision=args.revision,
-                                      numerical_profile=args.numerical_profile or "default", mode=args.mode
+                                      numerical_profile=args.numerical_profile or "nncase", mode=args.mode
                                       or "decode-1", num_tokens=1 if args.num_tokens is None else args.num_tokens))
                   if args.command == "compile" and args.model is not None else load_module(args.input))
         compiler = Compiler(_options(args))
@@ -363,7 +379,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             if args.num_tokens is not None and args.num_tokens != source.metadata.get("tokens_per_call", 1):
                 raise IRSchemaError("--num-tokens does not match the saved IR; select token extent at import.")
         if (args.command == "compile" and args.input is not None and args.numerical_profile is not None
-                and args.numerical_profile != source.metadata.get("numerical_contract", "default")):
+                and args.numerical_profile != source.metadata.get("numerical_contract", "nncase")):
             raise IRSchemaError("--numerical-profile does not match the saved IR; select the contract at import.")
         result = compiler.compile(source, stop_after=args.stop_after)
         checkpoint_path = (args.model if args.command == "compile" and args.model is not None else getattr(
@@ -382,6 +398,8 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
             checkpoint=checkpoint,
             emit_executable=bool(getattr(args, "emit_executable", False)),
             codegen_backend=args.codegen_backend,
+            cpp_max_registers=args.cpp_max_registers,
+            cpp_operator_profile=args.cpp_operator_profile,
             dumper=compiler.diagnostics.dumper,
             rdata_cache_dir=rdata_cache_dir,
         )
@@ -416,14 +434,16 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         try:
             if hasattr(runtime, "create_state"):
                 if len(inputs) not in {1, args.steps}:
-                    raise RuntimeContractError("Stateful artifact expects one reusable input tensor or exactly "
-                                               f"--steps tensors, got {len(inputs)} inputs for {args.steps} steps.")
+                    raise RuntimeContractError(
+                        "Stateful artifact expects one reusable input tensor or exactly "
+                        f"--steps tensors, got {len(inputs)} inputs for {args.steps} steps.")
                 step_inputs = inputs * args.steps if len(inputs) == 1 else inputs
                 state = runtime.create_state()
                 result_kind = getattr(runtime, "result_kind", None)
                 if result_kind == "logits_token_state":
                     output, next_token = runtime.create_outputs()
-                    runtime.prepare(step_inputs[0], state, logits=output, next_token=next_token)
+                    runtime.prepare(
+                        step_inputs[0], state, logits=output, next_token=next_token)
                     for input_ids in step_inputs:
                         runtime.run_into(output, next_token, input_ids, state)
                 elif result_kind == "tensor_state":
@@ -433,15 +453,22 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
                         runtime.run_into(output, input_ids, state)
                 elif result_kind == "composite_logits_token_state":
                     output, next_token = runtime.create_outputs()
-                    runtime.prepare(step_inputs[0], state, logits=output, next_token=next_token)
+                    runtime.prepare(
+                        step_inputs[0], state, logits=output, next_token=next_token)
                     for input_ids in step_inputs:
                         runtime.run_into(output, next_token, input_ids, state)
                 else:
-                    raise RuntimeContractError(f"Stateful runtime has unsupported result contract {result_kind!r}.")
+                    raise RuntimeContractError(
+                        f"Stateful runtime has unsupported result contract {result_kind!r}."
+                    )
                 torch.cuda.synchronize(torch.device(device))
                 if hasattr(state, "kv_caches"):
                     serialized_output = {
-                        ("logits" if result_kind == "logits_token_state" else "hidden"): output.detach().cpu(),
+                        (
+                            "logits"
+                            if result_kind == "logits_token_state"
+                            else "hidden"
+                        ): output.detach().cpu(),
                         "kv_caches": state.kv_caches.detach().cpu(),
                         "query_start_loc": state.query_start_loc.detach().cpu(),
                         "seq_lens": state.seq_lens.detach().cpu(),
@@ -471,7 +498,9 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
                         "block_table": state.paged.block_table.detach().cpu(),
                     }
                 else:
-                    raise RuntimeContractError("Stateful runtime returned an unsupported state ABI.")
+                    raise RuntimeContractError(
+                        "Stateful runtime returned an unsupported state ABI."
+                    )
             else:
                 if args.steps != 1:
                     raise RuntimeContractError("Stateless artifacts only support --steps 1.")
@@ -549,10 +578,14 @@ def _artifact_run_device(requested: str, torch) -> str:
     try:
         index = int(local_rank)
     except ValueError as error:
-        raise RuntimeContractError(f"LOCAL_RANK must be an integer, got {local_rank!r}.") from error
+        raise RuntimeContractError(
+            f"LOCAL_RANK must be an integer, got {local_rank!r}."
+        ) from error
     if index < 0 or index >= int(torch.cuda.device_count()):
-        raise RuntimeContractError(f"LOCAL_RANK {index} is outside the visible CUDA device range "
-                                   f"[0, {int(torch.cuda.device_count())}).")
+        raise RuntimeContractError(
+            f"LOCAL_RANK {index} is outside the visible CUDA device range "
+            f"[0, {int(torch.cuda.device_count())})."
+        )
     return f"cuda:{index}"
 
 

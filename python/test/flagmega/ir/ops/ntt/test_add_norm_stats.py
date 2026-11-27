@@ -22,15 +22,15 @@ def _node(name, value_type):
 @pytest.mark.parametrize("layout", ["broadcast", "reduce-scatter", "hybrid", "gather-hybrid"])
 def test_cost_counts_all_partial_owners_for_each_materialized_output(lanes, layout):
     placement = fm.Placement((3, 5), "ab", "bb")
-    dtype = "bfloat16" if lanes == 1 else fm.vector_type("bfloat16", (lanes, ))
+    dtype = "bfloat16" if lanes == 1 else fm.vector_type("bfloat16", (lanes,))
     tensor = fm.tensor_type(dtype, (1, 240))
     broadcast = (fm.SBP.broadcast(), fm.SBP.broadcast())
-    hybrid = (fm.SBP.broadcast(), fm.SBP.split_contiguous((1, )))
+    hybrid = (fm.SBP.broadcast(), fm.SBP.split_contiguous((1,)))
     source_sbp = hybrid if "hybrid" in layout else broadcast
     target_sbp = hybrid if layout == "hybrid" else broadcast
     if layout == "reduce-scatter":
         target_sbp = (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, 1)))
-    axes = (0, ) if "hybrid" in layout else (0, 1)
+    axes = (0,) if "hybrid" in layout else (0, 1)
     source = fm.DistributedType(tensor, source_sbp, placement, partial=fm.SBP.partial(axes))
     target = fm.DistributedType(tensor, target_sbp, placement)
     inputs = (_node("partial", source), _node("residual", target))
@@ -103,11 +103,11 @@ def test_non_sum_or_incompatible_nonpartial_reshard_is_rejected():
         tensor,
         (fm.SBP.broadcast(), fm.SBP.broadcast()),
         placement,
-        partial=fm.SBP.partial((0, ), fm.ReduceOp.MAX),
+        partial=fm.SBP.partial((0,), fm.ReduceOp.MAX),
     )
     wrong_split = fm.DistributedType(
         tensor,
-        (fm.SBP.split_contiguous((0, )), fm.SBP.broadcast()),
+        (fm.SBP.split_contiguous((0,)), fm.SBP.broadcast()),
         placement,
     )
 
@@ -121,7 +121,6 @@ def test_non_sum_or_incompatible_nonpartial_reshard_is_rejected():
 
 
 class _CombineModule(fm.Module):
-
     def __init__(self, use_mean):
         super().__init__(dialect="ntt", stage="packed", entry="main")
         self.use_mean = use_mean
@@ -137,7 +136,8 @@ class _CombineModule(fm.Module):
             use_mean=self.use_mean,
             name="combine",
         )
-        value, stats = fm.F.tensors.get_items(combine, 0, 1, name_prefix="combine_result")
+        value, stats = fm.F.tensors.get_items(
+            combine, 0, 1, name_prefix="combine_result")
         self.function("main", (partial, residual), (value, stats))
 
 
@@ -146,7 +146,8 @@ def test_evaluator_returns_materialized_value_and_its_additive_statistics(use_me
     module = _CombineModule(use_mean).build()
     partial = torch.randn(2, 8)
     residual = torch.randn(2, 8)
-    value, stats = TorchEvaluator(DictWeightResolver({})).run(module, {"partial": partial, "residual": residual})
+    value, stats = TorchEvaluator(DictWeightResolver({})).run(
+        module, {"partial": partial, "residual": residual})
 
     expected = partial + residual
     torch.testing.assert_close(value, expected)
@@ -157,14 +158,12 @@ def test_evaluator_returns_materialized_value_and_its_additive_statistics(use_me
 
 @pytest.mark.parametrize("use_mean", (False, True))
 def test_evaluator_reduces_vector_lanes_as_part_of_the_logical_axis(use_mean):
-
     class VectorCombine(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="ntt", stage="packed", entry="main")
 
         def forward(self):
-            value_type = fm.tensor_type(fm.vector_type("bfloat16", (8, )), (1, 2))
+            value_type = fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, 2))
             partial = self.input("partial", value_type)
             residual = self.input("residual", value_type)
             result = fm.F.ntt.add_norm_stats(
@@ -174,13 +173,15 @@ def test_evaluator_reduces_vector_lanes_as_part_of_the_logical_axis(use_mean):
                 use_mean=use_mean,
                 name="result",
             )
-            value, stats = fm.F.tensors.get_items(result, 0, 1, name_prefix="result_field")
+            value, stats = fm.F.tensors.get_items(
+                result, 0, 1, name_prefix="result_field")
             self.function("main", (partial, residual), (value, stats))
 
     module = VectorCombine().build()
     partial = torch.randn(1, 2, 8, dtype=torch.bfloat16)
     residual = torch.randn(1, 2, 8, dtype=torch.bfloat16)
-    value, stats = TorchEvaluator(DictWeightResolver({})).run(module, {"partial": partial, "residual": residual})
+    value, stats = TorchEvaluator(DictWeightResolver({})).run(
+        module, {"partial": partial, "residual": residual})
 
     expected = partial + residual
     logical = expected.reshape(1, 16).float()

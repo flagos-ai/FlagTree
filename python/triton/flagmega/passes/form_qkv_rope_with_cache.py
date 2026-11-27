@@ -7,4 +7,4 @@ from triton.flagmega.rules.neutral.form_qkv_rope_with_cache import form_qkv_rope
 
 
 def form_qkv_rope_with_cache(module):
-    return DataflowPass("FormQKVRoPEWithCache", (form_qkv_rope_with_cache_rule(), )).run(module)
+    return DataflowPass("FormQKVRoPEWithCache", (form_qkv_rope_with_cache_rule(),)).run(module)

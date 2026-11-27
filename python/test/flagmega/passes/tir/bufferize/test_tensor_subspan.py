@@ -10,43 +10,38 @@ from triton.flagmega.compiler import Compiler
 from triton.flagmega.options import CompileOptions
 
 
-def slice_graph(*, shape=(3, 16), starts=(1, ), ends=(2, ), axes=(0, ), vector=False, distributed=False, producer=False,
-                exported=False, crop=False, split=False, chip=False):
+def slice_graph(*, shape=(3, 16), starts=(1,), ends=(2,), axes=(0,), vector=False, distributed=False,
+                producer=False, exported=False, crop=False, split=False, chip=False):
     dtype = fm.vector_type("float32", (2, 2)) if vector else "float32"
     value_type = fm.tensor_type(dtype, shape)
     mesh = fm.Placement((2, 2), "yx", "bb")
     if distributed:
-        policies = (fm.SBP.broadcast(), ) * len(shape)
+        policies = (fm.SBP.broadcast(),) * len(shape)
         if split:
             policies = (*policies[:-1], fm.SBP.split_contiguous((0, 1)))
         value_type = fm.DistributedType(value_type, policies, mesh)
 
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("x", value_type, id="x")
-
             def add(value, name):
-                return (fm.F.math.vectorized_binary(
-                    value, value, binary_op="add", name=name, metadata={
-                        "selected_vectorization": "test.subspan",
-                        "selected_vector_axes": (len(shape) - 1, ) * 2,
-                        "selected_vector_lanes": (2, 2),
-                    }) if vector else fm.F.math.add(value, value, name=name))
-
+                return (fm.F.math.vectorized_binary(value, value, binary_op="add", name=name, metadata={
+                    "selected_vectorization": "test.subspan", "selected_vector_axes": (len(shape) - 1,) * 2,
+                    "selected_vector_lanes": (2, 2),
+                }) if vector else
+                        fm.F.math.add(value, value, name=name))
             value = add(x, "parent") if producer else x
-            view = (fm.F.tensors.slice_to_shape(value, shape=ends, name="view") if crop else fm.F.tensors.slice(
-                value, starts=starts, ends=ends, axes=axes, name="view"))
+            view = (fm.F.tensors.slice_to_shape(value, shape=ends, name="view") if crop else
+                    fm.F.tensors.slice(value, starts=starts, ends=ends, axes=axes, name="view"))
             output = view if exported else add(view, "output")
-            self.function("main", (x, ), (output, ))
+            self.function("main", (x,), (output,))
 
     module = Graph(dialect="ntt", stage="frozen_constants", entry="main",
                    metadata={"auto_distribution": {"placement": mesh.to_data()}} if distributed else {}).build()
     if chip:
-        module = replace(
-            module, nodes=tuple(
-                replace(node, metadata={**node.metadata, "bufferization.memory_space": "workspace"}) if node.id ==
-                "parent" else node for node in module.nodes))
+        module = replace(module, nodes=tuple(replace(node, metadata={**node.metadata,
+                          "bufferization.memory_space": "workspace"}) if node.id == "parent" else node
+                          for node in module.nodes))
     return module
 
 
@@ -83,7 +78,7 @@ def test_subspan_representation_is_fixed_before_microkernel_proposal():
 
 
 def test_noncontiguous_columns_still_require_materialization():
-    module = slice_graph(shape=(3, 16), starts=(2, ), ends=(6, ), axes=(1, ))
+    module = slice_graph(shape=(3, 16), starts=(2,), ends=(6,), axes=(1,))
     result = Compiler().compile(module).module
     assert result.node_map["view"].op == "tir.call"
 
@@ -122,28 +117,23 @@ def test_owner_stride_cannot_be_changed_in_an_edited_alias():
     result = Compiler().compile(slice_graph(producer=True, distributed=True, split=True, chip=True)).module
     plan = fm.verify_buffer_plan(result)
     view = plan.buffer_map["view"]
-    corrupted = replace(
-        plan, buffers=tuple(
-            replace(buffer, owner_stride_bytes=view.nbytes) if buffer.id == view.id else buffer
-            for buffer in plan.buffers))
+    corrupted = replace(plan, buffers=tuple(replace(buffer, owner_stride_bytes=view.nbytes)
+                                           if buffer.id == view.id else buffer for buffer in plan.buffers))
     from triton.flagmega.errors import IRVerificationError
     with pytest.raises(IRVerificationError, match="owner stride"):
         fm.verify_buffer_plan(replace(result, metadata={**result.metadata, "buffer_plan": corrupted.to_data()}))
 
 
 def test_subspan_argument_keeps_the_caller_base_offset(tmp_path):
-
     class Graph(fm.Module):
-
         def forward(self):
             p = self.input("p", fm.tensor_type("float32", (1, 16)), id="p")
             output = fm.F.math.add(p, p, name="worker_output")
-            self.function("worker", (p, ), (output, ), attrs={"reusable": True, "noinline": True})
+            self.function("worker", (p,), (output,), attrs={"reusable": True, "noinline": True})
             x = self.input("x", fm.tensor_type("float32", (3, 16)), id="x")
-            view = fm.F.tensors.slice(x, starts=(1, ), ends=(2, ), axes=(0, ), name="view")
+            view = fm.F.tensors.slice(x, starts=(1,), ends=(2,), axes=(0,), name="view")
             call = fm.F.builtin.call(view, callee="worker", result_type=output.type, name="call")
-            self.function("main", (x, ), (call, ))
-
+            self.function("main", (x,), (call,))
     result = Compiler().compile(Graph(dialect="ntt", stage="frozen_constants", entry="main").build()).module
     plan = fm.verify_buffer_plan(result)
     assert result.node_map["view"].op == "tir.buffer_subspan"
@@ -156,11 +146,10 @@ def test_subspan_argument_keeps_the_caller_base_offset(tmp_path):
 def test_shard_backing_promotion_rebases_subspan_coordinates():
     source = slice_graph(producer=True, distributed=True, split=True, chip=True)
     view_type = source.node_map["view"].type
-    target = replace(view_type, axis_policies=(fm.SBP.broadcast(), fm.SBP.split_contiguous((1, ))))
-    retarget = fm.Node("retarget", "distributed.sharded_view", ("view", ), target, attrs={"new_type": target})
-    source = replace(
-        source,
-        nodes=(*source.nodes[:-1], retarget, replace(source.nodes[-1], inputs=("retarget", "retarget"), type=target)))
+    target = replace(view_type, axis_policies=(fm.SBP.broadcast(), fm.SBP.split_contiguous((1,))))
+    retarget = fm.Node("retarget", "distributed.sharded_view", ("view",), target, attrs={"new_type": target})
+    source = replace(source, nodes=(*source.nodes[:-1], retarget,
+                                   replace(source.nodes[-1], inputs=("retarget", "retarget"), type=target)))
     result = Compiler().compile(source).module
     plan = fm.verify_buffer_plan(result)
     assert plan.buffer_map["parent"].distributed_storage_kind.value == "canonical_global"
@@ -174,13 +163,10 @@ def test_subspan_selection_obeys_the_declared_consumer_abi(alignment, expected):
     from triton.flagmega.passes.tir.lower_tensor_subspans import lower_tensor_subspans
     planned = Compiler().compile(slice_graph(), stop_after="plan-tir-alignments").module
     callee = planned.node_map["output"].attrs["callee"]
-    planned = replace(
-        planned, kernel_definitions=tuple(
-            replace(
-                kernel, parameters=tuple(
-                    replace(p, alignment_bytes=alignment) if p.name in {"lhs", "rhs"} else p
-                    for p in kernel.parameters)) if kernel.name == callee else kernel
-            for kernel in planned.kernel_definitions))
+    planned = replace(planned, kernel_definitions=tuple(
+        replace(kernel, parameters=tuple(replace(p, alignment_bytes=alignment) if p.name in {"lhs", "rhs"} else p
+                                         for p in kernel.parameters)) if kernel.name == callee else kernel
+        for kernel in planned.kernel_definitions))
     result = lower_tensor_subspans(planned)
     assert result.node_map["view"].op == expected
 
@@ -191,28 +177,23 @@ def test_real_transfer_alignment_propagates_through_a_subspan():
     source = _selected_module(source_alignment=128)
     weight = source.node_map["fused_weight"]
     parent = replace(weight, id="parent", type=fm.tensor_type("bfloat16", (2049, 4096)))
-    view = fm.Node(weight.id, "tir.buffer_subspan", (parent.id, ), weight.type,
+    view = fm.Node(weight.id, "tir.buffer_subspan", (parent.id,), weight.type,
                    attrs={"offsets": (1, 0), "shape": (2048, 4096)})
-    source = fm.verify_module(
-        replace(
-            source, nodes=tuple(replacement for node in source.nodes
-                                for replacement in ((parent, view) if node.id == weight.id else (node, )))))
+    source = fm.verify_module(replace(source, nodes=tuple(
+        replacement for node in source.nodes for replacement in ((parent, view) if node.id == weight.id else (node,)))))
     requirements = transfer_source_alignment_requirements(source)
     assert requirements[view.id] == requirements[parent.id] == 128
 
 
 def test_declared_alignment_applies_to_every_owner_component(tmp_path):
-    source = slice_graph(producer=True, distributed=True, split=True, chip=True, starts=(0, ), ends=(1, ))
+    source = slice_graph(producer=True, distributed=True, split=True, chip=True, starts=(0,), ends=(1,))
     compiler = Compiler()
     planned = compiler.compile(source, stop_after="plan-tir-alignments").module
     callee = planned.node_map["output"].attrs["callee"]
-    planned = replace(
-        planned, kernel_definitions=tuple(
-            replace(
-                kernel, parameters=tuple(
-                    replace(p, alignment_bytes=128) if p.name in {"lhs", "rhs"} else p
-                    for p in kernel.parameters)) if kernel.name == callee else kernel
-            for kernel in planned.kernel_definitions))
+    planned = replace(planned, kernel_definitions=tuple(
+        replace(kernel, parameters=tuple(replace(p, alignment_bytes=128) if p.name in {"lhs", "rhs"} else p
+                                         for p in kernel.parameters)) if kernel.name == callee else kernel
+        for kernel in planned.kernel_definitions))
     result = compiler.compile(planned).module
     plan = fm.verify_buffer_plan(result)
     assert result.node_map["view"].op == "tir.buffer_subspan"

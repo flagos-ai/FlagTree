@@ -19,7 +19,6 @@ def mixed_boxing_module():
     mixed_type = fm.TupleType((tensor, fm.TupleType((local, tensor))))
 
     class Transfer(fm.Module):
-
         def forward(self):
             a, b, c = (self.input(name, tensor) for name in ("a", "b", "c"))
             local_a = fm.F.distributed.force_boxing(a, local, name="load_a")
@@ -37,10 +36,8 @@ def mixed_boxing_module():
 
 
 def test_mixed_tuple_has_independent_transfer_contracts(mixed_boxing_module):
-    calls = [
-        call for call in describe_tir_package(mixed_boxing_module)["render_calls"]
-        if call["family"] == "distributed_boxing"
-    ]
+    calls = [call for call in describe_tir_package(mixed_boxing_module)["render_calls"]
+             if call["family"] == "distributed_boxing"]
     assert len(calls) == 4  # load a, mixed store a/load b, store b; c aliases.
     assert all(len(call["leaves"]) == 1 for call in calls)
     assert sorted(call["leaves"][0]["transition"] for call in calls) == ["tensor_load"] * 2 + ["tensor_store"] * 2

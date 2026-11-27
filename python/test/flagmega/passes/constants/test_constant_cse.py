@@ -11,11 +11,11 @@ def _duplicate_weight_module():
     runtime = builder.var("runtime", value_type, id="runtime")
     first = builder.weight("shared", value_type, source="memory", key="shared", id="first")
     duplicate = builder.weight("shared", value_type, source="memory", key="shared", id="duplicate")
-    first_silu = builder.call("math.silu", (first, ), value_type, id="first_silu")
-    duplicate_silu = builder.call("math.silu", (duplicate, ), value_type, id="duplicate_silu")
+    first_silu = builder.call("math.silu", (first,), value_type, id="first_silu")
+    duplicate_silu = builder.call("math.silu", (duplicate,), value_type, id="duplicate_silu")
     combined = builder.call("math.add", (first_silu, duplicate_silu), value_type, id="combined")
     output = builder.call("math.add", (runtime, combined), value_type, id="output")
-    builder.function("main", (runtime, ), (output, ))
+    builder.function("main", (runtime,), (output,))
     return builder.build(entry="main")
 
 

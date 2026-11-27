@@ -28,16 +28,16 @@ def test_k_sharded_projection_and_bf16_partial_collective(tmp_path):
     runtime = None
     try:
         placement = fm.Placement((4, 8, 16), "cyx", "cbb")
-        source = graph(k=2048, n=128, parts=4, lanes=(2, 4), input_lanes=(2, 4), placement=placement,
-                       k_policy=fm.SBP.split_contiguous((0, )), materialize=True)
-        assert source.node_map["projection"].type.partial == fm.SBPPartial((0, ))
+        source = graph(k=2048, n=128, parts=4, lanes=(2, 4), input_lanes=(2, 4),
+                       placement=placement, k_policy=fm.SBP.split_contiguous((0,)), materialize=True)
+        assert source.node_map["projection"].type.partial == fm.SBPPartial((0,))
         module = Compiler().compile(source).module
         artifact = write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
         runtime = load(artifact, device=device)
         generator = torch.Generator().manual_seed(10031)
         x = (torch.randint(-7, 8, (1, 2048), generator=generator).float() / 128).bfloat16()
         w = (torch.randint(-7, 8, (128, 2048), generator=generator).float() / 128).bfloat16()
-        storage = torch.full((160, ), 123., dtype=torch.bfloat16, device=device)
+        storage = torch.full((160,), 123., dtype=torch.bfloat16, device=device)
         result = storage[16:-16].reshape(1, 16, 2, 4)
         result_spec, = (spec for spec in runtime.external_arguments if spec["role"] == "result")
         values = {"x": x.reshape(1, 256, 2, 4).to(device), "w": w.to(device), result_spec["value"]: result}
@@ -56,12 +56,9 @@ def test_k_sharded_projection_and_bf16_partial_collective(tmp_path):
             torch.testing.assert_close(result.cpu().reshape(1, 128), expected, rtol=0, atol=0)
             assert bool(torch.all(storage[:16] == 123.)) and bool(torch.all(storage[-16:] == 123.))
         assert runtime.resource_report["spill_bytes"] == 0
-        (tmp_path / "tp4-result.json").write_text(
-            json.dumps(
-                {
-                    "rank": dist.get_rank(), "passed": True, "mutations": 3, "guards": True, "resources":
-                    runtime.resource_report, "source_sha256": runtime.codegen["source_sha256"]
-                }, indent=2) + "\n")
+        (tmp_path / "tp4-result.json").write_text(json.dumps({"rank": dist.get_rank(), "passed": True,
+            "mutations": 3, "guards": True, "resources": runtime.resource_report,
+            "source_sha256": runtime.codegen["source_sha256"]}, indent=2) + "\n")
     finally:
         if runtime is not None:
             runtime.close()
@@ -90,21 +87,22 @@ def test_fresh_dynamic_k_partition_handoff_and_graph(tmp_path, program_kind, fre
     device = fresh_tp4_device_group
     runtime = None
     try:
-        module = compile_tp4_dynamic_projection(kind=program_kind, max_ctas=2 if program_kind == 'persistent' else None)
+        module = compile_tp4_dynamic_projection(kind=program_kind,
+            max_ctas=2 if program_kind == 'persistent' else None)
         partial = fm.verify_buffer_plan(module).buffer_map['projection']
-        assert partial.distributed_type.partial == fm.SBP.partial((0, ))
+        assert partial.distributed_type.partial == fm.SBP.partial((0,))
         assert partial.distributed_storage_kind == fm.DistributedBufferStorageKind.COMPACT_PER_CHIP
         assert partial.nbytes == 8192
-        runtime = load(write_artifact(module, tmp_path / 'artifact', target='nvidia-sm90', emit_executable=True),
-                       device=device)
+        runtime = load(write_artifact(module, tmp_path / 'artifact', target='nvidia-sm90',
+                                     emit_executable=True), device=device)
         k, n, span = 8192, 4096, 2048
         # Integer products and these dyadic inputs make the FP32 reference
         # exact, while retaining each TP partition's required BF16 rounding.
         x_cpu = torch.empty((1, k), dtype=torch.bfloat16)
-        w_cpu = ((torch.arange(n * k).reshape(n, k) % 15 - 7).float() / 128).bfloat16()
+        w_cpu = ((torch.arange(n*k).reshape(n, k) % 15 - 7).float() / 128).bfloat16()
         weight = w_cpu.to(device)
         x, rebound_x = [torch.empty((1, k // 8, 2, 4), dtype=torch.bfloat16, device=device) for _ in range(2)]
-        guards = [torch.full((n + 32, ), 123., dtype=torch.bfloat16, device=device) for _ in range(2)]
+        guards = [torch.full((n + 32,), 123., dtype=torch.bfloat16, device=device) for _ in range(2)]
         outputs = [guard[16:-16].reshape(1, n // 8, 2, 4) for guard in guards]
 
         def bind(value, output):
@@ -122,9 +120,8 @@ def test_fresh_dynamic_k_partition_handoff_and_graph(tmp_path, program_kind, fre
             x_cpu.copy_((torch.arange(k) % 15 - 7 + mutation).float().div_(128))
             value.copy_(x_cpu.reshape(value.shape))
             output.fill_(float('nan'))
-            return sum(
-                (x_cpu[:, start:start + span].float() @ w_cpu[:, start:start + span].float().T).bfloat16().float()
-                for start in range(0, k, span)).bfloat16()
+            return sum((x_cpu[:, start:start+span].float() @ w_cpu[:, start:start+span].float().T)
+                       .bfloat16().float() for start in range(0, k, span)).bfloat16()
 
         def check(index, expected):
             torch.testing.assert_close(outputs[index].cpu().reshape(1, n), expected, rtol=0, atol=0)
@@ -158,25 +155,13 @@ def test_fresh_dynamic_k_partition_handoff_and_graph(tmp_path, program_kind, fre
             check(1, expected)
         reports = runtime.resource_report
         assert all(report['spill_bytes'] == 0 for report in reports)
-        (tmp_path / 'dynamic-tp4-result.json').write_text(
-            json.dumps(
-                {
-                    'passed': True,
-                    'rank': dist.get_rank(),
-                    'program_kind': program_kind,
-                    'program_grids': grids,
-                    'k': k,
-                    'local_k': span,
-                    'n': n,
-                    'partial_bytes_per_chip': partial.nbytes,
-                    'eager_mutations': 3,
-                    'pointer_rebind': True,
-                    'captured_requests': 3,
-                    'graph_replays': 3,
-                    'captured_input_mutations': 3,
-                    'guards': True,
-                    'resources': reports,
-                }, indent=2) + '\n')
+        (tmp_path / 'dynamic-tp4-result.json').write_text(json.dumps({
+            'passed': True, 'rank': dist.get_rank(), 'program_kind': program_kind,
+            'program_grids': grids, 'k': k, 'local_k': span, 'n': n, 'partial_bytes_per_chip': partial.nbytes,
+            'eager_mutations': 3, 'pointer_rebind': True, 'captured_requests': 3,
+            'graph_replays': 3, 'captured_input_mutations': 3, 'guards': True,
+            'resources': reports,
+        }, indent=2) + '\n')
     finally:
         if runtime is not None:
             runtime.close()

@@ -22,11 +22,12 @@ def _phase_matches(phase, query):
     """The phase is shared by every head, including across device owners."""
     if not isinstance(query, DistributedType):
         return not isinstance(phase, DistributedType)
-    return (isinstance(phase, DistributedType) and phase.placement == query.placement and phase.partial is None
-            and phase.exclusive is None)
+    return (isinstance(phase, DistributedType) and phase.placement == query.placement
+            and phase.partial is None and phase.exclusive is None)
 
 
-@op_definition("nn.kda_gated_step", namespace="nn", functional_name="kda_gated_step", display_name="NN.KdaGatedStep")
+@op_definition("nn.kda_gated_step", namespace="nn", functional_name="kda_gated_step",
+               display_name="NN.KdaGatedStep")
 class KdaGatedStep(OpDefinition):
     """Dispatch the explicit single-token chunk/recurrent numerical contracts.
 
@@ -90,8 +91,8 @@ class KdaGatedStep(OpDefinition):
 
     @classmethod
     def infer_distributed_input_types(cls, output_type, logical_input_types, attrs):
-        for operands in KdaGatedRecurrentCore.infer_distributed_input_types(output_type, logical_input_types[:8],
-                                                                            attrs):
+        for operands in KdaGatedRecurrentCore.infer_distributed_input_types(
+                output_type, logical_input_types[:8], attrs):
             yield (*operands, DistributedType(logical_input_types[8], (), operands[0].placement))
 
     @classmethod

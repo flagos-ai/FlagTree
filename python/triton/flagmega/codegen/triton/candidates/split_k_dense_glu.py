@@ -14,10 +14,8 @@ class SplitKDenseGluCandidateProvider:
             return None
         family = 'split_k_dense_glu'
         variant = 'projection' if node.op == SplitKDenseGluProjection.op_name else 'epilogue'
-        variants = tuple(
-            context.configure_implementation(value)
-            for value in context.implementations(family)
-            if value.variant == variant)
+        variants = tuple(context.configure_implementation(value)
+                         for value in context.implementations(family) if value.variant == variant)
         if not variants:
             return None
         return TritonCandidateProposal(variants, context.choose_default(family, variants))

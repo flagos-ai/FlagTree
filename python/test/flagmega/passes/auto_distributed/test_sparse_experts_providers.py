@@ -94,14 +94,12 @@ def test_down_rounding_keeps_output_parallelism_on_the_whole_two_dimensional_mes
 
 
 def test_combine_retains_nondefault_policy_of_partial_projection():
-    module = build_module(SparseExpertsCombine, types=operand_types(tokens=4, hidden=64),
-                          attrs={"output_dtype": "bfloat16"})
+    module = build_module(SparseExpertsCombine, types=operand_types(tokens=4, hidden=64), attrs={"output_dtype": "bfloat16"})
     node = module.node_map["experts"]
     mesh = fm.Placement((2, 2), "yx", "bb")
-    available = [(module.node_map[key].type, ) for key in node.inputs]
+    available = [(module.node_map[key].type,) for key in node.inputs]
     available[0] = (fm.DistributedType(available[0][0],
-                                       (fm.SBP.broadcast(), fm.SBP.broadcast(), fm.SBP.split_block_cyclic(
-                                           (0, ), 3)), mesh, fm.SBP.partial((1, ))), )
-    context = DistributedCandidateContext(module, node, mesh, tuple(available),
-                                          PyNttDistributedSplitCandidateProvider(128))
+                                     (fm.SBP.broadcast(), fm.SBP.broadcast(), fm.SBP.split_block_cyclic((0,), 3)),
+                                     mesh, fm.SBP.partial((1,))),)
+    context = DistributedCandidateContext(module, node, mesh, tuple(available), PyNttDistributedSplitCandidateProvider(128))
     assert any(candidate.input_types[0] == available[0][0] for candidate in candidates_for(context))

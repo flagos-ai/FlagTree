@@ -22,8 +22,7 @@ from .sampling import SamplingConfig
 def create_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact", type=Path, required=True)
-    parser.add_argument("--checkpoint", type=Path, required=True,
-                        help="Local tokenizer/config checkpoint; weights come from artifact")
+    parser.add_argument("--checkpoint", type=Path, required=True, help="Local tokenizer/config checkpoint; weights come from artifact")
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("-c", "--ctx-size", type=int)
     parser.add_argument("-n", "--n-predict", type=int, default=128)
@@ -36,20 +35,17 @@ def create_parser():
     mode.add_argument("-i", "--interactive", action="store_true", help="Continue chatting after an initial prompt")
     mode.add_argument("--single-turn", action="store_true", help="Stop after the first interactive response")
     parser.add_argument("-sys", "--system-prompt")
-    parser.add_argument("--chat-template-kwargs", default="{}",
-                        help="JSON object forwarded to the checkpoint's chat template")
+    parser.add_argument("--chat-template-kwargs", default="{}", help="JSON object forwarded to the checkpoint's chat template")
     parser.add_argument("--temp", type=float, default=0.0, help="Zero selects greedy decoding")
     parser.add_argument("--top-k", type=int, default=0)
     parser.add_argument("--top-p", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--ignore-eos", action="store_true",
-                        help="Raw completion only, useful for fixed-length measurements")
+    parser.add_argument("--ignore-eos", action="store_true", help="Raw completion only, useful for fixed-length measurements")
     parser.add_argument("--cuda-graph", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--warmups", type=int, default=3)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--show-timings", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--metrics-file", type=Path,
-                        help="New JSONL file containing load information and per-turn metrics/tokens")
+    parser.add_argument("--metrics-file", type=Path, help="New JSONL file containing load information and per-turn metrics/tokens")
     return parser
 
 
@@ -76,8 +72,8 @@ def main(argv=None):
     import torch
     from .backend import ArtifactBackend
     torch.set_num_threads(args.threads)
-    backend = ArtifactBackend.load(args.artifact, device=args.device, sampling=sampling, cuda_graph=args.cuda_graph,
-                                   warmups=args.warmups)
+    backend = ArtifactBackend.load(args.artifact, device=args.device, sampling=sampling,
+                                   cuda_graph=args.cuda_graph, warmups=args.warmups)
     output = None
     try:
         tokenizer, eos = load_tokenizer(args.checkpoint, backend)
@@ -85,21 +81,18 @@ def main(argv=None):
         chat = ChatSession(engine, tokenizer, system_prompt=args.system_prompt, template_kwargs=kwargs)
         if not raw and not tokenizer.chat_template:
             parser.error("Checkpoint has no chat template; provide a template in its tokenizer config or use --raw")
-        info = {
-            **backend.info(), "sampling": asdict(sampling), "context_size": engine.capacity, "checkpoint":
-            str(args.checkpoint.resolve()), "timing_boundary":
-            "synchronous token generation, sampling, host delivery and text callback; no human input wait", "schema":
-            "flagmega.chat/v1"
-        }
+        info = {**backend.info(), "sampling": asdict(sampling), "context_size": engine.capacity,
+                "checkpoint": str(args.checkpoint.resolve()),
+                "timing_boundary": "synchronous token generation, sampling, host delivery and text callback; no human input wait",
+                "schema": "flagmega.chat/v1"}
         if args.metrics_file:
             args.metrics_file.parent.mkdir(parents=True, exist_ok=True)
             output = args.metrics_file.open("x")
             output.write(json.dumps({"event": "load", **info}) + "\n")
             output.flush()
-        print(
-            f"FlagMega | {info['gpu']} | context {engine.capacity} | prefill: compiled token scan\n"
-            f"load {backend.load_ms:.2f} ms; prepare/JIT/graph {backend.prepare_ms:.2f} ms", file=sys.stderr,
-            flush=True)
+        print(f"FlagMega | {info['gpu']} | context {engine.capacity} | prefill: compiled token scan\n"
+              f"load {backend.load_ms:.2f} ms; prepare/JIT/graph {backend.prepare_ms:.2f} ms",
+              file=sys.stderr, flush=True)
         last = None
         turn = 0
 
@@ -114,15 +107,14 @@ def main(argv=None):
             if args.show_timings:
                 print(last.format(), file=sys.stderr, flush=True)
             if output is not None:
-                output.write(
-                    json.dumps({"event": "generation", "turn": turn, "text": text, **result.to_dict()},
-                               ensure_ascii=False) + "\n")
+                output.write(json.dumps({"event": "generation", "turn": turn, "text": text,
+                                         **result.to_dict()}, ensure_ascii=False) + "\n")
                 output.flush()
 
         if raw:
             started = time.perf_counter()
-            tokens = (json.loads(args.prompt_token_file.read_text())
-                      if args.prompt_token_file is not None else tokenizer.encode(prompt, add_special_tokens=False))
+            tokens = (json.loads(args.prompt_token_file.read_text()) if args.prompt_token_file is not None
+                      else tokenizer.encode(prompt, add_special_tokens=False))
             tokenization_ms = (time.perf_counter() - started) * 1000
             stream = TextStream(tokenizer, write)
             result = engine.generate(tokens, max_new_tokens=args.n_predict, ignore_eos=args.ignore_eos,
@@ -135,7 +127,8 @@ def main(argv=None):
             record(result, text)
             if not args.interactive:
                 return 0
-        print("Commands: /reset, /stats, /help, /exit. End a line with \\ for multiline input.", file=sys.stderr)
+        print("Commands: /reset, /stats, /help, /exit. End a line with \\ for multiline input.",
+              file=sys.stderr)
         while True:
             try:
                 text = input("\n> ")
@@ -151,8 +144,7 @@ def main(argv=None):
                     print(last.format() if last else "No completed turns.", file=sys.stderr)
                     continue
                 if text == "/help":
-                    print("/reset clears history; /stats shows the last turn; /exit quits. Ctrl-C cancels a turn.",
-                          file=sys.stderr)
+                    print("/reset clears history; /stats shows the last turn; /exit quits. Ctrl-C cancels a turn.", file=sys.stderr)
                     continue
                 if not text.strip():
                     continue

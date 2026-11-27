@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Equality saturation sessions shared by EGraph passes."""
+"""Equality saturation sessions shared by nncase-shaped EGraph passes."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Callable, Iterable
 
 from triton.flagmega.diagnostics import DumpFlags, DumpScope
 from triton.flagmega.egraph.extractor import EGraphExtractor, ExtractionResult, ForcedChoice, NodeCost
-from triton.flagmega.egraph.graph import EGraph
+from triton.flagmega.egraph.graph import EGraph, ENode
 from triton.flagmega.egraph.matcher import find_egraph_matches
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir import IRModule, Node, verify_module
@@ -94,7 +94,7 @@ class EGraphSession:
                 )
             self.cost_model = resolved_model
         if selector is not None:
-            return (self._apply_selected_once(name, rules, cost, selector), )
+            return (self._apply_selected_once(name, rules, cost, selector),)
 
         iterations: list[RewriteIteration] = []
         for _ in range(max_iterations):
@@ -104,8 +104,11 @@ class EGraphSession:
             pending: list[tuple[RewriteRule, Node, object]] = []
             # Match every rule against one immutable e-graph snapshot.  A
             # subsequent iteration is required to observe alternatives added
-            # by this batch, exactly as in the reference EGraphRewriteProvider.
-            enodes = tuple(enode for _class_id, enode in graph.enodes() if enode.op != "egraph.opaque")
+            # by this batch, exactly as in nncase's EGraphRewriteProvider.
+            enodes = tuple(
+                enode for _class_id, enode in graph.enodes()
+                if enode.op != "egraph.opaque"
+            )
             for rule_index, rule in enumerate(rules):
                 if rule.pattern is not None:
                     for match in find_egraph_matches(graph, rule.pattern, module_view):
@@ -244,24 +247,24 @@ class EGraphSession:
         dumper = DumpScope.current()
         if dumper.is_enabled(DumpFlags.REWRITE) and dumper.directory is not None:
             with dumper.open_artifact(
-                    f"Matches/V{iteration.version_before}.txt",
-                    category=DumpFlags.REWRITE,
-                    kind="rewrite-matches",
-                    producer="EGraphSession",
-                    source_semantic_hash=self.module.semantic_hash,
-                    encoding="utf-8",
+                f"Matches/V{iteration.version_before}.txt",
+                category=DumpFlags.REWRITE,
+                kind="rewrite-matches",
+                producer="EGraphSession",
+                source_semantic_hash=self.module.semantic_hash,
+                encoding="utf-8",
             ) as stream:
                 stream.write("rule, results\n")
                 for rule, count in iteration.matches:
                     stream.write(f"{rule}, {count}\n")
             if iteration.version_after != iteration.version_before:
                 with dumper.open_artifact(
-                        f"Rebuild/V{iteration.version_after}.dot",
-                        category=DumpFlags.REWRITE,
-                        kind="egraph-rebuild-dot",
-                        producer="EGraphSession",
-                        source_semantic_hash=self.module.semantic_hash,
-                        encoding="utf-8",
+                    f"Rebuild/V{iteration.version_after}.dot",
+                    category=DumpFlags.REWRITE,
+                    kind="egraph-rebuild-dot",
+                    producer="EGraphSession",
+                    source_semantic_hash=self.module.semantic_hash,
+                    encoding="utf-8",
                 ) as stream:
                     stream.write(graph.to_dot(roots=graph.roots_for_module(self.module)))
 
@@ -336,7 +339,10 @@ def _verify_helpers(result: RewriteResult, root: Node, module: IRModule, graph: 
                 node_id=root.id,
             )
         generated.add(helper.id)
-    missing = {value for value in result.replacement.inputs if not graph.has_node_id(value) and value not in generated}
+    missing = {
+        value for value in result.replacement.inputs
+        if not graph.has_node_id(value) and value not in generated
+    }
     if missing:
         raise IRVerificationError(
             f"E-graph replacement {root.id!r} has non-topological inputs {sorted(missing)}.",

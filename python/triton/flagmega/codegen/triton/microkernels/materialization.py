@@ -30,8 +30,10 @@ def materialize_shared_workspace_buffers(
     result = []
     for index, descriptor in enumerate(selection.shared_workspaces):
         if descriptor.name in parameter_names:
-            raise IRVerificationError(f"TIR microkernel {selection.family}/{selection.variant} shared "
-                                      f"workspace {descriptor.name!r} conflicts with @{function.name} ABI.")
+            raise IRVerificationError(
+                f"TIR microkernel {selection.family}/{selection.variant} shared "
+                f"workspace {descriptor.name!r} conflicts with @{function.name} ABI."
+            )
         physical = PhysicalBuffer(
             id=f"shared:{function.name}:{index}:{descriptor.name}",
             memory_space="shared",
@@ -40,14 +42,13 @@ def materialize_shared_workspace_buffers(
             function=function.name,
             role="microkernel_shared_workspace",
         )
-        result.append(
-            Buffer(
-                descriptor.name,
-                descriptor.type.dtype,
-                MemSpan(physical),
-                descriptor.type.shape,
-                _dense_strides(descriptor.type.shape),
-            ))
+        result.append(Buffer(
+            descriptor.name,
+            descriptor.type.dtype,
+            MemSpan(physical),
+            descriptor.type.shape,
+            _dense_strides(descriptor.type.shape),
+        ))
     return tuple(result)
 
 

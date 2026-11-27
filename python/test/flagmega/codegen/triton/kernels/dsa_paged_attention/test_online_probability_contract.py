@@ -35,7 +35,7 @@ def test_explicit_online_contract_rounds_before_normalization_and_resumes(tmp_pa
     module = attention_module(config, 3, probability_rounding="online_bf16")
     restored = fm.load_module(fm.emit_module(module, tmp_path / "online.py"))
     assert restored.semantic_hash == module.semantic_hash
-    (result, ) = TorchEvaluator(DictWeightResolver({})).run(restored, {"query": query, "topk": topk, "state": state})
+    (result,) = TorchEvaluator(DictWeightResolver({})).run(restored, {"query": query, "topk": topk, "state": state})
     expected = torch.tensor(7 / 3, dtype=torch.bfloat16)
     assert expected != (torch.tensor(1 / 3, dtype=torch.bfloat16).float() * 7).bfloat16()
     torch.testing.assert_close(result, torch.full_like(result, expected.item()), rtol=0, atol=0)
@@ -43,9 +43,10 @@ def test_explicit_online_contract_rounds_before_normalization_and_resumes(tmp_pa
 
 def test_default_probability_contract_keeps_its_canonical_hash():
     config, _, _, _ = inputs()
-    assert (attention_module(config,
-                             3).semantic_hash == attention_module(config, 3,
-                                                                  probability_rounding="normalized").semantic_hash)
+    assert (
+        attention_module(config, 3).semantic_hash
+        == attention_module(config, 3, probability_rounding="normalized").semantic_hash
+    )
 
 
 def test_unknown_probability_contract_is_rejected():
@@ -56,8 +57,9 @@ def test_unknown_probability_contract_is_rejected():
 
 def test_default_index_traversal_keeps_its_canonical_hash():
     config, _, _, _ = inputs()
-    assert (attention_module(config, 3).semantic_hash == attention_module(config, 3,
-                                                                          index_traversal="slots").semantic_hash)
+    assert (
+        attention_module(config, 3).semantic_hash == attention_module(config, 3, index_traversal="slots").semantic_hash
+    )
 
 
 @pytest.mark.parametrize("value", ["unknown", 1, True, None, []])
@@ -104,9 +106,9 @@ def test_device_online_contract_handles_empty_and_multiple_tiles(tmp_path, slots
     runtime, arguments = prepare(module, tmp_path / "attention", {"query": query, "topk": topk}, state, output)
     try:
         runtime.run_into(*arguments)
-        torch.testing.assert_close(output, torch.full_like(output,
-                                                           torch.tensor(7 / 3, dtype=torch.bfloat16).item()), rtol=0,
-                                   atol=0)
+        torch.testing.assert_close(
+            output, torch.full_like(output, torch.tensor(7 / 3, dtype=torch.bfloat16).item()), rtol=0, atol=0
+        )
         assert runtime.resource_report["spill_bytes"] == 0
     finally:
         runtime.close()

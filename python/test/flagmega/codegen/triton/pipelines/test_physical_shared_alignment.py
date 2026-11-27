@@ -15,7 +15,6 @@ def _align_entry_allocations(module, alignment):
     physical = {}
 
     class Rebind(fm.TIRRewriter):
-
         def visit_buffer(self, value):
             buffer = value.mem_span.buffer
             if buffer.memory_space != "shared" or buffer.function != module.entry:
@@ -31,20 +30,13 @@ def _align_entry_allocations(module, alignment):
 
 
 @pytest.mark.parametrize("reusable, wrapper_depth, alignment", [
-    (False, 0, 2048),
-    (False, 0, 4096),
-    (True, 0, 4096),
-    (True, 2, 4096),
+    (False, 0, 2048), (False, 0, 4096), (True, 0, 4096), (True, 2, 4096),
 ])
 def test_stronger_physical_alignment_reaches_arena_after_python_resume(
-    tmp_path,
-    compile_pipeline_module,
-    reusable,
-    wrapper_depth,
-    alignment,
+    tmp_path, compile_pipeline_module, reusable, wrapper_depth, alignment,
 ):
-    module = _align_entry_allocations(compile_pipeline_module(reusable=reusable, wrapper_depth=wrapper_depth),
-                                      alignment)
+    module = _align_entry_allocations(compile_pipeline_module(
+        reusable=reusable, wrapper_depth=wrapper_depth), alignment)
     fm.verify_buffer_plan(module)
     path = tmp_path / "aligned.py"
     fm.emit_module(module, path)
@@ -57,8 +49,6 @@ def test_stronger_physical_alignment_reaches_arena_after_python_resume(
             assert workspace["alignment_bytes"] == 1024
             assert workspace["allocation_alignment_bytes"] == alignment
     tree = ast.parse(render_tir_package(package, "unit"))
-    arena = next(node.value for node in ast.walk(tree) if isinstance(node, ast.Assign) and any(
-        isinstance(value, ast.Name) and value.id == "_flagmega_shared_arena" for value in node.targets))
-    assert next(ast.literal_eval(value.value)
-                for value in arena.keywords
-                if value.arg == "alignment_bytes") == alignment
+    arena = next(node.value for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                 and any(isinstance(value, ast.Name) and value.id == "_flagmega_shared_arena" for value in node.targets))
+    assert next(ast.literal_eval(value.value) for value in arena.keywords if value.arg == "alignment_bytes") == alignment

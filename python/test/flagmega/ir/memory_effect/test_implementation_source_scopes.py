@@ -22,20 +22,15 @@ def selected_module(path, scopes):
     if path == "semantic":
         target = StubTarget()
         model = target.triton_implementation_model
-        target.triton_implementation_model = replace(
-            model, implementations=tuple(
-                replace(value, facts={**value.facts, "source_memory_scope": "chip", "source_memory_scopes": scopes})
-                for value in model.implementations))
+        target.triton_implementation_model = replace(model, implementations=tuple(
+            replace(value, facts={**value.facts, "source_memory_scope": "chip", "source_memory_scopes": scopes})
+            for value in model.implementations))
         policy = TritonMicroKernelSelectionPolicy(default_triton_microkernel_registry())
         return fm.verify_module(policy.apply(policy.propose(semantic_packed_qkv_module(), target), target))
     module = _two_add_kernels()
-    module = replace(
-        module, nodes=tuple(
-            replace(
-                node, attrs={
-                    **node.attrs, "facts":
-                    {**node.attrs["facts"], "source_memory_scope": "chip", "source_memory_scopes": scopes}
-                }) if node.op == "tir.kernel" else node for node in module.nodes))
+    module = replace(module, nodes=tuple(
+        replace(node, attrs={**node.attrs, "facts": {**node.attrs["facts"], "source_memory_scope": "chip",
+            "source_memory_scopes": scopes}}) if node.op == "tir.kernel" else node for node in module.nodes))
     return fm.verify_module(materialize_kernel_prim_functions(module))
 
 
@@ -61,12 +56,12 @@ def test_named_source_scope_rejects_missing_schema_or_invalid_scope(path, bad):
 
 def test_named_inferred_scope_retains_the_op_requirement_and_none_stays_none():
     facts = {"source_memory_scope": "device", "source_memory_scopes": {"value": "inferred"}}
-    kwargs = {"parameter_name": "value", "input_names": ("value", )}
+    kwargs = {"parameter_name": "value", "input_names": ("value",)}
     assert implementation_memory_effect(fm.MemoryEffect.CHIP_READ, facts, **kwargs) == fm.MemoryEffect.CHIP_READ
     assert implementation_memory_effect(fm.MemoryEffect.NONE, facts, **kwargs) == fm.MemoryEffect.NONE
 
 
-@pytest.mark.parametrize("kwargs", [{}, {"input_names": ("value", )}])
+@pytest.mark.parametrize("kwargs", [{}, {"input_names": ("value",)}])
 def test_named_scopes_cannot_silently_omit_the_input_schema_or_name(kwargs):
     with pytest.raises(IRVerificationError, match="source_memory_scopes"):
         implementation_memory_effect(fm.MemoryEffect.READ, {"source_memory_scopes": {"value": "block"}}, **kwargs)

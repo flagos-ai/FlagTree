@@ -41,7 +41,9 @@ class _Checkpoint:
 
 @pytest.fixture(scope="module")
 def artifact(tmp_path_factory):
-    module = Compiler(CompileOptions(bufferize_opt_level="fast")).compile(weight_module(distributed=True)).module
+    module = Compiler(CompileOptions(bufferize_opt_level="fast")).compile(
+        weight_module(distributed=True)
+    ).module
     root = write_artifact(
         module,
         tmp_path_factory.mktemp("rdata-once") / "artifact",
@@ -95,7 +97,10 @@ def test_running_an_artifact_digests_the_payload_exactly_once(artifact, monkeypa
     passes = _count_payload_digests(monkeypatch)
 
     runtime = load_runtime(artifact)
-    pool = next(value for value in runtime.runtime_binding["pools"] if str(value["storage"]) == "rdata")
+    pool = next(
+        value for value in runtime.runtime_binding["pools"]
+        if str(value["storage"]) == "rdata"
+    )
     pooled = runtime._load_rdata(torch, "cpu", int(pool["nbytes"]))
 
     assert pooled.numel() == int(pool["nbytes"])
@@ -108,7 +113,10 @@ def test_a_corrupt_payload_is_still_rejected_when_the_pool_is_mapped(artifact, m
     image.write_bytes(bytes([original[0] ^ 0xFF]) + original[1:])
     try:
         runtime = load_runtime(artifact)
-        pool = next(value for value in runtime.runtime_binding["pools"] if str(value["storage"]) == "rdata")
+        pool = next(
+            value for value in runtime.runtime_binding["pools"]
+            if str(value["storage"]) == "rdata"
+        )
         with pytest.raises(ArtifactError, match="hash does not match"):
             runtime._load_rdata(torch, "cpu", int(pool["nbytes"]))
     finally:
@@ -133,7 +141,10 @@ def test_an_index_without_segment_digests_is_still_runnable(artifact, monkeypatc
     # Images packed before per-segment digests existed cannot be narrowed, so the
     # runtime verifies them whole rather than refusing to run them.
     runtime = load_runtime(artifact)
-    pool = next(value for value in runtime.runtime_binding["pools"] if str(value["storage"]) == "rdata")
+    pool = next(
+        value for value in runtime.runtime_binding["pools"]
+        if str(value["storage"]) == "rdata"
+    )
     # Downgrade the published index after loading, so the manifest's own section
     # digests stay intact and only the rdata scope decision is under test.
     index_path = artifact / "assets" / "rdata.index.json"
@@ -164,4 +175,6 @@ def test_a_deferred_digest_cannot_also_be_narrowed_to_a_segment(artifact):
     # a later caller, the other *is* that caller's check.  Combining them would
     # silently skip the payload entirely.
     with pytest.raises(ArtifactError, match="cannot both"):
-        rdata_module.verify_rdata(artifact / "assets", segment=0, verify_image_bytes=False)
+        rdata_module.verify_rdata(
+            artifact / "assets", segment=0, verify_image_bytes=False
+        )

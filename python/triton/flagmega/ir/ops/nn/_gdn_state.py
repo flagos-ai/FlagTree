@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""physical ABI for persistent Gated DeltaNet state."""
+"""nncase-compatible physical ABI for persistent Gated DeltaNet state."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ class GatedDeltaNetStateDimKind(str, Enum):
 
 @dataclass(frozen=True)
 class GatedDeltaNetStateConfig:
-    """Logical layout and trailing-lane storage contract copied from reference."""
+    """Logical layout and trailing-lane storage contract copied from nncase."""
 
     num_layers: int
     num_key_heads: int
@@ -41,22 +41,26 @@ class GatedDeltaNetStateConfig:
     conv_kernel_size: int
     hidden_size: int
     activation_dtype: DType = DType.BFLOAT16
-    activation_lanes: tuple[int, ...] = (8, )
+    activation_lanes: tuple[int, ...] = (8,)
     convolution_layout: tuple[GatedDeltaNetStateDimKind, ...] = (
         GatedDeltaNetStateDimKind.NUM_LAYERS,
         GatedDeltaNetStateDimKind.CONV_CHANNELS,
         GatedDeltaNetStateDimKind.CONV_HISTORY,
     )
-    convolution_vectorized_axes: tuple[GatedDeltaNetStateDimKind, ...] = (GatedDeltaNetStateDimKind.CONV_CHANNELS, )
-    convolution_lanes: tuple[int, ...] = (8, )
+    convolution_vectorized_axes: tuple[GatedDeltaNetStateDimKind, ...] = (
+        GatedDeltaNetStateDimKind.CONV_CHANNELS,
+    )
+    convolution_lanes: tuple[int, ...] = (8,)
     recurrent_layout: tuple[GatedDeltaNetStateDimKind, ...] = (
         GatedDeltaNetStateDimKind.NUM_LAYERS,
         GatedDeltaNetStateDimKind.NUM_VALUE_HEADS,
         GatedDeltaNetStateDimKind.VALUE_HEAD_DIM,
         GatedDeltaNetStateDimKind.KEY_HEAD_DIM,
     )
-    recurrent_vectorized_axes: tuple[GatedDeltaNetStateDimKind, ...] = (GatedDeltaNetStateDimKind.KEY_HEAD_DIM, )
-    recurrent_lanes: tuple[int, ...] = (4, )
+    recurrent_vectorized_axes: tuple[GatedDeltaNetStateDimKind, ...] = (
+        GatedDeltaNetStateDimKind.KEY_HEAD_DIM,
+    )
+    recurrent_lanes: tuple[int, ...] = (4,)
 
     def __post_init__(self) -> None:
         integer_fields = (
@@ -183,7 +187,7 @@ class GatedDeltaNetState:
             self.convolution[layer_id],
             outer_rank=2,
             lanes=self.config.convolution_lanes,
-            axes=(0, ),
+            axes=(0,),
         )
 
     def update_convolution_layer(self, value, layer_id: int = 0) -> None:
@@ -195,7 +199,7 @@ class GatedDeltaNetState:
             value,
             outer_rank=2,
             lanes=self.config.convolution_lanes,
-            axes=(0, ),
+            axes=(0,),
         )
         self.convolution[layer_id].copy_(packed)
 
@@ -205,7 +209,7 @@ class GatedDeltaNetState:
             self.recurrent[layer_id],
             outer_rank=3,
             lanes=self.config.recurrent_lanes,
-            axes=(2, ),
+            axes=(2,),
         )
         return value_key.permute(0, 2, 1).contiguous()
 
@@ -219,7 +223,7 @@ class GatedDeltaNetState:
             value_key,
             outer_rank=3,
             lanes=self.config.recurrent_lanes,
-            axes=(2, ),
+            axes=(2,),
         )
         self.recurrent[layer_id].copy_(packed)
 
@@ -228,11 +232,13 @@ class GatedDeltaNetState:
         expected_convolution = self.config.storage_shape(GatedDeltaNetStateKind.CONVOLUTION)
         expected_recurrent = self.config.storage_shape(GatedDeltaNetStateKind.RECURRENT)
         if tuple(self.convolution.shape) != expected_convolution or self.convolution.dtype != torch.bfloat16:
-            raise EvaluationError(f"Packed GDN convolution state must be BF16{expected_convolution}, got "
-                                  f"{self.convolution.dtype}{tuple(self.convolution.shape)}.")
+            raise EvaluationError(
+                f"Packed GDN convolution state must be BF16{expected_convolution}, got "
+                f"{self.convolution.dtype}{tuple(self.convolution.shape)}.")
         if tuple(self.recurrent.shape) != expected_recurrent or self.recurrent.dtype != torch.float32:
-            raise EvaluationError(f"Packed GDN recurrent state must be F32{expected_recurrent}, got "
-                                  f"{self.recurrent.dtype}{tuple(self.recurrent.shape)}.")
+            raise EvaluationError(
+                f"Packed GDN recurrent state must be F32{expected_recurrent}, got "
+                f"{self.recurrent.dtype}{tuple(self.recurrent.shape)}.")
 
     def _validate_layer(self, layer_id: int) -> None:
         self.validate()

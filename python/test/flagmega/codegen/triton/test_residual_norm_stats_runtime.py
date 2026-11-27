@@ -1,5 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
+
 """GPU regression for the fused projection/residual/norm-stat reduction."""
 
 import pytest
@@ -10,10 +11,15 @@ import triton.experimental.tle.language as tle
 
 import triton._C.libtriton as libtriton
 
-_WEIGHT_LAYOUT = tl.constexpr(tle.gpu.BlockEncoding([1, 2], [2, 16], [8, 1], [1, 0]))
+
+_WEIGHT_LAYOUT = tl.constexpr(
+    tle.gpu.BlockEncoding([1, 2], [2, 16], [8, 1], [1, 0])
+)
 _OUTPUT_LAYOUT = tl.constexpr(tle.gpu.SlicedEncoding(1, _WEIGHT_LAYOUT.value))
 _STATS_LAYOUT = tl.constexpr(tle.gpu.SlicedEncoding(0, _WEIGHT_LAYOUT.value))
-_HAS_TLE_EXPLICIT_LAYOUT = hasattr(libtriton.ir.builder, "ensure_ttg_layout_attrs")
+_HAS_TLE_EXPLICIT_LAYOUT = hasattr(
+    libtriton.ir.builder, "ensure_ttg_layout_attrs"
+)
 
 
 @triton.jit
@@ -37,11 +43,11 @@ def test_rank_one_sliced_norm_stats_reduce_through_parent_layout():
     compiled = _rank_one_sliced_all_dimensions_sum.warmup(
         source,
         partial_stats,
-        grid=(1, ),
+        grid=(1,),
         num_warps=8,
     )
     assert compiled is not None
-    _rank_one_sliced_all_dimensions_sum[(1, )](
+    _rank_one_sliced_all_dimensions_sum[(1,)](
         source,
         partial_stats,
         num_warps=8,
@@ -49,5 +55,5 @@ def test_rank_one_sliced_norm_stats_reduce_through_parent_layout():
 
     torch.testing.assert_close(
         partial_stats.cpu(),
-        torch.tensor([(source.cpu()**2).sum().item()], dtype=torch.float32),
+        torch.tensor([(source.cpu() ** 2).sum().item()], dtype=torch.float32),
     )

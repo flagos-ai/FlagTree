@@ -25,24 +25,23 @@ IDENTITY = "tir.partitioned_sparse_experts_down.wgmma"
 def graph(*, n=4096, k=512, parts=1, experts=16, rounded=False, lanes=(2, 4), shard_n=True):
     mesh = fm.Placement((8, 16), "yx", "bb")
     b = fm.SBP.broadcast()
-    route = fm.SBP.split_contiguous((0, ), 1)
-    feature = fm.SBP.split_contiguous((1, )) if shard_n else b
+    route = fm.SBP.split_contiguous((0,), 1)
+    feature = fm.SBP.split_contiguous((1,)) if shard_n else b
     types = {
-        "activations":
-        fm.DistributedType(fm.tensor_type(fm.vector_type("bfloat16", (2, 2)), (1, 8, parts, k // 4)), (b, route, b, b),
-                           mesh),
-        "router_expert_ids":
-        fm.DistributedType(fm.tensor_type("int32", (1, 8)), (b, route), mesh),
-        "down_input_scale":
-        fm.DistributedType(fm.tensor_type("float32", (experts, 1)), (b, b), mesh),
-        "down_weight":
-        fm.DistributedType(fm.tensor_type("float8_e4m3fn", (experts, parts, n, k)), (b, b, feature, b), mesh),
-        "down_proj_scale":
-        fm.DistributedType(fm.tensor_type("float32", (experts, parts, (n + 127) // 128, k // 128)), (b, b, b, b), mesh),
+        "activations": fm.DistributedType(
+            fm.tensor_type(fm.vector_type("bfloat16", (2, 2)), (1, 8, parts, k // 4)), (b, route, b, b), mesh
+        ),
+        "router_expert_ids": fm.DistributedType(fm.tensor_type("int32", (1, 8)), (b, route), mesh),
+        "down_input_scale": fm.DistributedType(fm.tensor_type("float32", (experts, 1)), (b, b), mesh),
+        "down_weight": fm.DistributedType(
+            fm.tensor_type("float8_e4m3fn", (experts, parts, n, k)), (b, b, feature, b), mesh
+        ),
+        "down_proj_scale": fm.DistributedType(
+            fm.tensor_type("float32", (experts, parts, (n + 127) // 128, k // 128)), (b, b, b, b), mesh
+        ),
     }
 
     class Graph(fm.Module):
-
         def forward(self):
             inputs = {name: self.input(name, t, id=name) for name, t in types.items()}
             out = fm.F.nn.partitioned_sparse_experts_down(
@@ -54,7 +53,7 @@ def graph(*, n=4096, k=512, parts=1, experts=16, rounded=False, lanes=(2, 4), sh
                 output_lanes=lanes,
                 name="projection",
             )
-            self.function("main", tuple(inputs.values()), (out, ))
+            self.function("main", tuple(inputs.values()), (out,))
 
     return Graph(
         dialect="distributed",
@@ -65,9 +64,7 @@ def graph(*, n=4096, k=512, parts=1, experts=16, rounded=False, lanes=(2, 4), sh
 
 
 def compile_graph(module, tile=None, *, identity=IDENTITY):
-
     class Target(NvidiaSm90Target):
-
         def propose_tir(self, module):
             p = super().propose_tir(module)
             return apply_plan(
@@ -96,7 +93,8 @@ def compile_graph(module, tile=None, *, identity=IDENTITY):
         )
 
     target = Target(
-        triton_implementation_model=replace(base, implementations=tuple(configure(v) for v in base.implementations)))
+        triton_implementation_model=replace(base, implementations=tuple(configure(v) for v in base.implementations))
+    )
     c = Compiler(CompileOptions(placement=mesh))
     c.target = target
     result = c.compile(module).module
@@ -110,8 +108,11 @@ def test_requested_output_cooperation_reaches_the_generated_kernel(tmp_path, til
     m = compile_graph(graph(), tile)
     p = write_artifact(m, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     t = ast.parse((p / "generated_kernels.py").read_text())
-    (loop, ) = (n for n in ast.walk(t)
-                if isinstance(n, ast.For) and isinstance(n.target, ast.Name) and n.target.id == "_fm_n_start")
+    (loop,) = (
+        n
+        for n in ast.walk(t)
+        if isinstance(n, ast.For) and isinstance(n.target, ast.Name) and n.target.id == "_fm_n_start"
+    )
     assert ast.literal_eval(loop.iter.args[2]) == tile
 
 
@@ -129,10 +130,16 @@ def test_wide_tail_scale_addresses_stay_inside_the_scale_buffer(tmp_path):
     m = compile_graph(graph(n=n, k=k, parts=parts, lanes=(), shard_n=False), 256)
     p = write_artifact(m, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     tree = ast.parse((p / "generated_kernels.py").read_text())
-    (assignment, ) = (a for a in ast.walk(tree) if isinstance(a, ast.Assign) and any(
-        isinstance(t, ast.Name) and t.id == "_fm_scale" for t in a.targets))
-    (call, ) = (a for a in ast.walk(assignment.value)
-                if isinstance(a, ast.Call) and isinstance(a.func, ast.Attribute) and a.func.attr == "load")
+    (assignment,) = (
+        a
+        for a in ast.walk(tree)
+        if isinstance(a, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "_fm_scale" for t in a.targets)
+    )
+    (call,) = (
+        a
+        for a in ast.walk(assignment.value)
+        if isinstance(a, ast.Call) and isinstance(a.func, ast.Attribute) and a.func.attr == "load"
+    )
     predicate = next(k.value for k in call.keywords if k.arg == "mask")
 
     def mask(node):
@@ -175,15 +182,16 @@ def test_resident_down_cooperation_and_scale_block_tails(tmp_path, n, k, parts, 
         t = fm.logical_type(kind)
         shape = tuple(d.fixed_value for d in t.shape) + tuple(getattr(t.dtype, "lanes", ()))
         dtype = getattr(torch, getattr(t.dtype, "elem_type", t.dtype).value)
-        storage = torch.full((prod(shape) + 32, ), 128, dtype=dtype, device="cuda")
+        storage = torch.full((prod(shape) + 32,), 128, dtype=dtype, device="cuda")
         storages.append(storage)
         return storage[16:-16].reshape(shape)
 
     try:
         for tile in (64, 128, 256):
             m = compile_graph(source, tile)
-            r = load(write_artifact(m, tmp_path / str(tile), target="nvidia-sm90", emit_executable=True),
-                     device="cuda:0")
+            r = load(
+                write_artifact(m, tmp_path / str(tile), target="nvidia-sm90", emit_executable=True), device="cuda:0"
+            )
             runtimes[tile] = r
             assert not r.codegen.get("host_tensor_descriptor_specs")
             values = {}
@@ -202,8 +210,8 @@ def test_resident_down_cooperation_and_scale_block_tails(tmp_path, n, k, parts, 
         for mutation in range(6):
             x = (torch.randint(-16, 17, (1, 8, parts, k), generator=gen).float() / 16).bfloat16()
             w = (torch.randint(-16, 17, (experts, parts, n, k), generator=gen).float() / 16).to(torch.float8_e4m3fn)
-            scales = 2.0**torch.randint(-3, 3, (experts, parts, (n + 127) // 128, k // 128), generator=gen).float()
-            input_scale = (2.0**(torch.arange(experts).remainder(3) - 2).float()).reshape(experts, 1)
+            scales = 2.0 ** torch.randint(-3, 3, (experts, parts, (n + 127) // 128, k // 128), generator=gen).float()
+            input_scale = (2.0 ** (torch.arange(experts).remainder(3) - 2).float()).reshape(experts, 1)
             ids = torch.randperm(experts, generator=gen)[:8].reshape(1, 8).int()
             if mutation in (1, 2, 3, 4):
                 x = (torch.randn((1, 8, parts, k), generator=gen) * (0.5 + mutation)).bfloat16()
@@ -234,14 +242,16 @@ def test_resident_down_cooperation_and_scale_block_tails(tmp_path, n, k, parts, 
             for tile in (128, 256):
                 assert torch.equal(outputs[64].view(torch.uint8), outputs[tile].view(torch.uint8)), (mutation, tile)
             if mutation == 0:
-                (expected, ) = TorchEvaluator(DictWeightResolver({})).run(source, cpu_values)
+                (expected,) = TorchEvaluator(DictWeightResolver({})).run(source, cpu_values)
                 torch.testing.assert_close(outputs[256].cpu(), expected, rtol=0, atol=0)
             if mutation == 5:
-                expected = torch.stack([
-                    scales[ids[0, r], p, torch.arange(n) // 128, 0] * 128 * input_scale[ids[0, r], 0]
-                    for p in range(parts)
-                    for r in range(8)
-                ]).reshape(parts, 1, 8, n)
+                expected = torch.stack(
+                    [
+                        scales[ids[0, r], p, torch.arange(n) // 128, 0] * 128 * input_scale[ids[0, r], 0]
+                        for p in range(parts)
+                        for r in range(8)
+                    ]
+                ).reshape(parts, 1, 8, n)
                 if rounded:
                     expected = expected.bfloat16().float()
                 torch.testing.assert_close(outputs[256].cpu().reshape(parts, 1, 8, n), expected, rtol=0, atol=0)

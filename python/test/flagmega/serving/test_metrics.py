@@ -1,5 +1,3 @@
-# Copyright 2026 FlagOS Contributors
-# SPDX-License-Identifier: MIT
 from triton.flagmega.serving.metrics import GenerationMetrics, summarize
 
 
@@ -8,8 +6,8 @@ def test_denominators_exclude_first_token_from_decode_and_cached_tokens_from_pre
     report = metrics.to_dict()
     assert report["prefill_tokens_per_second"] == 100
     assert report["decode_tokens"] == 2
-    assert report["decode_tokens_per_second"] == 2000 / 6
-    assert report["output_tokens_per_second"] == 3000 / 42
+    assert report["decode_tokens_per_second"] == 2000/6
+    assert report["output_tokens_per_second"] == 3000/42
     assert report["decode_latency_ms"]["median"] == 3
     assert "6.00 ms" in metrics.format()
     assert summarize([])["median"] is None

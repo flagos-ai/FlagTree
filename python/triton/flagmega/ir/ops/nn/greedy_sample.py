@@ -44,7 +44,8 @@ class GreedySample(OpDefinition):
         result = tensor_type(DType.INT32, logits.shape[:-1])
         if isinstance(value_type, DistributedType):
             if value_type.partial is not None or any(
-                    isinstance(policy, SBPPartial) for policy in value_type.axis_policies):
+                isinstance(policy, SBPPartial) for policy in value_type.axis_policies
+            ):
                 raise IRSchemaError("GreedySample requires materialized logits, not additive partials.")
             # This operation includes the collective argmax. A vocabulary
             # split is reduced/materialized; outer (batch) splits survive.

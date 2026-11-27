@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: dense_matmul_glu/packed_k_major_gemv platform=nvidia architecture=sm90
+# flagmega-kernel: dense_matmul_glu/packed_k_major_gemv platform=nvidia architecture=sm90
 {% set dense_matmul_glu_variant = "packed_k_major_gemv" %}
 {% set dense_matmul_glu_accumulate_helper = "_flagmega_dense_matmul_glu_packed_k_major_gemv_accumulate" %}
 {% include "kernels/dense_matmul_glu/_local_accumulate.py.jinja" %}

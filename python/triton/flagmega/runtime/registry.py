@@ -7,8 +7,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from triton.flagmega.errors import ArtifactError
+
 
 RuntimeFactory = Callable[[Path, dict[str, object], object, object], object]
 
@@ -38,7 +40,8 @@ class RuntimePackageRegistry:
         spec = RuntimePackageSpec(str(kind), str(target), factory)
         key = (spec.kind, spec.target)
         if key in self._specs:
-            raise ArtifactError(f"Runtime package adapter {spec.kind!r} for {spec.target!r} is already registered.")
+            raise ArtifactError(
+                f"Runtime package adapter {spec.kind!r} for {spec.target!r} is already registered.")
         self._specs[key] = spec
         return spec
 
@@ -47,10 +50,13 @@ class RuntimePackageRegistry:
         try:
             return self._specs[key]
         except KeyError as error:
-            available = [{"kind": spec.kind, "target": spec.target}
-                         for spec in sorted(self._specs.values(), key=lambda value: (value.target, value.kind))]
-            raise ArtifactError(f"Runtime has no adapter for package {kind!r} on target {target!r}; "
-                                f"available adapters: {available}.") from error
+            available = [
+                {"kind": spec.kind, "target": spec.target}
+                for spec in sorted(self._specs.values(), key=lambda value: (value.target, value.kind))
+            ]
+            raise ArtifactError(
+                f"Runtime has no adapter for package {kind!r} on target {target!r}; "
+                f"available adapters: {available}.") from error
 
     def create(
         self,
@@ -69,6 +75,7 @@ class RuntimePackageRegistry:
 
 
 package_registry = RuntimePackageRegistry()
+
 
 __all__ = [
     "RuntimeFactory",

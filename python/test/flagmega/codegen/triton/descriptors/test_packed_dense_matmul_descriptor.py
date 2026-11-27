@@ -11,11 +11,11 @@ from triton.flagmega.codegen.triton.templates import (
 
 
 def _abi(
-        logical_shape,
-        local_shape,
-        scalar_strides,
-        *,
-        scalar_lane_shape=(),
+    logical_shape,
+    local_shape,
+    scalar_strides,
+    *,
+    scalar_lane_shape=(),
 ):
     lane_count = 1
     for extent in scalar_lane_shape:
@@ -29,7 +29,9 @@ def _abi(
         "logical_shape": tuple(logical_shape),
         "local_capacity_shape": tuple(local_shape),
         "active_shape_expressions": tuple(str(value) for value in local_shape),
-        "logical_coordinate_expressions": tuple(f"local_coord_{axis}" for axis in range(len(logical_shape))),
+        "logical_coordinate_expressions": tuple(
+            f"local_coord_{axis}" for axis in range(len(logical_shape))
+        ),
         "scalar_storage_strides": tuple(scalar_strides),
         "scalar_lane_shape": tuple(scalar_lane_shape),
         "scalar_lane_count": lane_count,
@@ -58,7 +60,7 @@ def _raw_call():
         (1, 256),
         (1, 256),
         (2048, 8),
-        scalar_lane_shape=(8, ),
+        scalar_lane_shape=(8,),
     )
     return {
         "semantic_op": "ntt.packed_matmul",
@@ -77,8 +79,8 @@ def _raw_call():
         },
         "inputs": [_parameter("lhs", source), _parameter("rhs", weight)],
         "outputs": [_parameter("result", result)],
-        "shared_workspaces": ({"name": "weight_stage"}, ),
-        "transfer_pipeline": {"channels": ({"name": "weight"}, )},
+        "shared_workspaces": ({"name": "weight_stage"},),
+        "transfer_pipeline": {"channels": ({"name": "weight"},)},
     }
 
 
@@ -152,7 +154,7 @@ def _chip_local_raw_call():
         "component_stride_scalar_elements": 65536,
         "distributed_type": None,
     }
-    result = _abi((1, 256), (1, 256), (2048, 8), scalar_lane_shape=(8, ))
+    result = _abi((1, 256), (1, 256), (2048, 8), scalar_lane_shape=(8,))
     raw = _raw_call()
     raw["parameters"] = {**raw["parameters"], "descriptor_kind": "table", "block_k": 128}
     raw["inputs"] = [_parameter("lhs", source), _parameter("rhs", weight)]

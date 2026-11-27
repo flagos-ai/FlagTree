@@ -7,18 +7,17 @@ from types import SimpleNamespace
 import pytest
 
 from triton.flagmega.errors import RuntimeContractError
-from triton.flagmega.runtime.prepared import PreparedKernel, ResourceContract, _validate_resources
+from triton.flagmega.runtime.prepared import (
+    PreparedKernel, ResourceContract, _validate_resources,
+    prepare_compiled_kernel, prepare_jit_kernel,
+)
 
 
 def _compiled(*, local_words=10, stack=40, stores=0, loads=0):
     return SimpleNamespace(
-        name="entry",
-        n_regs=32,
-        n_spills=local_words,
-        run=lambda: None,
+        name="entry", n_regs=32, n_spills=local_words, run=lambda: None,
         metadata=SimpleNamespace(
-            num_warps=4,
-            shared=1024,
+            num_warps=4, shared=1024,
             ptxas_stack_frame_bytes=stack,
             ptxas_spill_store_bytes=stores,
             ptxas_spill_load_bytes=loads,
@@ -30,7 +29,7 @@ def test_call_stack_is_not_a_register_spill():
     compiled = _compiled()
     contract = ResourceContract(4, 1)
     _validate_resources(compiled, contract)
-    prepared = PreparedKernel(compiled, (), (), grid=(1, ), contract=contract)
+    prepared = PreparedKernel(compiled, (), (), grid=(1,), contract=contract)
     report = prepared.resource_report
     assert report["spill_bytes"] == 0
     assert report["spill_store_bytes"] == report["spill_load_bytes"] == 0
@@ -55,10 +54,7 @@ def _compiled_without_ptxas_fields(*, n_spills=0):
     # with no per-function ptxas_stack_frame_bytes/spill_store_bytes/
     # spill_load_bytes breakdown at all.
     return SimpleNamespace(
-        name="entry",
-        n_regs=32,
-        n_spills=n_spills,
-        run=lambda: None,
+        name="entry", n_regs=32, n_spills=n_spills, run=lambda: None,
         metadata=SimpleNamespace(num_warps=4, shared=1024),
     )
 
@@ -74,7 +70,7 @@ def test_non_ptxas_backend_with_no_spills_is_accepted():
     compiled = _compiled_without_ptxas_fields(n_spills=0)
     contract = ResourceContract(4, 1, reports_ptxas_resource_fields=False)
     _validate_resources(compiled, contract)
-    prepared = PreparedKernel(compiled, (), (), grid=(1, ), contract=contract)
+    prepared = PreparedKernel(compiled, (), (), grid=(1,), contract=contract)
     report = prepared.resource_report
     assert report["spill_bytes"] == report["local_memory_bytes"] == 0
     assert report["stack_frame_bytes"] == 0
@@ -91,10 +87,7 @@ def test_non_ptxas_backend_missing_n_spills_is_not_silently_accepted():
 def test_spill_tolerance_accepts_spills_at_or_below_the_limit():
     compiled = _compiled_without_ptxas_fields(n_spills=24)
     contract = ResourceContract(
-        4,
-        1,
-        reports_ptxas_resource_fields=False,
-        spill_tolerance_bytes=96,
+        4, 1, reports_ptxas_resource_fields=False, spill_tolerance_bytes=96,
     )
     _validate_resources(compiled, contract)
 
@@ -102,10 +95,7 @@ def test_spill_tolerance_accepts_spills_at_or_below_the_limit():
 def test_spill_tolerance_still_rejects_spills_above_the_limit():
     compiled = _compiled_without_ptxas_fields(n_spills=25)
     contract = ResourceContract(
-        4,
-        1,
-        reports_ptxas_resource_fields=False,
-        spill_tolerance_bytes=96,
+        4, 1, reports_ptxas_resource_fields=False, spill_tolerance_bytes=96,
     )
     with pytest.raises(RuntimeContractError, match="tolerated byte"):
         _validate_resources(compiled, contract)
@@ -121,7 +111,6 @@ def test_spill_tolerance_defaults_to_zero_and_does_not_relax_nvidia():
 
 @pytest.mark.parametrize("cached_error_launcher", [False, True])
 def test_oversized_shared_is_rejected_before_loading_or_reading_driver_registers(cached_error_launcher):
-
     class Unloaded:
         metadata = SimpleNamespace(num_warps=4, shared=288908)
         run_reads = 0
@@ -143,7 +132,6 @@ def test_oversized_shared_is_rejected_before_loading_or_reading_driver_registers
 
 
 def test_resident_shared_budget_is_checked_before_loading():
-
     class Unloaded:
         metadata = SimpleNamespace(num_warps=4, shared=120000)
 
@@ -153,3 +141,39 @@ def test_resident_shared_budget_is_checked_before_loading():
 
     with pytest.raises(RuntimeContractError, match="240000 shared-memory bytes for 2 resident block"):
         _validate_resources(Unloaded(), ResourceContract(4, 2))
+
+
+@pytest.mark.parametrize("prepare", [prepare_compiled_kernel, prepare_jit_kernel])
+@pytest.mark.parametrize("dynamic,static", [(768, 0), (0, 768), (256, 512),
+                                           (384, 0), (0, 384), (128, 256)])
+def test_static_and_dynamic_shared_obey_same_prepare_limits(prepare, dynamic, static):
+    class Unloaded:
+        metadata = SimpleNamespace(num_warps=4, shared=dynamic, static_shared=static)
+
+        @property
+        def run(self):
+            raise AssertionError("Shared admission must precede driver loading")
+
+    compiled = Unloaded()
+    kernel = SimpleNamespace(run=lambda *args, **kwargs: compiled)
+    subject = kernel if prepare is prepare_jit_kernel else compiled
+    total = dynamic + static
+    diagnostic = ("768 shared-memory bytes; limit is 512" if total == 768
+                  else "768 shared-memory bytes for 2 resident block")
+    with pytest.raises(RuntimeContractError, match=diagnostic):
+        prepare(subject, (), (), grid=(1,), contract=ResourceContract(4, 2, shared_memory_capacity_bytes=512))
+
+
+@pytest.mark.parametrize("dynamic,static", [(256, 0), (0, 256), (128, 128)])
+def test_shared_report_counts_static_without_changing_launch_dynamic(dynamic, static):
+    compiled = _compiled(local_words=0, stack=0)
+    compiled.metadata.shared = dynamic
+    compiled.metadata.static_shared = static
+    prepared = prepare_compiled_kernel(compiled, (), (), grid=(1,),
+                                      contract=ResourceContract(4, 2, shared_memory_capacity_bytes=512))
+    report = prepared.resource_report
+    assert report["shared_memory_bytes"] == 256
+    assert report["resident_shared_memory_bytes"] == 512
+    assert report["static_shared_memory_bytes"] == static
+    assert report["dynamic_shared_memory_bytes"] == dynamic
+    assert compiled.metadata.shared == dynamic

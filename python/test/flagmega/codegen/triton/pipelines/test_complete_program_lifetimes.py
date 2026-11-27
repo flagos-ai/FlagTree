@@ -18,39 +18,32 @@ def complete_entry():
     pipeline = dict(kind="pipeline_kernel_call", call="pipeline", parameters={})
     handoff = dict(kind="handoff", endpoint="reuse_writer", role="consumer")
     drain = dict(kind="drain", endpoints=["tile_reader"], stage_id="stage")
-    events = [
-        dict(kind="barrier", scope="block"), ordinary, handoff,
-        dict(kind="barrier", scope="block"), pipeline, drain
-    ]
+    events = [dict(kind="barrier", scope="block"), ordinary, handoff,
+              dict(kind="barrier", scope="block"), pipeline, drain]
     schedule = dict(
-        stages=[
-            dict(id="stage", call="pipeline", channels=[dict(reader_name="tile_reader", writer_name="tile_writer")],
-                 consumer_workspaces=[], auxiliary_consumer=None,
-                 workspaces=[dict(offset_bytes=0, nbytes=64, alignment_bytes=16, allocation_alignment_bytes=16)])
-        ],
-        handoffs=[
-            dict(id="reuse", pipe_name="reuse_pipe", semantic=True, repeated=False, wrap_around=False,
-                 writer_name="reuse_writer", reader_name="reuse_reader")
-        ],
+        stages=[dict(id="stage", call="pipeline",
+                     channels=[dict(reader_name="tile_reader", writer_name="tile_writer")],
+                     consumer_workspaces=[], auxiliary_consumer=None,
+                     workspaces=[dict(offset_bytes=0, nbytes=64,
+                                      alignment_bytes=16, allocation_alignment_bytes=16)])],
+        handoffs=[dict(id="reuse", pipe_name="reuse_pipe", semantic=True,
+                       repeated=False, wrap_around=False,
+                       writer_name="reuse_writer", reader_name="reuse_reader")],
         consumer_events=events,
-        producer_events=[
-            dict(kind="handoff", endpoint="reuse_reader", role="producer"),
-            dict(kind="pipeline_kernel_call", call="pipeline"), {**drain, "endpoints": ["tile_writer"]}
-        ],
-        auxiliary_events=[],
-        consumer_endpoints=["tile_reader", "reuse_writer"],
-        producer_endpoints=["tile_writer", "reuse_reader"],
-        auxiliary_endpoints=[],
-        trip_scoped_closes=[],
-        trip_scoped_drains={},
-        shared_arena_required_nbytes=64,
-        shared_arena_nbytes=64,
+        producer_events=[dict(kind="handoff", endpoint="reuse_reader", role="producer"),
+                         dict(kind="pipeline_kernel_call", call="pipeline"),
+                         {**drain, "endpoints": ["tile_writer"]}],
+        auxiliary_events=[], consumer_endpoints=["tile_reader", "reuse_writer"],
+        producer_endpoints=["tile_writer", "reuse_reader"], auxiliary_endpoints=[],
+        trip_scoped_closes=[], trip_scoped_drains={},
+        shared_arena_required_nbytes=64, shared_arena_nbytes=64,
         shared_arena_alignment_bytes=16,
     )
     programs = [dict(symbol="whole", calls=["ordinary", "pipeline"], num_warps=4)]
-    descriptor = dict(entry_events=events, pipeline_schedule=schedule, render_calls=[ordinary, pipeline],
-                      device_functions=[], grid=[1, 1, 1], dynamic_argument_indices=[0], distributed_entry=False,
-                      grid_barrier_axis_groups=[], runtime_binding={})
+    descriptor = dict(entry_events=events, pipeline_schedule=schedule,
+                      render_calls=[ordinary, pipeline], device_functions=[],
+                      grid=[1, 1, 1], dynamic_argument_indices=[0],
+                      distributed_entry=False, grid_barrier_axis_groups=[], runtime_binding={})
     module = SimpleNamespace(entry="main", metadata={"kernel_program_partition": programs})
     return module, dict(programs=programs), descriptor
 
@@ -71,10 +64,8 @@ def test_whole_entry_keeps_root_handoff_drain_endpoints_and_shared_allocation():
 
 def test_root_handoff_cannot_be_split_between_independent_programs():
     module, plan, descriptor = complete_entry()
-    programs = [
-        dict(symbol="first", calls=["ordinary"], num_warps=4),
-        dict(symbol="second", calls=["pipeline"], num_warps=4)
-    ]
+    programs = [dict(symbol="first", calls=["ordinary"], num_warps=4),
+                dict(symbol="second", calls=["pipeline"], num_warps=4)]
     module.metadata["kernel_program_partition"] = programs
     plan["programs"] = programs
     with pytest.raises(CodegenError, match="handoff|complete executable"):
@@ -114,17 +105,15 @@ def test_complete_entry_preserves_loop_carried_and_auxiliary_lifetimes():
 @pytest.mark.parametrize("reusable,depth", [(False, 0), (True, 0), (True, 1)])
 @pytest.mark.parametrize("auxiliary", [False, True])
 def test_normal_complete_program_preserves_all_physical_roles(
-    compile_pipeline_module,
-    reusable,
-    depth,
-    auxiliary,
+    compile_pipeline_module, reusable, depth, auxiliary,
 ):
     from triton.flagmega.codegen.triton.kernel_programs import _incoming_completion
     from triton.flagmega.codegen.triton.tir_package import describe_tir_package, render_tir_package
 
-    implementation = "tir.dense_matmul.tensor_descriptor_smem_pipeline_" + ("aux_gemv" if auxiliary else "gemv")
-    module = compile_pipeline_module(reusable=reusable, wrapper_depth=depth, implementation=implementation,
-                                     whole_program=True)
+    implementation = "tir.dense_matmul.tensor_descriptor_smem_pipeline_" + (
+        "aux_gemv" if auxiliary else "gemv")
+    module = compile_pipeline_module(reusable=reusable, wrapper_depth=depth,
+                                     implementation=implementation, whole_program=True)
     package = describe_tir_package(module)
     original = package["pipeline_schedule"]
     program, = package["programs"]

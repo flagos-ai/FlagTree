@@ -29,7 +29,7 @@ def packed_matmul_module(*, size: int = 1024) -> fm.IRModule:
             "packed_layout": "n_major_k_packed",
         },
     )
-    builder.function("main", (value, ), (output, ))
+    builder.function("main", (value,), (output,))
     return fm.verify_module(builder.build(entry="main"))
 
 
@@ -58,18 +58,18 @@ def qwen3_packed_module(*, reusable: bool = True) -> fm.IRModule:
     prefix = "model.layers.0."
     shapes = {
         "model.embed_tokens.weight": (151936, 2048),
-        prefix + "input_layernorm.weight": (2048, ),
+        prefix + "input_layernorm.weight": (2048,),
         prefix + "self_attn.q_proj.weight": (2048, 2048),
         prefix + "self_attn.k_proj.weight": (1024, 2048),
         prefix + "self_attn.v_proj.weight": (1024, 2048),
-        prefix + "self_attn.q_norm.weight": (128, ),
-        prefix + "self_attn.k_norm.weight": (128, ),
+        prefix + "self_attn.q_norm.weight": (128,),
+        prefix + "self_attn.k_norm.weight": (128,),
         prefix + "self_attn.o_proj.weight": (2048, 2048),
-        prefix + "post_attention_layernorm.weight": (2048, ),
+        prefix + "post_attention_layernorm.weight": (2048,),
         prefix + "mlp.gate_proj.weight": (6144, 2048),
         prefix + "mlp.up_proj.weight": (6144, 2048),
         prefix + "mlp.down_proj.weight": (2048, 6144),
-        "model.norm.weight": (2048, ),
+        "model.norm.weight": (2048,),
     }
     tensors = {
         key: TensorInfo(key, fm.DType.BFLOAT16, shape, "qwen3-unit.safetensors")
@@ -92,15 +92,17 @@ def qwen3_packed_module(*, reusable: bool = True) -> fm.IRModule:
                         "calling_convention": "device",
                         "noinline": True,
                     },
-                ) for function in module.functions),
+                )
+                for function in module.functions
+            ),
         )
     compiler = Compiler()
     for stage in (
-            "decompose-gdn",
-            "propose-vectorization",
-            "apply-vectorization",
-            "propose-packing",
-            "apply-packing",
+        "decompose-gdn",
+        "propose-vectorization",
+        "apply-vectorization",
+        "propose-packing",
+        "apply-packing",
     ):
         module = compiler.run_stage(module, stage).module
     return module

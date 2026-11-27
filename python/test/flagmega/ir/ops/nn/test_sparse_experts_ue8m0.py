@@ -50,7 +50,6 @@ def test_complete_bf16_domain_matches_independently_recorded_native_codes_and_sc
 
     values = bf16_domain()
     codes, scale = ue8m0_quantize(values)
-
     # Official vLLM 0.31.0 CUDA per_token_group_fp8_quant, SM90, block K=128,
     # UE8M0 enabled. Both outputs were observed independently of this model.
     def digest(value):
@@ -87,12 +86,10 @@ def test_stage_preserves_ue8m0_quantization_and_its_rounding_boundary(tmp_path, 
 @pytest.mark.parametrize("definition", (SparseExpertsGateUp, SparseExpertsDown, SparseExperts))
 @pytest.mark.parametrize("invalid", ("mode", "activation", "weight", "scales", "block_n", "block_k"))
 def test_quantization_rejects_unsupported_mode_or_storage(definition, invalid):
-    attrs = {
-        "dtype": "float32" if invalid == "activation" else "bfloat16", "weight_dtype":
-        "bfloat16" if invalid == "weight" else "float8_e4m3fn", "block_scaled": invalid != "scales", "weight_block":
-        128, "hidden": 128, "intermediate": 128, "tokens": 1, "activation_quantization":
-        "unknown" if invalid == "mode" else MODE
-    }
+    attrs = {"dtype": "float32" if invalid == "activation" else "bfloat16",
+             "weight_dtype": "bfloat16" if invalid == "weight" else "float8_e4m3fn",
+             "block_scaled": invalid != "scales", "weight_block": 128, "hidden": 128, "intermediate": 128,
+             "tokens": 1, "activation_quantization": "unknown" if invalid == "mode" else MODE}
     if invalid in {"block_n", "block_k"}:
         attrs[f"weight_{invalid}"] = 0
     with pytest.raises(IRSchemaError, match="activation_quantization|UE8M0|positive integer"):
@@ -110,18 +107,20 @@ def test_composite_decomposition_preserves_the_quantizer(tmp_path, egraph):
     from triton.flagmega.passes.rewriter import DataflowPass, EGraphRulesPass
     from triton.flagmega.rules.neutral import decompose_sparse_experts_rule
 
-    module = stage_module(SparseExperts, dtype="bfloat16", weight_dtype="float8_e4m3fn", block_scaled=True,
-                          weight_block=128, hidden=128, intermediate=128, tokens=1, activation_quantization=MODE)
+    module = stage_module(SparseExperts, dtype="bfloat16", weight_dtype="float8_e4m3fn",
+                          block_scaled=True, weight_block=128, hidden=128, intermediate=128,
+                          tokens=1, activation_quantization=MODE)
     original = fm.load_module(fm.emit_module(module, tmp_path / "composite.py"))
     assert original.semantic_hash == module.semantic_hash
     if egraph:
-        pass_ = EGraphRulesPass("UE8M0Decomposition", (decompose_sparse_experts_rule(), ),
-                                cost=lambda node, _module: 100. if node.op == "nn.sparse_experts" else 1.,
-                                cost_model="unit-test/force-stage-extraction")
+        pass_ = EGraphRulesPass("UE8M0Decomposition", (decompose_sparse_experts_rule(),),
+            cost=lambda node, _module: 100. if node.op == "nn.sparse_experts" else 1.,
+            cost_model="unit-test/force-stage-extraction")
     else:
-        pass_ = DataflowPass("UE8M0Decomposition", (decompose_sparse_experts_rule(), ))
+        pass_ = DataflowPass("UE8M0Decomposition", (decompose_sparse_experts_rule(),))
     rewritten = pass_.run(module)
-    stages = [node for node in rewritten.nodes if node.op in {"nn.sparse_experts_gate_up", "nn.sparse_experts_down"}]
+    stages = [node for node in rewritten.nodes if node.op in
+              {"nn.sparse_experts_gate_up", "nn.sparse_experts_down"}]
     assert len(stages) == 2 and all(node.attrs["activation_quantization"] == MODE for node in stages)
     values = {}
     for name in module.function_map[module.entry].parameters:
@@ -138,16 +137,17 @@ def test_composite_decomposition_preserves_the_quantizer(tmp_path, egraph):
 @pytest.mark.parametrize("mode", ("dynamic_fp8", MODE))
 @pytest.mark.parametrize("cyclic", (False, True))
 def test_reduction_shards_cannot_split_an_activation_quantization_group(mode, cyclic):
-    module = stage_module(SparseExpertsDown, dtype="bfloat16", weight_dtype="float8_e4m3fn", block_scaled=True,
-                          weight_block=128, hidden=256, intermediate=256, tokens=1, activation_quantization=mode)
-    placement = fm.Placement((4, ), "x", "b")
+    module = stage_module(SparseExpertsDown, dtype="bfloat16", weight_dtype="float8_e4m3fn",
+                          block_scaled=True, weight_block=128, hidden=256, intermediate=256,
+                          tokens=1, activation_quantization=mode)
+    placement = fm.Placement((4,), "x", "b")
     b = fm.SBP.broadcast()
-    split = fm.SBP.split_block_cyclic((0, ), 64) if cyclic else fm.SBP.split_contiguous((0, ), 64)
+    split = fm.SBP.split_block_cyclic((0,), 64) if cyclic else fm.SBP.split_contiguous((0,), 64)
     stage = next(node for node in module.nodes if node.op == SparseExpertsDown.op_name)
     operands = []
     for name in stage.inputs:
         kind = module.node_map[name].type
-        policies = (b, b, split) if name in {"activations", "down_weight"} else (b, ) * kind.rank
+        policies = (b, b, split) if name in {"activations", "down_weight"} else (b,) * kind.rank
         operands.append(fm.Node(name, "builtin.var", (), fm.DistributedType(kind, policies, placement)))
     with pytest.raises(IRSchemaError, match="quantization group"):
         SparseExpertsDown.prepare(operands, stage.attrs)
@@ -156,17 +156,17 @@ def test_reduction_shards_cannot_split_an_activation_quantization_group(mode, cy
 def test_all_three_constructors_round_trip_in_a_fresh_process(tmp_path):
     arguments = []
     for definition in (SparseExperts, SparseExpertsGateUp, SparseExpertsDown):
-        module = stage_module(definition, dtype="bfloat16", weight_dtype="float8_e4m3fn", block_scaled=True,
-                              weight_block=128, hidden=128, intermediate=128, tokens=1, activation_quantization=MODE)
+        module = stage_module(definition, dtype="bfloat16", weight_dtype="float8_e4m3fn",
+                              block_scaled=True, weight_block=128, hidden=128, intermediate=128,
+                              tokens=1, activation_quantization=MODE)
         path = fm.emit_module(module, tmp_path / (definition.functional_name + ".py"))
         arguments.extend((str(path), module.semantic_hash))
-    subprocess.run([
-        sys.executable, "-c", '''
+    subprocess.run([sys.executable, "-c", '''
 import sys
 from triton.flagmega import ir as fm
 for path, expected in zip(sys.argv[1::2], sys.argv[2::2]):
     module = fm.load_module(path)
     assert module.semantic_hash == expected
     assert any(node.attrs.get("activation_quantization") == "dynamic_fp8_ue8m0" for node in module.nodes)
-''', *arguments
-    ], check=True)
+''', *arguments], check=True)
+

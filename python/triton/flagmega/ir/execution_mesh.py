@@ -51,8 +51,9 @@ class ExecutionMesh:
             if not shape or any(type(value) is not int or value <= 0 for value in shape):
                 raise IRSchemaError('Fixed execution mesh dimensions must be positive integers.')
             axes = axes or tuple(f'b{i}' for i in range(len(shape)))
-            if (len(axes) != len(shape) or any(not isinstance(axis, str) or not axis or axis.strip() != axis
-                                               for axis in axes) or len(set(axes)) != len(axes)):
+            if (len(axes) != len(shape)
+                    or any(not isinstance(axis, str) or not axis or axis.strip() != axis for axis in axes)
+                    or len(set(axes)) != len(axes)):
                 raise IRSchemaError('Fixed execution mesh axes must uniquely name every dimension.')
             mapping = 'row_major' if mapping is None else mapping
             if not isinstance(mapping, str) or not mapping or mapping.strip() != mapping:
@@ -65,7 +66,7 @@ class ExecutionMesh:
     @classmethod
     def fixed(cls, shape: int | Sequence[int], *, axes: Sequence[str] = (),
               mapping: str = 'row_major') -> ExecutionMesh:
-        shape = (shape, ) if type(shape) is int else shape
+        shape = (shape,) if type(shape) is int else shape
         return cls(ExecutionMeshKind.FIXED, shape, axes, mapping)
 
     @classmethod
@@ -104,8 +105,8 @@ class ExecutionMesh:
             raise IRSchemaError('Execution mesh has unknown fields or is not a mapping.')
         if data.get('schema', EXECUTION_MESH_SCHEMA) != EXECUTION_MESH_SCHEMA:
             raise IRSchemaError('Unsupported execution mesh schema.')
-        return cls(data.get('kind'), data.get('shape', ()), data.get('axes', ()), data.get('mapping'),
-                   data.get('scope', 'device'))
+        return cls(data.get('kind'), data.get('shape', ()), data.get('axes', ()),
+                   data.get('mapping'), data.get('scope', 'device'))
 
 
 def execution_mesh(value) -> ExecutionMesh | None:
@@ -167,11 +168,13 @@ def placement_for_execution_mesh(placement, mesh):
     mesh = execution_mesh(mesh)
     if mesh is None:
         return placement
-    if mesh.mapping not in (None, 'row_major'):
+    if mesh.mapping not in (None, 'row_major', 'x-fast'):
         raise IRSchemaError(f'No reviewed data mapping for execution mesh {mesh.mapping!r}.')
+    if mesh.mapping == 'x-fast' and not 1 <= len(mesh.shape) <= 3:
+        raise IRSchemaError('x-fast execution grids require rank one through three.')
     block_axes = tuple(i for i, level in enumerate(placement.hierarchy_levels) if level == 'b')
     if mesh.kind is ExecutionMeshKind.DYNAMIC:
-        shape = (1, ) * len(block_axes)
+        shape = (1,) * len(block_axes)
     else:
         shape = mesh.shape
     if len(shape) == len(block_axes):
@@ -187,9 +190,9 @@ def placement_for_execution_mesh(placement, mesh):
     available = tuple(c for c in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ' if c not in names)
     if len(shape) > len(available):
         raise IRSchemaError('Execution mesh exceeds the named data-placement axis capacity.')
-    return Placement(
-        tuple(placement.hierarchy[i] for i in retained) + shape, names + ''.join(available[:len(shape)]),
-        ''.join(placement.hierarchy_levels[i] for i in retained) + 'b' * len(shape))
+    return Placement(tuple(placement.hierarchy[i] for i in retained) + shape,
+                     names + ''.join(available[:len(shape)]),
+                     ''.join(placement.hierarchy_levels[i] for i in retained) + 'b' * len(shape))
 
 
 def with_execution_mesh(value, mesh):

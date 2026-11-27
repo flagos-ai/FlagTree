@@ -6,10 +6,14 @@ from triton.flagmega.codegen.triton.tir_package import (
     render_tir_package,
 )
 
-_AUX_PIPELINE = ("tir.dense_matmul.tensor_descriptor_smem_pipeline_aux_gemv")
+_AUX_PIPELINE = (
+    "tir.dense_matmul.tensor_descriptor_smem_pipeline_aux_gemv"
+)
 
 
-def test_auxiliary_pipeline_emits_three_roles_and_direct_output_publication(compile_pipeline_module, ):
+def test_auxiliary_pipeline_emits_three_roles_and_direct_output_publication(
+    compile_pipeline_module,
+):
     package = describe_tir_package(compile_pipeline_module(
         reusable=False,
         implementation=_AUX_PIPELINE,
@@ -21,7 +25,7 @@ def test_auxiliary_pipeline_emits_three_roles_and_direct_output_publication(comp
     assert len(schedule["auxiliary_events"]) == 1
     stage = schedule["stages"][0]
     auxiliary = stage["auxiliary_consumer"]
-    assert auxiliary["channel_indices"] == (0, )
+    assert auxiliary["channel_indices"] == (0,)
     assert not auxiliary["consumer_shared_workspace_indices"]
     assert auxiliary["warps"] == 4
     assert auxiliary["registers"] == 160
@@ -36,7 +40,9 @@ def test_auxiliary_pipeline_emits_three_roles_and_direct_output_publication(comp
     assert "dense_accumulator.to(tl.bfloat16)" in source
 
 
-def test_auxiliary_reader_owns_drain_across_reused_pipeline_calls(compile_pipeline_module, ):
+def test_auxiliary_reader_owns_drain_across_reused_pipeline_calls(
+    compile_pipeline_module,
+):
     package = describe_tir_package(compile_pipeline_module(
         reusable=True,
         implementation=_AUX_PIPELINE,
@@ -44,8 +50,14 @@ def test_auxiliary_reader_owns_drain_across_reused_pipeline_calls(compile_pipeli
     schedule = package["pipeline_schedule"]
     source = render_tir_package(package, "unit")
 
-    auxiliary_drains = [value for value in schedule["auxiliary_events"] if value["kind"] == "drain"]
-    primary_drains = [value for value in schedule["consumer_events"] if value["kind"] == "drain"]
+    auxiliary_drains = [
+        value for value in schedule["auxiliary_events"]
+        if value["kind"] == "drain"
+    ]
+    primary_drains = [
+        value for value in schedule["consumer_events"]
+        if value["kind"] == "drain"
+    ]
     assert len(auxiliary_drains) == 1
     assert not primary_drains
     assert source.count(".pipe.wait_drained()") == 2

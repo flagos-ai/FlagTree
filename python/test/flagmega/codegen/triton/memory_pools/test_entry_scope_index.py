@@ -14,28 +14,18 @@ def test_entry_inlines_address_helper_for_a_replicated_block_pool():
                 "hierarchy_levels": "bb",
                 "name": "yx",
             }),
-            "distributed_entry":
-            True,
-            "renderer_version":
-            "test",
-            "entry_template":
-            "entrypoints/call_graph.py.jinja",
-            "use_tle":
-            True,
-            "grid_mesh":
-            False,
+            "distributed_entry": True,
+            "renderer_version": "test",
+            "entry_template": "entrypoints/call_graph.py.jinja",
+            "use_tle": True,
+            "grid_mesh": False,
             "grid_barrier_axis_groups": (),
-            "shared_silu":
-            False,
+            "shared_silu": False,
             "kernel_templates": (),
-            "replicated_block_runtime_pool":
-            True,
-            "symbol":
-            "flagmega_main",
-            "signature":
-            "workspace, block_data",
-            "pipeline_schedule":
-            None,
+            "replicated_block_runtime_pool": True,
+            "symbol": "flagmega_main",
+            "signature": "workspace, block_data",
+            "pipeline_schedule": None,
             "entry_events": ({
                 "kind": "tir.kernel_call",
                 "call": "nested",
@@ -45,13 +35,15 @@ def test_entry_inlines_address_helper_for_a_replicated_block_pool():
                 "symbol": "worker",
                 "arguments": "_flagmega_block_scope_base(block_data, 64)",
                 "barrier_before": False,
-            }, ),
+            },),
         },
     )
 
     entry = source.index("def flagmega_main(")
     definition = source.index("def _flagmega_block_scope_base(")
-    use = source.index("_flagmega_block_scope_base(block_data, 64)", entry)
+    use = source.index(
+        "_flagmega_block_scope_base(block_data, 64)", entry
+    )
     assert definition < use
     assert "@triton.jit\ndef _flagmega_block_scope_base" in source
     assert "tl.program_id(0)" not in source[entry:use]

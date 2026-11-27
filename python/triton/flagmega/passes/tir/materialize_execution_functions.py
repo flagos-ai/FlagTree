@@ -50,11 +50,15 @@ def materialize_execution_functions(module: IRModule) -> IRModule:
         function_plan = plan.function_map[graph_function.name]
         values = dict(function_plan.values)
         nested = {value.call: value for value in function_plan.calls}
-        kernel_workspaces = {value.call: value for value in function_plan.kernel_calls}
+        kernel_workspaces = {
+            value.call: value for value in function_plan.kernel_calls
+        }
         nodes = function_nodes(module, graph_function)
-        executable_ids = frozenset(node.id
-                                   for node in nodes
-                                   if node.id in nested or _kernel_primitive(module, node) is not None)
+        executable_ids = frozenset(
+            node.id
+            for node in nodes
+            if node.id in nested or _kernel_primitive(module, node) is not None
+        )
         dependencies = _execution_dependencies(nodes, executable_ids)
         calls: list[PrimFunctionCall | KernelInvoke] = []
         for node in nodes:
@@ -76,29 +80,25 @@ def materialize_execution_functions(module: IRModule) -> IRModule:
                         ) from error
                     region = module.function_map[str(node.attrs["callee"])]
                     body = Sequential((_nested_call(
-                        graph_function.name,
-                        node,
-                        record,
-                        callee,
+                        graph_function.name, node, record, callee,
                         dependencies[node.id],
                         induction=region.parameters[0] if region.parameters else None,
-                    ), ))
+                    ),))
                 calls.append(_structured_for(module, node, values, body))
                 continue
             primitive = _kernel_primitive(module, node)
             dispatch = None if primitive is None else kernel_dispatch_of(primitive)
             if primitive is not None and dispatch is not None:
-                calls.append(
-                    _kernel_call(
-                        module,
-                        graph_function.name,
-                        node,
-                        primitive,
-                        dispatch,
-                        values,
-                        kernel_workspaces.get(node.id),
-                        dependencies[node.id],
-                    ))
+                calls.append(_kernel_call(
+                    module,
+                    graph_function.name,
+                    node,
+                    primitive,
+                    dispatch,
+                    values,
+                    kernel_workspaces.get(node.id),
+                    dependencies[node.id],
+                ))
                 continue
             nested_call = nested.get(node.id)
             if nested_call is not None:
@@ -119,10 +119,18 @@ def materialize_execution_functions(module: IRModule) -> IRModule:
                     dependencies[node.id],
                 ))
 
-        parameters = tuple(buffer_id for _, buffer_ids in function_plan.parameters for buffer_id in buffer_ids)
+        parameters = tuple(
+            buffer_id
+            for _, buffer_ids in function_plan.parameters
+            for buffer_id in buffer_ids
+        )
         # Logical tuple fields retain their mapping in FunctionBufferPlan;
         # the physical orchestration ABI binds each result only once.
-        outputs = tuple(dict.fromkeys(buffer_id for _, buffer_ids in function_plan.outputs for buffer_id in buffer_ids))
+        outputs = tuple(dict.fromkeys(
+            buffer_id
+            for _, buffer_ids in function_plan.outputs
+            for buffer_id in buffer_ids
+        ))
         written = {value for call in calls for value in getattr(call, "writes", ())}
         sources = {value for call in calls for value in getattr(call, "transfer_sources", ())}
         result[graph_function.name] = ExecutionFunction(
@@ -143,14 +151,12 @@ def materialize_execution_functions(module: IRModule) -> IRModule:
         # function body can establish a P/C region or drain boundary.
         prim_functions=tuple(value for value in module.prim_functions if kernel_dispatch_of(value) is None),
         kernel_definitions=(*module.kernel_definitions, *(KernelDefinition(
-            value.name,
-            value.module_kind,
-            value.parameters,
-            kernel_dispatch_of(value),
-            value.results,
-            value.attrs,
+            value.name, value.module_kind, value.parameters, kernel_dispatch_of(value),
+            value.results, value.attrs,
         ) for value in module.prim_functions if kernel_dispatch_of(value) is not None)),
-        execution_functions=tuple(result[function.name] for function in module.functions),
+        execution_functions=tuple(
+            result[function.name] for function in module.functions
+        ),
     )
 
 
@@ -176,8 +182,14 @@ def _structured_for(module, node, values, body=None):
     lower, upper, step = (int(value.attrs["value"]) for value in bounds)
     region = module.function_map[str(node.attrs["callee"])]
     iter_count = int(node.attrs["iter_count"])
-    iter_args = tuple(ValueRef(value, module.node_map[value].type) for value in node.inputs[3:3 + iter_count])
-    yields = tuple(ValueRef(value, module.node_map[value].type) for value in region.outputs)
+    iter_args = tuple(
+        ValueRef(value, module.node_map[value].type)
+        for value in node.inputs[3:3 + iter_count]
+    )
+    yields = tuple(
+        ValueRef(value, module.node_map[value].type)
+        for value in region.outputs
+    )
     from triton.flagmega.ir.tir.loop_carry import LoopCarry
     from triton.flagmega.ir import BarrierScope
     from math import prod
@@ -192,14 +204,11 @@ def _structured_for(module, node, values, body=None):
         accesses = resolver.accesses(record.caller, node, dict(plan.function_map[record.caller].values))
         if any(_requires_device(access) for access in accesses):
             scope = BarrierScope.DEVICE
-        elif any(plan.memory_space_map[plan.buffer_map[buffer].mem_span.buffer.memory_space].sharing_scope.value !=
-                 'block' and (plan.buffer_map[buffer].distributed_type is not None and prod(
-                     size
-                     for size, level in zip(plan.buffer_map[buffer].distributed_type.placement.hierarchy,
-                                            plan.buffer_map[buffer].distributed_type.placement.hierarchy_levels)
-                     if level == 'b') > 1)
-                 for carry in carries
-                 for buffer in (carry.initial, carry.current, carry.staging, carry.yielded, carry.result)):
+        elif any(plan.memory_space_map[plan.buffer_map[buffer].mem_span.buffer.memory_space].sharing_scope.value != 'block'
+                 and (plan.buffer_map[buffer].distributed_type is not None
+                      and prod(size for size,level in zip(plan.buffer_map[buffer].distributed_type.placement.hierarchy,
+                          plan.buffer_map[buffer].distributed_type.placement.hierarchy_levels) if level=='b')>1)
+                 for carry in carries for buffer in (carry.initial,carry.current,carry.staging,carry.yielded,carry.result)):
             scope = BarrierScope.CHIP
     return For(
         loop_var=DimVar(f"{node.id}_iv", lower, max(lower, upper - step)),
@@ -227,8 +236,14 @@ def _kernel_call(
 ) -> KernelInvoke:
     arguments: list[PrimCallBinding] = []
     actuals_by_parameter: dict[str, tuple[str, ...]] = {}
-    for parameter, actual_value in zip(primitive.runtime_parameters, node.inputs, strict=True):
-        actual_buffers = (() if parameter.role.value == "metadata" else tuple(values.get(actual_value, ())))
+    for parameter, actual_value in zip(
+        primitive.runtime_parameters, node.inputs, strict=True
+    ):
+        actual_buffers = (
+            ()
+            if parameter.role.value == "metadata"
+            else tuple(values.get(actual_value, ()))
+        )
         if len(actual_buffers) != len(parameter.buffers):
             raise IRVerificationError(
                 f"Kernel call {node.id!r} parameter {parameter.name!r} has "
@@ -240,10 +255,17 @@ def _kernel_call(
         actuals_by_parameter[parameter.name] = actual_buffers
         arguments.extend(
             PrimCallBinding(formal.name, actual)
-            for formal, actual in zip(parameter.buffers, actual_buffers, strict=True))
+            for formal, actual in zip(
+                parameter.buffers, actual_buffers, strict=True
+            )
+        )
 
     result_actuals = tuple(values.get(node.id, ()))
-    result_formals = tuple(buffer for parameter in primitive.output_parameters for buffer in parameter.buffers)
+    result_formals = tuple(
+        buffer
+        for parameter in primitive.output_parameters
+        for buffer in parameter.buffers
+    )
     if len(result_actuals) != len(result_formals):
         raise IRVerificationError(
             f"Kernel call {node.id!r} result buffer arity differs from "
@@ -252,14 +274,18 @@ def _kernel_call(
             node_id=node.id,
         )
     results = tuple(
-        PrimCallBinding(formal.name, actual) for formal, actual in zip(result_formals, result_actuals, strict=True))
+        PrimCallBinding(formal.name, actual)
+        for formal, actual in zip(result_formals, result_actuals, strict=True)
+    )
     cursor = 0
     for parameter in primitive.output_parameters:
         count = len(parameter.buffers)
         actuals_by_parameter[parameter.name] = result_actuals[cursor:cursor + count]
         cursor += count
 
-    workspace_map = ({} if workspace_record is None else dict(workspace_record.workspaces))
+    workspace_map = (
+        {} if workspace_record is None else dict(workspace_record.workspaces)
+    )
     workspaces: list[PrimCallBinding] = []
     for parameter in primitive.workspaces:
         parameter_actuals = []
@@ -278,15 +304,22 @@ def _kernel_call(
         actuals_by_parameter[parameter.name] = tuple(parameter_actuals)
 
     def resolve_effect(names, mode) -> tuple[str, ...]:
-        return tuple(
-            dict.fromkeys(actual for name in names for actual, effect in zip(
+        return tuple(dict.fromkeys(
+            actual
+            for name in names
+            for actual, effect in zip(
                 actuals_by_parameter.get(name, ()),
                 expand_memory_effect(primitive.parameter_map[name].type, dispatch.memory_effect_map[name]),
                 strict=True,
-            ) if effect.physical_mode & mode))
+            )
+            if effect.physical_mode & mode
+        ))
 
     transfer_sources: list[str] = []
-    pipeline = (None if dispatch.microkernel is None else dispatch.microkernel.transfer_pipeline)
+    pipeline = (
+        None if dispatch.microkernel is None
+        else dispatch.microkernel.transfer_pipeline
+    )
     if pipeline is not None:
         for channel in pipeline.channels:
             for argument_index in channel.source_argument_indices:
@@ -294,13 +327,16 @@ def _kernel_call(
                 actuals = actuals_by_parameter[parameter_name]
                 if channel.inplace_partition is not None:
                     leaf_index, _ = channel.inplace_partition.source_leaf(primitive.parameter_map[parameter_name].type)
-                    actuals = (actuals[leaf_index], )
+                    actuals = (actuals[leaf_index],)
                 transfer_sources.extend(actuals)
         for argument_index in pipeline.producer_read_argument_indices:
             parameter_name = dispatch.arguments[argument_index]
             transfer_sources.extend(actuals_by_parameter[parameter_name])
 
-    shared = tuple(_caller_shared_buffer(function_name, node.id, value) for value in dispatch.shared_workspace_buffers)
+    shared = tuple(
+        _caller_shared_buffer(function_name, node.id, value)
+        for value in dispatch.shared_workspace_buffers
+    )
     return KernelInvoke(
         call_id=node.id,
         kernel=primitive.name,
@@ -317,12 +353,16 @@ def _kernel_call(
     )
 
 
-def _nested_call(function_name, node, record, callee, dependencies, *, induction=None) -> PrimFunctionCall:
+def _nested_call(
+    function_name, node, record, callee, dependencies, *, induction=None
+) -> PrimFunctionCall:
     argument_map = dict(record.arguments)
     result_map = {}
     for formal, actual in record.results:
         if formal in result_map and result_map[formal] != actual:
-            raise IRVerificationError(f"Call {node.id!r} binds physical result {formal!r} to different caller buffers.")
+            raise IRVerificationError(
+                f"Call {node.id!r} binds physical result {formal!r} to different caller buffers."
+            )
         result_map[formal] = actual
     # A loop's induction value is produced by the loop itself, so its formal
     # is its own actual rather than a caller-side buffer.
@@ -330,26 +370,35 @@ def _nested_call(function_name, node, record, callee, dependencies, *, induction
         PrimCallBinding(
             formal,
             formal if formal == induction else argument_map[formal],
-        ) for formal in callee.parameters)
-    results = tuple(PrimCallBinding(formal, result_map[formal]) for formal in callee.results)
+        )
+        for formal in callee.parameters
+    )
+    results = tuple(
+        PrimCallBinding(formal, result_map[formal])
+        for formal in callee.results
+    )
     written_formals = set(callee.attrs.get("written_parameters", ()))
     source_formals = set(callee.attrs.get("transfer_source_parameters", ()))
-    writes = tuple(
-        dict.fromkeys((
-            *(argument_map[value] for value in callee.parameters if value in written_formals),
-            *(result_map[value] for value in callee.results),
-        )))
+    writes = tuple(dict.fromkeys((
+        *(argument_map[value] for value in callee.parameters if value in written_formals),
+        *(result_map[value] for value in callee.results),
+    )))
     shared = tuple(
         _caller_shared_buffer(function_name, node.id, buffer)
         for call in callee.body.fields
-        for buffer in _call_shared_buffers(call))
+        for buffer in _call_shared_buffers(call)
+    )
     return PrimFunctionCall(
         call_id=node.id,
         callee=record.callee,
         arguments=arguments,
         results=results,
         shared_workspace_buffers=shared,
-        transfer_sources=tuple(argument_map[value] for value in callee.parameters if value in source_formals),
+        transfer_sources=tuple(
+            argument_map[value]
+            for value in callee.parameters
+            if value in source_formals
+        ),
         reads=tuple(value.actual for value in arguments),
         writes=writes,
         effect_kind=node.effect.kind.value,
@@ -360,7 +409,9 @@ def _nested_call(function_name, node, record, callee, dependencies, *, induction
                 pool.allocation,
                 pool.offset,
                 pool.scope_bytes,
-            ) for pool in record.memory_pools),
+            )
+            for pool in record.memory_pools
+        ),
         dependencies=dependencies,
     )
 
@@ -388,14 +439,17 @@ def _execution_dependencies(nodes, executable_ids) -> dict[str, tuple[str, ...]]
 
     def nearest_executable(node_id: str) -> tuple[str, ...]:
         if node_id in executable_ids:
-            return (node_id, )
+            return (node_id,)
         if node_id in memo:
             return memo[node_id]
         node = node_map.get(node_id)
         if node is None:
             return ()
-        result = tuple(
-            dict.fromkeys(dependency for input_id in node.inputs for dependency in nearest_executable(input_id)))
+        result = tuple(dict.fromkeys(
+            dependency
+            for input_id in node.inputs
+            for dependency in nearest_executable(input_id)
+        ))
         memo[node_id] = result
         return result
 
@@ -406,7 +460,9 @@ def _execution_dependencies(nodes, executable_ids) -> dict[str, tuple[str, ...]]
         if node.id not in executable_ids:
             continue
         required = [
-            dependency for input_id in node.inputs for dependency in nearest_executable(input_id)
+            dependency
+            for input_id in node.inputs
+            for dependency in nearest_executable(input_id)
             if dependency != node.id
         ]
         resource = node.effect.resource
@@ -435,7 +491,11 @@ def _call_shared_buffers(statement) -> tuple:
         return statement.operation.shared_workspace_buffers
     if isinstance(statement, ProducerConsumerRegion):
         temporary = ExecutionFunction("_region", (), (), statement.consume_body)
-        return tuple(buffer for call in execution_calls_of(temporary) for buffer in call.shared_workspace_buffers)
+        return tuple(
+            buffer
+            for call in execution_calls_of(temporary)
+            for buffer in call.shared_workspace_buffers
+        )
     return ()
 
 

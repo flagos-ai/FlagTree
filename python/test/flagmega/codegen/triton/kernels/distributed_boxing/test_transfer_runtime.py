@@ -15,25 +15,22 @@ def test_tensor_boundary_transfer_preserves_scalar_and_vector_tails(tmp_path, ex
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
-    dtype = fm.DType.BFLOAT16 if lanes == 1 else fm.vector_type("bfloat16", (lanes, ))
+    dtype = fm.DType.BFLOAT16 if lanes == 1 else fm.vector_type("bfloat16", (lanes,))
     value_type = fm.tensor_type(dtype, (2, extent))
     placement = fm.Placement((8, 16), "yx", "bb")
     policy = fm.SBP.split_block_cyclic((0, 1), 1) if cyclic else fm.SBP.broadcast()
     distributed = fm.DistributedType(value_type, (fm.SBP.broadcast(), policy), placement)
 
     class Transfer(fm.Module):
-
         def forward(self):
             source = self.input("source", value_type)
             local = fm.F.distributed.force_boxing(source, distributed, name="load")
             result = fm.F.distributed.force_boxing(local, value_type, name="store")
-            self.function("main", (source, ), (result, ))
+            self.function("main", (source,), (result,))
 
     compiler = Compiler()
     source = Transfer(
-        dialect="distributed",
-        stage="frozen_constants",
-        entry="main",
+        dialect="distributed", stage="frozen_constants", entry="main",
         metadata={"auto_distribution": {"placement": placement.to_data()}},
     ).build()
     module = compiler.compile(source).module

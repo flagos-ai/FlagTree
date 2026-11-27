@@ -9,7 +9,7 @@ from triton.flagmega.errors import RuntimeContractError
 from triton.flagmega.runtime.module import _allocate_tensor, _validate_ir_tensor
 
 
-@pytest.mark.parametrize("lanes", [(), (8, ), (2, 4)])
+@pytest.mark.parametrize("lanes", [(), (8,), (2, 4)])
 def test_runtime_allocation_and_validation_use_physical_vector_shape(lanes):
     torch = pytest.importorskip("torch")
     dtype = fm.vector_type("float32", lanes) if lanes else fm.DType.FLOAT32

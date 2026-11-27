@@ -38,7 +38,8 @@ def _reference_pre(residual, fn, hc_scale, hc_base, iterations=SINKHORN):
     sqrsum = x.square().sum(dim=-1, keepdim=True)
     mixes = mixes * torch.rsqrt(sqrsum / (hc_mult * hidden) + RMS_EPS)
     pre_mix = torch.sigmoid(mixes[:, :hc_mult] * hc_scale[0] + hc_base[:hc_mult]) + HC_EPS
-    post_mix = torch.sigmoid(mixes[:, hc_mult:2 * hc_mult] * hc_scale[1] + hc_base[hc_mult:2 * hc_mult]) * POST_MULT
+    post_mix = torch.sigmoid(mixes[:, hc_mult:2 * hc_mult] * hc_scale[1]
+                             + hc_base[hc_mult:2 * hc_mult]) * POST_MULT
     comb_logits = mixes[:, 2 * hc_mult:].view(-1, hc_mult, hc_mult) * hc_scale[2] \
         + hc_base[2 * hc_mult:].view(1, hc_mult, hc_mult)
     comb_mix = torch.softmax(comb_logits, dim=-1) + HC_EPS
@@ -46,13 +47,15 @@ def _reference_pre(residual, fn, hc_scale, hc_base, iterations=SINKHORN):
     for _ in range(iterations - 1):
         comb_mix = comb_mix / (comb_mix.sum(dim=-1, keepdim=True) + HC_EPS)
         comb_mix = comb_mix / (comb_mix.sum(dim=-2, keepdim=True) + HC_EPS)
-    layer_input = torch.sum(pre_mix.unsqueeze(-1) * residual.to(torch.float32), dim=1).to(residual.dtype)
+    layer_input = torch.sum(pre_mix.unsqueeze(-1) * residual.to(torch.float32),
+                            dim=1).to(residual.dtype)
     return post_mix, comb_mix, layer_input
 
 
 def _reference_post(x, residual, post_layer_mix, comb_res_mix):
     """vLLM ``mhc_post_torch``; ``post_layer_mix`` arrives as ``(T, hc, 1)``."""
-    mixed_residual = torch.einsum("...ij,...ih->...jh", comb_res_mix.to(torch.float32), residual.to(torch.float32))
+    mixed_residual = torch.einsum("...ij,...ih->...jh", comb_res_mix.to(torch.float32),
+                                 residual.to(torch.float32))
     post_term = post_layer_mix.to(torch.float32) * x.unsqueeze(-2).to(torch.float32)
     return (mixed_residual + post_term).to(residual.dtype)
 
@@ -63,10 +66,11 @@ def _operands(generator=None):
     def normal(*shape, dtype=torch.float32):
         return torch.randn(*shape, generator=generator).to(dtype)
 
-    return {
-        "streams": normal(TOKENS, HC, HIDDEN, dtype=torch.bfloat16), "projection": normal(COEFFICIENTS, HC * HIDDEN),
-        "base": normal(COEFFICIENTS), "scale": normal(3), "value": normal(TOKENS, HIDDEN, dtype=torch.bfloat16)
-    }
+    return {"streams": normal(TOKENS, HC, HIDDEN, dtype=torch.bfloat16),
+            "projection": normal(COEFFICIENTS, HC * HIDDEN),
+            "base": normal(COEFFICIENTS),
+            "scale": normal(3),
+            "value": normal(TOKENS, HIDDEN, dtype=torch.bfloat16)}
 
 
 def _node(name, value_type):
@@ -76,18 +80,16 @@ def _node(name, value_type):
 def _pre_types(streams=None):
     return (_node("streams", streams or fm.tensor_type("bfloat16", (TOKENS, HC, HIDDEN))),
             _node("projection", fm.tensor_type("float32", (COEFFICIENTS, HC * HIDDEN))),
-            _node("base", fm.tensor_type("float32", (COEFFICIENTS, ))), _node("scale", fm.tensor_type("float32",
-                                                                                                      (3, ))))
+            _node("base", fm.tensor_type("float32", (COEFFICIENTS, ))),
+            _node("scale", fm.tensor_type("float32", (3, ))))
 
 
 def _pre_attrs(**overrides):
-    return dict(
-        {"epsilon": RMS_EPS, "sinkhorn_iterations": SINKHORN, "sinkhorn_epsilon": HC_EPS, "post_multiplier": POST_MULT},
-        **overrides)
+    return dict({"epsilon": RMS_EPS, "sinkhorn_iterations": SINKHORN,
+                 "sinkhorn_epsilon": HC_EPS, "post_multiplier": POST_MULT}, **overrides)
 
 
 class _PreModule(fm.Module):
-
     def __init__(self, output_lanes=(), stream_dtype="bfloat16"):
         super().__init__(dialect="nn", stage="imported", entry="main")
         self.output_lanes, self.stream_dtype = output_lanes, stream_dtype
@@ -97,8 +99,8 @@ class _PreModule(fm.Module):
         projection = self.input("projection", fm.tensor_type("float32", (COEFFICIENTS, HC * HIDDEN)))
         base = self.input("base", fm.tensor_type("float32", (COEFFICIENTS, )))
         scale = self.input("scale", fm.tensor_type("float32", (3, )))
-        stage = fm.F.nn.mhc_pre(streams, projection, base, scale, name="pre", output_lanes=self.output_lanes,
-                                **_pre_attrs())
+        stage = fm.F.nn.mhc_pre(streams, projection, base, scale, name="pre",
+                               output_lanes=self.output_lanes, **_pre_attrs())
         items = fm.F.tensors.get_items(stage, 0, 1, 2, name_prefix="pre")
         self.function("main", (streams, projection, base, scale), items)
 
@@ -123,18 +125,19 @@ class _RoundTripModule(fm.Module):
 
 def test_pre_emits_the_coefficient_and_collapsed_stream_contract():
     result = MhcPre.infer_type(_pre_types(), _pre_attrs())
-    assert result == fm.TupleType((fm.tensor_type("float32", (TOKENS, HC)), fm.tensor_type("float32", (TOKENS, HC, HC)),
+    assert result == fm.TupleType((fm.tensor_type("float32", (TOKENS, HC)),
+                                   fm.tensor_type("float32", (TOKENS, HC, HC)),
                                    fm.tensor_type("bfloat16", (TOKENS, HIDDEN))))
 
 
-@pytest.mark.parametrize("lanes", [(8, ), (2, 4), (4, 2)])
+@pytest.mark.parametrize("lanes", [(8,), (2, 4), (4, 2)])
 def test_pre_infers_packing_only_for_the_collapsed_result(lanes):
     result = MhcPre.infer_type(_pre_types(), _pre_attrs(output_lanes=lanes))
     assert result.fields[:2] == MhcPre.infer_type(_pre_types(), _pre_attrs()).fields[:2]
     assert result.fields[2] == fm.tensor_type(fm.vector_type("bfloat16", lanes), (TOKENS, HIDDEN // 8))
 
 
-@pytest.mark.parametrize("lanes", [(8, ), (2, 4), (4, 2), (1, )])
+@pytest.mark.parametrize("lanes", [(8,), (2, 4), (4, 2), (1,)])
 @pytest.mark.parametrize("dtype", ["bfloat16", "float32"])
 def test_pre_packed_evaluation_preserves_scalar_order_and_rounding(lanes, dtype):
     values = {name: value for name, value in _operands().items() if name != "value"}
@@ -146,7 +149,7 @@ def test_pre_packed_evaluation_preserves_scalar_order_and_rounding(lanes, dtype)
         torch.testing.assert_close(actual.reshape(expected.shape), expected, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("lanes", [(0, ), (-2, ), (True, ), (2.0, ), None, 8])
+@pytest.mark.parametrize("lanes", [(0,), (-2,), (True,), (2.0,), None, 8])
 def test_pre_rejects_invalid_output_lanes(lanes):
     with pytest.raises(IRSchemaError, match="output_lanes.*positive integers"):
         MhcPre.normalize_attrs(_pre_attrs(output_lanes=lanes))
@@ -154,19 +157,19 @@ def test_pre_rejects_invalid_output_lanes(lanes):
 
 def test_pre_rejects_output_lanes_that_do_not_divide_hidden():
     with pytest.raises(IRSchemaError, match="hidden must be divisible"):
-        MhcPre.prepare(_pre_types(), _pre_attrs(output_lanes=(3, )))
+        MhcPre.prepare(_pre_types(), _pre_attrs(output_lanes=(3,)))
 
 
 @pytest.mark.parametrize("index", range(4))
 def test_pre_does_not_claim_packed_input_support(index):
     inputs = list(_pre_types())
     operand = inputs[index]
-    inputs[index] = _node(operand.id, fm.tensor_type(fm.vector_type(operand.type.dtype, (2, )), operand.type.shape))
+    inputs[index] = _node(operand.id, fm.tensor_type(fm.vector_type(operand.type.dtype, (2,)), operand.type.shape))
     with pytest.raises(IRSchemaError, match=f"{operand.id} must use a scalar element type"):
-        MhcPre.prepare(inputs, _pre_attrs(output_lanes=(8, )))
+        MhcPre.prepare(inputs, _pre_attrs(output_lanes=(8,)))
 
 
-@pytest.mark.parametrize("lanes", [(), (8, ), (2, 4)])
+@pytest.mark.parametrize("lanes", [(), (8,), (2, 4)])
 def test_pre_output_layout_round_trips_and_keeps_the_old_default_attrs(tmp_path, lanes):
     from triton.flagmega.ir.python_ir import emit_module, load_module
 
@@ -182,8 +185,8 @@ def test_pre_output_layout_round_trips_and_keeps_the_old_default_attrs(tmp_path,
 
 
 def test_pre_packed_distributed_output_keeps_coefficients_and_broadcast_policies():
-    inputs = tuple(
-        _node(node.id, fm.DistributedType(node.type, tuple(B for _ in node.type.shape), MESH)) for node in _pre_types())
+    inputs = tuple(_node(node.id, fm.DistributedType(node.type, tuple(B for _ in node.type.shape), MESH))
+                   for node in _pre_types())
     result = MhcPre.prepare(inputs, _pre_attrs(output_lanes=(2, 4))).result_type
     expected = MhcPre.prepare(_pre_types(), _pre_attrs(output_lanes=(2, 4))).result_type
     for field, tensor in zip(result.fields, expected.fields):
@@ -203,12 +206,13 @@ def test_pre_rejects_out_of_contract_attributes(attrs, message):
 
 def test_pre_rejects_a_stream_split_it_cannot_honour():
     """The RMS term reduces over all streams, so a split stream axis needs Boxing."""
-    streams = fm.DistributedType(fm.tensor_type("bfloat16", (TOKENS, HC, HIDDEN)), (B, fm.SBP.split_contiguous(
-        (0, )), B), MESH)
+    streams = fm.DistributedType(fm.tensor_type("bfloat16", (TOKENS, HC, HIDDEN)),
+                                (B, fm.SBP.split_contiguous((0, )), B), MESH)
     inputs = list(_pre_types(streams))
     for index in range(1, 4):
         tensor = inputs[index].type
-        inputs[index] = _node(inputs[index].id, fm.DistributedType(tensor, tuple(B for _ in tensor.shape), MESH))
+        inputs[index] = _node(inputs[index].id,
+                              fm.DistributedType(tensor, tuple(B for _ in tensor.shape), MESH))
     with pytest.raises(IRSchemaError, match="broadcast streams"):
         MhcPre.infer_type(tuple(inputs), _pre_attrs())
 
@@ -218,7 +222,8 @@ def test_pre_matches_the_serving_runtime_reference():
     actual = TorchEvaluator(DictWeightResolver({})).run(
         _PreModule().build(), {name: operands[name]
                                for name in ("streams", "projection", "base", "scale")})
-    expected = _reference_pre(operands["streams"], operands["projection"], operands["scale"], operands["base"])
+    expected = _reference_pre(operands["streams"], operands["projection"],
+                              operands["scale"], operands["base"])
     for value, reference in zip(actual, expected):
         torch.testing.assert_close(value, reference, rtol=0, atol=0)
 
@@ -251,11 +256,12 @@ def test_pre_adds_the_hc_epsilon_to_pre_mix_not_the_rms_epsilon():
     """
     operands = _operands()
     streams = operands["streams"].float()
-    actual = TorchEvaluator(DictWeightResolver(
-        {})).run(_Fp32PreModule().build(),
-                 {"streams": streams, **{name: operands[name]
-                                         for name in ("projection", "base", "scale")}})
-    expected = _reference_pre(streams, operands["projection"], operands["scale"], operands["base"])
+    actual = TorchEvaluator(DictWeightResolver({})).run(
+        _Fp32PreModule().build(),
+        {"streams": streams, **{name: operands[name]
+                                for name in ("projection", "base", "scale")}})
+    expected = _reference_pre(streams, operands["projection"], operands["scale"],
+                              operands["base"])
     for value, reference in zip(actual, expected):
         torch.testing.assert_close(value, reference, rtol=0, atol=0)
 
@@ -273,17 +279,20 @@ def test_pre_comb_is_doubly_stochastic_in_the_direction_normalized_last():
 def test_post_requires_float32_coefficients_from_the_pre_stage():
     inputs = (_node("value", fm.tensor_type("bfloat16", (TOKENS, HIDDEN))),
               _node("residual", fm.tensor_type("bfloat16", (TOKENS, HC, HIDDEN))),
-              _node("post", fm.tensor_type("bfloat16",
-                                           (TOKENS, HC))), _node("comb", fm.tensor_type("float32", (TOKENS, HC, HC))))
+              _node("post", fm.tensor_type("bfloat16", (TOKENS, HC))),
+              _node("comb", fm.tensor_type("float32", (TOKENS, HC, HC))))
     with pytest.raises(IRSchemaError, match="post must be FP32"):
         MhcPost.infer_type(inputs, {})
 
 
 def test_pre_and_post_round_trip_matches_the_serving_runtime_reference():
     operands = _operands()
-    collapsed, output = TorchEvaluator(DictWeightResolver({})).run(_RoundTripModule().build(), operands)
-    post, comb, reference_collapsed = _reference_pre(operands["streams"], operands["projection"], operands["scale"],
-                                                     operands["base"])
+    collapsed, output = TorchEvaluator(DictWeightResolver({})).run(
+        _RoundTripModule().build(), operands)
+    post, comb, reference_collapsed = _reference_pre(
+        operands["streams"], operands["projection"], operands["scale"], operands["base"])
     torch.testing.assert_close(collapsed, reference_collapsed, rtol=0, atol=0)
-    torch.testing.assert_close(output, _reference_post(operands["value"], operands["streams"], post.unsqueeze(-1),
-                                                       comb), rtol=0, atol=0)
+    torch.testing.assert_close(
+        output,
+        _reference_post(operands["value"], operands["streams"], post.unsqueeze(-1), comb),
+        rtol=0, atol=0)

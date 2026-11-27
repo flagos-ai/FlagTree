@@ -10,7 +10,6 @@ from triton.flagmega.rules.ntt.vectorize import VectorizeNormStats
 
 
 class _StatsModule(fm.Module):
-
     def __init__(self, extent=16):
         super().__init__(dialect="nn", stage="decomposed", entry="main")
         self.extent = extent
@@ -18,17 +17,17 @@ class _StatsModule(fm.Module):
     def forward(self):
         value = self.input("value", fm.tensor_type("bfloat16", [2, self.extent]))
         stats = fm.F.nn.norm_stats(value, axis=-1, use_mean=False, name="stats")
-        self.function("main", (value, ), (stats, ))
+        self.function("main", (value,), (stats,))
 
 
-def test_norm_stats_rule_matches_reference_last_reduction_axis_only():
+def test_norm_stats_rule_matches_nncase_last_reduction_axis_only():
     module = _StatsModule().build()
     rule = VectorizeNormStats()
     candidates = rule.candidates(module.node_map["stats"], module)
     assert len(candidates) == 1
     assert candidates[0].id == "vectorization.norm_stats.reduction_axis"
-    assert candidates[0].axes == (1, )
-    assert candidates[0].lanes == (8, )
+    assert candidates[0].axes == (1,)
+    assert candidates[0].lanes == (8,)
 
     non_divisible = _StatsModule(10).build()
     assert rule.candidates(non_divisible.node_map["stats"], non_divisible) == ()
@@ -42,7 +41,7 @@ def test_norm_stats_rule_rewrite_is_evaluator_equivalent():
         "VectorizeNormStats:stats",
         lambda node, _: node.id == "stats" and "vectorized_from" not in node.metadata,
         lambda node, current: rule.rewrite(node, current, candidate),
-    ), ), remove_unused=False).rewrite(module)
+    ),), remove_unused=False).rewrite(module)
 
     root = rewritten.node_map["stats"]
     assert isinstance(rewritten.node_map[root.inputs[0]].type.dtype, fm.VectorType)

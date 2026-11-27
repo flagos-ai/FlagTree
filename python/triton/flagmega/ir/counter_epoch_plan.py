@@ -88,7 +88,8 @@ class CounterEpochRow:
         _digest(self.invocation_sha256)
 
     def to_data(self):
-        return {'ordinal': self.ordinal, 'entry_id': self.entry_id, 'invocation_sha256': self.invocation_sha256}
+        return {'ordinal': self.ordinal, 'entry_id': self.entry_id,
+                'invocation_sha256': self.invocation_sha256}
 
     @classmethod
     def from_data(cls, data):
@@ -130,13 +131,14 @@ class CounterEpochPlan:
             raise IRSchemaError('Counter plan requires ordered bounded resets and a full initial reset.')
 
     def _body(self):
-        return {
-            'schema': COUNTER_EPOCH_SCHEMA, 'mode': COUNTER_EPOCH_MODE, 'contract': self.contract, 'contract_sha256':
-            self.contract_sha256, 'schedule': self.schedule, 'execution_sha256': self.execution_sha256,
-            'device_source_sha256': self.device_source_sha256, 'counter_bits': 32, 'counter_count':
-            self.frame_nbytes // 4, 'frame_nbytes': self.frame_nbytes, 'rows': [row.to_data() for row in self.rows],
-            'resets': [reset.to_data() for reset in self.resets]
-        }
+        return {'schema': COUNTER_EPOCH_SCHEMA, 'mode': COUNTER_EPOCH_MODE,
+                'contract': self.contract, 'contract_sha256': self.contract_sha256,
+                'schedule': self.schedule, 'execution_sha256': self.execution_sha256,
+                'device_source_sha256': self.device_source_sha256,
+                'counter_bits': 32, 'counter_count': self.frame_nbytes // 4,
+                'frame_nbytes': self.frame_nbytes,
+                'rows': [row.to_data() for row in self.rows],
+                'resets': [reset.to_data() for reset in self.resets]}
 
     @property
     def plan_sha256(self):
@@ -147,16 +149,15 @@ class CounterEpochPlan:
 
     @classmethod
     def from_data(cls, data):
-        _closed(
-            data,
-            ('schema', 'mode', 'contract', 'contract_sha256', 'schedule', 'execution_sha256', 'device_source_sha256',
-             'counter_bits', 'counter_count', 'frame_nbytes', 'rows', 'resets', 'plan_sha256'))
+        _closed(data, ('schema', 'mode', 'contract', 'contract_sha256', 'schedule',
+                      'execution_sha256', 'device_source_sha256', 'counter_bits',
+                      'counter_count', 'frame_nbytes', 'rows', 'resets', 'plan_sha256'))
         if data['schema'] != COUNTER_EPOCH_SCHEMA or data['mode'] != COUNTER_EPOCH_MODE:
             raise IRSchemaError('Unsupported counter epoch schema or execution mode.')
         if type(data['counter_bits']) is not int or data['counter_bits'] != 32:
             raise IRSchemaError('Counter epochs currently require uint32 counters.')
-        plan = cls(data['contract'], data['contract_sha256'], data['schedule'], data['execution_sha256'],
-                   data['device_source_sha256'], data['frame_nbytes'],
+        plan = cls(data['contract'], data['contract_sha256'], data['schedule'],
+                   data['execution_sha256'], data['device_source_sha256'], data['frame_nbytes'],
                    tuple(CounterEpochRow.from_data(row) for row in _sequence(data['rows'])),
                    tuple(CounterReset.from_data(reset) for reset in _sequence(data['resets'])))
         if _uint(data['counter_count'], positive=True) != plan.frame_nbytes // 4:
@@ -193,27 +194,22 @@ class EntryCounterEffect:
     def __post_init__(self):
         _uint(self.entry_id)
         _digest(self.entry_sha256)
-        object.__setattr__(self, 'alternatives',
-                           tuple(tuple(_sequence(branch)) for branch in _sequence(self.alternatives)))
-        if (not self.alternatives
-                or any(not isinstance(effect, CounterBarrier) for branch in self.alternatives for effect in branch)):
+        object.__setattr__(self, 'alternatives', tuple(tuple(_sequence(branch))
+                           for branch in _sequence(self.alternatives)))
+        if (not self.alternatives or any(not isinstance(effect, CounterBarrier)
+                for branch in self.alternatives for effect in branch)):
             raise IRSchemaError('Counter effects require all typed branch alternatives.')
 
     def to_data(self):
-        return {
-            'entry_id': self.entry_id, 'entry_sha256': self.entry_sha256, 'alternatives':
-            [[effect.to_data() for effect in branch] for branch in self.alternatives]
-        }
+        return {'entry_id': self.entry_id, 'entry_sha256': self.entry_sha256,
+                'alternatives': [[effect.to_data() for effect in branch] for branch in self.alternatives]}
 
     @classmethod
     def from_data(cls, data):
         _closed(data, ('entry_id', 'entry_sha256', 'alternatives'))
-        return cls(
-            data['entry_id'], data['entry_sha256'],
-            tuple(
-                tuple(CounterBarrier.from_data(effect)
-                      for effect in _sequence(branch))
-                for branch in _sequence(data['alternatives'])))
+        return cls(data['entry_id'], data['entry_sha256'], tuple(
+            tuple(CounterBarrier.from_data(effect) for effect in _sequence(branch))
+            for branch in _sequence(data['alternatives'])))
 
 
 @dataclass(frozen=True)
@@ -234,28 +230,23 @@ class CounterEffectContract:
         if self.frame_nbytes % 4:
             raise IRSchemaError('Effect frame must contain uint32 counters.')
         object.__setattr__(self, 'effects', tuple(_sequence(self.effects)))
-        object.__setattr__(self, 'schedules',
-                           tuple((_name(name), tuple(_sequence(resets))) for name, resets in _sequence(self.schedules)))
+        object.__setattr__(self, 'schedules', tuple((_name(name), tuple(_sequence(resets)))
+                           for name, resets in _sequence(self.schedules)))
         if (not self.effects or any(not isinstance(effect, EntryCounterEffect) for effect in self.effects)
                 or [effect.entry_id for effect in self.effects] != list(range(len(self.effects)))
                 or any(e.slot >= self.frame_nbytes // 4 for f in self.effects for b in f.alternatives for e in b)):
             raise IRSchemaError('Effects must cover every entry and stay inside the counter frame.')
-        if (not self.schedules or len({name
-                                       for name, _ in self.schedules}) != len(self.schedules)
+        if (not self.schedules or len({name for name, _ in self.schedules}) != len(self.schedules)
                 or any(not isinstance(r, CounterReset) for _, resets in self.schedules for r in resets)):
             raise IRSchemaError('Reviewed counter schedules must be named, typed and unique.')
 
     def to_data(self):
-        return {
-            'schema':
-            COUNTER_EFFECT_SCHEMA, 'name':
-            self.name, 'execution_sha256':
-            self.execution_sha256, 'device_source_sha256':
-            self.device_source_sha256, 'proof_sha256':
-            self.proof_sha256, 'frame_nbytes':
-            self.frame_nbytes, 'effects': [effect.to_data() for effect in self.effects], 'schedules':
-            [{'name': name, 'resets': [reset.to_data() for reset in resets]} for name, resets in self.schedules]
-        }
+        return {'schema': COUNTER_EFFECT_SCHEMA, 'name': self.name,
+                'execution_sha256': self.execution_sha256,
+                'device_source_sha256': self.device_source_sha256, 'proof_sha256': self.proof_sha256,
+                'frame_nbytes': self.frame_nbytes, 'effects': [effect.to_data() for effect in self.effects],
+                'schedules': [{'name': name, 'resets': [reset.to_data() for reset in resets]}
+                              for name, resets in self.schedules]}
 
     @property
     def contract_sha256(self):
@@ -263,17 +254,17 @@ class CounterEffectContract:
 
     @classmethod
     def from_data(cls, data):
-        _closed(data, ('schema', 'name', 'execution_sha256', 'device_source_sha256', 'proof_sha256', 'frame_nbytes',
-                       'effects', 'schedules'))
+        _closed(data, ('schema', 'name', 'execution_sha256', 'device_source_sha256',
+                      'proof_sha256', 'frame_nbytes', 'effects', 'schedules'))
         if data['schema'] != COUNTER_EFFECT_SCHEMA:
             raise IRSchemaError('Unsupported counter effect contract schema.')
         schedules = []
         for row in _sequence(data['schedules']):
             _closed(row, ('name', 'resets'))
             schedules.append((row['name'], tuple(CounterReset.from_data(r) for r in _sequence(row['resets']))))
-        return cls(data['name'], data['execution_sha256'], data['device_source_sha256'], data['proof_sha256'],
-                   data['frame_nbytes'], tuple(EntryCounterEffect.from_data(e) for e in _sequence(data['effects'])),
-                   tuple(schedules))
+        return cls(data['name'], data['execution_sha256'], data['device_source_sha256'],
+                   data['proof_sha256'], data['frame_nbytes'],
+                   tuple(EntryCounterEffect.from_data(e) for e in _sequence(data['effects'])), tuple(schedules))
 
 
 # Trusted implementation extensions register immutable contracts, analogous to
@@ -295,8 +286,7 @@ def counter_effect_contract(name):
     try:
         return _CONTRACTS[name]
     except (KeyError, TypeError) as error:
-        raise IRVerificationError(
-            'Counter effect contract is not registered by an implementation extension.') from error
+        raise IRVerificationError('Counter effect contract is not registered by an implementation extension.') from error
 
 
 def _program_identity(programs):
@@ -312,11 +302,10 @@ def make_counter_epoch_plan(contract_name, schedule, programs, device_source_sha
         resets = dict(contract.schedules)[schedule]
     except (KeyError, TypeError) as error:
         raise IRVerificationError('Counter schedule is not reviewed by the registered contract.') from error
-    plan = CounterEpochPlan(
-        contract.name, contract.contract_sha256, schedule, _program_identity(programs), device_source_sha256,
-        contract.frame_nbytes,
-        tuple(CounterEpochRow(row['ordinal'], row['entry_id'], identity(row)) for row in programs['invocations']),
-        resets)
+    plan = CounterEpochPlan(contract.name, contract.contract_sha256, schedule, _program_identity(programs),
+                            device_source_sha256, contract.frame_nbytes,
+                            tuple(CounterEpochRow(row['ordinal'], row['entry_id'], identity(row))
+                                  for row in programs['invocations']), resets)
     verify_counter_epoch_plan(plan, programs, device_source_sha256)
     return plan
 
@@ -325,18 +314,22 @@ def verify_counter_epoch_plan(plan, programs, device_source_sha256):
     if not isinstance(plan, CounterEpochPlan):
         plan = CounterEpochPlan.from_data(plan)
     contract = counter_effect_contract(plan.contract)
-    if (plan.contract_sha256 != contract.contract_sha256 or plan.execution_sha256 != _program_identity(programs)
-            or plan.execution_sha256 != contract.execution_sha256 or plan.device_source_sha256 != device_source_sha256
-            or plan.device_source_sha256 != contract.device_source_sha256 or plan.frame_nbytes != contract.frame_nbytes
+    if (plan.contract_sha256 != contract.contract_sha256
+            or plan.execution_sha256 != _program_identity(programs)
+            or plan.execution_sha256 != contract.execution_sha256
+            or plan.device_source_sha256 != device_source_sha256
+            or plan.device_source_sha256 != contract.device_source_sha256
+            or plan.frame_nbytes != contract.frame_nbytes
             or dict(contract.schedules).get(plan.schedule) != plan.resets):
         raise IRVerificationError('Counter plan differs from the reviewed implementation/schedule identity.')
-    expected_rows = tuple(
-        CounterEpochRow(row['ordinal'], row['entry_id'], identity(row)) for row in programs['invocations'])
+    expected_rows = tuple(CounterEpochRow(row['ordinal'], row['entry_id'], identity(row))
+                          for row in programs['invocations'])
     if plan.rows != expected_rows or len(contract.effects) != len(programs['entries']):
         raise IRVerificationError('Counter plan does not bind the complete invocation order and entries.')
     for effect, entry in zip(contract.effects, programs['entries'], strict=True):
         if (entry['entry_id'] != effect.entry_id or effect.entry_sha256 != identity(entry)
-                or entry['scratch_nbytes'] > plan.frame_nbytes or entry['scratch_nbytes'] % 4):
+                or entry['scratch_nbytes'] > plan.frame_nbytes
+                or entry['scratch_nbytes'] % 4):
             raise IRVerificationError('Counter effect differs from selected entry/geometry/scratch identity.')
         if any(e.slot >= entry['scratch_nbytes'] // 4 for branch in effect.alternatives for e in branch):
             raise IRVerificationError('Counter effect is outside the exact per-entry scratch span.')
@@ -358,9 +351,7 @@ def verify_counter_epoch_plan(plan, programs, device_source_sha256):
             branch_states.append(current)
         states = [set().union(*(branch[slot] for branch in branch_states)) for slot in range(len(states))]
         maxima = [max(old, max(values)) for old, values in zip(maxima, states, strict=True)]
-    return {
-        'plan_sha256': plan.plan_sha256, 'contract_sha256': contract.contract_sha256, 'proof_sha256':
-        contract.proof_sha256, 'calls': len(plan.rows), 'resets': len(plan.resets), 'nodes':
-        len(plan.rows) + len(plan.resets), 'max_counter_values': maxima, 'terminal_counter_values':
-        [sorted(values) for values in states]
-    }
+    return {'plan_sha256': plan.plan_sha256, 'contract_sha256': contract.contract_sha256,
+            'proof_sha256': contract.proof_sha256, 'calls': len(plan.rows), 'resets': len(plan.resets),
+            'nodes': len(plan.rows) + len(plan.resets), 'max_counter_values': maxima,
+            'terminal_counter_values': [sorted(values) for values in states]}

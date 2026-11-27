@@ -24,29 +24,28 @@ def _vectorized_reusable_matmul() -> fm.IRModule:
     builder.function(
         "worker",
         (worker_value, worker_weight),
-        (projection, ),
+        (projection,),
         attrs={"calling_convention": "device", "noinline": True, "reusable": True},
     )
 
     value = builder.var("value", value_type, id="value")
     weight = builder.var("weight", weight_type, id="weight")
     result = builder.call(
-        "builtin.call",
-        (value, weight),
-        value_type,
-        id="result",
-        attrs={"callee": "worker"},
+        "builtin.call", (value, weight), value_type,
+        id="result", attrs={"callee": "worker"},
     )
-    builder.function("main", (value, weight), (result, ))
+    builder.function("main", (value, weight), (result,))
 
     compiler = Compiler()
-    proposed = compiler.compile(builder.build(entry="main"), stop_after="propose-vectorization").module
+    proposed = compiler.compile(
+        builder.build(entry="main"), stop_after="propose-vectorization"
+    ).module
     return compiler.run_stage(
         proposed,
         "apply-vectorization",
         plan=override_plan(
             proposed,
-            (("vectorization.projection", "vectorization.matmul.n"), ),
+            (("vectorization.projection", "vectorization.matmul.n"),),
         ),
     ).module
 
@@ -56,9 +55,13 @@ def test_schedule_only_vector_expression_is_not_moved_into_function_abi():
     rewritten = propagate_function_boundary_layouts(vectorized)
 
     worker = rewritten.function_map["worker"]
-    assert rewritten.node_map["worker_weight"].type == fm.tensor_type("bfloat16", (128, 128))
-    assert worker.outputs == ("projection", )
+    assert rewritten.node_map["worker_weight"].type == fm.tensor_type(
+        "bfloat16", (128, 128)
+    )
+    assert worker.outputs == ("projection",)
     assert rewritten.node_map["projection"].op == "tensors.unpack"
-    assert rewritten.node_map["projection.vectorized.pack1"].inputs == ("worker_weight", )
+    assert rewritten.node_map["projection.vectorized.pack1"].inputs == (
+        "worker_weight",
+    )
     assert rewritten.node_map["result"].inputs == ("value", "weight")
     assert "function_boundary_layout" not in worker.attrs

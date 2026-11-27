@@ -47,13 +47,11 @@ def test_non_affine_record_column_retains_ordinary_table_lookup():
     assert all("record_affine" not in field for field in plan["bindings"])
     alias = function_pool_aliases(plan)["weight"]
     assert "_flagmega_function_offsets" in alias
-    loads = [
-        node for node in ast.walk(ast.parse(alias, mode="eval"))
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "load"
-    ]
+    loads = [node for node in ast.walk(ast.parse(alias, mode="eval"))
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "load"]
     assert len(loads) == 1
-    assert not any(keyword.arg == "volatile" and isinstance(keyword.value, ast.Constant) and keyword.value.value
-                   for keyword in loads[0].keywords)
+    assert not any(keyword.arg == "volatile" and isinstance(keyword.value, ast.Constant)
+                   and keyword.value.value for keyword in loads[0].keywords)
 
 
 def test_negative_stride_uses_the_complete_call_domain():

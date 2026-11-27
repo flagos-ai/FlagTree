@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Canonical per-owner view of a :class:`DistributedType`.
 
-This is the Python counterpart of the reference ``LocalShardDescriptor``.  It is a
+This is the Python counterpart of nncase's ``LocalShardDescriptor``.  It is a
 derived IR contract, rather than a target schedule: ordinary kernels consume
 the dense local domain while only layout transitions/collectives interpret
 the relationship between owners.
@@ -56,7 +56,7 @@ def uniform_contiguous_owner_regions(value_type):
     for extent, policy in zip(value_type.tensor.shape, value_type.axis_policies):
         if not extent.is_fixed:
             if isinstance(policy, SBPBroadCast):
-                rows.append(((0, ) * len(hierarchy), extent))
+                rows.append(((0,) * len(hierarchy), extent))
                 continue
             return None
         active = extent.fixed_value
@@ -150,13 +150,19 @@ class LocalShardStageDescriptor:
         coordinate = dim(local_coordinate)
         distribution = self.stage.distribution
         if isinstance(distribution, ContiguousSplit):
-            return (self.linear_shard_index * self.local_capacity + coordinate).simplify()
+            return (
+                self.linear_shard_index * self.local_capacity + coordinate
+            ).simplify()
         if isinstance(distribution, BlockCyclicSplit):
             block = distribution.block_size
-            return ((coordinate // block) * (self.shard_count * block) + self.linear_shard_index * block +
-                    coordinate % block).simplify()
+            return (
+                (coordinate // block) * (self.shard_count * block)
+                + self.linear_shard_index * block
+                + coordinate % block
+            ).simplify()
         raise IRSchemaError(  # pragma: no cover - SplitDistribution is closed today.
-            f"Unsupported split distribution {type(distribution).__name__}.")
+            f"Unsupported split distribution {type(distribution).__name__}."
+        )
 
 
 @dataclass(frozen=True)
@@ -194,7 +200,8 @@ class LocalShardAxisDescriptor:
                 if stride % block == 0:
                     next_stride = stride * stage.shard_count
                 elif (count is not None and origin.is_fixed
-                      and origin.fixed_value // block == (origin.fixed_value + max(count - 1, 0) * stride) // block):
+                      and origin.fixed_value // block
+                      == (origin.fixed_value + max(count - 1, 0) * stride) // block):
                     next_stride = stride
                 else:
                     return None
@@ -287,8 +294,11 @@ class LocalShardDescriptor:
                 return None
             fixed_coordinates.append(coordinate.fixed_value)
         ranges = tuple(
-            range(extent) if axis in partial_axes else (fixed_coordinates[axis], )
-            for axis, extent in enumerate(self.distributed_type.placement.hierarchy))
+            range(extent) if axis in partial_axes else (fixed_coordinates[axis],)
+            for axis, extent in enumerate(
+                self.distributed_type.placement.hierarchy
+            )
+        )
         return tuple(product(*ranges))
 
 
@@ -316,7 +326,9 @@ def local_shard_descriptor(
 
     if not isinstance(distributed_type, DistributedType):
         raise TypeError("local_shard_descriptor requires a DistributedType.")
-    return _local_shard_descriptor_cached(distributed_type, tuple(dim(value) for value in coordinates))
+    return _local_shard_descriptor_cached(
+        distributed_type, tuple(dim(value) for value in coordinates)
+    )
 
 
 def _local_shard_descriptor(
@@ -336,26 +348,36 @@ def _local_shard_descriptor(
     placement = distributed_type.placement
     bound_coordinates = tuple(dim(value) for value in coordinates)
     if len(bound_coordinates) != placement.rank:
-        raise IRSchemaError(f"Shard coordinate rank {len(bound_coordinates)} does not match "
-                            f"placement rank {placement.rank}.")
-    for axis, (coordinate, extent) in enumerate(zip(bound_coordinates, placement.hierarchy)):
+        raise IRSchemaError(
+            f"Shard coordinate rank {len(bound_coordinates)} does not match "
+            f"placement rank {placement.rank}."
+        )
+    for axis, (coordinate, extent) in enumerate(
+        zip(bound_coordinates, placement.hierarchy)
+    ):
         if coordinate.is_fixed and not 0 <= coordinate.fixed_value < extent:
-            raise IRSchemaError(f"Shard coordinate {coordinate.fixed_value} on placement axis "
-                                f"{axis} is outside [0, {extent}).")
+            raise IRSchemaError(
+                f"Shard coordinate {coordinate.fixed_value} on placement axis "
+                f"{axis} is outside [0, {extent})."
+            )
 
     axes: list[LocalShardAxisDescriptor] = []
     used_hierarchy_axes: set[int] = set()
     for global_extent, policy in zip(
-            distributed_type.tensor.shape,
-            distributed_type.axis_policies,
+        distributed_type.tensor.shape,
+        distributed_type.axis_policies,
     ):
         if isinstance(policy, SBPBroadCast):
-            axes.append(LocalShardAxisDescriptor(global_extent, global_extent, global_extent, ()))
+            axes.append(LocalShardAxisDescriptor(
+                global_extent, global_extent, global_extent, ()
+            ))
             continue
         if not isinstance(policy, SBPSplit):
             # Partial is represented separately on DistributedType in
             # FlagMega, so an axis policy can only be broadcast or split.
-            axes.append(LocalShardAxisDescriptor(global_extent, global_extent, global_extent, ()))
+            axes.append(LocalShardAxisDescriptor(
+                global_extent, global_extent, global_extent, ()
+            ))
             continue
 
         capacity = global_extent
@@ -372,11 +394,15 @@ def _local_shard_descriptor(
         for stage in policy.stages:
             for hierarchy_axis in stage.hierarchy_axes:
                 if hierarchy_axis in used_hierarchy_axes:
-                    raise IRSchemaError(f"Placement axis {hierarchy_axis} is assigned to more "
-                                        "than one tensor split policy.")
+                    raise IRSchemaError(
+                        f"Placement axis {hierarchy_axis} is assigned to more "
+                        "than one tensor split policy."
+                    )
                 used_hierarchy_axes.add(hierarchy_axis)
             shard_count = _stage_shard_count(stage, placement.hierarchy)
-            linear_shard_index = _linear_stage_coordinate(stage, bound_coordinates, placement.hierarchy)
+            linear_shard_index = _linear_stage_coordinate(
+                stage, bound_coordinates, placement.hierarchy
+            )
             stage_capacity = _local_capacity(parent_extent, shard_count, stage)
             active_extent = _active_extent(
                 parent_extent,
@@ -385,25 +411,23 @@ def _local_shard_descriptor(
                 shard_count,
                 stage,
             )
-            stages.append(
-                LocalShardStageDescriptor(
-                    stage,
-                    parent_extent,
-                    stage_capacity,
-                    active_extent,
-                    linear_shard_index,
-                    shard_count,
-                ))
-            # reference intentionally feeds the active owner extent into the next
+            stages.append(LocalShardStageDescriptor(
+                stage,
+                parent_extent,
+                stage_capacity,
+                active_extent,
+                linear_shard_index,
+                shard_count,
+            ))
+            # nncase intentionally feeds the active owner extent into the next
             # stage.  This preserves staged tail semantics.
             parent_extent = active_extent
-        axes.append(
-            LocalShardAxisDescriptor(
-                global_extent,
-                capacity.simplify(),
-                active_extent.simplify(),
-                tuple(stages),
-            ))
+        axes.append(LocalShardAxisDescriptor(
+            global_extent,
+            capacity.simplify(),
+            active_extent.simplify(),
+            tuple(stages),
+        ))
     return LocalShardDescriptor(distributed_type, bound_coordinates, tuple(axes))
 
 
@@ -461,34 +485,29 @@ def max_chip_active_elements(distributed_type: DistributedType) -> int | None:
     # Broadcast chip axes contribute replicas on other chips, not traffic on
     # this chip. Exclusive types are fully broadcast, so their selected chip
     # coordinate does not change this maximum either.
-    chips = product(*(range(size) if axis in split_chip_axes else (0, )
+    chips = product(*(range(size) if axis in split_chip_axes else (0,)
                       for axis, size in enumerate(placement.hierarchy)))
-    return max(base *
-               prod(_split_active_element_sum_on_chip(extent, policy, placement, chip)
-                    for extent, policy in splits)
-               for chip in chips)
+    return max(base * prod(_split_active_element_sum_on_chip(extent, policy, placement, chip)
+                           for extent, policy in splits) for chip in chips)
 
 
 @lru_cache(maxsize=4096)
 def _split_active_element_sum_on_chip(
-    extent: Dimension,
-    policy: SBPSplit,
-    placement: Placement,
-    chip: tuple[int, ...],
+    extent: Dimension, policy: SBPSplit, placement: Placement, chip: tuple[int, ...],
 ) -> int:
-    axis_type = DistributedType(tensor_type("int32", (extent, )), (policy, ), placement)
-    owners = product(
-        *(range(size) if axis in policy.hierarchy_axes and placement.is_physical_block_axis(axis) else (chip[axis], )
-          for axis, size in enumerate(placement.hierarchy)))
+    axis_type = DistributedType(tensor_type("int32", (extent,)), (policy,), placement)
+    owners = product(*(range(size) if axis in policy.hierarchy_axes and placement.is_physical_block_axis(axis)
+                       else (chip[axis],) for axis, size in enumerate(placement.hierarchy)))
     return sum(local_shard_descriptor(axis_type, owner).active_shape[0].fixed_value for owner in owners)
 
 
 @lru_cache(maxsize=4096)
 def _split_active_element_sum(extent: Dimension, policy: SBPSplit, placement: Placement) -> int:
-    axis_type = DistributedType(tensor_type("int32", (extent, )), (policy, ), placement)
-    ranges = tuple(
-        range(size) if axis in policy.hierarchy_axes else (0, ) for axis, size in enumerate(placement.hierarchy))
-    return sum(local_shard_descriptor(axis_type, owner).active_shape[0].fixed_value for owner in product(*ranges))
+    axis_type = DistributedType(tensor_type("int32", (extent,)), (policy,), placement)
+    ranges = tuple(range(size) if axis in policy.hierarchy_axes else (0,)
+                   for axis, size in enumerate(placement.hierarchy))
+    return sum(local_shard_descriptor(axis_type, owner).active_shape[0].fixed_value
+               for owner in product(*ranges))
 
 
 def unravel_placement_index(
@@ -501,7 +520,9 @@ def unravel_placement_index(
     for extent in hierarchy:
         owner_count *= int(extent)
     if isinstance(linear_index, bool) or not 0 <= int(linear_index) < owner_count:
-        raise IRSchemaError(f"Placement owner index {linear_index} is outside [0, {owner_count}).")
+        raise IRSchemaError(
+            f"Placement owner index {linear_index} is outside [0, {owner_count})."
+        )
     remaining = int(linear_index)
     result = [0] * len(hierarchy)
     for axis in range(len(hierarchy) - 1, -1, -1):
@@ -542,7 +563,8 @@ def _local_capacity(
         block = distribution.block_size
         return (ceil_div(parent_extent, shard_count * block) * block).simplify()
     raise IRSchemaError(  # pragma: no cover - SplitDistribution is closed today.
-        f"Unsupported split distribution {type(distribution).__name__}.")
+        f"Unsupported split distribution {type(distribution).__name__}."
+    )
 
 
 def _active_extent(
@@ -552,11 +574,16 @@ def _active_extent(
     shard_count: int,
     stage: SplitStage,
 ) -> Dimension:
-    # Match the reference IsUniformCapacity fast path.  Besides simplifying codegen,
+    # Match nncase's IsUniformCapacity fast path.  Besides simplifying codegen,
     # this proves that every valid owner has the same active extent without
     # leaving a coordinate-dependent clamp in the serialized ABI.
-    if (parent_extent.is_fixed and local_capacity.is_fixed and parent_extent.fixed_value % shard_count == 0
-            and parent_extent.fixed_value // shard_count == local_capacity.fixed_value):
+    if (
+        parent_extent.is_fixed
+        and local_capacity.is_fixed
+        and parent_extent.fixed_value % shard_count == 0
+        and parent_extent.fixed_value // shard_count
+        == local_capacity.fixed_value
+    ):
         return local_capacity
     distribution = stage.distribution
     if isinstance(distribution, ContiguousSplit):
@@ -570,13 +597,17 @@ def _active_extent(
     if isinstance(distribution, BlockCyclicSplit):
         block = distribution.block_size
         cycle = shard_count * block
-        return ((parent_extent // cycle) * block + dim_clamp(
-            parent_extent % cycle - linear_shard_index * block,
-            0,
-            block,
-        )).simplify()
+        return (
+            (parent_extent // cycle) * block
+            + dim_clamp(
+                parent_extent % cycle - linear_shard_index * block,
+                0,
+                block,
+            )
+        ).simplify()
     raise IRSchemaError(  # pragma: no cover - SplitDistribution is closed today.
-        f"Unsupported split distribution {type(distribution).__name__}.")
+        f"Unsupported split distribution {type(distribution).__name__}."
+    )
 
 
 __all__ = [

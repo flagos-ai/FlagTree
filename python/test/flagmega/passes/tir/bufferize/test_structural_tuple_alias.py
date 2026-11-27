@@ -17,8 +17,10 @@ def test_tuple_and_get_item_forward_existing_physical_buffer_identities():
         fm.TupleType((tensor, tensor)),
         id="pair",
     )
-    selected = builder.call("builtin.get_item", (pair, ), tensor, id="selected", attrs={"index": 1})
-    builder.function("main", (lhs, rhs), (selected, ))
+    selected = builder.call(
+        "builtin.get_item", (pair,), tensor, id="selected", attrs={"index": 1}
+    )
+    builder.function("main", (lhs, rhs), (selected,))
 
     plan = fm.make_buffer_plan(builder.build(entry="main"))
     values = dict(plan.function_map["main"].values)
@@ -30,21 +32,21 @@ def test_tuple_and_get_item_forward_existing_physical_buffer_identities():
 
 
 def test_tuple_of_vector_reinterpret_views_preserves_each_source_memspan():
-    packed = fm.tensor_type(fm.vector_type("bfloat16", (8, )), (1, 1))
+    packed = fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, 1))
     unpacked = fm.tensor_type("bfloat16", (1, 8))
     builder = fm.IRBuilder(dialect="semantic_tir", stage="packaged_tir")
     lhs = builder.var("lhs", packed, id="lhs")
     rhs = builder.var("rhs", packed, id="rhs")
     lhs_view = builder.call(
         "tir.buffer_view",
-        (lhs, ),
+        (lhs,),
         unpacked,
         id="lhs_view",
         attrs={"alias_kind": "vector_reinterpret"},
     )
     rhs_view = builder.call(
         "tir.buffer_view",
-        (rhs, ),
+        (rhs,),
         unpacked,
         id="rhs_view",
         attrs={"alias_kind": "vector_reinterpret"},
@@ -55,8 +57,10 @@ def test_tuple_of_vector_reinterpret_views_preserves_each_source_memspan():
         fm.TupleType((unpacked, unpacked)),
         id="pair",
     )
-    selected = builder.call("builtin.get_item", (pair, ), unpacked, id="selected", attrs={"index": 0})
-    builder.function("main", (lhs, rhs), (selected, ))
+    selected = builder.call(
+        "builtin.get_item", (pair,), unpacked, id="selected", attrs={"index": 0}
+    )
+    builder.function("main", (lhs, rhs), (selected,))
 
     plan = fm.make_buffer_plan(builder.build(entry="main"))
     values = dict(plan.function_map["main"].values)

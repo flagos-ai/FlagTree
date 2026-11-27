@@ -44,7 +44,8 @@ def _starve_optimizer(monkeypatch):
 
 
 def test_exhausted_objective_budget_still_yields_a_distribution(monkeypatch):
-    graph = AutoDistributedPass._build_graph(packed_matmul_module(), NvidiaSm90Target())
+    graph = AutoDistributedPass._build_graph(
+        packed_matmul_module(), NvidiaSm90Target())
     reference = solve_search_graph(graph)
 
     _starve_optimizer(monkeypatch)
@@ -61,7 +62,8 @@ def test_exhausted_objective_budget_still_yields_a_distribution(monkeypatch):
 def test_infeasible_model_is_still_reported(monkeypatch):
     """Only genuine infeasibility remains an extraction failure."""
 
-    graph = AutoDistributedPass._build_graph(packed_matmul_module(), NvidiaSm90Target())
+    graph = AutoDistributedPass._build_graph(
+        packed_matmul_module(), NvidiaSm90Target())
     original = solve_search_graph.__globals__["_solve_distribution_model"]
 
     def contradictory(cp_model_module, model, search_graph):
@@ -70,7 +72,8 @@ def test_infeasible_model_is_still_reported(monkeypatch):
         model.Add(variable == 1)
         return original(cp_model_module, model, search_graph)
 
-    monkeypatch.setattr(search_module, "_solve_distribution_model", contradictory)
+    monkeypatch.setattr(
+        search_module, "_solve_distribution_model", contradictory)
     with pytest.raises(IRVerificationError, match="INFEASIBLE"):
         solve_search_graph(graph)
 
@@ -78,7 +81,8 @@ def test_infeasible_model_is_still_reported(monkeypatch):
 def test_budget_is_deterministic_not_wall_clock(monkeypatch):
     """Machine load must not decide whether a module compiles."""
 
-    graph = AutoDistributedPass._build_graph(packed_matmul_module(), NvidiaSm90Target())
+    graph = AutoDistributedPass._build_graph(
+        packed_matmul_module(), NvidiaSm90Target())
     seen = []
     original = cp_model.CpSolver.Solve
 

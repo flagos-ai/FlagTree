@@ -17,32 +17,27 @@ from python.test.flagmega.devices import requires_nvidia_sm90
 
 
 def graph():
-
     class Graph(fm.Module):
-
         def forward(self):
-            ids = self.input("input_ids", fm.tensor_type("int32", (1, )), id="input_ids")
+            ids = self.input("input_ids", fm.tensor_type("int32", (1,)), id="input_ids")
             phase = self.input("prefill", fm.tensor_type("bool", ()), id="prefill")
             conv = self.input("conv", fm.tensor_type("bfloat16", (3, 1, 8, 2)), id="conv")
             state = self.input("recurrent", fm.tensor_type("float32", (1, 1, 8, 8)), id="recurrent")
-            paged = self.input("paged",
-                               PagedAttentionStateConfig(1, 1, 8, block_size=8, num_blocks=1).ref_type, id="paged")
+            paged = self.input("paged", PagedAttentionStateConfig(1, 1, 8, block_size=8, num_blocks=1).ref_type,
+                               id="paged")
             scalar = fm.F.tensors.cast(phase, "float32")
             logits = fm.F.math.add(fm.F.tensors.broadcast_to(scalar, shape=(1, 8)),
-                                   fm.F.tensors.broadcast_to(fm.F.tensors.cast(ids, "float32"), shape=(1, 8)),
-                                   name="logits")
+                                    fm.F.tensors.broadcast_to(fm.F.tensors.cast(ids, "float32"), shape=(1, 8)),
+                                    name="logits")
             token = fm.F.nn.greedy_sample(logits, name="token")
-            conv_out = fm.F.math.add(
-                conv, fm.F.tensors.broadcast_to(fm.F.tensors.cast(phase, "bfloat16"), shape=(3, 1, 8, 2)))
+            conv_out = fm.F.math.add(conv, fm.F.tensors.broadcast_to(fm.F.tensors.cast(phase, "bfloat16"),
+                                                                    shape=(3, 1, 8, 2)))
             state_out = fm.F.math.add(state, fm.F.tensors.broadcast_to(scalar, shape=(1, 1, 8, 8)))
             self.builder.metadata["composite_abi"] = {
-                "schema": "flagmega.composite-abi/v1",
-                "input_id": ids.id,
-                "prefill_input": phase.id,
-                "logits_output": logits.id,
-                "token_output": token.id,
-                "tensor_states": ({"state_id": 0, "input": (conv.id, state.id), "output":
-                                   (conv_out.id, state_out.id)}, ),
+                "schema": "flagmega.composite-abi/v1", "input_id": ids.id, "prefill_input": phase.id,
+                "logits_output": logits.id, "token_output": token.id,
+                "tensor_states": ({"state_id": 0, "input": (conv.id, state.id),
+                                   "output": (conv_out.id, state_out.id)},),
                 "paged_state": {"input": paged.id, "output": paged.id},
             }
             self.function("main", (ids, phase, conv, state, paged), (logits, token, conv_out, state_out, paged))
@@ -66,8 +61,8 @@ def test_prepared_composite_adapter_switches_phase_and_restarts(tmp_path):
             state.kda.recurrent.zero_()
             runtime.run_into(logits, token, ids, state, prefill=phase)
             torch.testing.assert_close(logits, torch.full_like(logits, 11 + int(phase)), rtol=0, atol=0)
-            torch.testing.assert_close(state.kda.recurrent, torch.full_like(state.kda.recurrent, int(phase)), rtol=0,
-                                       atol=0)
+            torch.testing.assert_close(state.kda.recurrent, torch.full_like(state.kda.recurrent, int(phase)),
+                                       rtol=0, atol=0)
             torch.testing.assert_close(state.kda.convolution, torch.full_like(state.kda.convolution, int(phase)),
                                        rtol=0, atol=0)
         for bad in (1, "prefill", torch.tensor(True)):
@@ -78,14 +73,12 @@ def test_prepared_composite_adapter_switches_phase_and_restarts(tmp_path):
         runtime.close()
 
 
-@pytest.mark.parametrize("binding,message", [("missing", "unknown prefill"), ("input_ids", "rank-zero bool")])
+@pytest.mark.parametrize("binding,message", [("missing", "unknown prefill"),
+                                            ("input_ids", "rank-zero bool")])
 def test_composite_phase_metadata_is_checked_before_loading_a_device(tmp_path, binding, message):
     source = graph()
-    source = fm.verify_module(
-        replace(
-            source, metadata={
-                **source.metadata, "composite_abi": {**source.metadata["composite_abi"], "prefill_input": binding}
-            }))
+    source = fm.verify_module(replace(source, metadata={**source.metadata,
+        "composite_abi": {**source.metadata["composite_abi"], "prefill_input": binding}}))
     compiled = Compiler().compile(source).module
     artifact = write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     with pytest.raises(ArtifactError, match=message):

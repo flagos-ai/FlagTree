@@ -32,9 +32,8 @@ def _worker(artifact):
         bindings = runtime.buffer_plan.function_map[module.entry]
         buffers = {}
         for value, names in bindings.parameters:
-            buffers.update(
-                zip(names, state_arguments(state), strict=True) if isinstance(module.node_map[value].type, fm.RefType
-                                                                              ) else [(names[0], slots)])
+            buffers.update(zip(names, state_arguments(state), strict=True) if isinstance(module.node_map[value].type, fm.RefType)
+                           else [(names[0], slots)])
         for _, names in bindings.outputs:
             buffers.update(zip(names, state_arguments(state), strict=True))
         args = [buffers[str(arg['buffer'])] for arg in runtime.external_arguments]
@@ -44,12 +43,11 @@ def _worker(artifact):
             state.seq_lens.fill_(position)
             runtime.run_into(*args)
             for row in range(3):
-                page = (2, 0, 3, 1)[(position + row) // 16]
+                page = (2, 0, 3, 1)[(position+row)//16]
                 for kind in range(2):
-                    expected[page, 1, kind,
-                             (position + row) % 16].copy_(semantic[row, :, kind * 32:(kind + 1) * 32].reshape(7, 4, 8))
+                    expected[page, 1, kind, (position+row)%16].copy_(semantic[row, :, kind*32:(kind+1)*32].reshape(7, 4, 8))
             torch.testing.assert_close(state.kv_caches, expected, rtol=0, atol=0)
-            assert state.seq_lens.item() == position + 3
+            assert state.seq_lens.item() == position+3
             assert state.slot_mapping.item() == position
             assert state.query_start_loc.tolist() == [0, 3]
     finally:
@@ -69,17 +67,14 @@ def test_pair_publication_preserves_each_chip_cache_replica(tmp_path, levels):
     from python.test.flagmega.ir.ops.nn.test_update_paged_attention_kv_cache_pair import PairModule
 
     source = PairModule(PagedAttentionStateConfig(3, 7, 32, block_size=16, num_blocks=4), lanes=(2, 4),
-                        layout=('head', 'dim', 'seq'), placement=fm.Placement(
-                            (2, 2, 2), 'abc', levels), split_axis='head', block_cyclic=True).build()
+                        layout=('head', 'dim', 'seq'), placement=fm.Placement((2, 2, 2), 'abc', levels),
+                        split_axis='head', block_cyclic=True).build()
     module = Compiler().compile(source).module
-    artifact = write_artifact(module, tmp_path / 'pair', target='nvidia-sm90', emit_executable=True)
+    artifact = write_artifact(module, tmp_path/'pair', target='nvidia-sm90', emit_executable=True)
     env = dict(os.environ)
     env['PYTHONPATH'] = str(Path(__file__).parents[7]) + os.pathsep + env.get('PYTHONPATH', '')
-    result = subprocess.run([
-        sys.executable, '-m', 'torch.distributed.run', '--standalone', '--nproc_per_node=2',
-        str(Path(__file__).resolve()),
-        str(artifact)
-    ], env=env, capture_output=True, text=True, timeout=180, check=False)
+    result = subprocess.run([sys.executable, '-m', 'torch.distributed.run', '--standalone', '--nproc_per_node=2',
+                             str(Path(__file__).resolve()), str(artifact)], env=env, capture_output=True, text=True, timeout=180, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
 
 

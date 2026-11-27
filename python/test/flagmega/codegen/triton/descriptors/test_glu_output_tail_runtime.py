@@ -40,17 +40,15 @@ def test_glu_tail_roundtrip_exact_output_and_full_pipe_close(tmp_path, n, suffix
     weights["up"][:, 0] = (rows % 7 - 3) / 8
     weights["up"][:, 1] = 1 / 128
     weights["up"][:, -1] = 1 / 512
-    checkpoint = MemoryCheckpoint(
-        {}, {name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
-             for name, value in weights.items()}, weights)
+    checkpoint = MemoryCheckpoint({}, {name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
+                                       for name, value in weights.items()}, weights)
     value = torch.zeros((1, 2048), dtype=torch.bfloat16, device="cuda")
     value[:, [0, 1, 2047]] = 1
     projections = [(value.cpu().double() @ weights[name].double().T).to(device="cuda", dtype=torch.bfloat16)
                    for name in ("gate", "up")]
     expected = torch.nn.functional.silu(projections[0]) * projections[1]
-    runtime = load(
-        write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", checkpoint=checkpoint,
-                       emit_executable=True), device="cuda:0")
+    runtime = load(write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", checkpoint=checkpoint,
+                                  emit_executable=True), device="cuda:0")
     output = runtime.create_outputs()
     runtime.prepare(value, output=output)
     for _ in range(3):

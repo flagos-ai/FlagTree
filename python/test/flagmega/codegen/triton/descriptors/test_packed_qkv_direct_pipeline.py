@@ -31,13 +31,13 @@ def direct_module(kind, descriptor, input_extent):
     # K=128 exercises a partial final transfer for local K=192, and transfers
     # larger than the input capacity for ragged/empty K owners.
     weight_stage = original.shared_workspaces[0]
-    shape = ((1, ) if descriptor == "single" else ()) + (8, 8, 2, 64)
+    shape = ((1,) if descriptor == "single" else ()) + (8, 8, 2, 64)
     candidate = replace(original, parameters={**original.parameters, "block_k": 128},
-                        shared_workspaces=(replace(weight_stage, type=fm.tensor_type("bfloat16", (2, *shape))), ))
-    target.triton_implementation_model = replace(
-        model, implementations=tuple(candidate if value.id == identity else value for value in model.implementations))
+                        shared_workspaces=(replace(weight_stage, type=fm.tensor_type("bfloat16", (2, *shape))),))
+    target.triton_implementation_model = replace(model, implementations=tuple(
+        candidate if value.id == identity else value for value in model.implementations))
     return _packed_qkv_mma_pipeline_module(identity, target=target, input_extent=input_extent,
-                                           projection_widths=(2048, 384, 384), num_kv_heads=3)
+                                          projection_widths=(2048, 384, 384), num_kv_heads=3)
 
 
 def test_partial_axis_proof_is_independent_of_full_tile_proof():
@@ -47,7 +47,7 @@ def test_partial_axis_proof_is_independent_of_full_tile_proof():
     del contract["requires_uniform_full_input_reduction_tiles"]
     assert _applicable(context, contract)
     output = context.dispatch.outputs[0]
-    wrong = replace(context.function.parameter_map[output].type, partial=fm.SBP.partial((1, ), fm.ReduceOp.SUM))
+    wrong = replace(context.function.parameter_map[output].type, partial=fm.SBP.partial((1,), fm.ReduceOp.SUM))
     assert not _applicable(_context(module, parameter_types={output: wrong}), contract)
 
 
@@ -81,8 +81,8 @@ def test_direct_pipeline_exact_k_tiles_and_empty_owners(kind, descriptor, input_
     check_exact_coordinates_and_partials(module, direct_id(kind, descriptor), (2048, 384, 384), input_extent, tmp_path)
 
 
-@pytest.mark.parametrize(
-    "violation", ("rows", "reduction", "output_dtype", "partial_axes", "missing_partial", "weight_k", "weight_n"))
+@pytest.mark.parametrize("violation", ("rows", "reduction", "output_dtype", "partial_axes", "missing_partial",
+                                      "weight_k", "weight_n"))
 def test_direct_candidate_rejects_incompatible_physical_abi(violation):
     from .test_packed_qkv_mma_candidate import _candidate_ids
 
@@ -102,11 +102,9 @@ def test_direct_candidate_rejects_incompatible_physical_abi(violation):
         shape[1 if violation == "weight_k" else 2] += 1
         changed = replace(original, shape=tuple(shape))
     elif violation == "output_dtype":
-        changed = replace(original, tensor=replace(original.tensor, dtype=fm.VectorType(fm.DType.FLOAT32, (8, ))))
+        changed = replace(original, tensor=replace(original.tensor, dtype=fm.VectorType(fm.DType.FLOAT32, (8,))))
     else:
-        changed = replace(original, partial=None if violation == "missing_partial" else fm.SBP.partial(
-            (1, ), fm.ReduceOp.SUM))
+        changed = replace(original, partial=None if violation == "missing_partial" else fm.SBP.partial((1,), fm.ReduceOp.SUM))
     ids = _candidate_ids(_context(module, parameter_types={name: changed}))
-    assert not {direct_id(kind, descriptor)
-                for kind in ("gemv", "mma")
+    assert not {direct_id(kind, descriptor) for kind in ("gemv", "mma")
                 for descriptor in ("single", "table")}.intersection(ids)

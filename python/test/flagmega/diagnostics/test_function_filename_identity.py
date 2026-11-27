@@ -19,9 +19,9 @@ from triton.flagmega.diagnostics import DumpFlags, DumpManager
 def test_dump_filename_is_injective_and_directory_resume_preserves_symbols(tmp_path, names):
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
     for index, name in enumerate(names):
-        value = builder.var(f"arg_{index}", fm.tensor_type("float32", (8, )), id=f"arg_{index}")
-        result = builder.call("math.silu", (value, ), value.type, id=f"result_{index}")
-        builder.function(name, (value, ), (result, ))
+        value = builder.var(f"arg_{index}", fm.tensor_type("float32", (8,)), id=f"arg_{index}")
+        result = builder.call("math.silu", (value,), value.type, id=f"result_{index}")
+        builder.function(name, (value,), (result,))
     module = fm.verify_module(builder.build(entry=names[0]))
     manager = DumpManager(tmp_path, DumpFlags.PASS_IR)
     for boundary in ("Before", "After"):

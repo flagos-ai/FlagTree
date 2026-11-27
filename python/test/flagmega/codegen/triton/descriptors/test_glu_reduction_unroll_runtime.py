@@ -28,11 +28,11 @@ def test_glu_partial_unroll_matches_torch_after_resume(tmp_path, suffix, unroll)
         pytest.skip("SM90 CUDA is required")
     implementation_id = "tir.dense_matmul_glu." + suffix
     model = portable_triton_implementation_model()
-    model = replace(
-        model, implementations=tuple(
-            replace(implementation, parameters={**implementation.parameters, "reduction_unroll": unroll}
-                    ) if implementation.id == implementation_id else implementation
-            for implementation in model.implementations))
+    model = replace(model, implementations=tuple(
+        replace(implementation, parameters={**implementation.parameters, "reduction_unroll": unroll})
+        if implementation.id == implementation_id else implementation
+        for implementation in model.implementations
+    ))
     compiler = Compiler()
     compiler.target = NvidiaSm90Target(triton_implementation_model=model)
     module = _packed_glu_descriptor_pipeline_module(implementation_id, compiler=compiler)
@@ -43,15 +43,14 @@ def test_glu_partial_unroll_matches_torch_after_resume(tmp_path, suffix, unroll)
                 if value["family"] == "dense_matmul_glu")
     assert call["reduction_unroll"] == unroll
     generator = torch.Generator().manual_seed(292)
-    weights = {
-        name: torch.randn((2048, 2048), generator=generator, dtype=torch.bfloat16) / 32
-        for name in ("gate", "up")
-    }
-    checkpoint = MemoryCheckpoint(
-        {}, {name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
-             for name, value in weights.items()}, weights)
-    artifact = write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", checkpoint=checkpoint,
-                              emit_executable=True)
+    weights = {name: torch.randn((2048, 2048), generator=generator, dtype=torch.bfloat16) / 32
+               for name in ("gate", "up")}
+    checkpoint = MemoryCheckpoint({}, {
+        name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
+        for name, value in weights.items()
+    }, weights)
+    artifact = write_artifact(module, tmp_path / "artifact", target="nvidia-sm90",
+                              checkpoint=checkpoint, emit_executable=True)
     runtime = load(artifact, device="cuda:0")
     value = torch.randn((1, 2048), generator=generator, dtype=torch.bfloat16).cuda() / 8
     expected = torch.nn.functional.silu(value @ weights["gate"].cuda().T) * (value @ weights["up"].cuda().T)

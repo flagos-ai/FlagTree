@@ -24,30 +24,24 @@ def _barriers(body):
 def _pipelined_body():
     """A consumer body whose barriers straddle calls the producer never runs."""
     staged = fm.KernelInvoke(
-        "staged",
-        "matmul",
-        arguments=(fm.PrimCallBinding("weight", "weight"), ),
-        transfer_sources=("weight", ),
-        reads=("weight", ),
+        "staged", "matmul",
+        arguments=(fm.PrimCallBinding("weight", "weight"),),
+        transfer_sources=("weight",), reads=("weight",),
     )
     local = fm.KernelInvoke(
-        "local",
-        "elementwise",
-        results=(fm.PrimCallBinding("result", "scratch"), ),
-        writes=("scratch", ),
+        "local", "elementwise",
+        results=(fm.PrimCallBinding("result", "scratch"),), writes=("scratch",),
     )
     later = fm.KernelInvoke(
-        "later",
-        "norm",
-        arguments=(fm.PrimCallBinding("input", "scratch"), ),
-        reads=("scratch", ),
+        "later", "norm",
+        arguments=(fm.PrimCallBinding("input", "scratch"),), reads=("scratch",),
     )
     body = fm.Sequential((
-        fm.T.barrier(fm.T.BarrierScope.CHIP, ("entry", ), "staged"),
+        fm.T.barrier(fm.T.BarrierScope.CHIP, ("entry",), "staged"),
         staged,
-        fm.T.barrier(fm.T.BarrierScope.CHIP, ("staged", ), "local"),
+        fm.T.barrier(fm.T.BarrierScope.CHIP, ("staged",), "local"),
         local,
-        fm.T.barrier(fm.T.BarrierScope.BLOCK, ("local", ), "later"),
+        fm.T.barrier(fm.T.BarrierScope.BLOCK, ("local",), "later"),
         later,
     ))
     return body, {id(staged): fm.PipelineStage("stage_0", staged)}
@@ -60,10 +54,12 @@ def test_producer_partition_replays_every_consumer_barrier():
     producer_barriers = _barriers(producer)
     # One `bar.sync` per barrier is CTA-wide, so unequal counts make each
     # side's k-th arrival pair with a different synchronization point.
-    assert [value.scope for value in producer_barriers
-            ] == [value.scope for value in consumer_barriers
-                  ], ("the producer partition must arrive at the same barrier sequence as "
-                      f"the consumer; got {producer_barriers!r}")
+    assert [value.scope for value in producer_barriers] == [
+        value.scope for value in consumer_barriers
+    ], (
+        "the producer partition must arrive at the same barrier sequence as "
+        f"the consumer; got {producer_barriers!r}"
+    )
 
 
 def test_producer_keeps_barriers_between_calls_it_does_not_run():

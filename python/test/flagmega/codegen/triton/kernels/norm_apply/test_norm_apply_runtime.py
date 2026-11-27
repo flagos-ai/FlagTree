@@ -10,9 +10,7 @@ from triton.flagmega.runtime import load
 
 
 def _module(*, round_before_scale=False):
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
@@ -32,14 +30,16 @@ def _module(*, round_before_scale=False):
                 round_before_scale=round_before_scale,
                 name="output",
             )
-            self.function("main", (value, scale, bias), (output, ))
+            self.function("main", (value, scale, bias), (output,))
 
     return Graph().build()
 
 
 def test_generic_norm_apply_source_consumes_mean_bias_and_outer_rows(tmp_path):
     module = Compiler().compile(_module()).module
-    artifact = write_artifact(module, tmp_path / "generic-norm-apply", target="nvidia-sm90", emit_executable=True)
+    artifact = write_artifact(
+        module, tmp_path / "generic-norm-apply", target="nvidia-sm90", emit_executable=True
+    )
     source = (artifact / "generated_kernels.py").read_text("utf-8")
 
     assert "# flagmega-kernel: norm_apply/local platform=generic" in source
@@ -54,8 +54,9 @@ def test_generic_norm_apply_matches_torch_on_h800(tmp_path):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
     module = Compiler().compile(_module()).module
-    artifact = write_artifact(module, tmp_path / "generic-norm-apply-runtime", target="nvidia-sm90",
-                              emit_executable=True)
+    artifact = write_artifact(
+        module, tmp_path / "generic-norm-apply-runtime", target="nvidia-sm90", emit_executable=True
+    )
     runtime = load(artifact, device="cuda:0")
     value = torch.randn((2, 3, 5), dtype=torch.bfloat16, device="cuda:0")
     scale = torch.randn((3, 5), dtype=torch.bfloat16, device="cuda:0")
@@ -66,8 +67,9 @@ def test_generic_norm_apply_matches_torch_on_h800(tmp_path):
     runtime.run_into(output, value, scale, bias)
     torch.cuda.synchronize()
 
-    expected = torch.nn.functional.layer_norm(value.float(), (3, 5), scale.float(), bias.float(),
-                                              1e-5).to(torch.bfloat16)
+    expected = torch.nn.functional.layer_norm(
+        value.float(), (3, 5), scale.float(), bias.float(), 1e-5
+    ).to(torch.bfloat16)
     torch.testing.assert_close(output, expected, rtol=2e-2, atol=2e-2)
 
 
@@ -90,8 +92,7 @@ def test_norm_apply_rounding_policy_is_executed_exactly(tmp_path, round_before_s
     rounded = normalized.to(value.dtype).float()
     expected = ((rounded if round_before_scale else normalized) * scale.float()).to(value.dtype)
     # Ensure the test actually distinguishes the policies.
-    assert torch.count_nonzero((normalized * scale.float()).to(value.dtype) != (rounded *
-                                                                                scale.float()).to(value.dtype))
+    assert torch.count_nonzero((normalized * scale.float()).to(value.dtype) != (rounded * scale.float()).to(value.dtype))
     output = torch.empty_like(value)
     runtime.prepare(value, scale, bias, output=output)
     runtime.run_into(output, value, scale, bias)

@@ -39,13 +39,13 @@ def _runtime(monkeypatch, descriptor_spec):
         "arguments": ({
             "name": "source",
             "buffer": "source_buffer",
-        }, ),
+        },),
         "pools": (),
-        "signature": ("source", ),
+        "signature": ("source",),
     }
     codegen = {
         "runtime_binding": binding,
-        "host_tensor_descriptor_specs": (descriptor_spec, ),
+        "host_tensor_descriptor_specs": (descriptor_spec,),
         "signature_arguments": ("source", "weight_descriptor"),
         "dynamic_argument_indices": (0, 1),
         "symbol": "entry",

@@ -16,11 +16,7 @@ from triton.flagmega.ir.op_fusion import has_ops
 
 
 def thread_partial_norm_stats_across_function_boundaries(
-    module,
-    *,
-    function_name,
-    stats_parameter_index,
-    stats_output_index,
+    module, *, function_name, stats_parameter_index, stats_output_index,
 ):
     """Retype one closed internal statistics channel and fuse its consumers.
 
@@ -34,7 +30,8 @@ def thread_partial_norm_stats_across_function_boundaries(
     function = next((f for f in module.functions if f.name == function_name), None)
     if function is None or function.name == module.entry:
         raise IRSchemaError("Partial statistics requires an existing internal function.")
-    if not (0 <= stats_parameter_index < len(function.parameters) and 0 <= stats_output_index < len(function.outputs)):
+    if not (0 <= stats_parameter_index < len(function.parameters)
+            and 0 <= stats_output_index < len(function.outputs)):
         raise IRSchemaError("Partial statistics function channel index is out of range.")
     parameter_id = function.parameters[stats_parameter_index]
     output_id = function.outputs[stats_output_index]
@@ -51,7 +48,8 @@ def thread_partial_norm_stats_across_function_boundaries(
         raise IRSchemaError("Original statistics channel must be broadcast.")
     if node_map[output_id].type != old_type:
         raise IRSchemaError("Statistics formal and result must have identical types.")
-    calls = tuple(n for n in module.nodes if n.op == "builtin.call" and n.attrs.get("callee") == function_name)
+    calls = tuple(n for n in module.nodes if n.op == "builtin.call"
+                  and n.attrs.get("callee") == function_name)
     if not calls or any(not isinstance(n.type, TupleType) for n in calls):
         raise IRSchemaError("Partial statistics requires explicit tuple-returning calls.")
     call_ids = {n.id for n in calls}
@@ -78,17 +76,19 @@ def thread_partial_norm_stats_across_function_boundaries(
         source = node_map[node.inputs[0]]
         seen = set()
         while isinstance(source.type, DistributedType):
-            inferred = NormStats.infer_type((source, ), attrs)
+            inferred = NormStats.infer_type((source,), attrs)
             if inferred.partial is not None:
                 if replace(inferred, partial=None) != old_type:
                     raise IRSchemaError("Local statistics has incompatible tensor or mesh.")
                 return source, inferred, attrs
             if (source.id in seen or source.op not in {"distributed.sharded_view", "tensors.reshape"}
-                    or len(source.inputs) != 1 or not source.effect.is_pure or has_ops(source.attrs)):
+                    or len(source.inputs) != 1 or not source.effect.is_pure
+                    or has_ops(source.attrs)):
                 break
             seen.add(source.id)
             previous = node_map[source.inputs[0]]
-            if (not isinstance(previous.type, DistributedType) or previous.type.tensor != source.type.tensor
+            if (not isinstance(previous.type, DistributedType)
+                    or previous.type.tensor != source.type.tensor
                     or previous.type.placement != source.type.placement):
                 break
             source = previous
@@ -111,11 +111,13 @@ def thread_partial_norm_stats_across_function_boundaries(
             source, ty, attrs = local_stats(node)
             if ty != partial_type:
                 raise IRSchemaError("All call statistics require the same owner layout.")
-            prepared = NormStats.prepare((source, ), attrs)
-            changed[value] = replace(node, inputs=(source.id, ), type=ty, attrs=prepared.attrs, effect=prepared.effect)
+            prepared = NormStats.prepare((source,), attrs)
+            changed[value] = replace(node, inputs=(source.id,), type=ty,
+                                     attrs=prepared.attrs, effect=prepared.effect)
         elif node.op == "builtin.get_item" and node.inputs[0] in call_ids and node.attrs["index"] == stats_output_index:
             changed[value] = replace(node, type=partial_type)
-        elif (node.op == "tensors.reshape" and node.type == old_type and node_map[node.inputs[0]].type == old_type):
+        elif (node.op == "tensors.reshape"
+              and node.type == old_type and node_map[node.inputs[0]].type == old_type):
             trace(node.inputs[0])
             changed[value] = replace(node, type=partial_type)
         else:
@@ -135,11 +137,8 @@ def thread_partial_norm_stats_across_function_boundaries(
                 trace(user.id)
     # Identity aliases are part of the same logical channel, not new owners.
     while True:
-        extra = [
-            n.id
-            for n in module.nodes
-            if n.op == "tensors.reshape" and n.inputs[0] in changed and n.type == old_type and n.id not in changed
-        ]
+        extra = [n.id for n in module.nodes if n.op == "tensors.reshape"
+                 and n.inputs[0] in changed and n.type == old_type and n.id not in changed]
         if not extra:
             break
         for value in extra:
@@ -161,8 +160,7 @@ def thread_partial_norm_stats_across_function_boundaries(
                 if prepared.result_type != user.type:
                     raise IRSchemaError("Partial-statistics apply changed the normalization result type.")
                 changed[user.id] = replace(user, op="ntt.gather_reduce_norm_apply",
-                                           inputs=tuple(n.id for n in arguments), attrs=prepared.attrs,
-                                           effect=prepared.effect)
+                    inputs=tuple(n.id for n in arguments), attrs=prepared.attrs, effect=prepared.effect)
             elif user.id in call_ids and index == stats_parameter_index:
                 pass
             elif user.op == "tensors.reshape" and user.id in channel_ids:
@@ -172,8 +170,10 @@ def thread_partial_norm_stats_across_function_boundaries(
 
     points = tuple(p for p in module.selection_points if p.owner not in changed)
     point_ids = {p.id for p in points}
-    result = replace(module, nodes=tuple(changed.get(n.id, n) for n in module.nodes), selection_points=points,
-                     selections=tuple(s for s in module.selections if s.point_id in point_ids))
+    result = replace(module,
+        nodes=tuple(changed.get(n.id, n) for n in module.nodes),
+        selection_points=points,
+        selections=tuple(s for s in module.selections if s.point_id in point_ids))
     return verify_module(result)
 
 

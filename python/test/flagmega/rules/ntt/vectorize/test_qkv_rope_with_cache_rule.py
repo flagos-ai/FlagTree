@@ -13,28 +13,38 @@ from triton.flagmega.evaluator import (
     create_paged_attention_state,
 )
 from triton.flagmega.ir.ops.nn._paged_attention_state import (
-    PagedAttentionStateConfig, )
+    PagedAttentionStateConfig,
+)
 from triton.flagmega.rules import DataflowRewriter, RewriteRule
 from triton.flagmega.rules.ntt.vectorize import VectorizeQKVRoPEWithCache
 
 
 class _FusedModule(fm.Module):
-
     def __init__(self, *, head_dim: int = 16, trig_dtype: str = "float32", round_qk: bool = True):
         super().__init__(dialect="nn", stage="decomposed", entry="main")
         self.head_dim = head_dim
         self.trig_dtype = trig_dtype
         self.round_qk = round_qk
-        self.config = PagedAttentionStateConfig(1, 1, 16, block_size=4, num_blocks=2, lanes=8)
+        self.config = PagedAttentionStateConfig(
+            1, 1, 16, block_size=4, num_blocks=2, lanes=8
+        )
 
     def forward(self):
         q = self.input("q", fm.tensor_type("bfloat16", (1, 2, self.head_dim)))
         k = self.input("k", fm.tensor_type("bfloat16", (1, 1, self.head_dim)))
         v = self.input("v", fm.tensor_type("bfloat16", (1, 1, self.head_dim)))
-        q_scale = self.input("q_scale", fm.tensor_type("bfloat16", (self.head_dim, )))
-        k_scale = self.input("k_scale", fm.tensor_type("bfloat16", (self.head_dim, )))
-        q_bias = self.input("q_bias", fm.tensor_type("bfloat16", (self.head_dim, )))
-        k_bias = self.input("k_bias", fm.tensor_type("bfloat16", (self.head_dim, )))
+        q_scale = self.input(
+            "q_scale", fm.tensor_type("bfloat16", (self.head_dim,))
+        )
+        k_scale = self.input(
+            "k_scale", fm.tensor_type("bfloat16", (self.head_dim,))
+        )
+        q_bias = self.input(
+            "q_bias", fm.tensor_type("bfloat16", (self.head_dim,))
+        )
+        k_bias = self.input(
+            "k_bias", fm.tensor_type("bfloat16", (self.head_dim,))
+        )
         cos = self.input("cos", fm.tensor_type(self.trig_dtype, (1, 1, self.head_dim)))
         sin = self.input("sin", fm.tensor_type(self.trig_dtype, (1, 1, self.head_dim)))
         state = self.input("state", self.config.ref_type)
@@ -98,10 +108,12 @@ def test_rule_packs_qkv_norm_parameters_and_double_lane_rope_tables(trig_dtype):
     replacement = result.replacement
     qkv = next(node for node in result.prefix_nodes if node.id == replacement.inputs[0])
     packed_q = next(node for node in result.prefix_nodes if node.id == qkv.inputs[0])
-    packed_cos = next(node for node in result.prefix_nodes if node.id == replacement.inputs[5])
-    assert packed_q.attrs == {"lanes": (8, ), "axes": (2, )}
+    packed_cos = next(
+        node for node in result.prefix_nodes if node.id == replacement.inputs[5]
+    )
+    assert packed_q.attrs == {"lanes": (8,), "axes": (2,)}
     assert packed_cos.attrs == {"lanes": (2, 8), "axes": (2, 2)}
-    assert packed_cos.inputs == (module.node_map["fused"].inputs[5], )
+    assert packed_cos.inputs == (module.node_map["fused"].inputs[5],)
     assert packed_cos.type.dtype.elem_type == fm.DType(trig_dtype)
     assert not any(value.op == "tensors.cast" for value in result.prefix_nodes)
     assert replacement.type == module.node_map["fused"].type
@@ -115,11 +127,14 @@ def test_rule_rewrite_is_evaluator_equivalent_for_query_and_cache_updates(trig_d
     rule = VectorizeQKVRoPEWithCache()
     candidate = rule.candidates(module.node_map["fused"], module)[0]
     rewritten = DataflowRewriter(
-        (RewriteRule(
-            "VectorizeQKVRoPEWithCache:fused",
-            lambda node, _: node.id == "fused" and "vectorized_from" not in node.metadata,
-            lambda node, current: rule.rewrite(node, current, candidate),
-        ), ),
+        (
+            RewriteRule(
+                "VectorizeQKVRoPEWithCache:fused",
+                lambda node, _: node.id == "fused"
+                and "vectorized_from" not in node.metadata,
+                lambda node, current: rule.rewrite(node, current, candidate),
+            ),
+        ),
         remove_unused=False,
     ).rewrite(module)
     torch.manual_seed(9)
@@ -127,10 +142,10 @@ def test_rule_rewrite_is_evaluator_equivalent_for_query_and_cache_updates(trig_d
         "q": torch.randn((1, 2, 16), dtype=torch.bfloat16),
         "k": torch.randn((1, 1, 16), dtype=torch.bfloat16),
         "v": torch.randn((1, 1, 16), dtype=torch.bfloat16),
-        "q_scale": torch.randn((16, ), dtype=torch.bfloat16),
-        "k_scale": torch.randn((16, ), dtype=torch.bfloat16),
-        "q_bias": torch.randn((16, ), dtype=torch.bfloat16),
-        "k_bias": torch.randn((16, ), dtype=torch.bfloat16),
+        "q_scale": torch.randn((16,), dtype=torch.bfloat16),
+        "k_scale": torch.randn((16,), dtype=torch.bfloat16),
+        "q_bias": torch.randn((16,), dtype=torch.bfloat16),
+        "k_bias": torch.randn((16,), dtype=torch.bfloat16),
         "cos": torch.randn((1, 1, 8), dtype=getattr(torch, trig_dtype)).repeat(1, 1, 2),
         "sin": torch.randn((1, 1, 8), dtype=getattr(torch, trig_dtype)).repeat(1, 1, 2),
         "layer": torch.tensor(0, dtype=torch.int32),
@@ -140,11 +155,17 @@ def test_rule_rewrite_is_evaluator_equivalent_for_query_and_cache_updates(trig_d
     original_state = create_paged_attention_state(_FusedModule().config)
     rewritten_state = original_state.clone()
 
-    original_query, original_result_state = evaluator.run(module, {**values, "state": original_state})
-    rewritten_query, rewritten_result_state = evaluator.run(rewritten, {**values, "state": rewritten_state})
+    original_query, original_result_state = evaluator.run(
+        module, {**values, "state": original_state}
+    )
+    rewritten_query, rewritten_result_state = evaluator.run(
+        rewritten, {**values, "state": rewritten_state}
+    )
 
     torch.testing.assert_close(rewritten_query, original_query, rtol=0, atol=0)
-    torch.testing.assert_close(rewritten_result_state.kv_caches, original_result_state.kv_caches, rtol=0, atol=0)
+    torch.testing.assert_close(
+        rewritten_result_state.kv_caches, original_result_state.kv_caches, rtol=0, atol=0
+    )
     assert rewritten_result_state.sequence_length == original_result_state.sequence_length
 
 
@@ -153,14 +174,16 @@ def test_rule_does_not_revectorize_its_cache_native_qkv_inputs():
     rule = VectorizeQKVRoPEWithCache()
     candidate = rule.candidates(module.node_map["fused"], module)[0]
     result = rule.rewrite(module.node_map["fused"], module, candidate)
-    root_index = next(index for index, node in enumerate(module.nodes) if node.id == "fused")
+    root_index = next(
+        index for index, node in enumerate(module.nodes) if node.id == "fused"
+    )
     rewritten = replace(
         module,
         nodes=(
             *module.nodes[:root_index],
             *result.prefix_nodes,
             result.replacement,
-            *module.nodes[root_index + 1:],
+            *module.nodes[root_index + 1 :],
         ),
     )
 

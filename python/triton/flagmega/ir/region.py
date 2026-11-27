@@ -69,8 +69,8 @@ def verify_regions(module):
         parameters = set(region.parameters)
         for node in function_nodes(module, region):
             if node.op == "builtin.var" and node.id not in parameters:
-                raise IRVerificationError(f"Region @{region.name} is not closed: implicit capture {node.id!r}.",
-                                          node_id=node.id)
+                raise IRVerificationError(
+                    f"Region @{region.name} is not closed: implicit capture {node.id!r}.", node_id=node.id)
         expected = tuple(module.node_map[value].type for value in region.parameters[1:1 + count])
         yielded = tuple(module.node_map[value].type for value in region.outputs)
         if expected != yielded:
@@ -97,8 +97,8 @@ def region_fingerprint(module, region):
         attrs = dict(node.to_data()["attrs"])
         attrs.pop("name", None)
         positions[node.id] = len(positions)
-        rows.append((node.op, tuple(positions[value]
-                                    for value in node.inputs), node.type.to_data(), node.effect.to_data(), attrs))
+        rows.append((node.op, tuple(positions[value] for value in node.inputs), node.type.to_data(),
+                     node.effect.to_data(), attrs))
     data = (tuple(module.node_map[value].type.to_data() for value in region.parameters), rows,
             tuple(positions[value] for value in region.outputs), int(region.attrs["iter_count"]))
     return hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

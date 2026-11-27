@@ -29,8 +29,8 @@ def tiled_squares(value, *, axis, group, block, torch, traversal="forward"):
         blocks = reversed(blocks)
     for index in blocks:
         tile = source[..., index, :, :]
-        squares = (_cuda_square_fma()(tile, squares) if value.is_cuda else
-                   (tile.double().square() + squares.double()).float())
+        squares = (_cuda_square_fma()(tile, squares) if value.is_cuda
+                   else (tile.double().square() + squares.double()).float())
         totals = totals + tile
     square = torch.zeros_like(squares[..., 0])
     total = torch.zeros_like(square)
@@ -47,7 +47,7 @@ def grouped_squares(value, *, axis, group, seed, torch):
     total = torch.zeros_like(square)
     for column in (seed, *(i for i in range(group) if i != seed)):
         element = source[..., column]
-        square = (_cuda_square_fma()(element, square) if value.is_cuda else
-                  (element.double().square() + square.double()).float())
+        square = (_cuda_square_fma()(element, square) if value.is_cuda
+                  else (element.double().square() + square.double()).float())
         total = total + element
     return square, total

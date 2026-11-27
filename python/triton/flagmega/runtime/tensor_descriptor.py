@@ -22,33 +22,15 @@ class TensorDescriptorCache:
     tensor_map_alignment_bytes = 128
     maximum_block_elements = 1_048_576
     _single_fields = frozenset({
-        "kind",
-        "name",
-        "source",
-        "offset_bytes",
-        "dtype",
-        "shape",
-        "strides",
-        "block_shape",
-        "source_shape_axes",
-        "padding",
+        "kind", "name", "source", "offset_bytes", "dtype", "shape",
+        "strides", "block_shape", "source_shape_axes", "padding",
     })
     _table_fields = frozenset({
-        "kind",
-        "name",
-        "source",
-        "dtype",
-        "block_shape",
-        "padding",
-        "swizzle_mode",
-        "entry_size_bytes",
-        "entries",
+        "kind", "name", "source", "dtype", "block_shape", "padding",
+        "swizzle_mode", "entry_size_bytes", "entries",
     })
     _table_entry_fields = frozenset({
-        "offset_bytes",
-        "shape",
-        "strides",
-        "source_shape_axes",
+        "offset_bytes", "shape", "strides", "source_shape_axes",
     })
     _host_dtype = {
         "uint8": 0,
@@ -86,12 +68,20 @@ class TensorDescriptorCache:
         names: list[str] = []
         for index, spec in enumerate(specs):
             if not isinstance(spec, Mapping):
-                raise RuntimeContractError(f"Host tensor descriptor spec {index} must be a mapping.")
+                raise RuntimeContractError(
+                    f"Host tensor descriptor spec {index} must be a mapping."
+                )
             kind = str(spec.get("kind", ""))
-            expected = (cls._single_fields if kind == "single" else cls._table_fields if kind == "table" else None)
+            expected = (
+                cls._single_fields if kind == "single"
+                else cls._table_fields if kind == "table"
+                else None
+            )
             if expected is None:
-                raise RuntimeContractError("Host tensor descriptor kind must be 'single' or 'table', "
-                                           f"got {kind!r}.")
+                raise RuntimeContractError(
+                    "Host tensor descriptor kind must be 'single' or 'table', "
+                    f"got {kind!r}."
+                )
             if kind == "single" and spec.get("storage") == "device":
                 expected = expected | {"storage", "box_shape", "swizzle_mode"}
             _require_exact_fields(spec, expected, "host tensor descriptor")
@@ -100,20 +90,30 @@ class TensorDescriptorCache:
             name = str(spec["name"])
             source = str(spec["source"])
             if not name or not source:
-                raise RuntimeContractError("Host tensor descriptor name/source must be non-empty.")
+                raise RuntimeContractError(
+                    "Host tensor descriptor name/source must be non-empty."
+                )
             if name in names:
-                raise RuntimeContractError(f"Duplicate host tensor descriptor name {name!r}.")
+                raise RuntimeContractError(
+                    f"Duplicate host tensor descriptor name {name!r}."
+                )
             if available is not None and source not in available:
-                raise RuntimeContractError(f"Host tensor descriptor {name!r} references unbound "
-                                           f"source {source!r}.")
+                raise RuntimeContractError(
+                    f"Host tensor descriptor {name!r} references unbound "
+                    f"source {source!r}."
+                )
             if kind == "table":
                 entries = spec["entries"]
                 if not isinstance(entries, (tuple, list)) or not entries:
-                    raise RuntimeContractError(f"Tensor-map table {name!r} requires at least one entry.")
+                    raise RuntimeContractError(
+                        f"Tensor-map table {name!r} requires at least one entry."
+                    )
                 for entry_index, entry in enumerate(entries):
                     if not isinstance(entry, Mapping):
-                        raise RuntimeContractError(f"Tensor-map table {name!r} entry {entry_index} "
-                                                   "must be a mapping.")
+                        raise RuntimeContractError(
+                            f"Tensor-map table {name!r} entry {entry_index} "
+                            "must be a mapping."
+                        )
                     _require_exact_fields(
                         entry,
                         cls._table_entry_fields,
@@ -135,12 +135,16 @@ class TensorDescriptorCache:
             name = str(spec["name"])
             source_name = str(spec["source"])
             if not name or not source_name:
-                raise RuntimeContractError("Host tensor descriptor name/source must be non-empty.")
+                raise RuntimeContractError(
+                    "Host tensor descriptor name/source must be non-empty."
+                )
             try:
                 storage = sources[source_name]
             except KeyError as error:
-                raise RuntimeContractError(f"Host tensor descriptor {name!r} references unbound "
-                                           f"source {source_name!r}.") from error
+                raise RuntimeContractError(
+                    f"Host tensor descriptor {name!r} references unbound "
+                    f"source {source_name!r}."
+                ) from error
             slot = f"{kernel_name}:{name}"
             if kind == "single" and spec.get("storage") == "device":
                 result.append(self._materialize_device(slot, storage, spec))
@@ -155,16 +159,11 @@ class TensorDescriptorCache:
         # The table encoder is reused as storage machinery, not as an owner
         # coordinate transformation. The launch owns its cached CUDA tensor.
         table = {
-            "kind": "table",
-            "name": spec["name"],
-            "source": spec["source"],
-            "dtype": spec["dtype"],
-            "padding": spec["padding"],
-            "block_shape": spec["box_shape"],
-            "swizzle_mode": spec["swizzle_mode"],
+            "kind": "table", "name": spec["name"], "source": spec["source"],
+            "dtype": spec["dtype"], "padding": spec["padding"],
+            "block_shape": spec["box_shape"], "swizzle_mode": spec["swizzle_mode"],
             "entry_size_bytes": self.tensor_map_alignment_bytes,
-            "entries": ({key: spec[key]
-                         for key in self._table_entry_fields}, ),
+            "entries": ({key: spec[key] for key in self._table_entry_fields},),
         }
         return self._materialize_table(slot, storage, table)
 
@@ -213,19 +212,27 @@ class TensorDescriptorCache:
         entry_size = int(spec["entry_size_bytes"])
         entries = tuple(spec["entries"])
         if entry_size != self.tensor_map_alignment_bytes:
-            raise RuntimeContractError(f"Tensor-map table {slot} entry size must be "
-                                       f"{self.tensor_map_alignment_bytes} bytes.")
+            raise RuntimeContractError(
+                f"Tensor-map table {slot} entry size must be "
+                f"{self.tensor_map_alignment_bytes} bytes."
+            )
         if not 0 <= swizzle <= 3 or not entries:
-            raise RuntimeContractError(f"Tensor-map table {slot} requires entries and swizzle in [0, 3].")
+            raise RuntimeContractError(
+                f"Tensor-map table {slot} requires entries and swizzle in [0, 3]."
+            )
         try:
             host_dtype = self._host_dtype[dtype]
         except KeyError as error:
-            raise RuntimeContractError(f"Tensor-map table {slot} does not support dtype {dtype!r}.") from error
+            raise RuntimeContractError(
+                f"Tensor-map table {slot} does not support dtype {dtype!r}."
+            ) from error
 
         prepared = []
         signatures = []
         for index, entry in enumerate(entries):
-            _require_exact_fields(entry, self._table_entry_fields, f"tensor-map table {slot} entry {index}")
+            _require_exact_fields(
+                entry, self._table_entry_fields, f"tensor-map table {slot} entry {index}"
+            )
             entry_slot = f"{slot}[{index}]"
             shape = self._resolve_shape(
                 entry_slot,
@@ -248,12 +255,7 @@ class TensorDescriptorCache:
             signatures.append(signature)
 
         signature = (
-            "table",
-            dtype,
-            block_shape,
-            padding,
-            swizzle,
-            entry_size,
+            "table", dtype, block_shape, padding, swizzle, entry_size,
             tuple(signatures),
         )
         cached = self._entries.get(slot)
@@ -261,12 +263,15 @@ class TensorDescriptorCache:
             return cached[1]
         device = getattr(storage, "device", None)
         if getattr(device, "type", None) != "cuda":
-            raise RuntimeContractError(f"Tensor-map table {slot} requires CUDA storage, got {device}.")
+            raise RuntimeContractError(
+                f"Tensor-map table {slot} requires CUDA storage, got {device}."
+            )
         import torch
         import triton
 
         from triton.flagmega.runtime.nvidia_tensor_map import (
-            encode_tma_descriptor_for_driver, )
+            encode_tma_descriptor_for_driver,
+        )
 
         driver_utils = triton.runtime.driver.active.utils
         payload = bytearray()
@@ -284,13 +289,19 @@ class TensorDescriptorCache:
                 1 if padding == "nan" else 0,
             )
             if len(encoded) != entry_size:
-                raise RuntimeContractError(f"Tensor-map table {slot} entry {index} encoded to an "
-                                           f"invalid {len(encoded)}-byte payload.")
+                raise RuntimeContractError(
+                    f"Tensor-map table {slot} entry {index} encoded to an "
+                    f"invalid {len(encoded)}-byte payload."
+                )
             payload.extend(encoded)
-        table = torch.frombuffer(payload, dtype=torch.uint8).to(device=device, non_blocking=False)
+        table = torch.frombuffer(payload, dtype=torch.uint8).to(
+            device=device, non_blocking=False
+        )
         if int(table.data_ptr()) % self.tensor_map_alignment_bytes:
-            raise RuntimeContractError(f"Tensor-map table {slot} device address is not "
-                                       f"{self.tensor_map_alignment_bytes}-byte aligned.")
+            raise RuntimeContractError(
+                f"Tensor-map table {slot} device address is not "
+                f"{self.tensor_map_alignment_bytes}-byte aligned."
+            )
         self._entries[slot] = (signature, table)
         return table
 
@@ -307,66 +318,95 @@ class TensorDescriptorCache:
         padding,
     ):
         if not 1 <= len(shape) <= 5:
-            raise RuntimeContractError(f"Host tensor descriptor {slot} rank must be in [1, 5].")
+            raise RuntimeContractError(
+                f"Host tensor descriptor {slot} rank must be in [1, 5]."
+            )
         if len(strides) != len(shape) or len(block_shape) != len(shape):
-            raise RuntimeContractError(f"Host tensor descriptor {slot} shape/stride/block ranks differ.")
+            raise RuntimeContractError(
+                f"Host tensor descriptor {slot} shape/stride/block ranks differ."
+            )
         if any(value <= 0 for value in (*shape, *strides, *block_shape)):
-            raise RuntimeContractError(f"Host tensor descriptor {slot} extents and strides must be positive.")
+            raise RuntimeContractError(
+                f"Host tensor descriptor {slot} extents and strides must be positive."
+            )
         if strides[-1] != 1:
-            raise RuntimeContractError(f"Host tensor descriptor {slot} last dimension is not contiguous.")
+            raise RuntimeContractError(
+                f"Host tensor descriptor {slot} last dimension is not contiguous."
+            )
         item_size = _dtype_item_size(dtype)
-        if any((stride * item_size) % self.descriptor_alignment_bytes for stride in strides[:-1]):
-            raise RuntimeContractError(f"Host tensor descriptor {slot} outer stride is not "
-                                       f"{self.descriptor_alignment_bytes}-byte aligned.")
+        if any(
+            (stride * item_size) % self.descriptor_alignment_bytes
+            for stride in strides[:-1]
+        ):
+            raise RuntimeContractError(
+                f"Host tensor descriptor {slot} outer stride is not "
+                f"{self.descriptor_alignment_bytes}-byte aligned."
+            )
         block_elements = 1
         for extent in block_shape:
             if extent & (extent - 1):
-                raise RuntimeContractError(f"Host tensor descriptor {slot} block extents must be powers of two.")
+                raise RuntimeContractError(
+                    f"Host tensor descriptor {slot} block extents must be powers of two."
+                )
             block_elements *= extent
         if block_elements > self.maximum_block_elements:
-            raise RuntimeContractError(f"Host tensor descriptor {slot} block exceeds the Triton limit.")
+            raise RuntimeContractError(
+                f"Host tensor descriptor {slot} block exceeds the Triton limit."
+            )
         if offset_bytes < 0 or padding not in {"zero", "nan"}:
-            raise RuntimeContractError(f"Host tensor descriptor {slot} has invalid offset/padding.")
+            raise RuntimeContractError(
+                f"Host tensor descriptor {slot} has invalid offset/padding."
+            )
         if not hasattr(storage, "data_ptr") or not hasattr(storage, "device"):
-            raise RuntimeContractError(f"Host tensor descriptor {slot} expects tensor storage.")
-        span = 1 + sum((extent - 1) * stride for extent, stride in zip(shape, strides))
+            raise RuntimeContractError(
+                f"Host tensor descriptor {slot} expects tensor storage."
+            )
+        span = 1 + sum(
+            (extent - 1) * stride for extent, stride in zip(shape, strides)
+        )
         base = _view_typed_buffer(storage, offset_bytes, span * item_size, dtype)
         if int(base.data_ptr()) % self.descriptor_alignment_bytes:
-            raise RuntimeContractError(f"Host tensor descriptor {slot} base is not "
-                                       f"{self.descriptor_alignment_bytes}-byte aligned.")
+            raise RuntimeContractError(
+                f"Host tensor descriptor {slot} base is not "
+                f"{self.descriptor_alignment_bytes}-byte aligned."
+            )
         if padding == "nan" and not base.dtype.is_floating_point:
-            raise RuntimeContractError(f"Host tensor descriptor {slot} cannot NaN-pad non-floating data.")
+            raise RuntimeContractError(
+                f"Host tensor descriptor {slot} cannot NaN-pad non-floating data."
+            )
         return base, (
-            int(storage.data_ptr()),
-            str(storage.device),
-            str(getattr(storage, "dtype", "")),
-            int(offset_bytes),
-            dtype,
-            shape,
-            strides,
-            block_shape,
-            padding,
+            int(storage.data_ptr()), str(storage.device),
+            str(getattr(storage, "dtype", "")), int(offset_bytes), dtype,
+            shape, strides, block_shape, padding,
         )
 
     @staticmethod
     def _resolve_shape(slot, storage, static_shape, source_shape_axes):
         if len(static_shape) != len(source_shape_axes):
-            raise RuntimeContractError(f"Host tensor descriptor {slot} static/source ranks differ.")
+            raise RuntimeContractError(
+                f"Host tensor descriptor {slot} static/source ranks differ."
+            )
         storage_shape = tuple(int(value) for value in getattr(storage, "shape", ()))
         used = set()
         result = []
-        for descriptor_axis, (static_extent, source_axes) in enumerate(zip(static_shape, source_shape_axes)):
+        for descriptor_axis, (static_extent, source_axes) in enumerate(
+            zip(static_shape, source_shape_axes)
+        ):
             extent = static_extent
             if source_axes:
                 extent = 1
                 for source_axis in source_axes:
                     if not 0 <= source_axis < len(storage_shape) or source_axis in used:
-                        raise RuntimeContractError(f"Host tensor descriptor {slot} has invalid/reused "
-                                                   f"source axis {source_axis} at axis {descriptor_axis}.")
+                        raise RuntimeContractError(
+                            f"Host tensor descriptor {slot} has invalid/reused "
+                            f"source axis {source_axis} at axis {descriptor_axis}."
+                        )
                     used.add(source_axis)
                     extent *= storage_shape[source_axis]
             if extent <= 0:
-                raise RuntimeContractError(f"Host tensor descriptor {slot} resolved non-positive shape.")
+                raise RuntimeContractError(
+                    f"Host tensor descriptor {slot} resolved non-positive shape."
+                )
             result.append(extent)
         return tuple(result)
 
@@ -374,19 +414,22 @@ class TensorDescriptorCache:
 def _require_exact_fields(value, expected, owner):
     fields = frozenset(value)
     if fields != expected:
-        raise RuntimeContractError(f"{owner} fields differ: missing={sorted(expected - fields)}, "
-                                   f"unexpected={sorted(fields - expected)}.")
+        raise RuntimeContractError(
+            f"{owner} fields differ: missing={sorted(expected - fields)}, "
+            f"unexpected={sorted(fields - expected)}."
+        )
 
 
 def _validate_device_encoding(spec):
     block = spec.get("block_shape", ())
     box = spec.get("box_shape", ())
     swizzle = spec.get("swizzle_mode")
-    if (not isinstance(block, (tuple, list)) or not block or not isinstance(box,
-                                                                            (tuple, list)) or len(box) != len(block)
-            or isinstance(swizzle, bool) or not isinstance(swizzle, int) or swizzle not in range(4) or any(
-                isinstance(value, bool) or not isinstance(value, int) or value <= 0 or value & (value - 1)
-                for value in (*block, *box))):
+    if (not isinstance(block, (tuple, list)) or not block
+            or not isinstance(box, (tuple, list)) or len(box) != len(block)
+            or isinstance(swizzle, bool) or not isinstance(swizzle, int)
+            or swizzle not in range(4)
+            or any(isinstance(value, bool) or not isinstance(value, int)
+                   or value <= 0 or value & (value - 1) for value in (*block, *box))):
         raise RuntimeContractError("Device tensor-map block/box/swizzle is invalid.")
     expected = tuple(min(value, 256) for value in block)
     if swizzle:
@@ -396,7 +439,9 @@ def _validate_device_encoding(spec):
             raise RuntimeContractError("Device tensor-map swizzle exceeds its tile.")
         expected = (*expected[:-1], width)
     if tuple(box) != expected:
-        raise RuntimeContractError(f"Device tensor-map box {tuple(box)} does not match its tile: {expected}.")
+        raise RuntimeContractError(
+            f"Device tensor-map box {tuple(box)} does not match its tile: {expected}."
+        )
 
 
 def _torch_dtype(dtype: str):
@@ -421,9 +466,13 @@ def _torch_dtype(dtype: str):
     try:
         result = values[dtype]
     except KeyError as error:
-        raise RuntimeContractError(f"Unsupported tensor descriptor dtype {dtype!r}.") from error
+        raise RuntimeContractError(
+            f"Unsupported tensor descriptor dtype {dtype!r}."
+        ) from error
     if result is None:
-        raise RuntimeContractError(f"Installed torch does not support tensor descriptor dtype {dtype!r}.")
+        raise RuntimeContractError(
+            f"Installed torch does not support tensor descriptor dtype {dtype!r}."
+        )
     return result
 
 
@@ -437,16 +486,22 @@ def _view_typed_buffer(storage, offset_bytes: int, size_bytes: int, dtype: str):
     import torch
 
     if not isinstance(storage, torch.Tensor) or not storage.is_contiguous():
-        raise RuntimeContractError("Tensor descriptor storage must be a contiguous torch.Tensor.")
+        raise RuntimeContractError(
+            "Tensor descriptor storage must be a contiguous torch.Tensor."
+        )
     torch_dtype = _torch_dtype(dtype)
     item_size = torch.empty((), dtype=torch_dtype).element_size()
     if offset_bytes % item_size or size_bytes % item_size:
-        raise RuntimeContractError("Tensor descriptor byte view is not aligned to its element type.")
+        raise RuntimeContractError(
+            "Tensor descriptor byte view is not aligned to its element type."
+        )
     byte_storage = storage.reshape(-1).view(torch.uint8).reshape(-1)
     end = offset_bytes + size_bytes
     if end > byte_storage.numel():
-        raise RuntimeContractError(f"Tensor descriptor byte view [{offset_bytes}, {end}) exceeds "
-                                   f"storage size {byte_storage.numel()}.")
+        raise RuntimeContractError(
+            f"Tensor descriptor byte view [{offset_bytes}, {end}) exceeds "
+            f"storage size {byte_storage.numel()}."
+        )
     return byte_storage.narrow(0, offset_bytes, size_bytes).view(torch_dtype)
 
 

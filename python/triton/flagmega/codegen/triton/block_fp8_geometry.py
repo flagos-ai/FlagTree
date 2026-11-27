@@ -43,7 +43,7 @@ class CooperativeBlockGeometry:
 
     @property
     def scale_shape(self):
-        return (self.k_blocks, )
+        return (self.k_blocks,)
 
 
 def cooperative_block_geometry(types, result_type, attrs):
@@ -64,23 +64,39 @@ def cooperative_block_geometry(types, result_type, attrs):
     result_lanes = result.dtype.lane_count if isinstance(result.dtype, VectorType) else 1
     scalar_weight = w.dtype.elem_type if isinstance(w.dtype, VectorType) else w.dtype
     scalar_result = result.dtype.elem_type if isinstance(result.dtype, VectorType) else result.dtype
-    if (v.dtype is not DType.BFLOAT16 or scalar_weight is not DType.FLOAT8_E4M3FN or s.dtype is not DType.FLOAT32
-            or scalar_result is not DType.BFLOAT16 or v.shape[0].fixed_value != 1 or result.shape[0].fixed_value != 1
-            or attrs.get("activation_quantization") != "dynamic_fp8_sm90"
-            or attrs.get("weight_dequant_dtype") is not None or attrs.get("weight_encoding") is not None
-            or attrs.get("weight_block_k") != 128 or v.shape[1].fixed_value % 128
-            or w.shape[1].fixed_value * weight_lanes != v.shape[1].fixed_value
-            or result.shape[1].fixed_value * result_lanes != w.shape[0].fixed_value):
+    if (
+        v.dtype is not DType.BFLOAT16
+        or scalar_weight is not DType.FLOAT8_E4M3FN
+        or s.dtype is not DType.FLOAT32
+        or scalar_result is not DType.BFLOAT16
+        or v.shape[0].fixed_value != 1
+        or result.shape[0].fixed_value != 1
+        or attrs.get("activation_quantization") != "dynamic_fp8_sm90"
+        or attrs.get("weight_dequant_dtype") is not None
+        or attrs.get("weight_encoding") is not None
+        or attrs.get("weight_block_k") != 128
+        or v.shape[1].fixed_value % 128
+        or w.shape[1].fixed_value * weight_lanes != v.shape[1].fixed_value
+        or result.shape[1].fixed_value * result_lanes != w.shape[0].fixed_value
+    ):
         return None
     row = policy(weight, 0)
     output_row = policy(result_type, 1)
     if isinstance(output_row, SBPSplit):
         output_row = scale_split_units(output_row, result_lanes, 1)
-    if (output_row != row
-            or row != SBP.broadcast() and not (isinstance(row, SBPSplit) and len(row.stages) == 1
-                                               and isinstance(row.stages[0].distribution, ContiguousSplit))
-            or any(policy(value, i) != SBP.broadcast() for i in (0, 1)) or policy(weight, 1) != SBP.broadcast()
-            or policy(result_type, 0) != SBP.broadcast() or any(policy(scale, i) != SBP.broadcast() for i in (0, 1))):
+    if (
+        output_row != row
+        or row != SBP.broadcast()
+        and not (
+            isinstance(row, SBPSplit)
+            and len(row.stages) == 1
+            and isinstance(row.stages[0].distribution, ContiguousSplit)
+        )
+        or any(policy(value, i) != SBP.broadcast() for i in (0, 1))
+        or policy(weight, 1) != SBP.broadcast()
+        or policy(result_type, 0) != SBP.broadcast()
+        or any(policy(scale, i) != SBP.broadcast() for i in (0, 1))
+    ):
         return None
     local = local_tensor_type(weight) if isinstance(weight, DistributedType) else w
     hierarchy = tuple(placement.hierarchy) if placement else ()

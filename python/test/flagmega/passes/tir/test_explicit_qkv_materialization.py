@@ -4,7 +4,8 @@
 
 from triton.flagmega import ir as fm
 from triton.flagmega.ir.ops.nn._paged_attention_state import (
-    PagedAttentionStateConfig, )
+    PagedAttentionStateConfig,
+)
 from triton.flagmega.passes.tir.fuse_distributed_ops import fuse_distributed_ops
 
 
@@ -15,9 +16,9 @@ def _distributed(value_type, policies, placement, partial=None):
 def _graph(*, extra_q_user=False, reduce_op=fm.ReduceOp.SUM, rotary_dim=None):
     placement = fm.Placement((2, 4), "yx", "bb")
     broadcast = fm.SBP.broadcast()
-    output_split = fm.SBP.split_block_cyclic((1, ), 1)
-    partial = fm.SBP.partial((0, ), reduce_op)
-    vector = fm.VectorType(fm.DType.BFLOAT16, (2, ))
+    output_split = fm.SBP.split_block_cyclic((1,), 1)
+    partial = fm.SBP.partial((0,), reduce_op)
+    vector = fm.VectorType(fm.DType.BFLOAT16, (2,))
     q_packed_tensor = fm.tensor_type(vector, (1, 4))
     kv_packed_tensor = fm.tensor_type(vector, (1, 2))
     partial_qkv = fm.TupleType((
@@ -25,8 +26,10 @@ def _graph(*, extra_q_user=False, reduce_op=fm.ReduceOp.SUM, rotary_dim=None):
         _distributed(kv_packed_tensor, (broadcast, output_split), placement, partial),
         _distributed(kv_packed_tensor, (broadcast, output_split), placement, partial),
     ))
-    materialized_qkv = fm.TupleType(
-        tuple(_distributed(field.tensor, field.axis_policies, placement) for field in partial_qkv.fields))
+    materialized_qkv = fm.TupleType(tuple(
+        _distributed(field.tensor, field.axis_policies, placement)
+        for field in partial_qkv.fields
+    ))
     q_logical = _distributed(
         fm.tensor_type(vector, (1, 2, 2)),
         (broadcast, broadcast, broadcast),
@@ -37,17 +40,20 @@ def _graph(*, extra_q_user=False, reduce_op=fm.ReduceOp.SUM, rotary_dim=None):
         (broadcast, broadcast, broadcast),
         placement,
     )
-    parameter = _distributed(fm.tensor_type(vector, (2, )), (broadcast, ), placement)
+    parameter = _distributed(
+        fm.tensor_type(vector, (2,)), (broadcast,), placement
+    )
     trig = _distributed(
-        (fm.tensor_type("float32", (1, 1, rotary_dim)) if rotary_dim is not None else fm.tensor_type(
-            fm.VectorType(fm.DType.FLOAT32, (2, 2)), (1, 1, 1))),
+        (fm.tensor_type("float32", (1, 1, rotary_dim)) if rotary_dim is not None else
+         fm.tensor_type(fm.VectorType(fm.DType.FLOAT32, (2, 2)), (1, 1, 1))),
         (broadcast, broadcast, broadcast),
         placement,
     )
-    state_type = PagedAttentionStateConfig(1, 1, 4, block_size=4, num_blocks=1, lanes=2).ref_type
+    state_type = PagedAttentionStateConfig(
+        1, 1, 4, block_size=4, num_blocks=1, lanes=2
+    ).ref_type
 
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="ntt", stage="frozen_constants", entry="main")
 
@@ -59,22 +65,26 @@ def _graph(*, extra_q_user=False, reduce_op=fm.ReduceOp.SUM, rotary_dim=None):
             cos = self.input("cos", trig, id="cos")
             sin = self.input("sin", trig, id="sin")
             state = self.input("state", state_type, id="state")
-            q_stats = self.input("q_stats",
-                                 _distributed(
-                                     fm.tensor_type("float32", (1, 1, 2, 1)),
-                                     (broadcast, ) * 4,
-                                     placement,
-                                 ))
-            k_stats = self.input("k_stats",
-                                 _distributed(
-                                     fm.tensor_type("float32", (1, 1, 1, 1)),
-                                     (broadcast, ) * 4,
-                                     placement,
-                                 ))
-            layer = fm.F.builtin.scalar_const(fm.tensor_type("int32", ()), 0, name="layer")
-            advance = fm.F.builtin.scalar_const(fm.tensor_type("bool", ()), True, name="advance")
-            combined = fm.F.distributed.boxing(source, materialized_qkv, name="combined")
-            packed = fm.F.tensors.get_items(combined, 0, 1, 2, name_prefix="packed")
+            q_stats = self.input("q_stats", _distributed(
+                fm.tensor_type("float32", (1, 1, 2, 1)),
+                (broadcast,) * 4, placement,
+            ))
+            k_stats = self.input("k_stats", _distributed(
+                fm.tensor_type("float32", (1, 1, 1, 1)),
+                (broadcast,) * 4, placement,
+            ))
+            layer = fm.F.builtin.scalar_const(
+                fm.tensor_type("int32", ()), 0, name="layer"
+            )
+            advance = fm.F.builtin.scalar_const(
+                fm.tensor_type("bool", ()), True, name="advance"
+            )
+            combined = fm.F.distributed.boxing(
+                source, materialized_qkv, name="combined"
+            )
+            packed = fm.F.tensors.get_items(
+                combined, 0, 1, 2, name_prefix="packed"
+            )
             broadcast_packed = tuple(
                 fm.F.distributed.sharded_view(
                     value,
@@ -84,13 +94,19 @@ def _graph(*, extra_q_user=False, reduce_op=fm.ReduceOp.SUM, rotary_dim=None):
                         placement,
                     ),
                     name=f"broadcast_{index}",
-                ) for index, value in enumerate(packed))
+                )
+                for index, value in enumerate(packed)
+            )
             views = tuple(
                 fm.F.tensors.reshape(
                     value,
                     tuple(dimension.fixed_value for dimension in logical.tensor.shape),
                     name=f"view_{index}",
-                ) for index, (value, logical) in enumerate(zip(broadcast_packed, (q_logical, kv_logical, kv_logical))))
+                )
+                for index, (value, logical) in enumerate(
+                    zip(broadcast_packed, (q_logical, kv_logical, kv_logical))
+                )
+            )
             qkv = fm.F.builtin.tuple(*views, name="qkv")
             fused_input = fm.F.nn.qkv_rope_with_cache(
                 qkv,
@@ -145,7 +161,9 @@ def test_keeps_collective_when_a_q_view_has_an_additional_user():
 
 
 def test_keeps_non_sum_partial_collective():
-    module = fuse_distributed_ops(_graph(reduce_op=fm.ReduceOp.MAX))
+    module = fuse_distributed_ops(
+        _graph(reduce_op=fm.ReduceOp.MAX)
+    )
 
     assert module.node_map["qkv_rope"].op == "nn.qkv_rope_with_cache"
     assert module.node_map["combined"].op == "distributed.boxing"

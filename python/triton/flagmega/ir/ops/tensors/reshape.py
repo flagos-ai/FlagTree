@@ -8,6 +8,7 @@ from math import prod
 from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
+from triton.flagmega.ir.dim_expr import dim_mul, equivalent_dim, try_div_exactly
 from triton.flagmega.ir.distributed_type import (
     BlockCyclicSplit,
     SBP,
@@ -28,7 +29,7 @@ class Reshape(OpDefinition):
     const_evaluable = True
     numpy_materializable = True
     value = input_parameter(is_tensor())
-    byte_preserving_input_parameters = (value, )
+    byte_preserving_input_parameters = (value,)
     shape = attribute_parameter()
 
     @classmethod
@@ -69,18 +70,15 @@ class Reshape(OpDefinition):
             if _reshape_tensor_type(source, attrs["shape"]) != output_type.tensor:
                 return ()
             required = DistributedType(
-                source,
-                _reshape_axis_policies(output_type, source),
-                output_type.placement,
-                output_type.partial,
-                output_type.exclusive,
+                source, _reshape_axis_policies(output_type, source), output_type.placement,
+                output_type.partial, output_type.exclusive,
             )
             if _reshape_axis_policies(required, output_type.tensor) != output_type.axis_policies:
                 return ()
         except IRSchemaError:
             # Only exact, bidirectionally proven owner maps are inverse relations.
             return ()
-        return ((required, ), )
+        return ((required,),)
 
     @classmethod
     def evaluate(cls, node, arguments, context):
@@ -88,7 +86,11 @@ class Reshape(OpDefinition):
         input_type = tensor_of(context.types[cls.value.read(node.inputs)])
         output_type = tensor_of(node.type)
         shape = tuple(dimension.fixed_value for dimension in output_type.shape)
-        lane_shape = (tuple(int(lane) for lane in input_type.dtype.lanes) if hasattr(input_type.dtype, "lanes") else ())
+        lane_shape = (
+            tuple(int(lane) for lane in input_type.dtype.lanes)
+            if hasattr(input_type.dtype, "lanes")
+            else ()
+        )
         return value.reshape((*shape, *lane_shape)).contiguous()
 
     @classmethod
@@ -97,13 +99,17 @@ class Reshape(OpDefinition):
         input_type = tensor_of(context.types[cls.value.read(node.inputs)])
         output_type = tensor_of(node.type)
         shape = tuple(dimension.fixed_value for dimension in output_type.shape)
-        lane_shape = (tuple(int(lane) for lane in input_type.dtype.lanes) if hasattr(input_type.dtype, "lanes") else ())
+        lane_shape = (
+            tuple(int(lane) for lane in input_type.dtype.lanes)
+            if hasattr(input_type.dtype, "lanes")
+            else ()
+        )
         return context.as_contiguous(value.reshape((*shape, *lane_shape)))
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         size = tensor_nbytes(tensor_of(node.type))
-        return OpCost(bytes_read=size, bytes_written=size, notes=("reshape", ))
+        return OpCost(bytes_read=size, bytes_written=size, notes=("reshape",))
 
     @classmethod
     def zero_copy_input_index(cls, inputs, attrs, return_type):
@@ -111,8 +117,12 @@ class Reshape(OpDefinition):
             return None
         source = tensor_of(inputs[0].type)
         target = tensor_of(return_type)
-        if (source.dtype != target.dtype or source.layout != TensorLayout() or target.layout != TensorLayout()
-                or any(not dimension.is_fixed for tensor in (source, target) for dimension in tensor.shape)):
+        if (
+            source.dtype != target.dtype
+            or source.layout != TensorLayout()
+            or target.layout != TensorLayout()
+            or any(not dimension.is_fixed for tensor in (source, target) for dimension in tensor.shape)
+        ):
             return None
         if prod(d.fixed_value for d in source.shape) != prod(d.fixed_value for d in target.shape):
             return None
@@ -121,17 +131,35 @@ class Reshape(OpDefinition):
 
 
 def _reshape_tensor_type(value: TensorType, requested_shape) -> TensorType:
-    if any(not dimension.is_fixed for dimension in value.shape):
-        raise IRSchemaError("F.tensors.reshape currently requires a static input shape.")
-    input_elements = prod(dimension.fixed_value for dimension in value.shape)
+    static_input = all(dimension.is_fixed for dimension in value.shape)
+    if static_input:
+        input_elements = prod(dimension.fixed_value for dimension in value.shape)
+    else:
+        # A bucketed (symbolic) leading extent may still reshape when the
+        # requested shape keeps one inferred axis: the quotient proves the
+        # element-count identity for every bucket value.
+        input_elements = dim_mul(*value.shape)
     shape = list(int(dimension) for dimension in requested_shape)
     known = prod(dimension for dimension in shape if dimension != -1)
     if -1 in shape:
-        if input_elements % known:
-            raise IRSchemaError("F.tensors.reshape inferred dimension is not integral.")
-        shape[shape.index(-1)] = input_elements // known
-    elif known != input_elements:
-        raise IRSchemaError(f"F.tensors.reshape changes logical element count from {input_elements} to {known}.")
+        if static_input:
+            if input_elements % known:
+                raise IRSchemaError("F.tensors.reshape inferred dimension is not integral.")
+            shape[shape.index(-1)] = input_elements // known
+        else:
+            quotient = try_div_exactly(input_elements, known)
+            if quotient is None:
+                raise IRSchemaError(
+                    "F.tensors.reshape cannot prove the inferred dimension of a "
+                    f"dynamic input shape {value.shape} is integral for {tuple(shape)}.")
+            shape[shape.index(-1)] = quotient
+    elif static_input:
+        if known != input_elements:
+            raise IRSchemaError(
+                f"F.tensors.reshape changes logical element count from {input_elements} to {known}.")
+    elif not equivalent_dim(input_elements, known):
+        raise IRSchemaError(
+            f"F.tensors.reshape changes logical element count from {input_elements} to {known}.")
     return tensor_type(value.dtype, shape, layout=value.layout)
 
 
@@ -139,7 +167,7 @@ def _reshape_axis_policies(
     source: DistributedType,
     output: TensorType,
 ) -> tuple[SBP, ...]:
-    """Port reference ``ReshapeEvaluator.VisitDistributedType``.
+    """Port nncase ``ReshapeEvaluator.VisitDistributedType``.
 
     A reshape is a zero-copy layout transform only when every split boundary
     can be expressed on the new logical axes.  Explicit split units are
@@ -172,18 +200,28 @@ def _reshape_axis_policies(
         split_axis = output_axes[split_position]
         reshaped_policy = input_policy
         if output_shape[split_axis] != input_shape[input_axis]:
-            trailing_extent = prod(output_shape[axis] for axis in output_axes if axis != split_axis)
+            trailing_extent = prod(
+                output_shape[axis]
+                for axis in output_axes
+                if axis != split_axis
+            )
             reshaped_policy = scale_split_units(input_policy, 1, trailing_extent)
             if reshaped_policy is None:
                 raise _distributed_reshape_error(source, output)
         for output_axis in output_axes:
-            policies[output_axis] = (reshaped_policy if output_axis == split_axis else SBP.broadcast())
+            policies[output_axis] = (
+                reshaped_policy if output_axis == split_axis else SBP.broadcast()
+            )
 
     # One or more input axes flattened into one output axis.
     for output_axis, input_axes in backward.items():
         if policies[output_axis] is not None:
             continue
-        split_axes = [input_axis for input_axis in input_axes if isinstance(source.axis_policies[input_axis], SBPSplit)]
+        split_axes = [
+            input_axis
+            for input_axis in input_axes
+            if isinstance(source.axis_policies[input_axis], SBPSplit)
+        ]
         if len(split_axes) > 1:
             flattened = _flatten_block_cyclic_splits(
                 source,
@@ -196,11 +234,19 @@ def _reshape_axis_policies(
             continue
         if split_axes:
             split_axis = split_axes[0]
-            if split_axis != input_axes[0] and any(input_shape[axis] != 1 for axis in input_axes if axis < split_axis):
+            if split_axis != input_axes[0] and any(
+                input_shape[axis] != 1
+                for axis in input_axes
+                if axis < split_axis
+            ):
                 raise _distributed_reshape_error(source, output)
             split = source.axis_policies[split_axis]
             assert isinstance(split, SBPSplit)
-            multiplier = prod(input_shape[axis] for axis in input_axes if axis != split_axis)
+            multiplier = prod(
+                input_shape[axis]
+                for axis in input_axes
+                if axis != split_axis
+            )
             scaled = scale_split_units(split, multiplier, 1)
             if scaled is None:  # pragma: no cover - multiplication is exact.
                 raise _distributed_reshape_error(source, output)
@@ -212,17 +258,22 @@ def _reshape_axis_policies(
         mapped_input_axes = set(forward)
         for input_axes in backward.values():
             mapped_input_axes.update(input_axes)
-        if any(not isinstance(policy, SBPBroadCast)
-               for axis, policy in enumerate(source.axis_policies)
-               if axis not in mapped_input_axes):
+        if any(
+            not isinstance(policy, SBPBroadCast)
+            for axis, policy in enumerate(source.axis_policies)
+            if axis not in mapped_input_axes
+        ):
             raise _distributed_reshape_error(source, output)
-        policies = [SBP.broadcast() if policy is None else policy for policy in policies]
+        policies = [
+            SBP.broadcast() if policy is None else policy
+            for policy in policies
+        ]
 
     typed_policies = tuple(policy for policy in policies if policy is not None)
     if len(typed_policies) != len(output_shape) or not is_distributable(
-            output,
-            typed_policies,
-            source.placement,
+        output,
+        typed_policies,
+        source.placement,
     ):
         raise _distributed_reshape_error(source, output)
     return typed_policies
@@ -258,20 +309,27 @@ def _shape_map_matrix(
     matrix = [[0 for _ in input_shape] for _ in output_shape]
 
     def input_product(output_axis: int) -> int:
-        return prod(input_shape[input_axis]
-                    for input_axis in range(len(input_shape))
-                    if matrix[output_axis][input_axis])
+        return prod(
+            input_shape[input_axis]
+            for input_axis in range(len(input_shape))
+            if matrix[output_axis][input_axis]
+        )
 
     def output_product(input_axis: int) -> int:
-        return prod(output_shape[output_axis]
-                    for output_axis in range(len(output_shape))
-                    if matrix[output_axis][input_axis])
+        return prod(
+            output_shape[output_axis]
+            for output_axis in range(len(output_shape))
+            if matrix[output_axis][input_axis]
+        )
 
     output_axis = 0
     input_axis = 0
     input_start = -1
     paths: list[tuple[int, int]] = []
-    while (0 <= output_axis < len(output_shape) and 0 <= input_axis < len(input_shape)):
+    while (
+        0 <= output_axis < len(output_shape)
+        and 0 <= input_axis < len(input_shape)
+    ):
         if (output_axis, input_axis) in paths:
             return None
         matrix[output_axis][input_axis] = 1
@@ -304,7 +362,9 @@ def _shape_map_matrix(
     return tuple(tuple(row) for row in matrix)
 
 
-def _complete_shape_map(matrix: tuple[tuple[int, ...], ...], ) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
+def _complete_shape_map(
+    matrix: tuple[tuple[int, ...], ...],
+) -> tuple[dict[int, list[int]], dict[int, list[int]]]:
     forward: dict[int, list[int]] = {}
     backward: dict[int, list[int]] = {}
     output_count = len(matrix)
@@ -313,11 +373,15 @@ def _complete_shape_map(matrix: tuple[tuple[int, ...], ...], ) -> tuple[dict[int
         for input_axis in range(input_count):
             if not matrix[output_axis][input_axis]:
                 continue
-            if all(other_input == input_axis or not matrix[output_axis][other_input]
-                   for other_input in range(input_count)):
+            if all(
+                other_input == input_axis or not matrix[output_axis][other_input]
+                for other_input in range(input_count)
+            ):
                 forward.setdefault(input_axis, []).append(output_axis)
-            if all(other_output == output_axis or not matrix[other_output][input_axis]
-                   for other_output in range(output_count)):
+            if all(
+                other_output == output_axis or not matrix[other_output][input_axis]
+                for other_output in range(output_count)
+            ):
                 backward.setdefault(output_axis, []).append(input_axis)
     return forward, backward
 
@@ -336,11 +400,14 @@ def _flatten_block_cyclic_splits(
         for stage in policy.stages:
             if not isinstance(stage.distribution, BlockCyclicSplit):
                 return None
-            shard_count = prod(source.placement.hierarchy[axis] for axis in stage.hierarchy_axes)
+            shard_count = prod(
+                source.placement.hierarchy[axis]
+                for axis in stage.hierarchy_axes
+            )
             if parent_extent % (shard_count * stage.distribution.block_size):
                 return None
             parent_extent //= shard_count
-        trailing_extent = prod(input_shape[axis] for axis in input_axes[position + 1:])
+        trailing_extent = prod(input_shape[axis] for axis in input_axes[position + 1 :])
         scaled = scale_split_units(policy, trailing_extent, 1)
         if scaled is None:  # pragma: no cover - multiplication is exact.
             return None
@@ -354,8 +421,10 @@ def _flatten_block_cyclic_splits(
 
 
 def _distributed_reshape_error(source: DistributedType, output: TensorType) -> IRSchemaError:
-    return IRSchemaError("F.tensors.reshape cannot preserve distributed layout "
-                         f"from {source.tensor.shape} to {output.shape}.")
+    return IRSchemaError(
+        "F.tensors.reshape cannot preserve distributed layout "
+        f"from {source.tensor.shape} to {output.shape}."
+    )
 
 
 __all__ = ["Reshape"]

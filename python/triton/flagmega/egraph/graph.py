@@ -225,8 +225,8 @@ class EGraph:
         try:
             return self.find(self._node_class[node_id])
         except KeyError as error:
-            raise IRVerificationError(f"E-graph expression references unknown node {node_id!r}.",
-                                      node_id=node_id) from error
+            raise IRVerificationError(
+                f"E-graph expression references unknown node {node_id!r}.", node_id=node_id) from error
 
     def has_node_id(self, node_id: str) -> bool:
         return node_id in self._node_class
@@ -240,7 +240,8 @@ class EGraph:
         return tuple(
             EClassView(class_id, self._types[class_id], tuple(self._nodes[class_id]))
             for class_id in range(len(self._parent))
-            if self.find(class_id) == class_id)
+            if self.find(class_id) == class_id
+        )
 
     def class_view(self, class_id: int) -> EClassView:
         """Return the canonical view for one e-class."""
@@ -264,9 +265,14 @@ class EGraph:
         return tuple(view for view in self.classes() if view.id in visited)
 
     def roots_for_module(self, module: IRModule) -> tuple[int, ...]:
-        root_ids = {value for function in module.functions for value in (*function.parameters, *function.outputs)}
+        root_ids = {value for function in module.functions
+                    for value in (*function.parameters, *function.outputs)}
         root_ids.update(input_id for node in module.nodes if not node.effect.is_pure for input_id in node.inputs)
-        roots = {self.class_for_node(node_id) for node_id in root_ids if self.has_node_id(node_id)}
+        roots = {
+            self.class_for_node(node_id)
+            for node_id in root_ids
+            if self.has_node_id(node_id)
+        }
         return tuple(sorted(roots))
 
     def to_dot(
@@ -324,7 +330,7 @@ def attrs_key_for(node: Node) -> str:
     ``Node.attrs`` may contain IRType instances, which the ordinary JSON
     encoder cannot serialize.  ``Node.to_data`` already owns the canonical
     IR attribute encoding, so the e-graph must use the same representation.
-    Variables remain identity-bearing leaves, using globally
+    Variables remain identity-bearing leaves, matching nncase's globally
     unique ``Var`` equality rather than merging same-spelled parameters.
     """
 

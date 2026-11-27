@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{# Generic local-shard M=1 DenseMatMul with an auxiliary compute partition.
+{# Generic local-shard M=1 DenseMatMul with an auxiliary compute partition.
 
    The primary consumer owns output publication, the auxiliary consumer owns
    the weight-channel reader and FP32 accumulation, and the producer owns TMA.

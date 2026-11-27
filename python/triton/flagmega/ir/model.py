@@ -37,15 +37,16 @@ from triton.flagmega.ir.distributed_type import (
 )
 from triton.flagmega.ir.types import (
     DataType,
+    DType,
+    VectorType,
     data_type,
     data_type_from_data,
     data_type_to_data,
 )
-from triton.flagmega.ir.types import DType as DType
-from triton.flagmega.ir.types import VectorType as VectorType
 
 if TYPE_CHECKING:
     from triton.flagmega.ir.tir import ExecutionFunction, KernelDefinition, PrimFunction
+
 
 IR_VERSION = 1
 
@@ -121,7 +122,6 @@ class TensorLayout:
 
 
 class IRType:
-
     def to_data(self) -> dict[str, object]:
         raise NotImplementedError
 
@@ -144,7 +144,6 @@ class InvalidType(IRType):
 
 @dataclass(frozen=True)
 class NoneType(IRType):
-
     def to_data(self) -> dict[str, object]:
         return {"kind": "none"}
 
@@ -273,13 +272,16 @@ class DistributedType(IRType):
                 raise IRSchemaError("DistributedType exclusive references an out-of-range placement axis.")
             coordinates = self.exclusive.owner_coordinates
             if coordinates is not None and any(
-                    coordinate >= self.placement.hierarchy[axis]
-                    for axis, coordinate in zip(self.exclusive.axes, coordinates, strict=True)):
+                coordinate >= self.placement.hierarchy[axis]
+                for axis, coordinate in zip(self.exclusive.axes, coordinates, strict=True)
+            ):
                 raise IRSchemaError("DistributedType exclusive owner coordinate is outside its mesh axis.")
             if self.partial is not None:
                 raise IRSchemaError("DistributedType cannot be both exclusive and partial.")
             if any(not isinstance(policy, SBPBroadCast) for policy in policies):
-                raise IRSchemaError("Exclusive DistributedType policies must be broadcast on every tensor axis.")
+                raise IRSchemaError(
+                    "Exclusive DistributedType policies must be broadcast on every tensor axis."
+                )
         object.__setattr__(self, "axis_policies", policies)
 
     @property
@@ -339,7 +341,8 @@ def contains_distributed(value: IRType) -> bool:
         return any(contains_distributed(field) for field in value.fields)
     if isinstance(value, CallableType):
         return contains_distributed(value.return_type) or any(
-            contains_distributed(parameter) for parameter in value.parameters)
+            contains_distributed(parameter) for parameter in value.parameters
+        )
     if isinstance(value, RefType):
         return any(contains_distributed(field) for _, field in value.fields)
     return False
@@ -654,11 +657,13 @@ class IRModule:
     @cached_property
     def kernel_callable_map(self) -> Mapping[str, Any]:
         """Kernel contracts, including pre-bufferization legacy PrimFunctions."""
-        return MappingProxyType({value.name: value for value in (*self.prim_functions, *self.kernel_definitions)})
+        return MappingProxyType(
+            {value.name: value for value in (*self.prim_functions, *self.kernel_definitions)})
 
     @cached_property
     def execution_function_map(self) -> Mapping[str, ExecutionFunction]:
-        return MappingProxyType({function.name: function for function in self.execution_functions})
+        return MappingProxyType(
+            {function.name: function for function in self.execution_functions})
 
     @property
     def selection_map(self) -> dict[str, SelectionRecord]:
@@ -684,7 +689,9 @@ class IRModule:
         if self.kernel_definitions:
             data["kernel_definitions"] = [value.to_data() for value in self.kernel_definitions]
         if self.execution_functions:
-            data["execution_functions"] = [value.to_data() for value in self.execution_functions]
+            data["execution_functions"] = [
+                value.to_data() for value in self.execution_functions
+            ]
         return data
 
     @cached_property
@@ -708,7 +715,9 @@ class IRModule:
             entry=str(data["entry"]),
             prim_functions=tuple(tir_from_data(value) for value in data.get("prim_functions", ())),
             kernel_definitions=tuple(tir_from_data(value) for value in data.get("kernel_definitions", ())),
-            execution_functions=tuple(tir_from_data(value) for value in data.get("execution_functions", ())),
+            execution_functions=tuple(
+                tir_from_data(value) for value in data.get("execution_functions", ())
+            ),
             metadata=data.get("metadata", {}),
             constant_recipes=tuple(ConstantRecipe.from_data(value) for value in data.get("constant_recipes", ())),
             selection_points=tuple(SelectionPoint.from_data(value) for value in data.get("selection_points", ())),
@@ -728,7 +737,7 @@ def function_module(
     """Return a self-contained module containing one function's node closure.
 
     Pass dumps use this view so ``Before``/``After`` directories contain one
-    executable Python checkpoint per function, using dump model.
+    executable Python checkpoint per function, matching nncase's dump model.
     """
 
     try:
@@ -747,7 +756,8 @@ def function_module(
             try:
                 node = node_map[node_id]
             except KeyError as error:
-                raise IRSchemaError(f"Function {value.name!r} references missing node {node_id!r}.") from error
+                raise IRSchemaError(
+                    f"Function {value.name!r} references missing node {node_id!r}.") from error
             result.add(node_id)
             pending.extend(node.inputs)
         return result
@@ -766,22 +776,24 @@ def function_module(
         # remains globally verifiable even when a recipe is shared by, or only
         # consumed from, another function.
         reachable.update(
-            node.id
-            for node in module.nodes
-            if node.op == "builtin.const_asset" or (node.op == "tir.buffer" and "constant_recipe" in node.metadata))
+            node.id for node in module.nodes
+            if node.op == "builtin.const_asset"
+            or (node.op == "tir.buffer" and "constant_recipe" in node.metadata)
+        )
     if include_unreferenced and not preserve_local_unreferenced:
         referenced = set().union(*(closure(value) for value in module.functions))
         reachable.update(node_map.keys() - referenced)
     nodes = tuple(node for node in module.nodes if node.id in reachable)
-    points = tuple(point for point in module.selection_points if point.owner is None or point.owner in reachable)
+    points = tuple(
+        point for point in module.selection_points
+        if point.owner is None or point.owner in reachable
+    )
     point_ids = {point.id for point in points}
     selections = tuple(record for record in module.selections if record.point_id in point_ids)
     signatures = {
         value.name: {
-            "parameters": tuple(node_map[node_id].type
-                                for node_id in value.parameters),
-            "outputs": tuple(node_map[node_id].type
-                             for node_id in value.outputs),
+            "parameters": tuple(node_map[node_id].type for node_id in value.parameters),
+            "outputs": tuple(node_map[node_id].type for node_id in value.outputs),
         }
         for value in module.functions
     }
@@ -798,7 +810,7 @@ def function_module(
         dialect=module.dialect,
         stage=module.stage,
         nodes=nodes,
-        functions=(function, ),
+        functions=(function,),
         entry=function.name,
         prim_functions=module.prim_functions,
         kernel_definitions=module.kernel_definitions,
@@ -819,7 +831,10 @@ def _optional_int(value: object) -> int | None:
 def _freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
     if isinstance(value, _FrozenMapping):
         return value
-    return _FrozenMapping({str(key): _freeze(item) for key, item in sorted(value.items())})
+    return _FrozenMapping({
+        str(key): _freeze(item)
+        for key, item in sorted(value.items())
+    })
 
 
 def canonical_attributes(value: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -914,16 +929,22 @@ def _canonical_json(value: Any) -> str:
 
 def _semantic_component_json(value: Any) -> str:
     if type(value) is Node and Node.to_data is _NATIVE_NODE_TO_DATA:
-        return _semantic_identity_json(
-            value, lambda: ('{"attrs":' + _semantic_mapping_json(value.attrs) + ',"effect":' + _semantic_component_json(
-                value.effect) + ',"id":' + _canonical_json(value.id) + ',"inputs":' + _canonical_json(value.inputs) +
-                            ',"metadata":' + _semantic_mapping_json(value.metadata) + ',"op":' + _canonical_json(
-                                value.op) + ',"type":' + _semantic_component_json(value.type) + '}'))
+        return _semantic_identity_json(value, lambda: (
+            '{"attrs":' + _semantic_mapping_json(value.attrs)
+            + ',"effect":' + _semantic_component_json(value.effect)
+            + ',"id":' + _canonical_json(value.id)
+            + ',"inputs":' + _canonical_json(value.inputs)
+            + ',"metadata":' + _semantic_mapping_json(value.metadata)
+            + ',"op":' + _canonical_json(value.op)
+            + ',"type":' + _semantic_component_json(value.type) + '}'
+        ))
     if type(value) is ConstantRecipe and ConstantRecipe.to_data is _NATIVE_RECIPE_TO_DATA:
-        return _semantic_identity_json(
-            value, lambda:
-            ('{"fingerprint":' + _canonical_json(value.fingerprint) + ',"id":' + _canonical_json(value.id) + ',"nodes":'
-             + _semantic_array(value.nodes) + ',"outputs":' + _canonical_json(value.outputs) + '}'))
+        return _semantic_identity_json(value, lambda: (
+            '{"fingerprint":' + _canonical_json(value.fingerprint)
+            + ',"id":' + _canonical_json(value.id)
+            + ',"nodes":' + _semantic_array(value.nodes)
+            + ',"outputs":' + _canonical_json(value.outputs) + '}'
+        ))
     return _semantic_identity_json(value, lambda: _canonical_json(value.to_data()))
 
 
@@ -936,9 +957,9 @@ def _semantic_mapping_json(value: Mapping[str, Any]) -> str:
         return "{}"
     if not isinstance(value, _FrozenMapping):
         return _canonical_json(_to_data(value))
-    return _semantic_identity_json(
-        value, lambda: _semantic_object_json({str(key): _semantic_value_json(item)
-                                              for key, item in value.items()}))
+    return _semantic_identity_json(value, lambda: _semantic_object_json({
+        str(key): _semantic_value_json(item) for key, item in value.items()
+    }))
 
 
 def _semantic_value_json(value):
@@ -1017,8 +1038,13 @@ def _semantic_payload(module: IRModule) -> str:
     if module.kernel_definitions:
         fields["kernel_definitions"] = _semantic_array(module.kernel_definitions)
     if module.execution_functions:
-        fields["execution_functions"] = _semantic_array(module.execution_functions)
-    return "{" + ",".join(_canonical_json(key) + ":" + fields[key] for key in sorted(fields)) + "}"
+        fields["execution_functions"] = _semantic_array(
+            module.execution_functions
+        )
+    return "{" + ",".join(
+        _canonical_json(key) + ":" + fields[key]
+        for key in sorted(fields)
+    ) + "}"
 
 
 class _EncodedSemanticChunk:
@@ -1066,7 +1092,8 @@ class _SemanticHashCache:
             objects = values[start:start + 256]
             identities = tuple(map(id, objects))
             chunk = previous[ordinal] if ordinal < len(previous) else None
-            if (chunk is None or chunk.identities != identities or chunk.encoder is not _semantic_component_json):
+            if (chunk is None or chunk.identities != identities
+                    or chunk.encoder is not _semantic_component_json):
                 chunk = _EncodedSemanticChunk(objects, identities)
             chunks.append(chunk)
             if ordinal:
@@ -1076,16 +1103,9 @@ class _SemanticHashCache:
         yield (name, "close"), b"]"
 
     def _fragments(self, module):
-        arrays = {
-            name: getattr(module, name)
-            for name in (
-                "constant_recipes",
-                "functions",
-                "nodes",
-                "selection_points",
-                "selections",
-            )
-        }
+        arrays = {name: getattr(module, name) for name in (
+            "constant_recipes", "functions", "nodes", "selection_points", "selections",
+        )}
         for name in ("prim_functions", "kernel_definitions", "execution_functions"):
             if getattr(module, name):
                 arrays[name] = getattr(module, name)
@@ -1097,10 +1117,10 @@ class _SemanticHashCache:
             if name in arrays:
                 yield from self._array(name, arrays[name])
             else:
-                encoded = (_semantic_mapping_json(module.metadata)
-                           if name == "metadata" else _canonical_json(scalar[name])).encode("utf-8")
+                encoded = (_semantic_mapping_json(module.metadata) if name == "metadata"
+                           else _canonical_json(scalar[name])).encode("utf-8")
                 yield (name, encoded), encoded
-        yield ("end", ), b"}"
+        yield ("end",), b"}"
 
     def compute(self, module):
         with self.lock:

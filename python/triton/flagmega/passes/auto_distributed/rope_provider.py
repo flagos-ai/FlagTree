@@ -8,7 +8,6 @@ from triton.flagmega.passes.auto_distributed.rotary_layouts import rotary_layout
 
 
 class RoPECandidateProvider(TypeInferenceCandidateProvider):
-
     def __init__(self):
         super().__init__(frozenset({"nn.rope", "ntt.vectorized_rope"}))
 

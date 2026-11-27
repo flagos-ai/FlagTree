@@ -89,8 +89,7 @@ class DenseMatMulGlu(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(flops=None, bytes_read=None, bytes_written=tensor_nbytes(node.type),
-                      notes=("two-dense-matmuls+glu", ))
+        return OpCost(flops=None, bytes_read=None, bytes_written=tensor_nbytes(node.type), notes=("two-dense-matmuls+glu",))
 
 
 __all__ = ["DenseMatMulGlu"]

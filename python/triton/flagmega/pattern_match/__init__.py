@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""structural pattern matching for FlagMega expression IR."""
+"""nncase-style structural pattern matching for FlagMega expression IR."""
 
 from triton.flagmega.pattern_match.call_pattern import CallPattern, is_call
 from triton.flagmega.pattern_match.const_pattern import ConstPattern, is_const

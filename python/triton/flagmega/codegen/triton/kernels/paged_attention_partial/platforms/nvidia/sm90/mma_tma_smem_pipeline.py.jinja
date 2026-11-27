@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: paged_attention_partial/mma_tma_smem_pipeline platform=nvidia architecture=sm90
+# flagmega-kernel: paged_attention_partial/mma_tma_smem_pipeline platform=nvidia architecture=sm90
 {# SM90 decode attention with independent K/V TMA channels and BF16 MMA.
 
    The body consumes only the selected owner-local query head.  Logical head

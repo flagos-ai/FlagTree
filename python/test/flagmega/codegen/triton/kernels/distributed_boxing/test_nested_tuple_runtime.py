@@ -21,13 +21,12 @@ def nested_boxing_module(request):
     result_type = fm.TupleType((value_type, fm.TupleType((value_type, value_type))))
 
     class Transfer(fm.Module):
-
         def forward(self):
             a, b, c = (self.input(name, value_type) for name in ("a", "b", "c"))
             value = fm.F.builtin.tuple(a, fm.F.builtin.tuple(b, c))
             local = fm.F.distributed.force_boxing(value, local_tuple, name="load")
             result = fm.F.distributed.force_boxing(local, result_type, name="store")
-            self.function("main", (a, b, c), (result, ))
+            self.function("main", (a, b, c), (result,))
 
     module = Transfer(dialect="distributed", stage="frozen_constants", entry="main",
                       metadata={"auto_distribution": {"placement": placement.to_data()}}).build()
@@ -38,7 +37,7 @@ def test_nested_tuple_codegen_retains_all_tensor_leaves(nested_boxing_module):
     package = describe_tir_package(nested_boxing_module)
     boxing_calls = [call for call in package["render_calls"] if call["family"] == "distributed_boxing"]
     # Identity subtrees retain their input aliases. Every changed leaf owns
-    # its individual transfer/effect contract, as in reference GenerateBoxingValue.
+    # its individual transfer/effect contract, as in nncase GenerateBoxingValue.
     assert len(boxing_calls) in (2, 6)
     assert all(len(call["leaves"]) == 1 for call in boxing_calls)
 

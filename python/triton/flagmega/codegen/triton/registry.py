@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import IRModule
 
+
 PackageMatcher = Callable[[IRModule], bool]
 DescriptorBuilder = Callable[[IRModule], dict[str, object]]
 SourceRenderer = Callable[[dict[str, object], str], str]
@@ -52,7 +53,6 @@ class PackageRendererSpec:
 
 
 class PackageRendererRegistry:
-
     def __init__(self) -> None:
         self._specs: dict[str, PackageRendererSpec] = {}
 

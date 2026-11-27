@@ -39,7 +39,8 @@ from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import DType, VectorType
 
 
-@op_definition("nn.mhc_pre", namespace="nn", functional_name="mhc_pre", display_name="NN.MhcPre")
+@op_definition("nn.mhc_pre", namespace="nn", functional_name="mhc_pre",
+               display_name="NN.MhcPre")
 class MhcPre(OpDefinition):
     """Collapse ``hc_mult`` residual streams and emit the mixing coefficients.
 
@@ -124,8 +125,7 @@ class MhcPre(OpDefinition):
                     raise IRSchemaError(f"MhcPre {name} must be float16, bfloat16 or float32.")
                 attrs[name] = dtype.value
         if not isinstance(attrs["collapse_reduction"], str) or attrs["collapse_reduction"] not in {
-                "sum", "sequential_fma"
-        }:
+                "sum", "sequential_fma"}:
             raise IRSchemaError("MhcPre collapse_reduction must be sum or sequential_fma.")
         if attrs["projection_reduction"] not in ("parallel", "stream_fma_128", "contiguous_tf32"):
             raise IRSchemaError("MhcPre projection_reduction must be parallel, stream_fma_128 or contiguous_tf32.")
@@ -139,19 +139,17 @@ class MhcPre(OpDefinition):
     @classmethod
     def ir_attrs(cls, attrs: Mapping[str, object]) -> Mapping[str, object]:
         # Preserve scalar checkpoints' canonical attributes and semantic hash.
-        return {
-            key: value
-            for key, value in attrs.items()
-            if (key != "output_lanes" or value) and
-            (key not in {"collapsed_dtype", "collapse_input_dtype"} or value is not None) and (
-                key != "collapse_reduction" or value != "sum") and (
-                    key != "projection_reduction" or value != "parallel") and (key != "projection_splits" or value != 1)
-        }
+        return {key: value for key, value in attrs.items()
+                if (key != "output_lanes" or value)
+                and (key not in {"collapsed_dtype", "collapse_input_dtype"} or value is not None)
+                and (key != "collapse_reduction" or value != "sum")
+                and (key != "projection_reduction" or value != "parallel")
+                and (key != "projection_splits" or value != 1)}
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
-        for name, parameter in (("streams", cls.streams), ("projection", cls.projection), ("base", cls.base),
-                                ("scale", cls.scale)):
+        for name, parameter in (("streams", cls.streams), ("projection", cls.projection),
+                                ("base", cls.base), ("scale", cls.scale)):
             if isinstance(tensor_of(parameter.type_of(inputs)).dtype, VectorType):
                 raise IRSchemaError(f"MhcPre {name} must use a scalar element type.")
         stream_source = cls.streams.type_of(inputs)
@@ -172,7 +170,8 @@ class MhcPre(OpDefinition):
         projection = tensor_of(cls.projection.type_of(inputs))
         if (projection.rank != 2 or projection.shape[0].fixed_value != coefficients
                 or projection.shape[1].fixed_value != hc * hidden):
-            raise IRSchemaError("MhcPre projection must be ((2 + hc_mult) * hc_mult, hc_mult * hidden).")
+            raise IRSchemaError(
+                "MhcPre projection must be ((2 + hc_mult) * hc_mult, hc_mult * hidden).")
         base = tensor_of(cls.base.type_of(inputs))
         if base.rank != 1 or base.shape[0].fixed_value != coefficients:
             raise IRSchemaError("MhcPre base must carry one entry per coefficient.")
@@ -184,24 +183,23 @@ class MhcPre(OpDefinition):
         post = tensor_type(DType.FLOAT32, (tokens, hc))
         comb = tensor_type(DType.FLOAT32, (tokens, hc, hc))
         collapsed_dtype = DType(attrs.get("collapsed_dtype") or streams.dtype)
-        collapsed = tensor_type(
-            VectorType(collapsed_dtype, lanes) if lanes else collapsed_dtype, (tokens, hidden // prod(lanes)))
+        collapsed = tensor_type(VectorType(collapsed_dtype, lanes) if lanes else collapsed_dtype,
+                                (tokens, hidden // prod(lanes)))
         if not isinstance(stream_source, DistributedType):
             return TupleType((post, comb, collapsed))
         if stream_source.partial is not None or any(policy != SBP.broadcast()
                                                     for policy in stream_source.axis_policies):
             raise IRSchemaError("MhcPre requires broadcast streams; insert explicit Boxing.")
         placement = stream_source.placement
-        for name, source in (("projection", cls.projection.type_of(inputs)), ("base", cls.base.type_of(inputs)),
+        for name, source in (("projection", cls.projection.type_of(inputs)),
+                             ("base", cls.base.type_of(inputs)),
                              ("scale", cls.scale.type_of(inputs))):
             if not isinstance(source, DistributedType) or source.placement != placement \
                     or any(policy != SBP.broadcast() for policy in source.axis_policies):
                 raise IRSchemaError(f"MhcPre {name} must be broadcast like the streams.")
-        return TupleType(
-            tuple(
-                DistributedType(field, tuple(SBP.broadcast()
-                                             for _ in field.shape), placement)
-                for field in (post, comb, collapsed)))
+        return TupleType(tuple(
+            DistributedType(field, tuple(SBP.broadcast() for _ in field.shape), placement)
+            for field in (post, comb, collapsed)))
 
     @classmethod
     def evaluate(cls, node, arguments, context):
@@ -225,7 +223,8 @@ class MhcPre(OpDefinition):
             products, squares = contiguous_tf32_projection(streams, projection, attrs["projection_splits"], torch)
             mixes = products * torch.rsqrt(squares[:, None] / flat.shape[-1] + epsilon)
         else:
-            mixes = (flat @ projection.t()) * torch.rsqrt(flat.square().mean(-1, keepdim=True) + epsilon)
+            mixes = (flat @ projection.t()) * torch.rsqrt(
+                flat.square().mean(-1, keepdim=True) + epsilon)
         # The floor on pre_mix is vLLM's ``hc_eps``, which this op carries as
         # sinkhorn_epsilon -- not the RMS epsilon above. GLM-5.3 sets them to
         # 1e-6 and 1e-5, so confusing the two biases every stream coefficient.
@@ -256,7 +255,8 @@ class MhcPre(OpDefinition):
     @classmethod
     def cost(cls, node):
         sizes = [tensor_nbytes(field) for field in node.type.fields]
-        return OpCost(bytes_written=None if None in sizes else sum(sizes), notes=("mhc-pre", ))
+        return OpCost(bytes_written=None if None in sizes else sum(sizes),
+                      notes=("mhc-pre", ))
 
 
 __all__ = ["MhcPre"]

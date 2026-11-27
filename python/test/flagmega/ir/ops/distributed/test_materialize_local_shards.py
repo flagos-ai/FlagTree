@@ -9,11 +9,11 @@ from triton.flagmega import pattern_match as pm
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.ir.ops.distributed.materialize_local_shards import (
-    MaterializeLocalShards, )
+    MaterializeLocalShards,
+)
 
 
 class MaterializeShardsModule(fm.Module):
-
     def __init__(self, value_type):
         super().__init__(dialect="high_level", stage="imported", entry="main")
         self.value_type = value_type
@@ -24,7 +24,7 @@ class MaterializeShardsModule(fm.Module):
             value,
             name="shards",
         )
-        self.function("main", (value, ), (shards, ))
+        self.function("main", (value,), (shards,))
 
 
 def _distributed_type(dtype="float32"):
@@ -32,8 +32,8 @@ def _distributed_type(dtype="float32"):
     return fm.DistributedType(
         fm.tensor_type(dtype, (4, 8)),
         (
-            fm.SBP.split_contiguous((0, ), 2),
-            fm.SBP.split_block_cyclic((1, ), 2),
+            fm.SBP.split_contiguous((0,), 2),
+            fm.SBP.split_block_cyclic((1,), 2),
         ),
         placement,
     )
@@ -55,7 +55,7 @@ def test_materialize_local_shards_uses_owner_major_staged_sbp_order():
 
 
 def test_materialize_local_shards_preserves_vector_lanes_and_round_trips(tmp_path):
-    source = _distributed_type(fm.VectorType(fm.DType.BFLOAT16, (2, )))
+    source = _distributed_type(fm.VectorType(fm.DType.BFLOAT16, (2,)))
     module = MaterializeShardsModule(source).build()
     value = torch.arange(64, dtype=torch.bfloat16).reshape(4, 8, 2)
 
@@ -81,14 +81,16 @@ def test_materialize_local_shards_has_parameter_addressable_pattern():
 
 def test_materialize_local_shards_pads_only_the_short_block_cyclic_owner():
     value_type = fm.DistributedType(
-        fm.tensor_type("float32", (10, )),
-        (fm.SBP.split_block_cyclic((0, ), 4), ),
-        fm.Placement((3, ), "x", "b"),
+        fm.tensor_type("float32", (10,)),
+        (fm.SBP.split_block_cyclic((0,), 4),),
+        fm.Placement((3,), "x", "b"),
     )
     module = MaterializeShardsModule(value_type).build()
     value = torch.arange(10, dtype=torch.float32)
 
-    actual = TorchEvaluator(DictWeightResolver({})).run(module, {"value": value})[0]
+    actual = TorchEvaluator(DictWeightResolver({})).run(
+        module, {"value": value}
+    )[0]
     torch.testing.assert_close(actual, torch.tensor((
         (0, 1, 2, 3),
         (4, 5, 6, 7),
@@ -98,17 +100,19 @@ def test_materialize_local_shards_pads_only_the_short_block_cyclic_owner():
 
 def test_materialize_local_shards_applies_multiple_stages_on_one_axis():
     value_type = fm.DistributedType(
-        fm.tensor_type("float32", (8, )),
+        fm.tensor_type("float32", (8,)),
         (fm.SBP.split(
-            fm.SplitStage.contiguous((0, ), 4),
-            fm.SplitStage.block_cyclic((1, ), 1),
-        ), ),
+            fm.SplitStage.contiguous((0,), 4),
+            fm.SplitStage.block_cyclic((1,), 1),
+        ),),
         fm.Placement((2, 2), "yx", "bb"),
     )
     module = MaterializeShardsModule(value_type).build()
     value = torch.arange(8, dtype=torch.float32)
 
-    actual = TorchEvaluator(DictWeightResolver({})).run(module, {"value": value})[0]
+    actual = TorchEvaluator(DictWeightResolver({})).run(
+        module, {"value": value}
+    )[0]
     torch.testing.assert_close(actual, torch.tensor((
         (0, 2),
         (1, 3),
@@ -119,10 +123,10 @@ def test_materialize_local_shards_applies_multiple_stages_on_one_axis():
 
 def test_materialize_local_shards_rejects_partial_values():
     value_type = fm.DistributedType(
-        fm.tensor_type("float32", (4, )),
-        (fm.SBP.broadcast(), ),
-        fm.Placement((2, ), "x", "b"),
-        partial=fm.SBP.partial((0, )),
+        fm.tensor_type("float32", (4,)),
+        (fm.SBP.broadcast(),),
+        fm.Placement((2,), "x", "b"),
+        partial=fm.SBP.partial((0,)),
     )
 
     with pytest.raises(IRSchemaError, match="cannot materialize a partial"):
@@ -136,9 +140,11 @@ def test_materialize_local_shards_does_not_broadcast_lift_a_broadcast_input():
         (fm.SBP.broadcast(), fm.SBP.broadcast()),
         placement,
     )
-    source = fm.Node("value", "builtin.var", (), source_type, attrs={"name": "value"})
+    source = fm.Node(
+        "value", "builtin.var", (), source_type, attrs={"name": "value"}
+    )
 
-    prepared = MaterializeLocalShards.prepare((source, ), {})
+    prepared = MaterializeLocalShards.prepare((source,), {})
 
     assert prepared.result_type == fm.tensor_type("bfloat16", (8, 3, 8))
 
@@ -157,7 +163,8 @@ def test_torch_and_numpy_materialization_agree_with_the_element_map(policies):
     from triton.flagmega.ir.local_shard import local_shard_descriptor
 
     placement = fm.Placement((2, 2), "yx", "bb")
-    value_type = fm.DistributedType(fm.tensor_type("float32", (4, 8)), policies, placement)
+    value_type = fm.DistributedType(
+        fm.tensor_type("float32", (4, 8)), policies, placement)
     module = MaterializeShardsModule(value_type).build()
     value = torch.arange(32, dtype=torch.float32).reshape(4, 8)
 
@@ -168,7 +175,11 @@ def test_torch_and_numpy_materialization_agree_with_the_element_map(policies):
         descriptor = local_shard_descriptor(value_type, owner)
         shard = value
         for tensor_axis, axis in enumerate(descriptor.axes):
-            indices = [axis.map_local_to_global(index).fixed_value for index in range(axis.active_extent.fixed_value)]
-            shard = torch.index_select(shard, tensor_axis, torch.tensor(indices, dtype=torch.int64))
+            indices = [
+                axis.map_local_to_global(index).fixed_value
+                for index in range(axis.active_extent.fixed_value)
+            ]
+            shard = torch.index_select(shard, tensor_axis,
+                                       torch.tensor(indices, dtype=torch.int64))
         expected.append(shard)
     torch.testing.assert_close(actual, torch.stack(tuple(expected)))

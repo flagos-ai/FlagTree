@@ -9,7 +9,7 @@ from typing import Mapping, Sequence
 from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.ir.memory_effect import MemoryEffect
 from triton.flagmega.ir.distributed_inference import tensor_of
-from triton.flagmega.ir.model import DType, DistributedType, Effect, IRType, Node, RefType, TensorType, effect
+from triton.flagmega.ir.model import DType, DistributedType, Effect, IRType, Node, RefType, TensorType, TupleType, effect
 from triton.flagmega.ir.distributed_type import SBPBroadCast
 from triton.flagmega.ir.ops.core import OpCost, OpDefinition, ParameterKind, attribute_parameter, input_parameter, op_definition
 from triton.flagmega.ir.ops.nn._dsa_indexer_state import DsaIndexerState
@@ -38,7 +38,7 @@ def _dsa_broadcast_choices(choices, tensor_indices):
                         continue
                     next_placement = value.placement
                 next_mode = distributed
-            yield from product(index + 1, current + (value, ), next_mode, next_placement)
+            yield from product(index + 1, current + (value,), next_mode, next_placement)
 
     yield from product()
 
@@ -55,7 +55,7 @@ class DsaIndexer(OpDefinition):
     gate = input_parameter(is_tensor() & has_rank(2))
     weights = input_parameter(is_tensor() & has_rank(2))
     state = input_parameter(is_ref(), parameter_kind=ParameterKind.ATTRIBUTE,
-                            memory_effect=MemoryEffect.CHIP_READ_WRITE.partitioned_by_argument(4))
+                             memory_effect=MemoryEffect.CHIP_READ_WRITE.partitioned_by_argument(4))
     layer_id = input_parameter(is_tensor() & has_rank(0) & has_dtype(DType.INT32),
                                parameter_kind=ParameterKind.ATTRIBUTE)
     advance_sequence = input_parameter(is_tensor() & has_rank(0) & has_dtype(DType.BOOL),
@@ -88,7 +88,8 @@ class DsaIndexer(OpDefinition):
         attrs["epsilon"] = epsilon
         layer_ids = attrs["state_layer_ids"]
         if (not isinstance(layer_ids, (tuple, list))
-                or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in layer_ids)
+                or any(isinstance(value, bool) or not isinstance(value, int) or value < 0
+                       for value in layer_ids)
                 or len(set(layer_ids)) != len(layer_ids)):
             raise IRSchemaError("DSA state_layer_ids must be unique non-negative integers.")
         attrs["state_layer_ids"] = tuple(layer_ids)
@@ -103,13 +104,15 @@ class DsaIndexer(OpDefinition):
             raise IRSchemaError("DSA indexer requires tensor q input and a state reference.")
         if attrs["state_layer_ids"]:
             packed = dict(state.fields).get("packed_states")
-            if (not isinstance(packed, TensorType) or len(packed.shape) != 3 or not packed.shape[0].is_fixed
+            if (not isinstance(packed, TensorType) or len(packed.shape) != 3
+                    or not packed.shape[0].is_fixed
                     or packed.shape[0].fixed_value != len(attrs["state_layer_ids"])):
                 raise IRSchemaError("DSA state_layer_ids must describe every packed cache layer.")
         tokens = q.shape[0]
         width = int(attrs["index_topk"]) + (int(attrs["index_kpool"]) - 1 if attrs["always_select_tail"] else 0)
         plain = TensorType(DType.INT32, (tokens, width))
-        topk = (DistributedType(plain, q_source.axis_policies, q_source.placement, q_source.partial, q_source.exclusive)
+        topk = (DistributedType(plain, q_source.axis_policies, q_source.placement,
+                                q_source.partial, q_source.exclusive)
                 if isinstance(q_source, DistributedType) else plain)
         # The reference is mutated in place, matching paged/KDA state ops;
         # carrying it as a separate function result would make ref tuple
@@ -175,16 +178,16 @@ class DsaIndexer(OpDefinition):
             probabilities = torch.nan_to_num(torch.softmax(logits, dim=1)).to(keys.dtype)
             pool_keys = (probabilities * grouped_keys).sum(dim=1)
             scores = torch.einsum("thd,pd->thp", q.float(), pool_keys.float())
-            scores = torch.relu(scores * (d**-0.5))
+            scores = torch.relu(scores * (d ** -0.5))
             index_scores = (weights.float()[:, :, None] * scores).sum(dim=1)
         else:
             pool_indices = torch.empty((0, pool), dtype=torch.int64, device=key.device)
-            pool_valid = torch.empty((0, ), dtype=torch.bool, device=key.device)
+            pool_valid = torch.empty((0,), dtype=torch.bool, device=key.device)
             index_scores = torch.empty((tokens, 0), dtype=torch.float32, device=key.device)
         visible = torch.zeros((tokens, length), dtype=torch.bool, device=key.device)
         positions = base + torch.arange(tokens, device=key.device)
         visible = (torch.arange(length, device=key.device)[None, :] <= positions[:, None]) & valid_keys[None, :]
-        pool_end = pool_indices[:, -1].clamp(0, max(length - 1, 0)) if pool_count else pool_indices.new_empty((0, ))
+        pool_end = pool_indices[:, -1].clamp(0, max(length - 1, 0)) if pool_count else pool_indices.new_empty((0,))
         candidates = (visible[:, pool_end] if pool_count else visible.new_empty((tokens, 0)))
         candidates &= pool_valid[None, :] if pool_count else candidates
         select = min(topk // pool, index_scores.shape[-1])
@@ -213,7 +216,7 @@ class DsaIndexer(OpDefinition):
 
     @classmethod
     def cost(cls, node):
-        return OpCost(notes=("dsa-indexer-stateful", ))
+        return OpCost(notes=("dsa-indexer-stateful",))
 
 
 __all__ = ["DsaIndexer"]

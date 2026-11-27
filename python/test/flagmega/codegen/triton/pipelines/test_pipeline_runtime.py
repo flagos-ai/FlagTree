@@ -19,8 +19,7 @@ def _assert_reused_device_roles(runtime, *, wrapper_depth=0):
         for role in ("consumer", "producer"):
             definitions = re.findall(
                 r"^define .*@([^ (]*\._flagmega_function_" + name + "__" + role + r"__[^ (]*)\(",
-                llir,
-                re.M,
+                llir, re.M,
             )
             assert len(definitions) == 1, (name, role, definitions)
             expected_calls = 2 if name == names[-1] else 1
@@ -30,22 +29,27 @@ def _assert_reused_device_roles(runtime, *, wrapper_depth=0):
 def _checkpoint(weights):
     return MemoryCheckpoint(
         {},
-        {name: TensorInfo(name, DType.BFLOAT16, (128, 128), "memory")
-         for name in weights},
+        {
+            name: TensorInfo(name, DType.BFLOAT16, (128, 128), "memory")
+            for name in weights
+        },
         weights,
     )
 
 
 def test_reusable_pipeline_matches_torch_on_sm90(
-    tmp_path,
-    compile_pipeline_module,
+    tmp_path, compile_pipeline_module,
 ):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
 
-    first_weight = torch.randn((128, 128), dtype=torch.bfloat16) / 8
-    second_weight = torch.randn((128, 128), dtype=torch.bfloat16) / 8
+    first_weight = torch.randn(
+        (128, 128), dtype=torch.bfloat16
+    ) / 8
+    second_weight = torch.randn(
+        (128, 128), dtype=torch.bfloat16
+    ) / 8
     artifact = write_artifact(
         compile_pipeline_module(reusable=True),
         tmp_path / "dense-pipeline",
@@ -74,20 +78,19 @@ def test_reusable_pipeline_matches_torch_on_sm90(
 
 @pytest.mark.parametrize("wrapper_depth", [0, 1])
 def test_reusable_multi_pipeline_drains_each_endpoint_once_on_sm90(
-    tmp_path,
-    compile_pipeline_module,
-    wrapper_depth,
+    tmp_path, compile_pipeline_module, wrapper_depth,
 ):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
 
-    weights = tuple(torch.randn((128, 128), dtype=torch.bfloat16) / 8 for _ in range(4))
+    weights = tuple(
+        torch.randn((128, 128), dtype=torch.bfloat16) / 8
+        for _ in range(4)
+    )
     checkpoint_weights = {
-        **{f"first_weight_{index}": weights[index]
-           for index in range(2)},
-        **{f"second_weight_{index}": weights[index + 2]
-           for index in range(2)},
+        **{f"first_weight_{index}": weights[index] for index in range(2)},
+        **{f"second_weight_{index}": weights[index + 2] for index in range(2)},
     }
     artifact = write_artifact(
         compile_pipeline_module(reusable=True, worker_depth=2, wrapper_depth=wrapper_depth),

@@ -8,12 +8,8 @@ from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir import DistributedType, TupleType, local_tensor_type
 from triton.flagmega.ir.distributed_type import placement_from_data
 from triton.flagmega.ir.execution_mesh import (
-    ExecutionMesh,
-    ExecutionMeshKind,
-    KernelProgramKind,
-    effective_execution_mesh,
-    node_execution_mesh,
-    placement_for_execution_mesh,
+    ExecutionMesh, ExecutionMeshKind, KernelProgramKind, effective_execution_mesh,
+    node_execution_mesh, placement_for_execution_mesh,
 )
 from triton.flagmega.passes.functions.graph import function_nodes
 from triton.flagmega.ir.launch_recipe import TaskLaunchRecipe
@@ -41,11 +37,12 @@ def selected_task_recipe(node):
 
 def _region_members(module, node, kernels):
     if node.id in kernels:
-        return (kernels[node.id], )
+        return (kernels[node.id],)
     callee = module.function_map.get(str(node.attrs.get('callee', '')))
     if callee is None:
         return ()
-    return tuple(member for child in function_nodes(module, callee) if child.op in {'tir.call', 'control.for'}
+    return tuple(member for child in function_nodes(module, callee)
+                 if child.op in {'tir.call', 'control.for'}
                  for member in _region_members(module, child, kernels))
 
 
@@ -57,49 +54,46 @@ def _execution_policy(module, node, default):
         # fixes those owners; a module default is only an inherited choice.
         def result_placements(value):
             if isinstance(value, DistributedType):
-                return (value.placement, )
+                return (value.placement,)
             if isinstance(value, TupleType):
                 return tuple(p for field in value.fields for p in result_placements(field))
             return ()
-
         placements = result_placements(node.type)
         if placements and all(p == placements[0] for p in placements):
-            shape = tuple(size
-                          for size, level in zip(placements[0].hierarchy, placements[0].hierarchy_levels, strict=True)
-                          if level == 'b') or (1, )
+            shape = tuple(size for size, level in zip(placements[0].hierarchy,
+                          placements[0].hierarchy_levels, strict=True) if level == 'b') or (1,)
             if mesh.shape != shape:
                 mesh = ExecutionMesh.fixed(shape)
-    kind = KernelProgramKind(
-        node.metadata.get(
-            'kernel_program_kind',
-            module.metadata.get('kernel_program_kind',
-                                'ordinary' if mesh.kind is ExecutionMeshKind.DYNAMIC else 'persistent')))
+    kind = KernelProgramKind(node.metadata.get('kernel_program_kind', module.metadata.get('kernel_program_kind',
+        'ordinary' if mesh.kind is ExecutionMeshKind.DYNAMIC else 'persistent')))
     warps = node.metadata.get('kernel_num_warps')
     if warps is not None and (type(warps) is not int or warps not in (1, 2, 4, 8, 16, 32)):
-        raise IRVerificationError('kernel_num_warps must be a supported positive power of two.', stage=module.stage,
-                                  node_id=node.id)
+        raise IRVerificationError('kernel_num_warps must be a supported positive power of two.',
+                                  stage=module.stage, node_id=node.id)
     maxnreg = node.metadata.get('kernel_maxnreg')
     if maxnreg is not None and (type(maxnreg) is not int or maxnreg < 8 or maxnreg > 256 or maxnreg % 8):
-        raise IRVerificationError('kernel_maxnreg must be a multiple of eight in [8, 256].', stage=module.stage,
-                                  node_id=node.id)
+        raise IRVerificationError('kernel_maxnreg must be a multiple of eight in [8, 256].',
+                                  stage=module.stage, node_id=node.id)
     from triton.flagmega.ir.tir.kernel_dispatch import kernel_dispatch_for_call
     dispatch = kernel_dispatch_for_call(module, node)
     parameters = dispatch.parameters if dispatch is not None else node.attrs.get('parameters', {})
     geometry = parameters.get('program_grid')
     if geometry is not None:
         geometry = tuple(geometry)
-        expected = (*mesh.shape,
-                    *(1 for _ in range(3 - len(mesh.shape)))) if mesh.kind is ExecutionMeshKind.FIXED else ()
-        if (len(geometry) != 3 or any(type(v) is not int or v <= 0 for v in geometry) or geometry != expected
-                or parameters.get('program_owner_mapping') != 'x-fast'):
+        expected = (*mesh.shape, *(1 for _ in range(3 - len(mesh.shape)))) if mesh.kind is ExecutionMeshKind.FIXED else ()
+        if (len(geometry) != 3 or any(type(v) is not int or v <= 0 for v in geometry)
+                or geometry != expected or parameters.get('program_owner_mapping') != 'x-fast'):
             raise IRVerificationError('Explicit fixed grid differs from its declared physical mesh/mapping.',
                                       stage=module.stage, node_id=node.id)
-    return mesh, kind, warps, maxnreg, geometry
+    static_shared = node.metadata.get("kernel_enable_static_shared")
+    if static_shared is not None and type(static_shared) is not bool:
+        raise IRVerificationError("kernel_enable_static_shared must be a strict bool.", node_id=node.id)
+    return mesh, kind, warps, maxnreg, geometry, static_shared
 
 
 def _root_unit(module, node, kernels, default, function_name=None):
     if node.id in kernels:
-        return node.id, _execution_policy(module, node, default), (kernels[node.id], )
+        return node.id, _execution_policy(module, node, default), (kernels[node.id],)
     if node.op not in {'tir.call', 'control.for'}:
         return None
     members = _region_members(module, node, kernels)
@@ -113,8 +107,8 @@ def _root_unit(module, node, kernels, default, function_name=None):
                                   stage=module.stage, node_id=node.id)
     if first[0].fusion_key is None or any(policy != first for policy in policies[1:]):
         from triton.flagmega.ir.program_execution import CallInvocation, loop_invocation
-        return (loop_invocation(module, node) if node.op == 'control.for' else CallInvocation(
-            node.id, str(node.attrs['callee'])))
+        return (loop_invocation(module, node) if node.op == 'control.for'
+                else CallInvocation(node.id, str(node.attrs['callee'])))
     # Match the typed For identity used by describe_function_schedule. Preserve
     # the complete region, its backedge and its invocation count; no unrolling.
     identity = f'{function_name or module.entry}.{node.id}_iv' if node.op == 'control.for' else node.id
@@ -137,16 +131,11 @@ def plan_execution_programs(module, target, kernels):
     if not isinstance(data, Mapping):
         raise IRVerificationError('Execution mesh edits require a selected data placement.', stage=module.stage)
     placement = placement_from_data(data)
-    default = ExecutionMesh.fixed(
-        tuple(size for size, level in zip(placement.hierarchy, placement.hierarchy_levels, strict=True) if level == 'b')
-        or (1, ))
+    default = ExecutionMesh.fixed(tuple(size for size, level in zip(
+        placement.hierarchy, placement.hierarchy_levels, strict=True) if level == 'b') or (1,))
     by_id = {node.id: node for node in kernels}
     from triton.flagmega.ir.program_execution import (
-        CallInvocation,
-        LoopInvocation,
-        ProgramInvocation,
-        FunctionProgramExecution,
-        ProgramExecution,
+        CallInvocation, LoopInvocation, ProgramInvocation, FunctionProgramExecution, ProgramExecution,
     )
     programs = []
     functions, active = {}, set()
@@ -158,25 +147,31 @@ def plan_execution_programs(module, target, kernels):
         warps = group['key'][2] or target.plan_launch(module, nodes)['num_warps']
         recipe = selected_task_recipe(nodes[0]) if mesh.kind is ExecutionMeshKind.DYNAMIC else None
         symbol = f'flagmega_{module.entry}_program_{len(programs)}'
+        maxnreg = group['key'][3]
+        if maxnreg is None and module.metadata.get('r004_native_model_request') is not None:
+            from triton.flagmega.rules.ntt.r004_native_model import native_model_request
+            from triton.flagmega.ir.ops.math._iq4_q8 import OPS
+            from triton.flagmega.ir.tir.kernel_dispatch import kernel_dispatch_for_call
+            native_model_request(module)
+            # Q8 entries carry their already qualified 80/96/104 options.
+            # Every ordinary neighbour keeps the frozen cap80 after rebuild.
+            dispatches = (kernel_dispatch_for_call(module,n) for n in nodes)
+            q8 = any((d.parameters if d is not None else n.attrs.get('parameters', {})).get('family')
+                     in OPS.values() for n,d in zip(nodes,dispatches,strict=True))
+            if not q8:
+                maxnreg = 80
         programs.append({
-            'symbol':
-            symbol,
-            'function':
-            function,
-            'calls':
-            tuple(group['calls']),
-            'num_warps':
-            warps,
-            'grid':
-            recipe.grid_upper_bound if recipe else group['key'][4] or (domain.physical_level_size('b'), 1, 1),
-            'execution_mesh':
-            mesh.to_data(),
-            'program_kind':
-            group['kind'].value,
-            'data_placement':
-            domain.to_data(),
-            **({'maxnreg': group['key'][3]} if group['key'][3] is not None else {}),
+            'symbol': symbol,
+            'function': function,
+            'calls': tuple(group['calls']),
+            'num_warps': warps,
+            'grid': recipe.grid_upper_bound if recipe else group['key'][4] or (domain.physical_level_size('b'), 1, 1),
+            'execution_mesh': mesh.to_data(),
+            'program_kind': group['kind'].value,
+            'data_placement': domain.to_data(),
+            **({'maxnreg': maxnreg} if maxnreg is not None else {}),
             **({'launch_recipe': recipe.to_data()} if recipe is not None else {}),
+            **({'enable_static_shared': group['key'][5]} if group['key'][5] is not None else {}),
         })
         return ProgramInvocation(symbol)
 
@@ -201,8 +196,8 @@ def plan_execution_programs(module, target, kernels):
                 steps.append(unit)
                 plan_function(unit.callee)
                 continue
-            identity, (mesh, kind, requested_warps, maxnreg, geometry), members = unit
-            key = (mesh.fusion_key, kind, requested_warps, maxnreg, geometry)
+            identity, (mesh, kind, requested_warps, maxnreg, geometry, static_shared), members = unit
+            key = (mesh.fusion_key, kind, requested_warps, maxnreg, geometry, static_shared)
             if group is None or mesh.fusion_key is None or group['key'] != key:
                 if group is not None:
                     steps.append(emit_group(name, group))
@@ -236,19 +231,23 @@ def verify_program_mesh(module, request):
     if 'launch_recipe' in request:
         recipe = TaskLaunchRecipe.from_data(request['launch_recipe'])
         if (mesh.kind is not ExecutionMeshKind.DYNAMIC or recipe.program_kind.value != request['program_kind']
-                or tuple(request.get('grid', ())) != recipe.grid_upper_bound or domain.physical_level_size('b') != 1):
-            raise IRVerificationError('Dynamic launch recipe differs from its program/data contract.',
-                                      stage=module.stage)
+                or tuple(request.get('grid', ())) != recipe.grid_upper_bound
+                or domain.physical_level_size('b') != 1):
+            raise IRVerificationError('Dynamic launch recipe differs from its program/data contract.', stage=module.stage)
     if mesh.kind is ExecutionMeshKind.FIXED and domain.physical_level_size('b') != mesh.fixed_size:
         raise IRVerificationError('Program data mapping differs from its fixed execution mesh.', stage=module.stage)
 
     def placements(value):
         if isinstance(value, DistributedType):
-            return (value.placement, )
+            return (value.placement,)
         if isinstance(value, TupleType):
             return tuple(p for field in value.fields for p in placements(field))
         return ()
 
+    if mesh.kind is ExecutionMeshKind.FIXED and mesh.mapping == 'x-fast':
+        expected = (*mesh.shape, *(1 for _ in range(3-len(mesh.shape))))
+        if not 1 <= len(mesh.shape) <= 3 or tuple(request.get('grid', ())) != expected:
+            raise IRVerificationError('x-fast program grid differs from its fixed mesh.',stage=module.stage)
     function_name = request.get('function', module.entry)
     if function_name not in module.function_map:
         raise IRVerificationError('Execution program references an unknown function scope.', stage=module.stage)
@@ -257,7 +256,8 @@ def verify_program_mesh(module, request):
     for call in request['calls']:
         node = module.node_map.get(call)
         if node is None:
-            node = next((n for n in owned if n.op == 'control.for' and call == f'{function_name}.{n.id}_iv'), None)
+            node = next((n for n in owned
+                         if n.op == 'control.for' and call == f'{function_name}.{n.id}_iv'), None)
         if node is None or node.id not in owned_ids:
             raise IRVerificationError('Execution program references an unknown scoped call.', stage=module.stage)
         explicit = node_execution_mesh(node)
@@ -266,8 +266,7 @@ def verify_program_mesh(module, request):
                                       stage=module.stage, node_id=call)
         kind = node.metadata.get('kernel_program_kind')
         if kind is not None and kind != request['program_kind']:
-            raise IRVerificationError('Program kind differs from its explicit call policy.', stage=module.stage,
-                                      node_id=call)
+            raise IRVerificationError('Program kind differs from its explicit call policy.', stage=module.stage, node_id=call)
         if any(p != domain for p in placements(node.type)):
             raise IRVerificationError('Program owner ABI is stale; resume before distribution and allocation.',
                                       stage=module.stage, node_id=call)

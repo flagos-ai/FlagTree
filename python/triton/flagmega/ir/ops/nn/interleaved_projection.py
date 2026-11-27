@@ -55,10 +55,8 @@ class InterleavedProjection(OpDefinition):
         lanes = attrs["output_lanes"]
         if not isinstance(lanes, (tuple, list)) or len(lanes) != 2:
             raise IRSchemaError("InterleavedProjection output_lanes requires two lane shapes.")
-        return {
-            **attrs, "feature_shape": tuple(shape), "output_lanes":
-            tuple(normalize_output_lanes(x, "InterleavedProjection") for x in lanes)
-        }
+        return {**attrs, "feature_shape": tuple(shape),
+                "output_lanes": tuple(normalize_output_lanes(x, "InterleavedProjection") for x in lanes)}
 
     @classmethod
     def ir_attrs(cls, attrs):
@@ -80,17 +78,14 @@ class InterleavedProjection(OpDefinition):
         bn, bk = attrs["weight_block_n"], attrs["weight_block_k"]
         k = value.shape[1]
         if (scale.dtype != DType.FLOAT32 or not k.is_fixed
-                or scale.shape != tensor_type(DType.FLOAT32, ((heads * 2 * width + bn - 1) // bn,
-                                                              (k.fixed_value + bk - 1) // bk)).shape):
+                or scale.shape != tensor_type(DType.FLOAT32, ((heads * 2 * width + bn - 1)//bn, (k.fixed_value+bk-1)//bk)).shape):
             raise IRSchemaError("InterleavedProjection requires logical-N/K FP32 placeholder scales.")
         fields = []
         for lanes in attrs.get("output_lanes", ((), ())):
             if width % prod(lanes):
                 raise IRSchemaError("InterleavedProjection field width must divide output_lanes.")
-            fields.append(
-                tensor_type(
-                    VectorType(DType.BFLOAT16, lanes) if lanes else DType.BFLOAT16,
-                    (value.shape[0], heads, width // prod(lanes))))
+            fields.append(tensor_type(VectorType(DType.BFLOAT16, lanes) if lanes else DType.BFLOAT16,
+                                      (value.shape[0], heads, width // prod(lanes))))
         if not any(isinstance(t, DistributedType) for t in kinds):
             return TupleType(tuple(fields))
         if not all(isinstance(t, DistributedType) for t in kinds) or len({t.placement for t in kinds}) != 1:
@@ -127,24 +122,20 @@ class InterleavedProjection(OpDefinition):
         if rows is None:
             return ()
         x, w, s = (tensor_of(t) for t in logical_input_types)
-        return ((broadcast_type(x, placement), DistributedType(w, (rows, SBP.broadcast()),
-                                                               placement), broadcast_type(s, placement)), )
+        return ((broadcast_type(x, placement), DistributedType(w, (rows, SBP.broadcast()), placement),
+                 broadcast_type(s, placement)),)
 
     @classmethod
     def distributed_output_type_candidates(cls, choices, output_type, attrs):
         del attrs
         results = []
-        for placement in dict.fromkeys(t.placement
-                                       for options in choices
-                                       for t in options
-                                       if isinstance(t, DistributedType)):
+        for placement in dict.fromkeys(t.placement for options in choices for t in options if isinstance(t, DistributedType)):
             axes = tuple(range(placement.rank))
             for count in range(1, len(axes) + 1):
                 for selected in combinations(axes, count):
                     head = SBP.split_contiguous(selected)
                     try:
-                        results.append(
-                            TupleType(tuple(_output(tensor_of(f), placement, head) for f in output_type.fields)))
+                        results.append(TupleType(tuple(_output(tensor_of(f), placement, head) for f in output_type.fields)))
                     except IRSchemaError:
                         continue
         return tuple(results)
@@ -152,30 +143,26 @@ class InterleavedProjection(OpDefinition):
     @classmethod
     def evaluate(cls, node, arguments, context):
         projected = block_scaled_linear(*arguments, block_n=node.attrs["weight_block_n"],
-                                        block_k=node.attrs["weight_block_k"],
-                                        weight_encoding=node.attrs["weight_encoding"],
-                                        output_dtype=context.torch.bfloat16)
+            block_k=node.attrs["weight_block_k"], weight_encoding=node.attrs["weight_encoding"], output_dtype=context.torch.bfloat16)
         heads, width = node.attrs["feature_shape"]
         projected = projected.reshape(projected.shape[0], heads, 2, width)
-        return tuple(projected[:, :,
-                               index, :].contiguous().reshape(projected.shape[0], heads, width // prod(lanes), *lanes)
-                     for index, lanes in enumerate(node.attrs.get("output_lanes", ((), ()))))
+        return tuple(projected[:, :, index, :].contiguous().reshape(projected.shape[0], heads,
+                    width//prod(lanes), *lanes) for index, lanes in enumerate(node.attrs.get("output_lanes", ((), ()))))
 
     @classmethod
     def cost(cls, node):
         return OpCost(bytes_written=sum(tensor_nbytes(tensor_of(t)) for t in node.type.fields),
-                      notes=("single-native-interleaved-row-projection", ))
+                      notes=("single-native-interleaved-row-projection",))
 
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
         from triton.flagmega.ir.distributed_type import local_tensor_type
         fields = tuple(local_tensor_type(t) if isinstance(t, DistributedType) else t for t in return_type.fields)
-        tensors = tuple(
-            local_tensor_type(n.type) if isinstance(n.type, DistributedType) else tensor_of(n.type) for n in inputs)
+        tensors = tuple(local_tensor_type(n.type) if isinstance(n.type, DistributedType) else tensor_of(n.type) for n in inputs)
         k = tensor_of(inputs[0].type).shape[1]
         if not k.is_fixed or any(not d.is_fixed for t in fields for d in t.shape):
             return None
-        outputs = sum(tensor_nbytes(t) // 2 for t in fields)
-        return OpCostFactors(cpu_cycles=2 * outputs * k.fixed_value,
+        outputs = sum(tensor_nbytes(t)//2 for t in fields)
+        return OpCostFactors(cpu_cycles=2*outputs*k.fixed_value,
                              chip_aggregate_memory_load_bytes=sum(tensor_nbytes(t) for t in tensors),
-                             chip_aggregate_memory_store_bytes=2 * outputs)
+                             chip_aggregate_memory_store_bytes=2*outputs)

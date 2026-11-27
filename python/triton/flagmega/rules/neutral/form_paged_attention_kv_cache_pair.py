@@ -15,14 +15,15 @@ from triton.flagmega.rules.core import RewriteEffectPolicy, RewriteResult, Rewri
 
 def form_paged_attention_kv_cache_pair_rule():
     layer = wildcard("layer")
-    key = F.nn.is_update_paged_attention_kv_cache(wildcard("key"), wildcard("state"), layer, wildcard("no_advance"),
-                                                  cache_kind="key", call_name="key_update").with_user_count(1)
+    key = F.nn.is_update_paged_attention_kv_cache(
+        wildcard("key"), wildcard("state"), layer, wildcard("no_advance"),
+        cache_kind="key", call_name="key_update").with_user_count(1)
     return RewriteRule(
         "form_paged_attention_kv_cache_pair",
-        F.nn.is_update_paged_attention_kv_cache(wildcard("value"), key, layer, wildcard("advance"), cache_kind="value",
-                                                call_name="value_update"),
-        _rewrite,
-        effect_policy=RewriteEffectPolicy.ALLOW,
+        F.nn.is_update_paged_attention_kv_cache(
+            wildcard("value"), key, layer, wildcard("advance"),
+            cache_kind="value", call_name="value_update"),
+        _rewrite, effect_policy=RewriteEffectPolicy.ALLOW,
     )
 
 
@@ -75,13 +76,13 @@ def _rewrite(match, module):
     prefix = ()
     if key_pack is not None:
         definition = get_definition("tensors.pack")
-        prepared = definition.prepare((source, ), key_pack.attrs)
+        prepared = definition.prepare((source,), key_pack.attrs)
         identifier = root.id + ".pair_slots"
         while identifier in module.node_map:
             identifier += "_"
-        source = Node(identifier, "tensors.pack", (source.id, ), prepared.result_type, prepared.effect, prepared.attrs,
-                      {"formed_by": "FormPagedAttentionKVCachePair"})
-        prefix = (source, )
+        source = Node(identifier, "tensors.pack", (source.id,), prepared.result_type,
+                      prepared.effect, prepared.attrs, {"formed_by": "FormPagedAttentionKVCachePair"})
+        prefix = (source,)
     inputs = (source, match["state"], match["layer"], match["advance"])
     definition = get_definition("nn.update_paged_attention_kv_cache_pair")
     try:
@@ -91,7 +92,7 @@ def _rewrite(match, module):
     replacement = replace(root, op=definition.op_name, inputs=tuple(node.id for node in inputs),
                           type=prepared.result_type, effect=prepared.effect, attrs=prepared.attrs,
                           metadata={**root.metadata, "formed_by": "FormPagedAttentionKVCachePair"})
-    return RewriteResult(replacement, prefix, removed_ids=(key_update.id, ))
+    return RewriteResult(replacement, prefix, removed_ids=(key_update.id,))
 
 
 __all__ = ["form_paged_attention_kv_cache_pair_rule"]

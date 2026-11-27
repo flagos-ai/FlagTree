@@ -12,7 +12,9 @@ def _descriptor(name, dtype, shape):
     nbytes = dtype.itemsize
     for extent in shape:
         nbytes *= extent
-    physical = fm.PhysicalBuffer(f"physical:{name}", "workspace", fm.dim(nbytes), 16)
+    physical = fm.PhysicalBuffer(
+        f"physical:{name}", "workspace", fm.dim(nbytes), 16
+    )
     strides = []
     stride = 1
     for extent in reversed(shape):
@@ -31,24 +33,27 @@ def _descriptor(name, dtype, shape):
 
 def _parameter(formal, descriptor):
     return {
-        "formal":
-        formal,
+        "formal": formal,
         "buffers": ({
             "formal": formal,
             "actual": descriptor.id,
             "runtime_argument": descriptor.id,
             "runtime_value_kind": "pointer",
             "abi": describe_local_buffer_abi(descriptor),
-        }, ),
+        },),
     }
 
 
 def test_rope_renderer_scalarizes_input_and_double_lane_rotary_tables():
-    value = _descriptor("value", fm.vector_type("bfloat16", (8, )), (1, 8, 2))
+    value = _descriptor(
+        "value", fm.vector_type("bfloat16", (8,)), (1, 8, 2)
+    )
     table_type = fm.vector_type("float32", (2, 8))
     cos = _descriptor("cos", table_type, (1, 1, 1))
     sin = _descriptor("sin", table_type, (1, 1, 1))
-    result = _descriptor("result", fm.vector_type("bfloat16", (8, )), (1, 8, 2))
+    result = _descriptor(
+        "result", fm.vector_type("bfloat16", (8,)), (1, 8, 2)
+    )
 
     call = prepare_kernel_calls(({
         "call": "rope",
@@ -62,9 +67,9 @@ def test_rope_renderer_scalarizes_input_and_double_lane_rotary_tables():
             _parameter("cos", cos),
             _parameter("sin", sin),
         ),
-        "outputs": (_parameter("result", result), ),
+        "outputs": (_parameter("result", result),),
         "workspaces": (),
-    }, ), function_name="main")[0]
+    },), function_name="main")[0]
 
     assert call["local_capacity"] == 128
     assert call["head_dim"] == 16
@@ -94,9 +99,9 @@ def test_scalar_rope_keeps_the_same_renderer_path_without_lane_coordinates():
             _parameter("cos", cos),
             _parameter("sin", sin),
         ),
-        "outputs": (_parameter("result", result), ),
+        "outputs": (_parameter("result", result),),
         "workspaces": (),
-    }, ), function_name="main")[0]
+    },), function_name="main")[0]
 
     assert call["local_capacity"] == 128
     assert call["head_dim"] == 16
@@ -105,23 +110,27 @@ def test_scalar_rope_keeps_the_same_renderer_path_without_lane_coordinates():
 
 
 def test_explicit_vectorized_rope_compiles_through_tir_and_package_rendering(tmp_path):
-
     class Graph(fm.Module):
-
         def __init__(self):
-            super().__init__(dialect="high_level", stage="vectorized", entry="main")
+            super().__init__(
+                dialect="high_level", stage="vectorized", entry="main"
+            )
 
         def forward(self):
             value = self.input(
                 "value",
-                fm.tensor_type(fm.vector_type("bfloat16", (8, )), (1, 8, 2)),
+                fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, 8, 2)),
                 id="value",
             )
-            table_type = fm.tensor_type(fm.vector_type("float32", (2, 8)), (1, 1, 1))
+            table_type = fm.tensor_type(
+                fm.vector_type("float32", (2, 8)), (1, 1, 1)
+            )
             cos = self.input("cos", table_type, id="cos")
             sin = self.input("sin", table_type, id="sin")
-            output = fm.F.ntt.vectorized_rope(value, cos, sin, name="output")
-            self.function("main", (value, cos, sin), (output, ))
+            output = fm.F.ntt.vectorized_rope(
+                value, cos, sin, name="output"
+            )
+            self.function("main", (value, cos, sin), (output,))
 
     compiled = Compiler().compile(Graph().build()).module
     # A logical entry argument may now select a local shard. Trace the public

@@ -25,7 +25,7 @@ def test_broadcast_rejects_invalid_shape(shape):
 
 
 def test_expanding_a_split_singleton_requires_boxing_not_local_replication():
-    source = fm.DistributedType(fm.tensor_type("float32", (1, )), (fm.SBP.split_block_cyclic((0, ), 1), ),
-                                fm.Placement((2, ), "x", "b"))
+    source = fm.DistributedType(fm.tensor_type("float32", (1,)), (fm.SBP.split_block_cyclic((0,), 1),),
+                                fm.Placement((2,), "x", "b"))
     with pytest.raises(IRSchemaError, match="Boxing"):
-        primitive_module(BroadcastTo, (source, ), shape=(8, ))
+        primitive_module(BroadcastTo, (source,), shape=(8,))

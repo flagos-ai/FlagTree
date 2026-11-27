@@ -26,10 +26,10 @@ class NttTargetOptions:
         if not self.placements:
             raise IRSchemaError("NTT target options require at least one placement.")
         for name in (
-                "vector_lane_bytes",
-                "vector_max_axes",
-                "packing_vector_bytes",
-                "packing_k_pack",
+            "vector_lane_bytes",
+            "vector_max_axes",
+            "packing_vector_bytes",
+            "packing_k_pack",
         ):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
@@ -50,11 +50,13 @@ class NttTargetOptions:
         if data.get("schema") == "flagmega.pyntt-target-options/v1":
             return PyNttTargetOptions.from_data(data)
         if data.get("schema") not in {
-                "flagmega.ntt-target-options/v2",
-                "flagmega.ntt-target-options/v3",
-                "flagmega.ntt-target-options/v4",
+            "flagmega.ntt-target-options/v2",
+            "flagmega.ntt-target-options/v3",
+            "flagmega.ntt-target-options/v4",
         }:
-            raise IRSchemaError(f"Unsupported NTT target-options schema {data.get('schema')!r}.")
+            raise IRSchemaError(
+                f"Unsupported NTT target-options schema {data.get('schema')!r}."
+            )
         placements = data.get("placements")
         if not isinstance(placements, Sequence) or isinstance(placements, (str, bytes)):
             raise IRSchemaError("NTT target-options placements must be a sequence.")
@@ -64,7 +66,10 @@ class NttTargetOptions:
                     tuple(value["hierarchy"]),
                     value["name"],
                     value["hierarchy_levels"],
-                ) for value in placements if isinstance(value, Mapping))
+                )
+                for value in placements
+                if isinstance(value, Mapping)
+            )
             if len(parsed) != len(placements):
                 raise IRSchemaError("Malformed NTT target-options placement entry.")
             return cls(
@@ -87,8 +92,15 @@ class PyNttTargetOptions(NttTargetOptions):
     def __post_init__(self) -> None:
         super().__post_init__()
         value = self.block_cyclic_block_bytes
-        if (not isinstance(value, int) or isinstance(value, bool) or value <= 0 or value & (value - 1)):
-            raise IRSchemaError("PyNTT block_cyclic_block_bytes must be a positive power of two.")
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value <= 0
+            or value & (value - 1)
+        ):
+            raise IRSchemaError(
+                "PyNTT block_cyclic_block_bytes must be a positive power of two."
+            )
 
     def to_data(self) -> dict[str, object]:
         data = super().to_data()
@@ -119,7 +131,9 @@ class PyNttTargetOptions(NttTargetOptions):
     @classmethod
     def from_data(cls, data: Mapping[str, object]) -> PyNttTargetOptions:
         if data.get("schema") != "flagmega.pyntt-target-options/v1":
-            raise IRSchemaError(f"Unsupported PyNTT target-options schema {data.get('schema')!r}.")
+            raise IRSchemaError(
+                f"Unsupported PyNTT target-options schema {data.get('schema')!r}."
+            )
         base_data = dict(data)
         base_data["schema"] = "flagmega.ntt-target-options/v4"
         base = NttTargetOptions.from_data(base_data)

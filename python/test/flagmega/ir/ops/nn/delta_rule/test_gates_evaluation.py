@@ -29,11 +29,11 @@ def test_gate_stable_softplus_tails_and_inputs_unchanged(threshold):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize("fixture_name", ["native_delta_rule_fast_inner.json", "native_delta_rule_fast_sigmoid.json"])
 def test_cuda_gate_evaluator_retains_fast_inner_exp_and_accurate_outer_exp(fixture_name):
-    fixture = json.loads((Path(__file__).resolve().parents[4] / "data" / fixture_name).read_text())
-    inputs = tuple(
-        torch.tensor(fixture[name], device="cuda", dtype=dtype)
-        for name, dtype in (("a", torch.bfloat16), ("b", torch.bfloat16), ("a_log", torch.float32), ("bias",
-                                                                                                     torch.bfloat16)))
+    fixture = json.loads((Path(__file__).resolve().parents[4] / "data" /
+                          fixture_name).read_text())
+    inputs = tuple(torch.tensor(fixture[name], device="cuda", dtype=dtype) for name, dtype in
+                   (("a", torch.bfloat16), ("b", torch.bfloat16),
+                    ("a_log", torch.float32), ("bias", torch.bfloat16)))
     alpha, beta = evaluate(DeltaRuleGates, inputs, alpha_exp_mode="accurate")
     expected_alpha = torch.tensor(fixture["alpha"], device="cuda")
     expected_beta = torch.tensor(fixture["beta"], device="cuda")

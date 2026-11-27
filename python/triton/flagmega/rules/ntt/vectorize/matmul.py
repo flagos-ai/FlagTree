@@ -31,9 +31,12 @@ class VectorizeMatMul:
             return ()
         lhs = module.node_map[node.inputs[0]].type
         rhs = module.node_map[node.inputs[1]].type
-        if (not isinstance(lhs, TensorType) or not isinstance(rhs, TensorType) or lhs.rank != 2 or rhs.rank != 2
-                or node.type.rank != 2 or isinstance(lhs.dtype, VectorType) or lhs.dtype != rhs.dtype
-                or not isinstance(lhs.dtype, DType) or lhs.dtype not in {DType.FLOAT16, DType.BFLOAT16, DType.FLOAT32}):
+        if (
+            not isinstance(lhs, TensorType) or not isinstance(rhs, TensorType)
+            or lhs.rank != 2 or rhs.rank != 2 or node.type.rank != 2
+            or isinstance(lhs.dtype, VectorType) or lhs.dtype != rhs.dtype or not isinstance(lhs.dtype, DType)
+            or lhs.dtype not in {DType.FLOAT16, DType.BFLOAT16, DType.FLOAT32}
+        ):
             return ()
         lane = self.lane_bytes // lhs.dtype.itemsize
         if lane <= 1:
@@ -42,55 +45,49 @@ class VectorizeMatMul:
         transpose_b = bool(node.attrs.get("transpose_b", False))
         lhs_m, lhs_k = ((1, 0) if transpose_a else (0, 1))
         rhs_k, rhs_n = ((1, 0) if transpose_b else (0, 1))
-        # Match the reference VectorizeMatMul alternatives. ``max_axes`` is the
+        # Match nncase's VectorizeMatMul alternatives. ``max_axes`` is the
         # maximum vector rank of each tensor, not a global M/N/K whitelist:
         # rank=1 exposes RHS-N; rank>=2 additionally exposes MxN and the full
         # LHS(M,K)/RHS(K,N) packed form.  The previously generated standalone
-        # M/K/MK/NK forms do not exist in reference and cannot describe its
+        # M/K/MK/NK forms do not exist in nncase and cannot describe its
         # coupled operand layouts.
         layouts = [
-            ("n", (), (rhs_n, ), (1, )),
+            ("n", (), (rhs_n,), (1,)),
         ]
         if self.max_axes > 1:
             layouts.extend((
-                ("mn", (lhs_m, ), (rhs_n, ), (0, 1)),
+                ("mn", (lhs_m,), (rhs_n,), (0, 1)),
                 ("mkn", (lhs_m, lhs_k), (rhs_k, rhs_n), (0, 1)),
             ))
         results: list[VectorizeCandidate] = []
         for kind, lhs_axes, rhs_axes, out_axes in layouts:
-            lhs_lanes = (lane, ) * len(lhs_axes)
-            rhs_lanes = (lane, ) * len(rhs_axes)
-            out_lanes = (lane, ) * len(out_axes)
+            lhs_lanes = (lane,) * len(lhs_axes)
+            rhs_lanes = (lane,) * len(rhs_axes)
+            out_lanes = (lane,) * len(out_axes)
             out_lanes, out_axes = split_vector_lanes(out_lanes, out_axes, element_bytes=node.type.dtype.itemsize,
-                                                     vector_bytes=self.lane_bytes)
+                                                       vector_bytes=self.lane_bytes)
             lhs_pads = padding_for(lhs, lhs_axes, lhs_lanes) if lhs_axes else (0, 0)
             rhs_pads = padding_for(rhs, rhs_axes, rhs_lanes) if rhs_axes else (0, 0)
             output_pads = padding_for(node.type, out_axes, out_lanes)
             if lhs_pads is None or rhs_pads is None or output_pads is None:
                 continue
-            results.append(
-                VectorizeCandidate(
-                    f"vectorization.matmul.{kind}",
-                    self.name,
-                    out_axes,
-                    out_lanes,
-                    {
-                        "kind": kind,
-                        "lhs_axes": list(lhs_axes),
-                        "rhs_axes": list(rhs_axes),
-                        "output_axes": list(out_axes),
-                        "lhs_lanes": list(lhs_lanes),
-                        "rhs_lanes": list(rhs_lanes),
-                        "output_lanes": list(out_lanes),
-                        "vector_bytes": self.lane_bytes,
-                    },
-                    {
-                        "lhs_padding": list(lhs_pads),
-                        "rhs_padding": list(rhs_pads),
-                        "output_padding": list(output_pads),
-                        "egraph_equivalent": True,
-                    },
-                ))
+            results.append(VectorizeCandidate(
+                f"vectorization.matmul.{kind}",
+                self.name,
+                out_axes,
+                out_lanes,
+                {
+                    "kind": kind,
+                    "lhs_axes": list(lhs_axes), "rhs_axes": list(rhs_axes),
+                    "output_axes": list(out_axes), "lhs_lanes": list(lhs_lanes),
+                    "rhs_lanes": list(rhs_lanes), "output_lanes": list(out_lanes),
+                    "vector_bytes": self.lane_bytes,
+                },
+                {
+                    "lhs_padding": list(lhs_pads), "rhs_padding": list(rhs_pads),
+                    "output_padding": list(output_pads), "egraph_equivalent": True,
+                },
+            ))
         return tuple(results)
 
     def rewrite(self, node: Node, module: IRModule, candidate: VectorizeCandidate) -> RewriteResult:
@@ -106,21 +103,13 @@ class VectorizeMatMul:
         rhs = module.node_map[node.inputs[1]]
         if lhs_axes:
             helpers, lhs = prepare_packed_input(
-                lhs,
-                axes=lhs_axes,
-                lanes=lhs_lanes,
-                root_id=node.id,
-                input_index=0,
+                lhs, axes=lhs_axes, lanes=lhs_lanes, root_id=node.id, input_index=0,
                 forced_pad=tuple(candidate.facts["lhs_padding"]),
             )
             prefix.extend(helpers)
         if rhs_axes:
             helpers, rhs = prepare_packed_input(
-                rhs,
-                axes=rhs_axes,
-                lanes=rhs_lanes,
-                root_id=node.id,
-                input_index=1,
+                rhs, axes=rhs_axes, lanes=rhs_lanes, root_id=node.id, input_index=1,
                 forced_pad=tuple(candidate.facts["rhs_padding"]),
             )
             prefix.extend(helpers)

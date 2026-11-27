@@ -17,8 +17,8 @@ def _shape(value, dtype, shape, label):
         raise IRSchemaError(f'{label} cannot consume an unresolved partial value.')
 
 
-@op_definition('ntt.split_k_dense_glu_projection', namespace='ntt', functional_name='split_k_dense_glu_projection',
-               display_name='NTT.SplitKDenseGluProjection')
+@op_definition('ntt.split_k_dense_glu_projection', namespace='ntt',
+               functional_name='split_k_dense_glu_projection', display_name='NTT.SplitKDenseGluProjection')
 class SplitKDenseGluProjection(OpDefinition):
     supports_broadcast_lifting = False
     value = input_parameter(is_tensor() & has_rank(2))
@@ -35,26 +35,25 @@ class SplitKDenseGluProjection(OpDefinition):
             return output
         if placement.hierarchy != (48, 2) or placement.hierarchy_levels != 'bb':
             raise IRSchemaError('Split GU projection requires its explicit 48-by-2 physical domain.')
-        if not all(
-                isinstance(v, DistributedType) and all(p == SBP.broadcast() for p in v.axis_policies) for v in (a, w)):
+        if not all(isinstance(v, DistributedType) and all(p == SBP.broadcast() for p in v.axis_policies)
+                   for v in (a, w)):
             raise IRSchemaError('Split GU projection requires canonical full global input and paired weight.')
-        return DistributedType(output, (SBP.split_contiguous((1, )), SBP.split_contiguous((0, ))), placement)
+        return DistributedType(output, (SBP.split_contiguous((1,)), SBP.split_contiguous((0,))), placement)
 
     @classmethod
     def evaluate(cls, node, arguments, context):
         a, w = cls.value.read(arguments), cls.weight.read(arguments)
-        return context.torch.stack(
-            tuple(a[:, s * 1024:(s + 1) * 1024].float().matmul(w[s * 1024:(s + 1) * 1024].float()).reshape(12288)
-                  for s in range(2)))
+        return context.torch.stack(tuple(a[:, s*1024:(s+1)*1024].float().matmul(
+            w[s*1024:(s+1)*1024].float()).reshape(12288) for s in range(2)))
 
     @classmethod
     def cost(cls, node):
         return OpCost(flops=50331648, bytes_written=tensor_nbytes(node.type),
-                      notes=('two-ordered-1024-FP32-split-projections', ))
+                      notes=('two-ordered-1024-FP32-split-projections',))
 
 
-@op_definition('ntt.split_k_dense_glu_epilogue', namespace='ntt', functional_name='split_k_dense_glu_epilogue',
-               display_name='NTT.SplitKDenseGluEpilogue')
+@op_definition('ntt.split_k_dense_glu_epilogue', namespace='ntt',
+               functional_name='split_k_dense_glu_epilogue', display_name='NTT.SplitKDenseGluEpilogue')
 class SplitKDenseGluEpilogue(OpDefinition):
     supports_broadcast_lifting = False
     partial = input_parameter(is_tensor() & has_rank(2))
@@ -67,10 +66,10 @@ class SplitKDenseGluEpilogue(OpDefinition):
         placement = placement_of(p)
         if placement is None:
             return output
-        if (placement.hierarchy != (24, ) or placement.hierarchy_levels != 'b'
+        if (placement.hierarchy != (24,) or placement.hierarchy_levels != 'b'
                 or any(policy != SBP.broadcast() for policy in p.axis_policies)):
             raise IRSchemaError('Split GU epilogue requires canonical complete partials in its 24-owner domain.')
-        return DistributedType(output, (SBP.broadcast(), SBP.split_contiguous((0, ))), placement)
+        return DistributedType(output, (SBP.broadcast(), SBP.split_contiguous((0,))), placement)
 
     @classmethod
     def evaluate(cls, node, arguments, context):
@@ -83,7 +82,7 @@ class SplitKDenseGluEpilogue(OpDefinition):
     @classmethod
     def cost(cls, node):
         return OpCost(bytes_read=98304, bytes_written=tensor_nbytes(node.type),
-                      notes=('sum-two-FP32-rows-round-G-and-U-BF16-FP32-SiLU-final-BF16', ))
+                      notes=('sum-two-FP32-rows-round-G-and-U-BF16-FP32-SiLU-final-BF16',))
 
 
 __all__ = ['SplitKDenseGluProjection', 'SplitKDenseGluEpilogue']

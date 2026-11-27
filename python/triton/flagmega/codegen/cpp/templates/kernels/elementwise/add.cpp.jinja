@@ -1,0 +1,5 @@
+// flagmega-kernel: elementwise/add platform=generic
+{% set elementwise_variant = "add" %}
+{% if render_calls is defined %}
+{% include "kernels/elementwise/_function.cpp.jinja" %}
+{% endif %}

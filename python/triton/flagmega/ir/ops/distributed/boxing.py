@@ -62,8 +62,9 @@ class Boxing(OpDefinition):
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
         source = cls.value.type_of(inputs)
-        if not (isinstance(source, DistributedType) and isinstance(return_type, DistributedType) and source.partial
-                is not None and return_type.partial is None and source.placement == return_type.placement):
+        if not (isinstance(source, DistributedType) and isinstance(return_type, DistributedType)
+                and source.partial is not None and return_type.partial is None
+                and source.placement == return_type.placement):
             return None
         local = local_tensor_type(return_type)
         size, count = tensor_nbytes(local), tensor_elements(local)
@@ -80,9 +81,15 @@ class Boxing(OpDefinition):
 
 def _same_logical_type(lhs: IRType, rhs: IRType) -> bool:
     if isinstance(lhs, TupleType) or isinstance(rhs, TupleType):
-        return (isinstance(lhs, TupleType) and isinstance(rhs, TupleType) and len(lhs.fields) == len(rhs.fields)
-                and all(
-                    _same_logical_type(lhs_field, rhs_field) for lhs_field, rhs_field in zip(lhs.fields, rhs.fields)))
+        return (
+            isinstance(lhs, TupleType)
+            and isinstance(rhs, TupleType)
+            and len(lhs.fields) == len(rhs.fields)
+            and all(
+                _same_logical_type(lhs_field, rhs_field)
+                for lhs_field, rhs_field in zip(lhs.fields, rhs.fields)
+            )
+        )
     lhs_tensor = lhs.tensor if isinstance(lhs, DistributedType) else lhs
     rhs_tensor = rhs.tensor if isinstance(rhs, DistributedType) else rhs
     return isinstance(lhs_tensor, TensorType) and lhs_tensor == rhs_tensor

@@ -11,14 +11,13 @@ from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 
 
 class _VectorizedRoPEGraph(fm.Module):
-
     def __init__(self):
         super().__init__(dialect="high_level", stage="vectorized", entry="main")
 
     def forward(self):
         value = self.input(
             "value",
-            fm.tensor_type(fm.vector_type("bfloat16", (8, )), (1, 2, 2)),
+            fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, 2, 2)),
             id="value",
         )
         cos = self.input(
@@ -32,7 +31,7 @@ class _VectorizedRoPEGraph(fm.Module):
             id="sin",
         )
         result = fm.F.ntt.vectorized_rope(value, cos, sin, name="result")
-        self.function("main", (value, cos, sin), (result, ))
+        self.function("main", (value, cos, sin), (result,))
 
 
 def test_vectorized_rope_has_static_functional_pattern_and_python_dump_api():
@@ -54,23 +53,35 @@ def test_vectorized_rope_evaluator_preserves_packed_physical_layout():
     cos = torch.randn((1, 1, 1, 2, 8), dtype=torch.float32)
     sin = torch.randn((1, 1, 1, 2, 8), dtype=torch.float32)
 
-    actual = TorchEvaluator(DictWeightResolver({})).run(module, {"value": value, "cos": cos, "sin": sin})[0]
+    actual = TorchEvaluator(DictWeightResolver({})).run(
+        module, {"value": value, "cos": cos, "sin": sin}
+    )[0]
 
     scalar_value = value.reshape(1, 2, 16).float()
     scalar_cos = cos.reshape(1, 1, 16).float()
     scalar_sin = sin.reshape(1, 1, 16).float()
     half = scalar_value.shape[-1] // 2
-    rotated = torch.cat((-scalar_value[..., half:], scalar_value[..., :half]), dim=-1)
-    expected = (scalar_value * scalar_cos + rotated * scalar_sin).to(value.dtype).reshape(1, 2, 2, 8)
+    rotated = torch.cat(
+        (-scalar_value[..., half:], scalar_value[..., :half]), dim=-1
+    )
+    expected = (
+        scalar_value * scalar_cos + rotated * scalar_sin
+    ).to(value.dtype).reshape(1, 2, 2, 8)
     torch.testing.assert_close(actual, expected)
 
 
 def test_vectorized_rope_rejects_a_rotary_table_without_pair_and_lane_groups():
-    value = _typed("value", fm.tensor_type(fm.vector_type("bfloat16", (8, )), (1, 2, 2)))
-    malformed = _typed("table", fm.tensor_type(fm.vector_type("float32", (8, )), (1, 1, 2)))
+    value = _typed(
+        "value", fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, 2, 2))
+    )
+    malformed = _typed(
+        "table", fm.tensor_type(fm.vector_type("float32", (8,)), (1, 1, 2))
+    )
 
     with pytest.raises(IRSchemaError, match="pair and lane"):
-        fm.get_definition("ntt.vectorized_rope").infer_type((value, malformed, malformed), {})
+        fm.get_definition("ntt.vectorized_rope").infer_type(
+            (value, malformed, malformed), {}
+        )
 
 
 def _typed(name: str, value_type: fm.IRType) -> fm.Node:

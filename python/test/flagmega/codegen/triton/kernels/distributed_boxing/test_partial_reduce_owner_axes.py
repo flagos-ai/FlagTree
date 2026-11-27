@@ -22,40 +22,28 @@ def routed_expert_partial_leaf():
     tensor = fm.tensor_type("float32", (1, 8, 4096))
     source_type = fm.DistributedType(
         tensor,
-        (fm.SBP.broadcast(), fm.SBP.split_contiguous((1, ), 1), fm.SBP.split_contiguous((2, ), 256)),
-        placement,
-        partial=fm.SBP.partial((0, )),
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((1,), 1), fm.SBP.split_contiguous((2,), 256)),
+        placement, partial=fm.SBP.partial((0,)),
     )
     result_type = fm.DistributedType(
-        tensor,
-        (fm.SBP.broadcast(), fm.SBP.broadcast(), fm.SBP.split_contiguous((1, 2), 32)),
-        placement,
+        tensor, (fm.SBP.broadcast(), fm.SBP.broadcast(), fm.SBP.split_contiguous((1, 2), 32)), placement,
     )
     source = _abi(
-        (1, 8, 4096),
-        local_shape=(1, 1, 256),
-        storage_kind="compact_per_owner",
-        coordinate_space="local",
-        owner_stride=256,
-        partial_axes=(0, ),
-        hierarchy=(4, 8, 16),
-        hierarchy_levels="cbb",
+        (1, 8, 4096), local_shape=(1, 1, 256), storage_kind="compact_per_owner", coordinate_space="local",
+        owner_stride=256, partial_axes=(0,), hierarchy=(4, 8, 16), hierarchy_levels="cbb",
         coordinates=("local_coord_0", "local_coord_1 + shard_coord_1", "local_coord_2 + shard_coord_2 * 256"),
     )
     result = _abi(
-        (1, 8, 4096),
-        local_shape=(1, 8, 32),
-        hierarchy=(4, 8, 16),
-        hierarchy_levels="cbb",
+        (1, 8, 4096), local_shape=(1, 8, 32), hierarchy=(4, 8, 16), hierarchy_levels="cbb",
         coordinates=("local_coord_0", "local_coord_1", "local_coord_2 + shard_coord_2 * 32 + shard_coord_1 * 512"),
     )
     for abi, value_type in ((source, source_type), (result, result_type)):
         abi.update(scalar_dtype="float32", scalar_itemsize=4, memory_space="workspace", storage="workspace",
                    distributed_type=value_type.to_data())
     result["scalar_storage_strides"] = (32768, 4096, 1)
-    raw = _raw((source, ), (result, ), ("gather_reduce_scatter", ))
+    raw = _raw((source,), (result,), ("gather_reduce_scatter",))
     raw["parameters"]["tile"] = 256
-    return prepare_kernel_calls((raw, ), function_name="main")[0]["leaves"][0]
+    return prepare_kernel_calls((raw,), function_name="main")[0]["leaves"][0]
 
 
 @pytest.mark.parametrize("y,x", [(0, 0), (0, 15), (7, 15), (3, 5)])
@@ -64,10 +52,8 @@ def test_partial_source_addresses_preserve_value_and_reduction_axes(y, x):
     offsets = np.arange(leaf["tile"])
     assert leaf["partial_owner_count"] == leaf["partial_owner_tile"] == 1
     for chip in range(4):
-        namespace = {
-            "boxing_offsets": offsets, "boxing_partial_member": np.arange(leaf["partial_owner_tile"]), "boxing_peer":
-            chip, "shard_coord0": chip, "shard_coord1": y, "shard_coord2": x
-        }
+        namespace = {"boxing_offsets": offsets, "boxing_partial_member": np.arange(leaf["partial_owner_tile"]),
+                     "boxing_peer": chip, "shard_coord0": chip, "shard_coord1": y, "shard_coord2": x}
         owners = np.asarray(eval(leaf["partial_owner"], {"__builtins__": {}}, namespace))
         local = np.asarray(eval(leaf["source_offset"], {"__builtins__": {}}, namespace))
         addresses = owners[:, None] * leaf["owner_stride"] + local[None, :]

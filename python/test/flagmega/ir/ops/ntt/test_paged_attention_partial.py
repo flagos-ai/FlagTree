@@ -6,6 +6,7 @@ import pytest
 from triton.flagmega import ir as fm
 from triton.flagmega.errors import IRSchemaError
 
+
 LAYOUT = ("seq", "head", "dim")
 
 
@@ -50,7 +51,9 @@ def test_logical_partial_uses_fp32_max_sum_and_scalar_accumulator_states():
 
 
 def test_vector_query_is_scalarized_along_the_semantic_dim_axis():
-    result = _infer(fm.tensor_type(fm.vector_type("bfloat16", (2, 2)), (1, 4, 2)))
+    result = _infer(
+        fm.tensor_type(fm.vector_type("bfloat16", (2, 2)), (1, 4, 2))
+    )
 
     assert result.fields[0] == fm.tensor_type("float32", (1, 4, 1))
     assert result.fields[2] == fm.tensor_type("float32", (1, 4, 8))
@@ -62,7 +65,7 @@ def test_distributed_partial_uses_unused_physical_block_axis_with_max_sum_sum():
         fm.tensor_type("bfloat16", (1, 16, 8)),
         (
             fm.SBP.broadcast(),
-            fm.SBP.split_contiguous((1, ), 1),
+            fm.SBP.split_contiguous((1,), 1),
             fm.SBP.broadcast(),
         ),
         placement,
@@ -77,9 +80,9 @@ def test_distributed_partial_uses_unused_physical_block_axis_with_max_sum_sum():
         query.axis_policies,
     )
     assert tuple(field.partial for field in result.fields) == (
-        fm.SBP.partial((0, ), fm.ReduceOp.MAX),
-        fm.SBP.partial((0, ), fm.ReduceOp.SUM),
-        fm.SBP.partial((0, ), fm.ReduceOp.SUM),
+        fm.SBP.partial((0,), fm.ReduceOp.MAX),
+        fm.SBP.partial((0,), fm.ReduceOp.SUM),
+        fm.SBP.partial((0,), fm.ReduceOp.SUM),
     )
 
 
@@ -89,7 +92,7 @@ def test_partial_rejects_a_split_axis_already_used_by_query_layout():
         fm.tensor_type("bfloat16", (1, 16, 8)),
         (
             fm.SBP.broadcast(),
-            fm.SBP.split_contiguous((0, ), 1),
+            fm.SBP.split_contiguous((0,), 1),
             fm.SBP.broadcast(),
         ),
         placement,
@@ -106,7 +109,9 @@ def test_partial_rejects_a_split_axis_already_used_by_query_layout():
         (fm.Placement((8, 16), "yx", "bb"), 4),
     ),
 )
-def test_partial_rejects_non_block_or_extent_mismatched_split_axis(placement, split_count):
+def test_partial_rejects_non_block_or_extent_mismatched_split_axis(
+    placement, split_count
+):
     query = fm.DistributedType(
         fm.tensor_type("bfloat16", (1, 16, 8)),
         (fm.SBP.broadcast(), fm.SBP.broadcast(), fm.SBP.broadcast()),

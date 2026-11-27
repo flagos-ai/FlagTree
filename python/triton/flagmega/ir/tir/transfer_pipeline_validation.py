@@ -7,10 +7,7 @@ from math import prod
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir.distributed_type import SBPSplit
 from triton.flagmega.ir.memory_effect import (
-    MemoryAccessMode,
-    MemoryEffectKind,
-    MemoryOwnerAccess,
-    expand_memory_effect,
+    MemoryAccessMode, MemoryEffectKind, MemoryOwnerAccess, expand_memory_effect,
 )
 from triton.flagmega.ir.model import DistributedType
 from triton.flagmega.ir.types import VectorType
@@ -52,10 +49,8 @@ def verify_transfer_sources(function, dispatch, implementation, *, check_alignme
                 mutable_leaves.add(key)
             alignment = function.parameter_map[name].alignment_bytes
             if check_alignment and alignment is not None and channel.source_alignment_bytes > alignment:
-                fail(
-                    f"implementation exceeds the declared alignment of {name!r}: "
-                    f"{channel.source_alignment_bytes} bytes required, exceeding its {alignment}-byte storage contract."
-                )
+                fail(f"implementation exceeds the declared alignment of {name!r}: "
+                     f"{channel.source_alignment_bytes} bytes required, exceeding its {alignment}-byte storage contract.")
 
 
 def _verify_inplace_partition(function, dispatch, implementation, channel, name, fail):
@@ -65,8 +60,8 @@ def _verify_inplace_partition(function, dispatch, implementation, channel, name,
     if name not in dispatch.reads or name not in dispatch.writes:
         fail("inplace transfer requires a read-write source.")
     effect = expand_memory_effect(parameter.type, dispatch.memory_effect_map[name])[leaf_index]
-    if (effect.physical_mode != MemoryAccessMode.READ_WRITE or effect.kind is not MemoryEffectKind.DIRECT
-            or effect.owner_access is not MemoryOwnerAccess.LOCAL):
+    if (effect.physical_mode != MemoryAccessMode.READ_WRITE
+            or effect.kind is not MemoryEffectKind.DIRECT or effect.owner_access is not MemoryOwnerAccess.LOCAL):
         fail("inplace transfer requires direct, owner-local read-write access to its source field.")
     row_rank = partition.source_row_rank
     if row_rank >= source.rank or any(not value.is_fixed or value.fixed_value <= 0 for value in source.shape):
@@ -95,9 +90,9 @@ def _verify_inplace_partition(function, dispatch, implementation, channel, name,
     if not isinstance(policy, SBPSplit) or not required_axes.issubset(policy.hierarchy_axes):
         fail("inplace transfer rows must have unique owners across the placement.")
     workspace = implementation.shared_workspaces[channel.shared_workspace_indices[0]].type
-    if (workspace.dtype != dtype or workspace.rank != 3 or any(not value.is_fixed for value in workspace.shape) or
-            tuple(value.fixed_value
-                  for value in workspace.shape[:2]) != (implementation.transfer_pipeline.capacity, partition.tile_rows)
+    if (workspace.dtype != dtype or workspace.rank != 3 or any(not value.is_fixed for value in workspace.shape)
+            or tuple(value.fixed_value for value in workspace.shape[:2]) != (
+                implementation.transfer_pipeline.capacity, partition.tile_rows)
             or workspace.shape[2].fixed_value < columns):
         fail("inplace transfer workspace must match stage count, tile rows and scalar column capacity/dtype.")
     if parameter.buffers:

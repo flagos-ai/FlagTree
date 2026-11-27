@@ -29,8 +29,8 @@ def tensor_state_storage_type(descriptor):
     if descriptor.strides != tuple(reversed(strides)):
         raise ArtifactError(f"Tensor state {descriptor.id!r} requires dense component strides.")
     if descriptor.distributed_storage_kind in {
-            DistributedBufferStorageKind.COMPACT_PER_OWNER,
-            DistributedBufferStorageKind.COMPACT_PER_CHIP,
+        DistributedBufferStorageKind.COMPACT_PER_OWNER,
+        DistributedBufferStorageKind.COMPACT_PER_CHIP,
     }:
         if descriptor.component_stride_bytes != prod(shape) * descriptor.dtype.itemsize:
             raise ArtifactError(f"Tensor state {descriptor.id!r} requires a dense owner stride.")

@@ -27,10 +27,8 @@ STAGES = DECODER_KINDS * STAGES_PER_BLOCK
 
 
 def _mhc_scale(**overrides):
-    return {
-        **REDUCED, "quantized": True, "fp8_block_size": (4, 4), "mhc": True, "hc_mult": 4, "hc_sinkhorn_iters": 20,
-        **overrides
-    }
+    return {**REDUCED, "quantized": True, "fp8_block_size": (4, 4), "mhc": True,
+            "hc_mult": 4, "hc_sinkhorn_iters": 20, **overrides}
 
 
 def _module(scale):
@@ -41,10 +39,12 @@ def _module(scale):
 @pytest.mark.parametrize("iterations", [2, 20])
 def test_stage_cost_is_independent_of_the_sinkhorn_iteration_count(iterations):
     module = _module(_mhc_scale(hc_sinkhorn_iters=iterations))
-    counts = {op: sum(1 for node in module.nodes if node.op == op) for op in ("nn.mhc_pre", "nn.mhc_post")}
+    counts = {op: sum(1 for node in module.nodes if node.op == op)
+              for op in ("nn.mhc_pre", "nn.mhc_post")}
     assert counts == {"nn.mhc_pre": STAGES, "nn.mhc_post": STAGES}
     # No per-iteration Sinkhorn residue and no per-stream-pair mixing residue.
-    assert not [node.id for node in module.nodes if "comb_" in node.id or "_mix_" in node.id or "_sinkhorn" in node.id]
+    assert not [node.id for node in module.nodes
+                if "comb_" in node.id or "_mix_" in node.id or "_sinkhorn" in node.id]
 
 
 def test_stages_carry_the_reference_hyperparameters_as_attributes():
@@ -68,7 +68,8 @@ def test_post_consumes_the_coefficients_the_matching_pre_produced():
     assert len(pre_stages) == len(post_stages) == STAGES
     for post in post_stages:
         # inputs are (value, residual, post, comb); the last two unpack one pre.
-        sources = {module.node_map[module.node_map[post.inputs[index]].inputs[0]].id for index in (2, 3)}
+        sources = {module.node_map[module.node_map[post.inputs[index]].inputs[0]].id
+                   for index in (2, 3)}
         assert len(sources) == 1 and sources.pop() in pre_stages
 
 
@@ -79,18 +80,19 @@ def _coefficients(iterations):
     text = configuration(scale)["text_config"]
     importer = Glm5MoeModelImporter(source, block_size=8, num_blocks=3)
     module = importer.import_module()
-    inputs = {
-        "input_ids": torch.tensor([11], dtype=torch.int32), "paged_attention_state":
-        create_paged_attention_state(importer.paged_config)
-    }
+    inputs = {"input_ids": torch.tensor([11], dtype=torch.int32),
+              "paged_attention_state": create_paged_attention_state(importer.paged_config)}
     for layer in importer.kda_layers:
-        _qkv = text["kda_num_heads"] * text["kda_head_dim"]
+        qkv = text["kda_num_heads"] * text["kda_head_dim"]
         inputs[f"kda_conv_state_{layer}"] = torch.zeros(
-            (3, text["kda_num_heads"], text["kda_head_dim"], text["kda_conv_kernel_size"] - 1), dtype=torch.bfloat16)
+            (3, text["kda_num_heads"], text["kda_head_dim"], text["kda_conv_kernel_size"] - 1),
+            dtype=torch.bfloat16)
         inputs[f"kda_recurrent_state_{layer}"] = torch.zeros(
-            (1, text["kda_num_heads"], text["kda_head_dim"], text["kda_head_dim"]), dtype=torch.float32)
+            (1, text["kda_num_heads"], text["kda_head_dim"], text["kda_head_dim"]),
+            dtype=torch.float32)
     _, trace = TorchEvaluator(CheckpointWeightResolver(source)).run_with_trace(module, inputs)
-    combs = {node.id: trace[module.node_map[node.inputs[3]].id] for node in module.nodes if node.op == "nn.mhc_post"}
+    combs = {node.id: trace[module.node_map[node.inputs[3]].id]
+             for node in module.nodes if node.op == "nn.mhc_post"}
     assert combs, "no mHC post stage was traced"
     return combs
 

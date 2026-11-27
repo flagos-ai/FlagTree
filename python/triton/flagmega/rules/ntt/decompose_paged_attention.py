@@ -10,9 +10,11 @@ from dataclasses import dataclass
 from triton.flagmega.ir import IRModule, Node
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.ops.nn._paged_attention_state import (
-    paged_attention_state_config_from_type, )
+    paged_attention_state_config_from_type,
+)
 from triton.flagmega.ir.ops.ntt.paged_attention_partial import (
-    PagedAttentionPartial, )
+    PagedAttentionPartial,
+)
 from triton.flagmega.pattern_match import F, wildcard
 from triton.flagmega.rules import (
     RewriteEffectPolicy,
@@ -48,15 +50,24 @@ class PagedAttentionWork:
             self.max_context_length,
             self.cache_block_size,
         )
-        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values):
-            raise ValueError("PagedAttentionWork requires positive integer head and cache "
-                             f"extents, got {values!r}.")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in values
+        ):
+            raise ValueError(
+                "PagedAttentionWork requires positive integer head and cache "
+                f"extents, got {values!r}."
+            )
         if self.num_query_heads % self.num_kv_heads:
-            raise ValueError(f"PagedAttentionWork query heads {self.num_query_heads} are not "
-                             f"a whole multiple of KV heads {self.num_kv_heads}.")
+            raise ValueError(
+                f"PagedAttentionWork query heads {self.num_query_heads} are not "
+                f"a whole multiple of KV heads {self.num_kv_heads}."
+            )
         if self.max_context_length % self.cache_block_size:
-            raise ValueError(f"PagedAttentionWork context {self.max_context_length} is not a "
-                             f"whole multiple of cache block {self.cache_block_size}.")
+            raise ValueError(
+                f"PagedAttentionWork context {self.max_context_length} is not a "
+                f"whole multiple of cache block {self.cache_block_size}."
+            )
 
     @property
     def query_heads_per_kv_head(self) -> int:
@@ -87,8 +98,10 @@ def paged_attention_work(module: IRModule) -> PagedAttentionWork | None:
     if not found:
         return None
     if len(found) != 1:
-        raise ValueError("PyNTT paged-attention decomposition requires one attention "
-                         f"workload per module, got {sorted(map(repr, found))}.")
+        raise ValueError(
+            "PyNTT paged-attention decomposition requires one attention "
+            f"workload per module, got {sorted(map(repr, found))}."
+        )
     return next(iter(found))
 
 
@@ -98,9 +111,13 @@ def _work_of_attention_node(node: Node, module: IRModule) -> PagedAttentionWork:
     query = tensor_of(module.node_map[node.inputs[0]].type)
     heads = query.shape[head_axis]
     if not heads.is_fixed:
-        raise ValueError("PyNTT paged-attention decomposition requires a fixed query head "
-                         f"extent, got {heads!r}.")
-    config = paged_attention_state_config_from_type(module.node_map[node.inputs[1]].type)
+        raise ValueError(
+            "PyNTT paged-attention decomposition requires a fixed query head "
+            f"extent, got {heads!r}."
+        )
+    config = paged_attention_state_config_from_type(
+        module.node_map[node.inputs[1]].type
+    )
     return PagedAttentionWork(
         num_query_heads=int(heads.fixed_value),
         num_kv_heads=int(config.num_kv_heads),
@@ -135,25 +152,39 @@ def paged_attention_split_plan(placements, work: PagedAttentionWork):
 
     placements = tuple(placements)
     if not placements:
-        raise ValueError("PyNTT paged-attention decomposition requires at least one placement.")
+        raise ValueError(
+            "PyNTT paged-attention decomposition requires at least one placement."
+        )
     if not isinstance(work, PagedAttentionWork):
-        raise TypeError("PyNTT paged-attention decomposition requires a PagedAttentionWork "
-                        f"describing the attention workload, got {work!r}.")
+        raise TypeError(
+            "PyNTT paged-attention decomposition requires a PagedAttentionWork "
+            f"describing the attention workload, got {work!r}."
+        )
     rank = placements[0].rank
     if any(placement.rank != rank for placement in placements):
-        raise ValueError("PyNTT paged-attention decomposition requires equal placement ranks.")
+        raise ValueError(
+            "PyNTT paged-attention decomposition requires equal placement ranks."
+        )
     candidates = _admissible_split_axes(placements, rank)
     if not candidates:
-        raise ValueError("PyNTT paged-attention decomposition requires a common physical "
-                         "block hierarchy axis with extent greater than one.")
-    axis, extent = min(candidates, key=lambda candidate: _split_plan_order(candidate, placements, rank, work))
+        raise ValueError(
+            "PyNTT paged-attention decomposition requires a common physical "
+            "block hierarchy axis with extent greater than one."
+        )
+    axis, extent = min(
+        candidates, key=lambda candidate: _split_plan_order(
+            candidate, placements, rank, work
+        )
+    )
     return axis, extent
 
 
 def _admissible_split_axes(placements, rank: int) -> list[tuple[int, int]]:
     candidates: list[tuple[int, int]] = []
     for axis in range(rank):
-        if not all(placement.is_physical_block_axis(axis) for placement in placements):
+        if not all(
+            placement.is_physical_block_axis(axis) for placement in placements
+        ):
             continue
         extents = {placement.hierarchy[axis] for placement in placements}
         if len(extents) != 1:
@@ -199,7 +230,7 @@ def decompose_paged_attention_rule(
     split_hierarchy_axis: int,
     split_count: int,
 ) -> RewriteRule:
-    """Use the reference split-state decomposition for causal query chunks.
+    """Use nncase's split-state decomposition for causal query chunks.
 
     Partial/combine preserves the sequence axis and computes a separate causal
     prefix for each row; the original single-token restriction is unnecessary.
@@ -219,10 +250,14 @@ def decompose_paged_attention_rule(
 
     def rewrite(result, module: IRModule):
         source = result["call"]
+        if source.attrs.get("compute_profile", "default") != "default":
+            return source
         q = result["q"]
         state = result["state"]
         layer_id = result["layer_id"]
-        assert all(isinstance(value, Node) for value in (source, q, state, layer_id))
+        assert all(
+            isinstance(value, Node) for value in (source, q, state, layer_id)
+        )
         layout = tuple(source.attrs["layout"])
         seq_axis = layout.index("seq")
         shape = tensor_of(source.type).shape
@@ -234,21 +269,15 @@ def decompose_paged_attention_rule(
             f"{source.id}.partial",
             (q, state, layer_id),
             {
-                "scale":
-                source.attrs["scale"],
-                "layout":
-                layout,
-                "hidden_size":
-                source.attrs["hidden_size"],
-                "split_hierarchy_axis":
-                split_hierarchy_axis,
-                "split_count":
-                split_count,
-                **({
-                    "probability_rounding": source.attrs["probability_rounding"],
-                    "softmax_block_size": source.attrs["softmax_block_size"], "softmax_traversal": source.attrs.get(
-                        "softmax_traversal", "forward")
-                } if source.attrs.get("probability_rounding", "normalized") != "normalized" else {}),
+                "scale": source.attrs["scale"],
+                "layout": layout,
+                "hidden_size": source.attrs["hidden_size"],
+                "split_hierarchy_axis": split_hierarchy_axis,
+                "split_count": split_count,
+                **({"probability_rounding": source.attrs["probability_rounding"],
+                    "softmax_block_size": source.attrs["softmax_block_size"],
+                    "softmax_traversal": source.attrs.get("softmax_traversal", "forward")}
+                   if source.attrs.get("probability_rounding", "normalized") != "normalized" else {}),
             },
             metadata,
         )
@@ -256,13 +285,15 @@ def decompose_paged_attention_rule(
             make_node(
                 "builtin.get_item",
                 f"{source.id}.{name}_state",
-                (partial, ),
+                (partial,),
                 {"index": index},
                 {
                     "decomposed_from": source.id,
                     "decomposition_rule": "DecomposePagedAttention",
                 },
-            ) for index, name in enumerate(("max", "sum", "acc")))
+            )
+            for index, name in enumerate(("max", "sum", "acc"))
+        )
         replacement = make_node(
             "ntt.paged_attention_combine",
             source.id,

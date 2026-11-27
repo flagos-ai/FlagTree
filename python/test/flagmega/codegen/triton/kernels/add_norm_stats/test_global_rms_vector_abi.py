@@ -23,7 +23,9 @@ def _abi(shape, *, dtype="bfloat16", lanes=()):
         "logical_shape": tuple(shape),
         "local_capacity_shape": tuple(shape),
         "active_shape_expressions": tuple(str(value) for value in shape),
-        "logical_coordinate_expressions": tuple(f"coord_{axis}" for axis in range(len(shape))),
+        "logical_coordinate_expressions": tuple(
+            f"coord_{axis}" for axis in range(len(shape))
+        ),
         "scalar_storage_strides": (),
         "scalar_lane_shape": tuple(lanes),
         "scalar_lane_count": lane_count,
@@ -45,14 +47,14 @@ def _parameter(name, abi):
             "actual": name,
             "runtime_argument": name,
             "abi": abi,
-        }, ),
+        },),
     }
 
 
-def _raw(*, residual_lanes=(8, )):
-    value = _abi((1, 2), lanes=(8, ))
+def _raw(*, residual_lanes=(8,)):
+    value = _abi((1, 2), lanes=(8,))
     stats = _abi((1, 1, 1), dtype="float32")
-    partials = _abi((128, ), dtype="float32")
+    partials = _abi((128,), dtype="float32")
     return {
         "semantic_attrs": {"axis": 1, "use_mean": False},
         "parameters": {
@@ -69,7 +71,7 @@ def _raw(*, residual_lanes=(8, )):
             _parameter("result_0", value),
             _parameter("result_1", stats),
         ),
-        "workspaces": (_parameter("norm_stats_partials", partials), ),
+        "workspaces": (_parameter("norm_stats_partials", partials),),
     }
 
 
@@ -93,8 +95,7 @@ def test_global_rms_partitions_stats_within_each_workspace_replica(hierarchy, le
         abi = parameter["buffers"][0]["abi"]
         abi["storage_kind"] = "canonical_global"
         abi["distributed_type"]["placement"] = {
-            "hierarchy": hierarchy,
-            "hierarchy_levels": levels,
+            "hierarchy": hierarchy, "hierarchy_levels": levels,
         }
     call = _add_norm_stats_call(raw)
     block_axes = [axis for axis, level in enumerate(levels) if level == "b"]
@@ -108,12 +109,11 @@ def test_global_rms_partitions_stats_within_each_workspace_replica(hierarchy, le
                 expected = expected * hierarchy[axis] + coordinate
         actual = eval(call["owner_index"], {"__builtins__": {}}, {
             "shard_index": global_index,
-            **{f"shard_coord{axis}": coord
-               for axis, coord in enumerate(coordinates)},
+            **{f"shard_coord{axis}": coord for axis, coord in enumerate(coordinates)},
         })
         assert actual == expected
 
 
 def test_global_rms_rejects_mismatched_vector_lane_abis():
     with pytest.raises(CodegenError, match="vector lanes must match"):
-        _add_norm_stats_call(_raw(residual_lanes=(4, )))
+        _add_norm_stats_call(_raw(residual_lanes=(4,)))

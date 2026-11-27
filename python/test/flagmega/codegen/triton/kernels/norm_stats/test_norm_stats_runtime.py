@@ -10,16 +10,18 @@ from triton.flagmega.runtime import load
 
 
 def _module(shape, *, axis, use_mean):
-
     class Graph(fm.Module):
-
         def __init__(self):
-            super().__init__(dialect="high_level", stage="imported", entry="main")
+            super().__init__(
+                dialect="high_level", stage="imported", entry="main"
+            )
 
         def forward(self):
             value = self.input("value", fm.tensor_type("bfloat16", shape))
-            stats = fm.F.nn.norm_stats(value, axis=axis, use_mean=use_mean, name="stats")
-            self.function("main", (value, ), (stats, ))
+            stats = fm.F.nn.norm_stats(
+                value, axis=axis, use_mean=use_mean, name="stats"
+            )
+            self.function("main", (value,), (stats,))
 
     return Graph().build()
 
@@ -32,12 +34,11 @@ def _module(shape, *, axis, use_mean):
     ),
 )
 def test_generic_norm_stats_compiles_without_a_collective_private_workspace(
-    tmp_path,
-    shape,
-    axis,
-    use_mean,
+    tmp_path, shape, axis, use_mean,
 ):
-    module = Compiler().compile(_module(shape, axis=axis, use_mean=use_mean)).module
+    module = Compiler().compile(
+        _module(shape, axis=axis, use_mean=use_mean)
+    ).module
     artifact = write_artifact(
         module,
         tmp_path / f"axis-{axis}-mean-{use_mean}",
@@ -62,15 +63,14 @@ def test_generic_norm_stats_compiles_without_a_collective_private_workspace(
     ),
 )
 def test_generic_norm_stats_matches_torch_on_h800(
-    tmp_path,
-    shape,
-    axis,
-    use_mean,
+    tmp_path, shape, axis, use_mean,
 ):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
-    module = Compiler().compile(_module(shape, axis=axis, use_mean=use_mean)).module
+    module = Compiler().compile(
+        _module(shape, axis=axis, use_mean=use_mean)
+    ).module
     artifact = write_artifact(
         module,
         tmp_path / f"runtime-axis-{axis}-mean-{use_mean}",

@@ -22,7 +22,9 @@ def test_memory_effect_round_trip_preserves_every_orthogonal_contract():
 
 
 def test_direct_read_write_retains_both_physical_accesses():
-    assert fm.MemoryEffect.READ_WRITE.physical_mode == (fm.MemoryAccessMode.READ | fm.MemoryAccessMode.WRITE)
+    assert fm.MemoryEffect.READ_WRITE.physical_mode == (
+        fm.MemoryAccessMode.READ | fm.MemoryAccessMode.WRITE
+    )
     assert fm.MemoryEffect.CHIP_READ.scope is fm.MemoryAccessScope.CHIP
 
 
@@ -32,11 +34,15 @@ def test_direct_read_write_retains_both_physical_accesses():
         (lambda: fm.MemoryAccessDomain.fixed_block(-1), "non-negative"),
         (lambda: fm.MemoryAccessPartition.by_argument(-1), "non-negative"),
         (
-            lambda: fm.MemoryAccessDomain(fm.MemoryAccessDomainKind.ALL_BLOCKS, 0),
+            lambda: fm.MemoryAccessDomain(
+                fm.MemoryAccessDomainKind.ALL_BLOCKS, 0
+            ),
             "cannot name a block",
         ),
     ),
 )
-def test_invalid_memory_effect_refinements_fail_at_construction(constructor, message):
+def test_invalid_memory_effect_refinements_fail_at_construction(
+    constructor, message
+):
     with pytest.raises(IRSchemaError, match=message):
         constructor()

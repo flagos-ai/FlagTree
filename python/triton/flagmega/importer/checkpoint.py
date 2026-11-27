@@ -96,8 +96,14 @@ class TensorByteRange:
         self._validate_limits()
 
     def _validate_limits(self) -> None:
-        if (isinstance(self.offset, bool) or not isinstance(self.offset, int) or self.offset < 0
-                or isinstance(self.nbytes, bool) or not isinstance(self.nbytes, int) or self.nbytes < 0):
+        if (
+            isinstance(self.offset, bool)
+            or not isinstance(self.offset, int)
+            or self.offset < 0
+            or isinstance(self.nbytes, bool)
+            or not isinstance(self.nbytes, int)
+            or self.nbytes < 0
+        ):
             raise ImporterError("TensorByteRange offset/nbytes must be non-negative integers.")
 
     @classmethod
@@ -119,24 +125,18 @@ class TensorByteRange:
 class Checkpoint(Protocol):
 
     @property
-    def config(self) -> Mapping[str, Any]:
-        ...
+    def config(self) -> Mapping[str, Any]: ...
 
     @property
-    def keys(self) -> tuple[str, ...]:
-        ...
+    def keys(self) -> tuple[str, ...]: ...
 
-    def tensor_info(self, key: str) -> TensorInfo:
-        ...
+    def tensor_info(self, key: str) -> TensorInfo: ...
 
-    def load_tensor(self, key: str, *, device: str = "cpu"):
-        ...
+    def load_tensor(self, key: str, *, device: str = "cpu"): ...
 
-    def tensor_byte_range(self, key: str) -> TensorByteRange | None:
-        ...
+    def tensor_byte_range(self, key: str) -> TensorByteRange | None: ...
 
-    def cache_identity(self, keys: Iterable[str]) -> Mapping[str, Any] | None:
-        ...
+    def cache_identity(self, keys: Iterable[str]) -> Mapping[str, Any] | None: ...
 
     def quantization_of(self, key: str) -> str | None:
         ...
@@ -183,9 +183,10 @@ class DirectoryCheckpoint:
             source = self._resolve_shard(str(record.get("file", "")))
             stat = source.stat()
             digest = record.get("sha256")
-            if (record.get("ok") is not True or record.get("size") != stat.st_size or not isinstance(digest, str)
-                    or len(digest) != 64 or any(char not in "0123456789abcdef"
-                                                for char in digest) or record.get("expected_sha256", digest) != digest
+            if (record.get("ok") is not True or record.get("size") != stat.st_size
+                    or not isinstance(digest, str) or len(digest) != 64
+                    or any(char not in "0123456789abcdef" for char in digest)
+                    or record.get("expected_sha256", digest) != digest
                     or max(stat.st_mtime_ns, stat.st_ctime_ns) > audited_at):
                 raise ImporterError(f"Checkpoint integrity report is stale or invalid for {source}.")
             bound[source] = (self._source_identity(stat), digest)
@@ -310,12 +311,16 @@ class DirectoryCheckpoint:
                 with path.open("rb") as stream:
                     prefix = stream.read(8)
                 if len(prefix) != 8:
-                    raise ImporterError(f"Safetensors shard {path} is shorter than its header prefix.")
+                    raise ImporterError(
+                        f"Safetensors shard {path} is shorter than its header prefix."
+                    )
                 payload_offset = 8 + struct.unpack("<Q", prefix)[0]
             except ImporterError:
                 raise
             except (OSError, struct.error) as error:
-                raise ImporterError(f"Failed to locate safetensors payload in {path}: {error}") from error
+                raise ImporterError(
+                    f"Failed to locate safetensors payload in {path}: {error}"
+                ) from error
             self._payload_offsets[info.source] = payload_offset
         start, end = info.data_offsets
         result = TensorByteRange._from_resolved_shard(path, payload_offset + start, end - start)
@@ -351,7 +356,11 @@ class DirectoryCheckpoint:
                 "dtype": info.dtype.value,
                 "shape": list(info.shape),
                 "source": info.source,
-                "data_offsets": (None if info.data_offsets is None else list(info.data_offsets)),
+                "data_offsets": (
+                    None
+                    if info.data_offsets is None
+                    else list(info.data_offsets)
+                ),
             })
         return {
             "schema": "flagmega.directory-checkpoint-cache-identity/v1",
@@ -373,12 +382,15 @@ class DirectoryCheckpoint:
         index_candidates = sorted(self.root.glob("*.safetensors.index.json"))
         if index_candidates:
             if len(index_candidates) != 1:
-                raise ImporterError(f"Checkpoint {self.root} contains multiple safetensors indices: "
-                                    f"{[value.name for value in index_candidates]}.")
+                raise ImporterError(
+                    f"Checkpoint {self.root} contains multiple safetensors indices: "
+                    f"{[value.name for value in index_candidates]}.")
             try:
                 data = json.loads(index_candidates[0].read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as error:
-                raise ImporterError(f"Failed to read safetensors index {index_candidates[0]}: {error}") from error
+                raise ImporterError(
+                    f"Failed to read safetensors index {index_candidates[0]}: {error}"
+                ) from error
             weight_map = data.get("weight_map")
             if not isinstance(weight_map, dict) or not weight_map:
                 raise ImporterError(f"Safetensors index {index_candidates[0]} has no non-empty weight_map.")
@@ -389,7 +401,8 @@ class DirectoryCheckpoint:
                 source = str(value)
                 if not tensor_key or tensor_key == "__metadata__":
                     raise ImporterError(
-                        f"Safetensors index {index_candidates[0]} contains invalid tensor key {tensor_key!r}.")
+                        f"Safetensors index {index_candidates[0]} contains invalid tensor key {tensor_key!r}."
+                    )
                 if source not in validated_sources:
                     self._resolve_shard(source, require_exists=False)
                     validated_sources.add(source)
@@ -425,17 +438,27 @@ class DirectoryCheckpoint:
         if require_exists and source in self._resolved_shards:
             return self._resolved_shards[source]
         candidate = Path(source)
-        if (not source or candidate.is_absolute() or candidate.suffix != ".safetensors"
-                or any(part in {"", ".", ".."} for part in candidate.parts)):
-            raise ImporterError(f"Checkpoint shard path {source!r} must be a safe relative .safetensors path.")
+        if (
+            not source
+            or candidate.is_absolute()
+            or candidate.suffix != ".safetensors"
+            or any(part in {"", ".", ".."} for part in candidate.parts)
+        ):
+            raise ImporterError(
+                f"Checkpoint shard path {source!r} must be a safe relative .safetensors path."
+            )
         path = (self.root / candidate).resolve()
         try:
             path.relative_to(self.root)
         except ValueError as error:
             if not self._is_huggingface_blob(path):
-                raise ImporterError(f"Checkpoint shard path {source!r} escapes root {self.root}.") from error
+                raise ImporterError(
+                    f"Checkpoint shard path {source!r} escapes root {self.root}."
+                ) from error
         if require_exists and not path.is_file():
-            raise ImporterError(f"Checkpoint shard {source!r} does not exist under {self.root}.")
+            raise ImporterError(
+                f"Checkpoint shard {source!r} does not exist under {self.root}."
+            )
         if require_exists:
             # Retain the canonical path, including an accepted HF blob target.
             # A later symlink change cannot redirect a cached reader outside
@@ -520,8 +543,8 @@ class GGUFCheckpoint:
     ``gguf`` is an optional dependency because ordinary FlagMega users only
     need safetensors.  The package's ``GGUFReader`` uses a read-only memmap;
     quantized tensor values are never copied or dequantized by this class. Quantized
-    tensor names are also exposed under the Qwen3.8 Hugging Face namespace so
-    the existing layer importer can consume the same semantic graph.
+    tensor names are also exposed under their Qwen Hugging Face namespace so
+    model importers can consume the same semantic graph.
     """
 
     _QWEN_PREFIX = "model.language_model."
@@ -667,7 +690,7 @@ class GGUFCheckpoint:
         values = np.asarray(tensor.data)
         if str(tensor.tensor_type.name) == "BF16":
             values = (values.astype(np.uint32) << 16).view(np.float32)
-        if key in self._aliases:
+        if key in self._aliases and self._config["model_type"] != "qwen3":
             # GGML stores the actual decay coefficient and RMS multiplier;
             # HF's semantic graph expects A_log and a zero-centred norm weight.
             # These tiny F32 parameters are unrelated to quantized matrices.
@@ -730,8 +753,12 @@ class GGUFCheckpoint:
 
     def _build_config(self) -> dict[str, Any]:
         arch = str(self._metadata("general.architecture", ""))
+        if arch == "qwen3":
+            return self._build_qwen3_config()
+        if arch == "dflash":
+            return self._build_dflash_config()
         if arch not in {"qwen35", "qwen3next"}:
-            raise ImporterError(f"GGUF checkpoint architecture {arch!r} is not Qwen3.8/qwen35.")
+            raise ImporterError(f"Unsupported GGUF checkpoint architecture {arch!r}; expected qwen3, qwen35, qwen3next or dflash.")
         hidden = _gguf_positive_int(self._metadata(f"{arch}.embedding_length"), "embedding_length")
         intermediate = _gguf_positive_int(self._metadata(f"{arch}.feed_forward_length"), "feed_forward_length")
         layers = _gguf_positive_int(self._metadata(f"{arch}.block_count"), "block_count")
@@ -811,21 +838,95 @@ class GGUFCheckpoint:
             },
             "gguf": {
                 "path": self.path.name, "architecture": arch, "value_head_order":
-                "tiled" if arch == "qwen35" else "grouped"
+                "tiled" if arch == "qwen35" else "grouped",
+                "nextn_predict_layers": int(self._metadata(f"{arch}.nextn_predict_layers", 0)),
             },
         }
 
+    def _build_qwen3_config(self) -> dict[str, Any]:
+        def positive(name, default=None):
+            return _gguf_positive_int(self._metadata("qwen3." + name, default), name)
+
+        hidden = positive("embedding_length")
+        heads = positive("attention.head_count")
+        kv_heads = positive("attention.head_count_kv", heads)
+        head_dim = positive("attention.key_length", hidden // heads)
+        if heads % kv_heads:
+            raise ImporterError("GGUF Qwen3 attention heads must be divisible by KV heads.")
+        if positive("attention.value_length", head_dim) != head_dim:
+            raise ImporterError("GGUF Qwen3 key and value head dimensions must match.")
+        embedding = self._raw.get("token_embd.weight")
+        if embedding is None or len(embedding.shape) != 2 or int(embedding.shape[0]) != hidden:
+            raise ImporterError("GGUF Qwen3 token embedding must be a matrix with embedding_length columns.")
+        return {
+            "model_type": "qwen3",
+            "architectures": ["Qwen3ForCausalLM"],
+            "vocab_size": _gguf_positive_int(embedding.shape[1], "vocab_size"),
+            "num_hidden_layers": positive("block_count"),
+            "hidden_size": hidden,
+            "intermediate_size": positive("feed_forward_length"),
+            "num_attention_heads": heads,
+            "num_key_value_heads": kv_heads,
+            "head_dim": head_dim,
+            "rms_norm_eps": float(self._metadata("qwen3.attention.layer_norm_rms_epsilon", 1e-6)),
+            "rope_theta": float(self._metadata("qwen3.rope.freq_base", 1000000.0)),
+            "max_position_embeddings": positive("context_length"),
+            # GGUF padding is tokenizer metadata, not a zero embedding row.
+            "pad_token_id": None,
+            "tie_word_embeddings": "output.weight" not in self._raw,
+            "hidden_act": "silu",
+            "attention_bias": False,
+            "mlp_bias": False,
+            "quantization_config": {"quant_method": "gguf", "activation_scheme": "native"},
+            "gguf": {
+                "path": self.path.name,
+                "architecture": "qwen3",
+                "padding_token_id": self._metadata("tokenizer.ggml.padding_token_id"),
+            },
+        }
+
+    def _build_dflash_config(self) -> dict[str, Any]:
+        # DFlash borrows embeddings/head from a separately bound target model;
+        # unlike Qwen, it need not contain token_embd or any recurrent tensors.
+        required = ("embedding_length", "feed_forward_length", "block_count",
+                    "attention.head_count", "attention.head_count_kv", "attention.key_length")
+        text = {key: _gguf_positive_int(self._metadata("dflash." + key), key) for key in required}
+        targets = self._metadata("dflash.target_layers")
+        if not isinstance(targets, (list, tuple)) or not targets or any(
+                type(x) is not int or x < 0 for x in targets) or len(set(targets)) != len(targets):
+            raise ImporterError("DFlash requires nonempty distinct nonnegative dflash.target_layers.")
+        if text["attention.head_count"] % text["attention.head_count_kv"]:
+            raise ImporterError("DFlash attention heads must be divisible by KV heads.")
+        epsilon = float(self._metadata("dflash.attention.layer_norm_rms_epsilon", 1e-6))
+        import math
+        if not math.isfinite(epsilon) or epsilon <= 0:
+            raise ImporterError("DFlash RMS epsilon must be finite and positive.")
+        options = {}
+        for key in ("block_size", "conv_kernel_size", "conv_group_size", "selector_rank", "selector_top_k"):
+            value = self._metadata("dflash." + key, 0)
+            if type(value) is not int or value < 0:
+                raise ImporterError(f"DFlash {key} must be a nonnegative integer.")
+            options[key] = value
+        return {"model_type": "dflash", "architectures": ["DFlashForCausalLM"],
+                "gguf": {"architecture": "dflash", "path": self.path.name},
+                "text_config": {**text, "rms_norm_eps": epsilon},
+                "dflash": {**options, "target_layers": tuple(targets),
+                           "hidden_act": self._metadata("dflash.hidden_act", "silu")}}
+
     def _build_aliases(self) -> dict[str, str]:
         aliases: dict[str, str] = {}
+        if self._metadata("general.architecture") == "dflash":
+            return aliases  # DFlash norms are GGML multipliers, not Qwen zero-centred HF weights.
+        prefix = "model." if self._metadata("general.architecture") == "qwen3" else self._QWEN_PREFIX
         for raw in self._raw:
             if raw == "output.weight":
                 aliases["lm_head.weight"] = raw
                 continue
             if raw == "output_norm.weight":
-                aliases[self._QWEN_PREFIX + "norm.weight"] = raw
+                aliases[prefix + "norm.weight"] = raw
                 continue
             if raw == "token_embd.weight":
-                aliases[self._QWEN_PREFIX + "embed_tokens.weight"] = raw
+                aliases[prefix + "embed_tokens.weight"] = raw
                 continue
             if not raw.startswith("blk."):
                 continue
@@ -855,13 +956,20 @@ class GGUFCheckpoint:
                 "ssm_norm.weight": "linear_attn.norm.weight",
                 "ssm_out.weight": "linear_attn.out_proj.weight",
                 "post_attention_norm.weight": "post_attention_layernorm.weight",
+                "ffn_norm.weight": "post_attention_layernorm.weight",
                 "ffn_gate.weight": "mlp.gate_proj.weight",
                 "ffn_up.weight": "mlp.up_proj.weight",
                 "ffn_down.weight": "mlp.down_proj.weight",
+                "nextn.eh_proj.weight": "nextn.eh_proj.weight",
+                "nextn.enorm.weight": "nextn.enorm.weight",
+                "nextn.hnorm.weight": "nextn.hnorm.weight",
+                "nextn.shared_head_norm.weight": "nextn.shared_head_norm.weight",
+                "nextn.embed_tokens.weight": "nextn.embed_tokens.weight",
+                "nextn.shared_head_head.weight": "nextn.shared_head_head.weight",
             }
             mapped = names.get(tail)
             if mapped is not None:
-                aliases[f"{self._QWEN_PREFIX}layers.{layer}.{mapped}"] = raw
+                aliases[f"{prefix}layers.{layer}.{mapped}"] = raw
         return aliases
 
 
@@ -917,20 +1025,31 @@ def _read_safetensors_header(path: Path) -> dict[str, Any]:
         shape = metadata.get("shape")
         offsets = metadata.get("data_offsets")
         if raw_dtype not in _SAFETENSORS_DTYPES:
-            raise ImporterError(f"Tensor {key!r} uses unsupported safetensors dtype {raw_dtype!r}.")
-        if not isinstance(shape, list) or any(not isinstance(value, int) or isinstance(value, bool) or value < 0
-                                              for value in shape):
+            raise ImporterError(
+                f"Tensor {key!r} uses unsupported safetensors dtype {raw_dtype!r}."
+            )
+        if not isinstance(shape, list) or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in shape
+        ):
             raise ImporterError(f"Tensor {key!r} has invalid safetensors shape {shape!r}.")
-        if (not isinstance(offsets, list) or len(offsets) != 2
-                or any(not isinstance(value, int) or isinstance(value, bool) for value in offsets)
-                or not 0 <= offsets[0] <= offsets[1] <= data_bytes):
+        if (
+            not isinstance(offsets, list)
+            or len(offsets) != 2
+            or any(not isinstance(value, int) or isinstance(value, bool) for value in offsets)
+            or not 0 <= offsets[0] <= offsets[1] <= data_bytes
+        ):
             raise ImporterError(f"Tensor {key!r} has invalid safetensors offsets {offsets!r}.")
         expected = prod(shape, start=1) * _SAFETENSORS_DTYPES[raw_dtype].itemsize
         if offsets[1] - offsets[0] != expected:
-            raise ImporterError(f"Tensor {key!r} byte range has size {offsets[1] - offsets[0]}, expected {expected}.")
+            raise ImporterError(
+                f"Tensor {key!r} byte range has size {offsets[1] - offsets[0]}, expected {expected}."
+            )
         intervals.append((offsets[0], offsets[1], key))
     intervals.sort()
     for lhs, rhs in zip(intervals, intervals[1:]):
         if lhs[1] > rhs[0]:
-            raise ImporterError(f"Safetensors tensors {lhs[2]!r} and {rhs[2]!r} overlap in {path}.")
+            raise ImporterError(
+                f"Safetensors tensors {lhs[2]!r} and {rhs[2]!r} overlap in {path}."
+            )
     return header

@@ -46,9 +46,10 @@ class Unpack(OpDefinition):
                 raise IRSchemaError("F.tensors.unpack axis must be an integer.")
             return {"axis": axis_value}
         elif isinstance(axes_value, int) and not isinstance(axes_value, bool):
-            axes = (axes_value, )
+            axes = (axes_value,)
         elif isinstance(axes_value, (tuple, list)) and all(
-                isinstance(value, int) and not isinstance(value, bool) for value in axes_value):
+            isinstance(value, int) and not isinstance(value, bool) for value in axes_value
+        ):
             axes = tuple(axes_value)
         else:
             raise IRSchemaError("F.tensors.unpack axes must be an integer sequence.")
@@ -88,7 +89,9 @@ class Unpack(OpDefinition):
                 continue
             scaled = scale_split_units(policy, lane_product, 1)
             if scaled is None:  # pragma: no cover - multiplying positive units is exact.
-                raise IRSchemaError(f"F.tensors.unpack cannot scale axis {axis} split policy.")
+                raise IRSchemaError(
+                    f"F.tensors.unpack cannot scale axis {axis} split policy."
+                )
             policies[axis] = scaled
         return DistributedType(
             unpacked,
@@ -121,7 +124,10 @@ class Unpack(OpDefinition):
         interleaved = []
         for axis in range(input_type.rank):
             interleaved.append(axis)
-            interleaved.extend(input_type.rank + lane_index for lane_index, _ in by_axis.get(axis, ()))
+            interleaved.extend(
+                input_type.rank + lane_index
+                for lane_index, _ in by_axis.get(axis, ())
+            )
         interleaved.extend(range(
             input_type.rank + len(consumed),
             input_type.rank + len(consumed) + remaining_count,
@@ -139,7 +145,7 @@ class Unpack(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         size = tensor_nbytes(node.type) if isinstance(node.type, TensorType) else None
-        return OpCost(bytes_read=size, bytes_written=size, notes=("vector-unpack", ))
+        return OpCost(bytes_read=size, bytes_written=size, notes=("vector-unpack",))
 
 
 def unpack_physical(value, outer_rank: int, lanes: tuple[int, ...], axes: tuple[int, ...]):
@@ -173,7 +179,7 @@ def _unpack_axes(attrs: Mapping[str, object], value_type: TensorType) -> tuple[i
     if "axes" in attrs:
         values = tuple(int(value) for value in attrs["axes"])
     else:
-        values = (int(attrs["axis"]), ) * len(value_type.dtype.lanes)
+        values = (int(attrs["axis"]),) * len(value_type.dtype.lanes)
     return normalize_axes(values, value_type.rank)
 
 

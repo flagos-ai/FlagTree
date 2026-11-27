@@ -13,19 +13,17 @@ def device_spec(**updates):
 
 
 def test_device_handle_preserves_single_descriptor_schema():
-    assert TensorDescriptorCache.validate_specs((device_spec(), )) == ("weight_descriptor", )
+    assert TensorDescriptorCache.validate_specs((device_spec(),)) == ("weight_descriptor",)
 
 
 @pytest.mark.parametrize("update", [
-    {"storage": "unknown"},
-    {"swizzle_mode": 4},
-    {"box_shape": (1, 8)},
+    {"storage": "unknown"}, {"swizzle_mode": 4}, {"box_shape": (1, 8)},
 ])
 def test_device_descriptor_rejects_inconsistent_storage_encoding(update):
     spec = device_spec()
     spec.update(update)
     with pytest.raises(RuntimeContractError):
-        TensorDescriptorCache.validate_specs((spec, ))
+        TensorDescriptorCache.validate_specs((spec,))
 
 
 def test_device_handle_cache_identity_tracks_source_shape_and_storage():
@@ -35,15 +33,15 @@ def test_device_handle_cache_identity_tracks_source_shape_and_storage():
     storage = torch.empty((3, 4), dtype=torch.float32, device="cuda")
     cache = TensorDescriptorCache()
     spec = device_spec()
-    first, = cache.materialize_many("kernel", (spec, ), {"rdata": storage})
-    again, = cache.materialize_many("kernel", (spec, ), {"rdata": storage})
+    first, = cache.materialize_many("kernel", (spec,), {"rdata": storage})
+    again, = cache.materialize_many("kernel", (spec,), {"rdata": storage})
     assert first is again
     assert first.dtype == torch.uint8 and first.numel() == 128
     assert first.data_ptr() % 128 == 0
-    reshaped, = cache.materialize_many("kernel", (spec, ), {"rdata": storage[:2]})
+    reshaped, = cache.materialize_many("kernel", (spec,), {"rdata": storage[:2]})
     assert reshaped is not first
-    replaced, = cache.materialize_many("kernel", (spec, ), {"rdata": storage.clone()})
+    replaced, = cache.materialize_many("kernel", (spec,), {"rdata": storage.clone()})
     assert replaced is not reshaped
     cache.clear()
-    fresh, = cache.materialize_many("kernel", (spec, ), {"rdata": storage})
+    fresh, = cache.materialize_many("kernel", (spec,), {"rdata": storage})
     assert fresh is not first

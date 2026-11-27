@@ -7,8 +7,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
-from triton.flagmega.ir.distributed_inference import tensor_of
-from triton.flagmega.ir.model import DType, IRType, Node, NoneType, TensorType, TupleType, tensor_type
+from triton.flagmega.ir.distributed_inference import all_broadcast, tensor_of
+from triton.flagmega.ir.model import DType, DistributedType, IRType, Node, NoneType, SBP, TensorType, TupleType, tensor_type
+from triton.flagmega.ir.ops._compute_profile import normalize_compute_profile, require_host_reference
+from triton.flagmega.ir.ops.math._quantized import matrix_width
 from triton.flagmega.ir.ops.core import (
     OpCost,
     OpDefinition,
@@ -18,6 +20,7 @@ from triton.flagmega.ir.ops.core import (
 )
 from triton.flagmega.ir.type_pattern import has_rank, is_none, is_tensor
 from triton.flagmega.ir.ops.math.matmul import normalize_reduction_order, validate_reduction_order
+
 
 _OPTIONAL_TENSOR = is_tensor() | is_none()
 
@@ -29,7 +32,7 @@ _OPTIONAL_TENSOR = is_tensor() | is_none()
     display_name="NN.QKVParallelLinear",
 )
 class QKVParallelLinear(OpDefinition):
-    """QKV projection with logical ``[K,N]`` weights."""
+    """QKV projection with dense ``[K,N]`` or explicit native GGUF byte rows."""
 
     input = input_parameter(is_tensor() & has_rank(2))
     q_weight = input_parameter(is_tensor() & has_rank(2))
@@ -48,6 +51,10 @@ class QKVParallelLinear(OpDefinition):
     num_kv_heads = attribute_parameter()
     output_data_type = attribute_parameter()
     reduction_order = attribute_parameter(default="relaxed")
+    q_weight_encoding = attribute_parameter(default=None)
+    k_weight_encoding = attribute_parameter(default=None)
+    v_weight_encoding = attribute_parameter(default=None)
+    native_compute_profile = attribute_parameter(default="f32")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -58,7 +65,13 @@ class QKVParallelLinear(OpDefinition):
                 raise IRSchemaError(f"QKVParallelLinear {name} must be positive.")
         output_type = DType(attrs["output_data_type"])
         normalize_reduction_order(attrs)
+        native = normalize_compute_profile(attrs, "QKVParallelLinear", key="native_compute_profile",
+                                           default="f32", supported=())
+        encodings = tuple(attrs[f"{role}_weight_encoding"] for role in ("q", "k", "v"))
+        if any(encoding is not None for encoding in encodings):
+            raise IRSchemaError("QKVParallelLinear native weight encodings are not available on this branch.")
         return {
+            **native,
             "num_heads": int(attrs["num_heads"]),
             "num_kv_heads": int(attrs["num_kv_heads"]),
             "output_data_type": output_type,
@@ -68,35 +81,31 @@ class QKVParallelLinear(OpDefinition):
     @classmethod
     def ir_attrs(cls, attrs: Mapping[str, object]) -> Mapping[str, object]:
         return {
+            **{key: value for key, value in attrs.items() if key.endswith("weight_encoding") or key == "native_compute_profile"},
             "num_heads": attrs["num_heads"],
             "num_kv_heads": attrs["num_kv_heads"],
             "output_data_type": DType(attrs["output_data_type"]).value,
-            **({"reduction_order": attrs["reduction_order"]} if attrs["reduction_order"] != "relaxed" else {}),
+            **({"reduction_order": attrs["reduction_order"]}
+               if attrs["reduction_order"] != "relaxed" else {}),
         }
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         value = tensor_of(cls.input.type_of(inputs))
         validate_reduction_order(attrs, cls.input.type_of(inputs), 1)
-        weights = tuple(
-            tensor_of(parameter.type_of(inputs)) for parameter in (
-                cls.q_weight,
-                cls.k_weight,
-                cls.v_weight,
-            ))
+        weights = tuple(tensor_of(parameter.type_of(inputs)) for parameter in (
+            cls.q_weight, cls.k_weight, cls.v_weight,
+        ))
         if not isinstance(value.dtype, DType):
             raise IRSchemaError("QKVParallelLinear input must have a scalar dtype.")
+        if attrs.get("native_compute_profile", "f32") != "f32":
+            return cls._infer_native(inputs, attrs, value, weights)
         if any(weight.shape[0] != value.shape[1] for weight in weights):
             raise IRSchemaError("QKVParallelLinear logical [K,N] weights must match input K.")
-        scales = tuple(
-            parameter.type_of(inputs) for parameter in (
-                cls.q_input_scale,
-                cls.k_input_scale,
-                cls.v_input_scale,
-                cls.q_weight_scale,
-                cls.k_weight_scale,
-                cls.v_weight_scale,
-            ))
+        scales = tuple(parameter.type_of(inputs) for parameter in (
+            cls.q_input_scale, cls.k_input_scale, cls.v_input_scale,
+            cls.q_weight_scale, cls.k_weight_scale, cls.v_weight_scale,
+        ))
         scale_presence = tuple(not isinstance(scale, NoneType) for scale in scales)
         if any(scale_presence) and not all(scale_presence):
             raise IRSchemaError("QKVParallelLinear requires either no scales or all six scales.")
@@ -107,23 +116,53 @@ class QKVParallelLinear(OpDefinition):
             raise IRSchemaError("Scaled QKVParallelLinear requires float8_e4m3fn weights.")
 
         output_dtype = DType(attrs["output_data_type"])
-        outputs = tuple(tensor_type(output_dtype, (value.shape[0], weight.shape[1])) for weight in weights)
+        outputs = tuple(
+            tensor_type(output_dtype, (value.shape[0], weight.shape[1]))
+            for weight in weights
+        )
         _check_heads(outputs, int(attrs["num_heads"]), int(attrs["num_kv_heads"]))
         for name, bias_parameter, output in zip(
             ("q", "k", "v"),
             (cls.q_bias, cls.k_bias, cls.v_bias),
-                outputs,
+            outputs,
         ):
             bias = bias_parameter.type_of(inputs)
             if isinstance(bias, NoneType):
                 continue
             bias_tensor = tensor_of(bias)
             if bias_tensor.rank != 1 or bias_tensor.shape[0] != output.shape[-1]:
-                raise IRSchemaError(f"QKVParallelLinear {name} bias must match its output N dimension.")
+                raise IRSchemaError(
+                    f"QKVParallelLinear {name} bias must match its output N dimension.")
+        return TupleType(outputs)
+
+    @classmethod
+    def _infer_native(cls, inputs, attrs, value, weights):
+        if value.dtype != DType.FLOAT32 or DType(attrs["output_data_type"]) != DType.FLOAT32:
+            raise IRSchemaError("Native QKVParallelLinear requires scalar F32 input/output.")
+        if value.shape[0].value not in range(1, 9):
+            raise IRSchemaError("Native QKVParallelLinear requires one to eight fixed token rows.")
+        for role, weight in zip(("q", "k", "v"), weights):
+            if matrix_width(weight, attrs[f"{role}_weight_encoding"]) != value.shape[1]:
+                raise IRSchemaError("Native QKVParallelLinear byte rows must match logical input K.")
+        if any(not isinstance(parameter.type_of(inputs), NoneType) for parameter in cls.input_parameters[4:]):
+            raise IRSchemaError("Native QKVParallelLinear does not support biases or FP8 scales.")
+        outputs = tuple(tensor_type(DType.FLOAT32, (value.shape[0], weight.shape[0])) for weight in weights)
+        heads, kv_heads = int(attrs["num_heads"]), int(attrs["num_kv_heads"])
+        _check_heads(outputs, heads, kv_heads)
+        if (heads % kv_heads or any(not output.shape[-1].is_fixed for output in outputs)
+                or len({output.shape[-1].fixed_value // count for output, count in zip(outputs, (heads, kv_heads, kv_heads))}) != 1):
+            raise IRSchemaError("Native QKVParallelLinear requires equal head dimensions and grouped query heads.")
+        input_types = tuple(parameter.type_of(inputs) for parameter in cls.input_parameters[:4])
+        if any(isinstance(item, DistributedType) for item in input_types):
+            if (not all(isinstance(item, DistributedType) and all_broadcast(item) for item in input_types)
+                    or len({item.placement for item in input_types}) != 1):
+                raise IRSchemaError("Native QKVParallelLinear requires a common complete broadcast placement.")
+            outputs = tuple(DistributedType(output, (SBP.broadcast(),) * 2, input_types[0].placement) for output in outputs)
         return TupleType(outputs)
 
     @classmethod
     def evaluate(cls, node, arguments, context):
+        require_host_reference(node, key="native_compute_profile", default="f32")
         output_dtype = context.torch_dtype(DType(node.attrs["output_data_type"]))
         return tuple(
             _project(
@@ -134,16 +173,18 @@ class QKVParallelLinear(OpDefinition):
                 weight_scale.read(arguments),
                 output_dtype=output_dtype,
                 torch=context.torch,
-            ) for weight, bias, input_scale, weight_scale in zip(
+            )
+            for weight, bias, input_scale, weight_scale in zip(
                 (cls.q_weight, cls.k_weight, cls.v_weight),
                 (cls.q_bias, cls.k_bias, cls.v_bias),
                 (cls.q_input_scale, cls.k_input_scale, cls.v_input_scale),
                 (cls.q_weight_scale, cls.k_weight_scale, cls.v_weight_scale),
-            ))
+            )
+        )
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(notes=("three-linear-projections", ))
+        return OpCost(notes=("three-linear-projections",))
 
 
 def _project(value, weight, bias, input_scale, weight_scale, *, output_dtype, torch):

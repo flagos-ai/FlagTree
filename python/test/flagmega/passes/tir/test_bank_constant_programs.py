@@ -15,8 +15,7 @@ def _module(*, dynamic_scale=False, shared=False, different_row=False):
     scale_type = fm.tensor_type("float32", (2, 2))
     output_type = fm.tensor_type("bfloat16", (4, 8))
     schema = fm.ParameterBankSchema("weights", (
-        fm.BankField("weight", weight_type, "checkpoint"),
-        fm.BankField("scale", scale_type, "checkpoint"),
+        fm.BankField("weight", weight_type, "checkpoint"), fm.BankField("scale", scale_type, "checkpoint"),
     ))
     iv = builder.var("iv", index_type, id="iv")
     carried = builder.var("carried", output_type, id="carried")
@@ -45,17 +44,17 @@ def _module(*, dynamic_scale=False, shared=False, different_row=False):
         output = fm.F.math.add(restored, carried, name="output")
         if shared:
             output = fm.F.math.add(output, fm.F.tensors.cast(wide, "bfloat16"), name="shared_output")
-    body = builder.region("body", (iv, carried, captured), (output, ), iter_count=1)
+    body = builder.region("body", (iv, carried, captured), (output,), iter_count=1)
     value = builder.var("value", output_type, id="value")
     with construction_scope(builder):
         bank = fm.F.builtin.parameter_bank(schema=schema, source="checkpoint",
-                                           rows=(("l0.w", "l0.s"), ("l1.w", "l1.s")), name="bank")
+            rows=(("l0.w", "l0.s"), ("l1.w", "l1.s")), name="bank")
         lower = fm.F.builtin.scalar_const(index_type, 0)
         upper = fm.F.builtin.scalar_const(index_type, 2)
         step = fm.F.builtin.scalar_const(index_type, 1)
-        loop = fm.F.control.for_loop(lower, upper, step, value, captures=(bank, ), body=body, name="loop")
+        loop = fm.F.control.for_loop(lower, upper, step, value, captures=(bank,), body=body, name="loop")
         result = fm.F.tensors.get_item(loop, 0, name="result")
-    builder.function("main", (value, ), (result, ))
+    builder.function("main", (value,), (result,))
     return fm.verify_module(builder.build(entry="main"))
 
 
@@ -104,12 +103,12 @@ def test_later_layout_program_composes_with_multisource_decode():
 
     module = fuse_bank_qkv_weights(_module())
     field_value = module.node_map["restored.bank_field"]
-    reshape = make_node("tensors.reshape", "layout", (field_value, ), {"shape": (8, 4)}, {})
-    restore = make_node("tensors.reshape", "layout_restore", (reshape, ), {"shape": (4, 8)}, {})
+    reshape = make_node("tensors.reshape", "layout", (field_value,), {"shape": (8, 4)}, {})
+    restore = make_node("tensors.reshape", "layout_restore", (reshape,), {"shape": (4, 8)}, {})
     nodes = []
     for node in module.nodes:
-        nodes.append(node if node.id == field_value.id else replace(
-            node, inputs=tuple(restore.id if value == field_value.id else value for value in node.inputs)))
+        nodes.append(node if node.id == field_value.id else replace(node, inputs=tuple(
+            restore.id if value == field_value.id else value for value in node.inputs)))
         if node.id == field_value.id:
             nodes.extend((reshape, restore))
     module = fm.verify_module(replace(module, nodes=tuple(nodes)))
@@ -129,4 +128,4 @@ def test_distinct_dynamic_rows_are_not_fused_into_one_field_program():
     for node in result.nodes:
         if node.op == "builtin.get_item" and node.id.endswith(".bank_field"):
             expected_row = "scale_row" if node.id.startswith("expanded") else "row"
-            assert node.inputs == (expected_row, )
+            assert node.inputs == (expected_row,)

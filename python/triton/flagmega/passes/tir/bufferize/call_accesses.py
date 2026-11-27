@@ -50,22 +50,17 @@ class CallAccessResolver:
         from triton.flagmega.ir.memory_effect import MemoryEffect, MemoryAccessScope
         result = []
         for carry in call.loop_carries:
-            for field, mode in (('initial', 'read'), ('current', 'read_write'), ('staging', 'read_write'),
-                                ('yielded', 'read'), ('result', 'write')):
-                descriptor = self.plan.buffer_map[getattr(carry, field)]
-                if descriptor.storage in {'scalar', 'rdata'} or not descriptor.nbytes:
+            for field,mode in (('initial','read'),('current','read_write'),('staging','read_write'),('yielded','read'),('result','write')):
+                descriptor = self.plan.buffer_map[getattr(carry,field)]
+                if descriptor.storage in {'scalar','rdata'} or not descriptor.nbytes:
                     continue
                 span = descriptor.physical_access_span
-                lo, hi = span.absolute_start.minimum, span.absolute_end.maximum
+                lo,hi = span.absolute_start.minimum,span.absolute_end.maximum
                 space = self.plan.memory_space_map[span.buffer.memory_space]
-                effect = MemoryEffect(
-                    mode, MemoryAccessScope.BLOCK if space.sharing_scope.value == 'block' else MemoryAccessScope.CHIP)
-                result.append(
-                    _Access(node.id, descriptor.id, descriptor.storage,
-                            physical_identity(self.plan, function_name, descriptor), lo, hi - lo, mode,
-                            descriptor.distributed_type, descriptor.distributed_storage_kind, effect,
-                            ('whole_resource', None), False, space.sharing_scope.value != 'block', space.sharing_scope,
-                            descriptor.component_stride_bytes))
+                effect = MemoryEffect(mode, MemoryAccessScope.BLOCK if space.sharing_scope.value=='block' else MemoryAccessScope.CHIP)
+                result.append(_Access(node.id,descriptor.id,descriptor.storage,physical_identity(self.plan,function_name,descriptor),
+                    lo,hi-lo,mode,descriptor.distributed_type,descriptor.distributed_storage_kind,effect,
+                    ('whole_resource',None),False,space.sharing_scope.value!='block',space.sharing_scope,descriptor.component_stride_bytes))
         return tuple(result)
 
     def instantiate(self, function_name, node, accesses):
@@ -119,14 +114,15 @@ class CallAccessResolver:
             pool = call.memory_pool_map.get(space)
             if pool is None:
                 memory_space = self.plan.memory_space_map.get(space)
-                if (memory_space is not None and memory_space.allocation_scope is MemoryAllocationScope.MODULE):
+                if (
+                    memory_space is not None
+                    and memory_space.allocation_scope is MemoryAllocationScope.MODULE
+                ):
                     # Module-scope storage such as readonly data has one
                     # address for the whole program, so a call frame binding
                     # would be meaningless: keep the access as it stands.
                     result.append(replace(
-                        access,
-                        node=node.id,
-                        storage=space,
+                        access, node=node.id, storage=space,
                         physical_id=f"{space}:module",
                     ))
                     continue

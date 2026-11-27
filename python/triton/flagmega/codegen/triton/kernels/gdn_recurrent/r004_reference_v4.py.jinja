@@ -1,0 +1,278 @@
+# flagmega-kernel: gdn_recurrent/r004_reference_v4
+# Copyright 2026 FlagOS Contributors
+# SPDX-License-Identifier: MIT
+# v4 body f59c3539a865d2b74ccdb68a33c3e6f7a5e6a3f8c64587f6ab2edb663309f03d.
+# A7: ordinary serial same-stream completion via frozen depends_on, no PDL.
+# A8: token-0 CLEAR, per-call vector GATHER, fused CORE cache commit.
+# Delta 9aa64e28d3363d7156d17852a6de34d9c47bb48c70eca1eab5254c8868669f4a.
+{% include "kernels/gdn_recurrent/r004_helpers_v4.py.jinja" %}
+
+# A8-clear: native setup-bound F32 scalars, never value-specialized.
+@triton.jit(do_not_specialize=["Scale", "Bias"])
+def _r004_reference_clear_v4(StateParent, Layer, Scale, Bias):
+    i = tle.gpu.set_layout(tl.program_id(0)*256 + tl.arange(0,256), E)
+    ptr = StateParent + Layer.to(tl.int64)*786432 + i
+    state = tl.load(ptr)
+    tl.store(ptr, state*Scale + Bias)
+
+
+# A8-gather: GET_ROWS vec4 ownership, device index and bit-copy preserved.
+@triton.jit
+def _r004_reference_gather_v4(StateParent, Layer, Selector, GatheredState):
+    i = tle.gpu.set_layout(tl.program_id(1)*1024 + tl.arange(0,1024), GATHER)
+    row = tl.load(Selector).to(tl.int64)
+    source = StateParent + Layer.to(tl.int64)*786432 + row*786432 + i
+    bits = tl.load(source.to(tl.pointer_type(tl.uint32)))
+    tl.store(GatheredState.to(tl.pointer_type(tl.uint32)) + i, bits)
+
+
+# Adaptation A1
+@triton.jit
+def _r004_reference_pb_v4(X, BW, B):
+    h = tl.program_id(0)
+    k0 = tle.gpu.set_layout(tl.arange(0,128),D)
+    acc = tl.full((),0.0,tl.float32)
+    for start in tl.range(0,5120,128):
+        k = start + k0
+        group = (k % 256) // 32
+        lane = k % 32
+        base = h*2720 + (k//256)*136
+        d = tl.load(BW.to(tl.pointer_type(tl.float16))+base//2).to(tl.float32)
+        sl = tl.load(BW+base+4+group//2)
+        sh = tl.load(BW.to(tl.pointer_type(tl.uint16))+(base+2)//2)
+        sc = ((sl >> ((group%2)*4)) & 15) | (((sh >> (group*2)) & 3)*16)
+        packed = tl.load(BW+base+8+group*16+lane%16)
+        code = tl.where(lane//16==0,packed & 15,packed >> 4)
+        cv = tl.where(code == 0, -127.0, tl.where(code == 1, -104.0, tl.where(code == 2, -83.0, tl.where(code == 3, -65.0, tl.where(code == 4, -49.0, tl.where(code == 5, -35.0, tl.where(code == 6, -22.0, tl.where(code == 7, -10.0, tl.where(code == 8, 1.0, tl.where(code == 9, 13.0, tl.where(code == 10, 25.0, tl.where(code == 11, 38.0, tl.where(code == 12, 53.0, tl.where(code == 13, 69.0, tl.where(code == 14, 89.0, 113.0)))))))))))))))
+        decoded = d * (sc.to(tl.float32)-32.0) * cv
+        value = tl.load(X+k).to(tl.float32)
+        acc += tl.sum(decoded*value,0)
+    tl.store(B+h,acc.to(tl.bfloat16).to(tl.float32))
+
+
+# Adaptation A1
+@triton.jit
+def _r004_reference_pa_v4(X, AW, A):
+    _r004_reference_pb_v4(X,AW,A)
+
+
+# Adaptation A2
+@triton.jit
+def _r004_reference_beta_v4(B, Beta):
+    i = tle.gpu.set_layout(tl.arange(0,256),E)
+    b = tl.load(B+i,i<48,0)
+    tl.store(Beta+i,tl.sigmoid(b).to(tl.bfloat16).to(tl.float32),i<48)
+
+
+# Adaptation A3
+@triton.jit
+def _r004_reference_bias_v4(A, DT, Biased):
+    i = tle.gpu.set_layout(tl.arange(0,2)[:,None]*24 + tl.arange(0,32)[None,:],BIAS)
+    active = tle.gpu.set_layout(tl.broadcast_to(tl.arange(0,32)[None,:]<24,[2,32]),BIAS)
+    a = tl.load(A+i,active,0)
+    dt = tl.load(DT+i,active,0)
+    tl.store(Biased+i,a+dt,active)
+
+
+# Adaptation A4
+@triton.jit
+def _r004_reference_gate_v4(Biased, ALog, G):
+    i = tle.gpu.set_layout(tl.arange(0,256),E)
+    a = tl.load(Biased+i,i<48,0)
+    loga = tl.load(ALog+i,i<48,0)
+    softplus = tl.where(a>20.0,a,libdevice.log1p(libdevice.exp(a)))
+    tl.store(G+i,-libdevice.exp(loga)*softplus,i<48)
+
+
+# Adaptation A5
+@triton.jit
+def _r004_reference_q_v4(QKV, QN):
+    qk_norm(QKV,QN,0)
+
+
+# Adaptation A5
+@triton.jit
+def _r004_reference_k_v4(QKV, KN):
+    qk_norm(QKV,KN,2048)
+
+
+# Adaptation A6/A8
+@triton.jit
+def _r004_reference_core_v4(QN,KN,QKV,Beta,G,GatheredState,StateParent,Layer,Core):
+    h = tl.program_id(0)
+    z = tl.program_id(2)
+    col = tle.gpu.set_layout(tl.broadcast_to((16*z+tl.arange(0,16))[:,None],[16,128]),L)
+    key = tle.gpu.set_layout(tl.broadcast_to(tl.arange(0,128)[None,:],[16,128]),L)
+    state_ptr = StateParent + Layer.to(tl.int64)*786432 + h*16384 + col*128 + key
+    state_input_ptr = GatheredState + h*16384 + col*128 + key
+    state = tle.gpu.set_layout(tl.load(state_input_ptr),L)
+    k = tle.gpu.set_layout(tl.load(KN+(h%16)*128+key),L)
+    q = tle.gpu.set_layout(tl.load(QN+(h%16)*128+key),L)
+    s0 = extract_r(state,0)
+    k0 = extract_r(k,0)
+    q0 = extract_r(q,0)
+    s1 = extract_r(state,1)
+    k1 = extract_r(k,1)
+    q1 = extract_r(q,1)
+    s2 = extract_r(state,2)
+    k2 = extract_r(k,2)
+    q2 = extract_r(q,2)
+    s3 = extract_r(state,3)
+    k3 = extract_r(k,3)
+    q3 = extract_r(q,3)
+    s4 = extract_r(state,4)
+    k4 = extract_r(k,4)
+    q4 = extract_r(q,4)
+    s5 = extract_r(state,5)
+    k5 = extract_r(k,5)
+    q5 = extract_r(q,5)
+    s6 = extract_r(state,6)
+    k6 = extract_r(k,6)
+    q6 = extract_r(q,6)
+    s7 = extract_r(state,7)
+    k7 = extract_r(k,7)
+    q7 = extract_r(q,7)
+    s8 = extract_r(state,8)
+    k8 = extract_r(k,8)
+    q8 = extract_r(q,8)
+    s9 = extract_r(state,9)
+    k9 = extract_r(k,9)
+    q9 = extract_r(q,9)
+    s10 = extract_r(state,10)
+    k10 = extract_r(k,10)
+    q10 = extract_r(q,10)
+    s11 = extract_r(state,11)
+    k11 = extract_r(k,11)
+    q11 = extract_r(q,11)
+    s12 = extract_r(state,12)
+    k12 = extract_r(k,12)
+    q12 = extract_r(q,12)
+    s13 = extract_r(state,13)
+    k13 = extract_r(k,13)
+    q13 = extract_r(q,13)
+    s14 = extract_r(state,14)
+    k14 = extract_r(k,14)
+    q14 = extract_r(q,14)
+    s15 = extract_r(state,15)
+    k15 = extract_r(k,15)
+    q15 = extract_r(q,15)
+    partial = tle.gpu.set_layout(tl.full([16,8],0.0,tl.float32),R)
+    partial = partial + s0*k0
+    partial = partial + s1*k1
+    partial = partial + s2*k2
+    partial = partial + s3*k3
+    partial = partial + s4*k4
+    partial = partial + s5*k5
+    partial = partial + s6*k6
+    partial = partial + s7*k7
+    partial = partial + s8*k8
+    partial = partial + s9*k9
+    partial = partial + s10*k10
+    partial = partial + s11*k11
+    partial = partial + s12*k12
+    partial = partial + s13*k13
+    partial = partial + s14*k14
+    partial = partial + s15*k15
+    recall = gdn_reduce8_xor_v4(partial)
+    decay = libdevice.exp(tl.load(G+h))
+    beta = tl.load(Beta+h)
+    c = tle.gpu.set_layout(tl.arange(0,16),tle.gpu.SlicedEncoding(1,R.value)) + 16*z
+    v = tl.load(QKV+4096+h*128+c).to(tl.float32)
+    delta = (v[:,None] - decay*recall)*beta
+    partial = tle.gpu.set_layout(tl.full([16,8],0.0,tl.float32),R)
+    n0 = decay*s0 + k0*delta
+    partial = partial + n0*q0
+    n1 = decay*s1 + k1*delta
+    partial = partial + n1*q1
+    n2 = decay*s2 + k2*delta
+    partial = partial + n2*q2
+    n3 = decay*s3 + k3*delta
+    partial = partial + n3*q3
+    n4 = decay*s4 + k4*delta
+    partial = partial + n4*q4
+    n5 = decay*s5 + k5*delta
+    partial = partial + n5*q5
+    n6 = decay*s6 + k6*delta
+    partial = partial + n6*q6
+    n7 = decay*s7 + k7*delta
+    partial = partial + n7*q7
+    n8 = decay*s8 + k8*delta
+    partial = partial + n8*q8
+    n9 = decay*s9 + k9*delta
+    partial = partial + n9*q9
+    n10 = decay*s10 + k10*delta
+    partial = partial + n10*q10
+    n11 = decay*s11 + k11*delta
+    partial = partial + n11*q11
+    n12 = decay*s12 + k12*delta
+    partial = partial + n12*q12
+    n13 = decay*s13 + k13*delta
+    partial = partial + n13*q13
+    n14 = decay*s14 + k14*delta
+    partial = partial + n14*q14
+    n15 = decay*s15 + k15*delta
+    partial = partial + n15*q15
+    readout = gdn_reduce8_xor_v4(partial) * 0.08838834764831845
+    elected = tle.gpu.set_layout(tl.broadcast_to((tl.arange(0,8)==0)[None,:],[16,8]),R)
+    tl.store(Core+h*128+tl.broadcast_to(c[:,None],[16,8]),readout,elected)
+    joined_0_0 = tl.join(n0,n1)
+    joined_0_1 = tl.join(n2,n3)
+    joined_0_2 = tl.join(n4,n5)
+    joined_0_3 = tl.join(n6,n7)
+    joined_0_4 = tl.join(n8,n9)
+    joined_0_5 = tl.join(n10,n11)
+    joined_0_6 = tl.join(n12,n13)
+    joined_0_7 = tl.join(n14,n15)
+    joined_1_0 = tl.join(joined_0_0,joined_0_1)
+    joined_1_0 = tl.reshape(tl.trans(joined_1_0,0,1,3,2),[16,8,4])
+    joined_1_1 = tl.join(joined_0_2,joined_0_3)
+    joined_1_1 = tl.reshape(tl.trans(joined_1_1,0,1,3,2),[16,8,4])
+    joined_1_2 = tl.join(joined_0_4,joined_0_5)
+    joined_1_2 = tl.reshape(tl.trans(joined_1_2,0,1,3,2),[16,8,4])
+    joined_1_3 = tl.join(joined_0_6,joined_0_7)
+    joined_1_3 = tl.reshape(tl.trans(joined_1_3,0,1,3,2),[16,8,4])
+    joined_2_0 = tl.join(joined_1_0,joined_1_1)
+    joined_2_0 = tl.reshape(tl.trans(joined_2_0,0,1,3,2),[16,8,8])
+    joined_2_1 = tl.join(joined_1_2,joined_1_3)
+    joined_2_1 = tl.reshape(tl.trans(joined_2_1,0,1,3,2),[16,8,8])
+    joined_3_0 = tl.join(joined_2_0,joined_2_1)
+    joined_3_0 = tl.reshape(tl.trans(joined_3_0,0,1,3,2),[16,8,16])
+    new3 = tle.gpu.set_layout(tl.trans(joined_3_0,0,2,1),L3)
+    new = tle.gpu.set_layout(tl.reshape(new3,[16,128]),L)
+    tl.store(state_ptr,new)
+
+
+# Adaptation A9
+@triton.jit
+def _r004_reference_rms_v4(Core,Norm,Weighted):
+    h = tl.program_id(0)
+    i = tle.gpu.set_layout(tl.arange(0,128),V)
+    core = tl.load(Core+h*128+i)
+    sumsq = local4_square(core)
+    inv = tl.rsqrt(sumsq/128.0 + 9.999999974752427e-7)
+    inv2 = tle.gpu.set_layout(tl.broadcast_to(inv[:,None],[32,4]),V2)
+    inv1 = tle.gpu.set_layout(tl.reshape(inv2,[128]),V)
+    weight = tl.load(Norm+i)
+    tl.store(Weighted+h*128+i,core*inv1*weight)
+
+
+# Adaptation A9
+@triton.jit
+def _r004_reference_y_v4(Weighted,Z,Y):
+    i = tle.gpu.set_layout(tl.program_id(0)*256+tl.arange(0,256),E)
+    z = tl.load(Z+i).to(tl.float32)
+    weighted = tl.load(Weighted+i)
+    tl.store(Y+i,(weighted*(z*tl.sigmoid(z))).to(tl.bfloat16))
+
+
+{% if render_calls is defined %}
+{% for call in render_calls if call.family == "gdn_recurrent" and call.variant == "r004_reference_v4" %}
+{% if call.phase == "clear" %}
+@triton.jit(do_not_specialize=["Scale", "Bias"])
+{% else %}
+@triton.jit
+{% endif %}
+def {{ call.symbol }}({{ call.signature }}):
+    _r004_reference_{{ call.phase }}_v4({{ call.native_arguments | join(", ") }})
+{% endfor %}
+{% endif %}

@@ -14,6 +14,7 @@ from triton.flagmega.artifacts import load_artifact
 from triton.flagmega.artifacts.manifest import resolve_artifact_path
 from triton.flagmega.artifacts.program_sources import program_source_records
 from triton.flagmega.errors import ArtifactError
+from triton.flagmega.runtime.cpp_module import create_cpp_tir_runtime
 from triton.flagmega.runtime.module import (
     GeneratedAddModule,
     GeneratedElementwiseModule,
@@ -32,6 +33,9 @@ def _register_builtin_packages() -> None:
     package_registry.register("elementwise_add/v1", "iluvatar-bi-v150", GeneratedAddModule)
     package_registry.register("elementwise/v2", "iluvatar-bi-v150", GeneratedElementwiseModule)
     package_registry.register("tir_call_graph/v1", "iluvatar-bi-v150", create_tir_runtime)
+    package_registry.register("tir_call_graph_cpp/v1", "iluvatar-bi-v150", create_cpp_tir_runtime)
+    for target in ("nvidia-sm89", "nvidia-sm90", "nvidia-sm120"):
+        package_registry.register("tir_call_graph_cpp/v1", target, create_cpp_tir_runtime)
     # Ada (sm_89, e.g. RTX 4090) runs the same portable TIR call graph.
     package_registry.register("tir_call_graph/v1", "nvidia-sm89", create_tir_runtime)
     # The TIR call-graph runtime is model- and platform-neutral; the RDNA path
@@ -91,14 +95,20 @@ def load(path: str | Path, *, device: str | None = None, shared_rdata=None, diag
         raise ArtifactError("Frozen native selection requires the normal TIR call-graph adapter.")
     if diagnostic_context is not None and adapter.factory is not create_tir_runtime:
         raise ArtifactError("This adapter does not support diagnostic resource contracts.")
-    source = resolve_artifact_path(artifact, str(codegen.get("source", "")))
-    module_name = f"_flagmega_artifact_{manifest['semantic_hash'][:16]}"
-    records = program_source_records(codegen)
-    if records:
-        generated = _load_program_sources(artifact, codegen, records, module_name)
+    if str(manifest.get("codegen_backend", "triton")) == "cpp":
+        # A C++ package is already compiled; its generated source is kept for
+        # inspection and hash verification, not imported. The adapter opens the
+        # artifact's built library itself, so there is no kernel object here.
+        kernel = None
     else:
-        generated = _import_source(source, module_name)
-    kernel = _resolve_kernel(generated, codegen, source)
+        source = resolve_artifact_path(artifact, str(codegen.get("source", "")))
+        module_name = f"_flagmega_artifact_{manifest['semantic_hash'][:16]}"
+        records = program_source_records(codegen)
+        if records:
+            generated = _load_program_sources(artifact, codegen, records, module_name)
+        else:
+            generated = _import_source(source, module_name)
+        kernel = _resolve_kernel(generated, codegen, source)
     result = adapter.factory(artifact, manifest, module, kernel)
     if frozen_context is not None:
         from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
@@ -174,8 +184,10 @@ def _resolve_kernel(generated, codegen: Mapping[str, object], source: Path):
         try:
             resolved.append(getattr(generated, symbol))
         except AttributeError as error:
-            raise ArtifactError(f"Generated source {source} has no entry symbol {symbol!r} "
-                                f"(from codegen['kernels']).") from error
+            raise ArtifactError(
+                f"Generated source {source} has no entry symbol {symbol!r} "
+                f"(from codegen['kernels'])."
+            ) from error
     return tuple(resolved)
 
 

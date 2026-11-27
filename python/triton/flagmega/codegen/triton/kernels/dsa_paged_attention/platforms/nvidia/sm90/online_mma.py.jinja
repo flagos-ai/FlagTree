@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# BF16 QK and PV use continuous FP32 Tensor Core accumulators.
+# BF16 QK and PV use continuous FP32 Tensor Core accumulators.
 import triton.experimental.tle.language as tle
 {{ call.symbol }}__mma_layout = tl.constexpr(tle.gpu.MmaEncoding([2, 0], [1, {{ num_warps }}], [16, 8]))
 {{ call.symbol }}__lhs_layout = tl.constexpr(tle.gpu.DotOperandEncoding(0, {{ call.symbol }}__mma_layout, 2))

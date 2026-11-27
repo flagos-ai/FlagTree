@@ -18,8 +18,7 @@ from triton.flagmega.ir.ops.math.vectorized_unary import VectorizedUnary
 
 __all__ = [
     "Div",
-    "Exp",
-    "Sigmoid",
+    "Exp", "Sigmoid",
     "ReduceSum",
     "Add",
     "BlockScaledMatMul",
@@ -32,3 +31,6 @@ __all__ = [
     "VectorizedMatMul",
     "VectorizedUnary",
 ]
+
+from .q8_1_prepare import Q8_1Prepare
+from .iq4_xs_q8_1_matmul import IQ4XSQ8_1MatMul

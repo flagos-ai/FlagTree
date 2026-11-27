@@ -41,7 +41,8 @@ def test_device_projection_preserves_interleaved_rows_and_lanes(tmp_path, direct
         values["sentinel"] = torch.arange(128, dtype=torch.float32, device="cuda")
     result_values = iter((output, sentinel_output))
     values.update(
-        (spec["value"], next(result_values)) for spec in runtime.external_arguments if spec["role"] == "result")
+        (spec["value"], next(result_values)) for spec in runtime.external_arguments if spec["role"] == "result"
+    )
     try:
         arguments = tuple(values[spec["value"]] for spec in runtime.external_arguments)
         GeneratedTirCallGraphModule.prepare(runtime, *arguments)

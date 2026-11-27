@@ -19,21 +19,21 @@ def test_prefill_norm_parameter_rounding_survives_decomposition():
     from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
     from triton.flagmega.passes.target_independent import decompose_complex_ops
 
-    module = import_model(checkpoint(), numerical_profile=VLLM_AE10_INDUCTOR_LEVEL3, mode="prefill", num_tokens=32)
+    module = import_model(checkpoint(), numerical_profile=VLLM_AE10_INDUCTOR_LEVEL3,
+                          mode="prefill", num_tokens=32)
     rounded = next(n for n in module.nodes if n.id.endswith("recurrent.norm_weight_bf16"))
 
     class Parameter(fm.Module):
-
         def forward(self):
-            value = self.input("weight", fm.tensor_type("float32", (16, )))
+            value = self.input("weight", fm.tensor_type("float32", (16,)))
             first = fm.F.tensors.cast(value, "bfloat16", name="rounded")
             result = fm.F.tensors.cast(first, "float32")
-            self.function("main", (value, ), (result, ))
+            self.function("main", (value,), (result,))
 
     # Exercise the profile's cast contract without the full-model weights.
     graph = Parameter(dialect="high_level", stage="imported", entry="main").build()
-    graph = fm.verify_module(
-        replace(graph, nodes=tuple(replace(n, attrs=rounded.attrs) if n.id == "rounded" else n for n in graph.nodes)))
+    graph = fm.verify_module(replace(graph, nodes=tuple(
+        replace(n, attrs=rounded.attrs) if n.id == "rounded" else n for n in graph.nodes)))
     evaluator = TorchEvaluator(DictWeightResolver({}))
     values = {"weight": torch.linspace(.991, 1.009, 16)}
     expected = values["weight"].bfloat16().float()
@@ -67,7 +67,8 @@ def test_native_attention_keeps_fa3_probability_store_and_block_order(mode):
     attention = tuple(n for n in module.nodes if n.op == "nn.paged_attention")
     assert attention
     assert all(n.attrs["probability_rounding"] == "online_bf16" for n in attention)
-    assert all(n.attrs["softmax_block_size"] == 80 and n.attrs["softmax_traversal"] == "reverse" for n in attention)
+    assert all(n.attrs["softmax_block_size"] == 80 and n.attrs["softmax_traversal"] == "reverse"
+               for n in attention)
 
 
 @pytest.mark.parametrize("mode", ("decode", "prefill"))
@@ -84,7 +85,7 @@ def test_native_router_owns_scoring_and_ordered_normalization(mode):
         assert prefix + "_router_softmax" not in module.node_map
         weights = module.node_map[prefix + "_router_weights"]
         assert weights.op == "tensors.reshape"
-        assert module.node_map[weights.inputs[0]].inputs == (routing.id, )
+        assert module.node_map[weights.inputs[0]].inputs == (routing.id,)
 
 
 def test_profile_preserves_reuse_and_materializes_only_declared_rounding_boundaries():
@@ -137,7 +138,7 @@ def test_profile_is_idempotent_and_python_round_trip_keeps_contract(tmp_path):
     assert loaded.semantic_hash == module.semantic_hash
     assert loaded.metadata["numerical_profile_reference"]["phase"] == "decode"
     with pytest.raises(ImporterError, match="Cannot change"):
-        apply_numerical_profile(module, "default")
+        apply_numerical_profile(module, "nncase")
     with pytest.raises(ImporterError, match="require imported"):
         apply_numerical_profile(replace(module, stage="target_independent"), VLLM_AE10_INDUCTOR_LEVEL3)
 
@@ -178,14 +179,12 @@ def test_profile_recognizes_gate_dependencies_in_older_anonymous_python_ir():
 
 @pytest.mark.parametrize("tokens", (1, 3, 65, 512))
 def test_native_prefill_uses_explicit_block_stages_instead_of_decode_recurrence(tokens):
-    module = import_model(checkpoint(), mode="prefill", num_tokens=tokens, numerical_profile=VLLM_AE10_INDUCTOR_LEVEL3)
+    module = import_model(checkpoint(), mode="prefill", num_tokens=tokens,
+                          numerical_profile=VLLM_AE10_INDUCTOR_LEVEL3)
     assert module.metadata["numerical_profile_reference"]["phase"] == "prefill"
     assert not any(node.op == "nn.gdn_recurrent_core" for node in module.nodes)
-    assert {node.op
-            for node in module.nodes} >= {
-                "nn.l2_normalization", "nn.delta_rule_gates", "nn.delta_rule_coefficients", "nn.delta_rule_log_prefix",
-                "nn.delta_rule_block_update"
-            }
+    assert {node.op for node in module.nodes} >= {"nn.l2_normalization", "nn.delta_rule_gates",
+        "nn.delta_rule_coefficients", "nn.delta_rule_log_prefix", "nn.delta_rule_block_update"}
     assert module.node_map["prefill_linear_recurrent"].op == "builtin.tuple"
     assert module.node_map["prefill_linear_recurrent.core"].type.dtype == fm.DType.BFLOAT16
     assert module.node_map["prefill_linear_recurrent.norm_apply"].type.dtype == fm.DType.FLOAT32
@@ -203,10 +202,8 @@ def test_cp_prefill_contract_exposes_cross_chunk_transfer(tokens):
     config = configuration()
     config["text_config"].update(linear_key_head_dim=128, linear_value_head_dim=128)
     source = checkpoint()
-    shapes = {
-        "in_proj_qkv.weight": (512, 16), "in_proj_z.weight": (256, 16), "conv1d.weight": (512, 1, 4), "norm.weight":
-        (128, ), "out_proj.weight": (16, 256)
-    }
+    shapes = {"in_proj_qkv.weight": (512, 16), "in_proj_z.weight": (256, 16),
+              "conv1d.weight": (512, 1, 4), "norm.weight": (128,), "out_proj.weight": (16, 256)}
     infos = {}
     for key in source.keys:
         info = source.tensor_info(key)

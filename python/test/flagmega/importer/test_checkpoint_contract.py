@@ -28,11 +28,10 @@ def _write_shard(path, header, data_bytes: int | bytes):
 def test_verified_shard_ranges_do_not_repeat_path_canonicalization(tmp_path, monkeypatch):
     _config(tmp_path)
     source = tmp_path / "model.safetensors"
-    _write_shard(
-        source, {
-            "first": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]},
-            "second": {"dtype": "F32", "shape": [1], "data_offsets": [4, 8]},
-        }, b"abcdefgh")
+    _write_shard(source, {
+        "first": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]},
+        "second": {"dtype": "F32", "shape": [1], "data_offsets": [4, 8]},
+    }, b"abcdefgh")
     checkpoint = DirectoryCheckpoint(tmp_path)
     checkpoint.tensor_info("first")
     calls = []
@@ -57,17 +56,13 @@ def test_verified_source_report_reuses_digest_and_invalidates_on_ctime(tmp_path,
     _write_shard(source, {"weight": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}, b"abcd")
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
     report = tmp_path / "audit.json"
-    report.write_text(
-        json.dumps({
-            "checkpoint": str(tmp_path), "ok": True, "shards":
-            [{"file": source.name, "size": source.stat().st_size, "sha256": digest, "ok": True}]
-        }))
+    report.write_text(json.dumps({"checkpoint": str(tmp_path), "ok": True, "shards": [
+        {"file": source.name, "size": source.stat().st_size, "sha256": digest, "ok": True}
+    ]}))
     checkpoint = DirectoryCheckpoint(tmp_path, integrity_report=report)
     original = hashlib.sha256
-
     def forbidden(*args, **kwargs):
         pytest.fail("unchanged verified source was hashed again")
-
     monkeypatch.setattr(hashlib, "sha256", forbidden)
     assert checkpoint.source_file_digest(source) == digest
     monkeypatch.setattr(hashlib, "sha256", original)
@@ -140,7 +135,7 @@ def test_huggingface_snapshot_accepts_same_model_blob_symlink(tmp_path):
     assert checkpoint.tensor_info("weight") == TensorInfo(
         "weight",
         DType.FLOAT32,
-        (1, ),
+        (1,),
         "model.safetensors",
         (0, 4),
     )
@@ -213,7 +208,8 @@ def test_directory_checkpoint_exposes_verified_tensor_byte_range(tmp_path):
 
 def test_verified_byte_ranges_reuse_resolved_shard_metadata(tmp_path, monkeypatch):
     _config(tmp_path)
-    _write_shard(tmp_path / "model.safetensors", {"weight": {"dtype": "F32", "shape": [2], "data_offsets": [0, 8]}}, 8)
+    _write_shard(tmp_path / "model.safetensors",
+                 {"weight": {"dtype": "F32", "shape": [2], "data_offsets": [0, 8]}}, 8)
     checkpoint = DirectoryCheckpoint(tmp_path)
     first = checkpoint.tensor_byte_range("weight")
 
@@ -227,9 +223,8 @@ def test_verified_byte_ranges_reuse_resolved_shard_metadata(tmp_path, monkeypatc
 def test_cache_identity_stats_each_backing_shard_once(tmp_path, monkeypatch):
     _config(tmp_path)
     shard = tmp_path / "model.safetensors"
-    _write_shard(shard,
-                 {f"w{i}": {"dtype": "F32", "shape": [2], "data_offsets": [i * 8, (i + 1) * 8]}
-                  for i in range(64)}, 64 * 8)
+    _write_shard(shard, {f"w{i}": {"dtype": "F32", "shape": [2], "data_offsets": [i * 8, (i + 1) * 8]}
+                         for i in range(64)}, 64 * 8)
     checkpoint = DirectoryCheckpoint(tmp_path)
     original = Path.stat
     calls = []
@@ -248,12 +243,12 @@ def test_cache_identity_stats_each_backing_shard_once(tmp_path, monkeypatch):
 
 def test_tensor_info_rejects_negative_shape_and_offsets():
     with pytest.raises(ImporterError, match="invalid shape"):
-        TensorInfo("weight", DType.FLOAT32, (-1, ), "model.safetensors")
+        TensorInfo("weight", DType.FLOAT32, (-1,), "model.safetensors")
     with pytest.raises(ImporterError, match="invalid data offsets"):
         TensorInfo(
             "weight",
             DType.FLOAT32,
-            (1, ),
+            (1,),
             "model.safetensors",
             (4, 0),
         )

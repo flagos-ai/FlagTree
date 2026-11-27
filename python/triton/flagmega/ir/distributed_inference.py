@@ -21,7 +21,7 @@ def broadcast_type(tensor: TensorType, placement: Placement) -> DistributedType:
 
 
 def broadcast_ir_type(value: IRType, placement: Placement) -> IRType:
-    """Build the reference recursively broadcast distributed candidate type.
+    """Build nncase's recursively broadcast distributed candidate type.
 
     Tensor leaves become ``DistributedType`` values, tuple structure is
     retained, and non-tensor leaves such as state/reference handles remain
@@ -39,18 +39,21 @@ def broadcast_ir_type(value: IRType, placement: Placement) -> IRType:
 
 
 def split_type(
-        tensor: TensorType,
-        tensor_axis: int,
-        placement: Placement,
-        hierarchy_axes: tuple[int, ...] = (0, ),
-        *,
-        block_size: int | None = None,
+    tensor: TensorType,
+    tensor_axis: int,
+    placement: Placement,
+    hierarchy_axes: tuple[int, ...] = (0,),
+    *,
+    block_size: int | None = None,
 ) -> DistributedType:
     if tensor_axis < 0:
         tensor_axis += tensor.rank
     policies = [SBP.broadcast() for _ in tensor.shape]
-    policies[tensor_axis] = (SBP.split_contiguous(hierarchy_axes) if block_size is None else SBP.split_block_cyclic(
-        hierarchy_axes, block_size))
+    policies[tensor_axis] = (
+        SBP.split_contiguous(hierarchy_axes)
+        if block_size is None
+        else SBP.split_block_cyclic(hierarchy_axes, block_size)
+    )
     return DistributedType(tensor, tuple(policies), placement)
 
 

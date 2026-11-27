@@ -12,22 +12,31 @@ from triton.flagmega.passes.functions import (
 
 
 class _NestedLayoutLayer(fm.Module):
-
     def __init__(self):
         super().__init__(dialect="ntt", stage="packed", entry="main")
 
     def forward(self):
         logical_type = fm.tensor_type("float32", (4, 16))
         parameter = self.input("parameter", logical_type, id="parameter")
-        packed4 = fm.F.tensors.pack(parameter, (4, ), axes=(1, ), name="packed4")
-        packed2 = fm.F.tensors.pack(packed4, (2, ), axes=(1, ), name="packed2")
-        unpacked2 = fm.F.tensors.unpack(packed2, axes=(1, ), name="unpacked2")
-        result = fm.F.tensors.unpack(unpacked2, axes=(1, ), name="result")
+        packed4 = fm.F.tensors.pack(
+            parameter, (4,), axes=(1,), name="packed4"
+        )
+        packed2 = fm.F.tensors.pack(
+            packed4, (2,), axes=(1,), name="packed2"
+        )
+        unpacked2 = fm.F.tensors.unpack(
+            packed2, axes=(1,), name="unpacked2"
+        )
+        result = fm.F.tensors.unpack(
+            unpacked2, axes=(1,), name="result"
+        )
 
         value = self.input("value", logical_type, id="value")
-        call = fm.F.builtin.call(value, result_type=logical_type, callee="layer", name="call")
-        self.function("main", (value, ), (call, ))
-        self.function("layer", (parameter, ), (result, ), attrs={"reusable": True})
+        call = fm.F.builtin.call(
+            value, result_type=logical_type, callee="layer", name="call"
+        )
+        self.function("main", (value,), (call,))
+        self.function("layer", (parameter,), (result,), attrs={"reusable": True})
 
 
 def test_nested_pack_unpack_chain_moves_across_boundary_to_fixed_point():
@@ -38,7 +47,10 @@ def test_nested_pack_unpack_chain_moves_across_boundary_to_fixed_point():
     parameter_type = rewritten.node_map[layer.parameters[0]].type
     assert isinstance(parameter_type.dtype, fm.VectorType)
     assert parameter_type.dtype.lanes == (2, 4)
-    assert not {node.op for node in function_nodes(rewritten, layer)} & {"tensors.pack", "tensors.unpack"}
+    assert not {
+        node.op
+        for node in function_nodes(rewritten, layer)
+    } & {"tensors.pack", "tensors.unpack"}
 
     main_ops = [node.op for node in function_nodes(rewritten, rewritten.function_map["main"])]
     assert main_ops.count("tensors.pack") == 2

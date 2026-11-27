@@ -22,13 +22,15 @@ def test_sme_gemv_preserves_complete_and_partial_transport_tiles(tmp_path, n, k,
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or not getattr(torch, "corex", False):
         pytest.skip("requires an Iluvatar COREX GPU")
-    call = dict(
-        family="dense_matmul", variant="packed_k_major_gemv", symbol="run", signature="X, W, Y", local_m_capacity=1,
-        local_n_capacity=n, local_k_capacity=k, tile_n=128, block_k=64, source="X", weight="W", result="Y",
-        source_active="True", result_active="True", output_type=output, global_n="dense_local_n_offsets",
-        global_k="dense_local_k_offsets", source_offset="dense_local_k_offsets", result_offset="dense_local_n_offsets",
-        weight_offset=f"(dense_global_k[None, :] // 16) * {n * 16} + "
-        "dense_global_n[:, None] * 16 + dense_global_k[None, :] % 16")
+    call = dict(family="dense_matmul", variant="packed_k_major_gemv",
+                symbol="run", signature="X, W, Y", local_m_capacity=1,
+                local_n_capacity=n, local_k_capacity=k, tile_n=128, block_k=64,
+                source="X", weight="W", result="Y", source_active="True",
+                result_active="True", output_type=output,
+                global_n="dense_local_n_offsets", global_k="dense_local_k_offsets",
+                source_offset="dense_local_k_offsets", result_offset="dense_local_n_offsets",
+                weight_offset=f"(dense_global_k[None, :] // 16) * {n * 16} + "
+                              "dense_global_n[:, None] * 16 + dense_global_k[None, :] % 16")
     generator = torch.Generator().manual_seed(n + k)
     x = torch.randn(k, generator=generator).bfloat16().cuda()
     dense = (torch.randn((n, k), generator=generator) / 32).bfloat16()
@@ -44,11 +46,13 @@ def test_sme_gemv_preserves_complete_and_partial_transport_tiles(tmp_path, n, k,
     results = []
     for corex, warps in ((False, 32), (True, 16)):
         if corex:
-            call["corex_flat_sme_gemv"] = dict(source="X", weight="W", result="Y", weight_k_group_stride=n * 16)
+            call["corex_flat_sme_gemv"] = dict(source="X", weight="W", result="Y",
+                                               weight_k_group_stride=n * 16)
         source = TritonTemplateRegistry().render_kernel(
-            KernelTemplateSpec("dense_matmul", "packed_k_major_gemv", "corex" if corex else None,
-                               "bi_v150" if corex else None),
-            dict(render_calls=[call], num_warps=warps, distributed_entry=False, mesh_hierarchy=(1, 1)),
+            KernelTemplateSpec("dense_matmul", "packed_k_major_gemv",
+                               "corex" if corex else None, "bi_v150" if corex else None),
+            dict(render_calls=[call], num_warps=warps,
+                 distributed_entry=False, mesh_hierarchy=(1, 1)),
         ).source
         path = tmp_path / f"gemv_{warps}.py"
         path.write_text("import triton\nimport triton.language as tl\n"
@@ -57,9 +61,9 @@ def test_sme_gemv_preserves_complete_and_partial_transport_tiles(tmp_path, n, k,
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         y = torch.empty(n, device="cuda", dtype=dtype)
-        module.run[(1, )](x, weight, y, num_warps=warps, enable_fp_fusion=False)
+        module.run[(1,)](x, weight, y, num_warps=warps, enable_fp_fusion=False)
         with torch.cuda.graph(graph := torch.cuda.CUDAGraph()):
-            module.run[(1, )](x, weight, y, num_warps=warps, enable_fp_fusion=False)
+            module.run[(1,)](x, weight, y, num_warps=warps, enable_fp_fusion=False)
         for _ in range(10):
             graph.replay()
         torch.cuda.synchronize()

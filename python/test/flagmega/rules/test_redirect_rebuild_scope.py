@@ -34,7 +34,9 @@ def _module():
             inputs=(source, ),
             id=f"consumer_{index}",
             attrs={"dtype": "float32"},
-        ) for index in range(6))
+        )
+        for index in range(6)
+    )
     bystanders = tuple(
         builder.node(
             op="tensors.cast",
@@ -42,7 +44,9 @@ def _module():
             inputs=(target, ),
             id=f"bystander_{index}",
             attrs={"dtype": "float32"},
-        ) for index in range(6))
+        )
+        for index in range(6)
+    )
     builder.function("main", (source, target), (*consumers, *bystanders, source))
     return builder.build(entry="main")
 
@@ -51,18 +55,22 @@ def _redirect_rebuilding_everything(module, source, target):
     """The previous implementation, kept here as the equivalence oracle."""
 
     nodes = tuple(
-        replace(node, inputs=tuple(target if v == source else v
-                                   for v in node.inputs))
+        replace(node, inputs=tuple(target if v == source else v for v in node.inputs))
         for node in module.nodes
-        if node.id != source)
+        if node.id != source
+    )
     functions = tuple(
         replace(
             function,
             parameters=tuple(target if v == source else v for v in function.parameters),
             outputs=tuple(target if v == source else v for v in function.outputs),
-        ) for function in module.functions)
+        )
+        for function in module.functions
+    )
     points = tuple(
-        replace(point, owner=target) if point.owner == source else point for point in module.selection_points)
+        replace(point, owner=target) if point.owner == source else point
+        for point in module.selection_points
+    )
     return replace(module, nodes=nodes, functions=functions, selection_points=points)
 
 
@@ -96,13 +104,18 @@ def test_untouched_nodes_keep_their_identity():
     before = {node.id: node for node in module.nodes}
     after = _redirect(module, "source", "target")
 
-    rebuilt = [node.id for node in after.nodes if node is not before.get(node.id)]
+    rebuilt = [
+        node.id for node in after.nodes if node is not before.get(node.id)
+    ]
     assert rebuilt, "the consumers of the redirected value must be rebuilt"
-    assert all("source" in before[node_id].inputs
-               for node_id in rebuilt), f"rebuilt a node that never named the value: {rebuilt}"
-    assert all(node is before[node.id]
-               for node in after.nodes
-               if "source" not in before[node.id].inputs), "a node that does not name the value was reconstructed"
+    assert all(
+        "source" in before[node_id].inputs for node_id in rebuilt
+    ), f"rebuilt a node that never named the value: {rebuilt}"
+    assert all(
+        node is before[node.id]
+        for node in after.nodes
+        if "source" not in before[node.id].inputs
+    ), "a node that does not name the value was reconstructed"
 
 
 def test_redirect_rewrites_function_parameters_and_outputs():

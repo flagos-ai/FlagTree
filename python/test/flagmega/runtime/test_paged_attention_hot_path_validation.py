@@ -20,18 +20,24 @@ def _runtime(validation_calls):
         validation_calls.append(dynamic_values)
 
     runtime._validate_inputs = MethodType(validate, runtime)
-    runtime._entry_buffer_values = MethodType(lambda self, input_ids, state, outputs: {}, runtime)
+    runtime._entry_buffer_values = MethodType(
+        lambda self, input_ids, state, outputs: {}, runtime
+    )
     runtime._prepare_bound = MethodType(lambda self, values: None, runtime)
-    runtime._launch_bound = MethodType(lambda self, values, *, stream=None: None, runtime)
+    runtime._launch_bound = MethodType(
+        lambda self, values, *, stream=None: None, runtime
+    )
     return runtime
 
 
-def test_prepare_checks_dynamic_state_but_run_only_checks_structural_contract(monkeypatch, ):
+def test_prepare_checks_dynamic_state_but_run_only_checks_structural_contract(
+    monkeypatch,
+):
     torch = pytest.importorskip("torch")
     calls = []
     runtime = _runtime(calls)
-    output = torch.empty((1, ), dtype=torch.float32)
-    input_ids = torch.empty((1, ), dtype=torch.int32)
+    output = torch.empty((1,), dtype=torch.float32)
+    input_ids = torch.empty((1,), dtype=torch.int32)
     state = SimpleNamespace()
     monkeypatch.setattr(
         runtime_module,

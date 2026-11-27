@@ -18,13 +18,15 @@ import pytest
 
 from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
-    _cross_chip_partial_source, )
+    _cross_chip_partial_source,
+)
 from triton.flagmega.errors import CodegenError
 
 from .test_partial_reduce_local_abi import _abi, _prepare
 
+
 _PLACEMENT = fm.Placement((4, 8, 16), "cyx", "cbb")
-_TENSOR = fm.tensor_type(fm.vector_type("bfloat16", (8, )), (1, 8))
+_TENSOR = fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, 8))
 
 
 def _distributed_data(policies, *, partial_axes=None):
@@ -34,9 +36,7 @@ def _distributed_data(policies, *, partial_axes=None):
     data = value.to_data()
     if partial_axes is not None:
         data["partial"] = {
-            "kind": "partial",
-            "axes": tuple(partial_axes),
-            "reduce_op": "sum",
+            "kind": "partial", "axes": tuple(partial_axes), "reduce_op": "sum",
         }
     return data
 
@@ -51,19 +51,14 @@ def _chip_split_source():
     """
 
     abi = _abi(
-        (1, 64),
-        local_shape=(1, 2),
-        storage_kind="compact_per_owner",
-        coordinate_space="local",
+        (1, 64), local_shape=(1, 2),
+        storage_kind="compact_per_owner", coordinate_space="local",
         coordinates=(
             "local_coord_0",
             "(shard_coord_1 + (local_coord_1 * 8) + (shard_coord_0 * 16))",
         ),
-        partial_axes=(2, ),
-        owner_stride=16,
-        lane_count=8,
-        hierarchy=(4, 8, 16),
-        hierarchy_levels="cbb",
+        partial_axes=(2,), owner_stride=16, lane_count=8,
+        hierarchy=(4, 8, 16), hierarchy_levels="cbb",
     )
     abi["memory_space"] = "workspace"
     abi["storage"] = "workspace"
@@ -71,31 +66,32 @@ def _chip_split_source():
         (
             fm.SBP.broadcast(),
             fm.SBP.split(
-                fm.SplitStage.contiguous((0, )),
-                fm.SplitStage.block_cyclic((1, ), 1),
+                fm.SplitStage.contiguous((0,)),
+                fm.SplitStage.block_cyclic((1,), 1),
             ),
         ),
-        partial_axes=(2, ),
+        partial_axes=(2,),
     )
     return abi
 
 
 def _canonical_result():
     abi = _abi(
-        (1, 64),
-        local_shape=(1, 8),
+        (1, 64), local_shape=(1, 8),
         coordinates=("local_coord_0", "(local_coord_1 + (shard_coord_1 * 8))"),
-        lane_count=8,
-        hierarchy=(4, 8, 16),
-        hierarchy_levels="cbb",
+        lane_count=8, hierarchy=(4, 8, 16), hierarchy_levels="cbb",
     )
     abi["memory_space"] = "workspace"
-    abi["distributed_type"] = _distributed_data((fm.SBP.broadcast(), fm.SBP.split_contiguous((1, ), 8)), )
+    abi["distributed_type"] = _distributed_data(
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((1,), 8)),
+    )
     return abi
 
 
 def test_chip_split_source_selects_its_peer_per_element():
-    leaf = _prepare((_chip_split_source(), ), (_canonical_result(), ), ("gather_reduce_scatter", ))["leaves"][0]
+    leaf = _prepare(
+        (_chip_split_source(),), (_canonical_result(),), ("gather_reduce_scatter",)
+    )["leaves"][0]
 
     # The whole reduction group is inside the selected chip, so the peer loop
     # does not consume any of it.
@@ -111,7 +107,9 @@ def test_chip_split_source_selects_its_peer_per_element():
 
 
 def test_chip_split_source_reduces_the_selected_chips_own_components():
-    leaf = _prepare((_chip_split_source(), ), (_canonical_result(), ), ("gather_reduce_scatter", ))["leaves"][0]
+    leaf = _prepare(
+        (_chip_split_source(),), (_canonical_result(),), ("gather_reduce_scatter",)
+    )["leaves"][0]
 
     # A remote read addresses the peer's instance at this pool's own offsets, so
     # the component index is the same decomposition a chip-local leaf uses: the
@@ -125,12 +123,12 @@ def test_group_spanning_chips_still_loops_peers_over_the_group():
 
     source = _chip_split_source()
     source["distributed_type"] = _distributed_data(
-        (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((1, ), 1)),
-        partial_axes=(0, ),
+        (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((1,), 1)),
+        partial_axes=(0,),
     )
     result = _canonical_result()
 
-    leaf = _prepare((source, ), (result, ), ("gather_reduce_scatter", ))["leaves"][0]
+    leaf = _prepare((source,), (result,), ("gather_reduce_scatter",))["leaves"][0]
 
     # The chip axis is the reduction group, so the peer loop consumes it.
     assert leaf["remote_peers"] == 4
@@ -153,16 +151,13 @@ def test_a_crossing_axis_that_neither_reduces_nor_splits_is_rejected():
     # Reduce over a block axis and split over its sibling: nothing then relates
     # the chip axis to a peer.
     source["distributed_type"] = _distributed_data(
-        (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((1, ), 1)),
-        partial_axes=(2, ),
+        (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((1,), 1)),
+        partial_axes=(2,),
     )
 
     with pytest.raises(CodegenError, match="neither"):
         _cross_chip_partial_source(
-            source,
-            (0, ),
-            axes=(2, ),
-            routed=True,
+            source, (0,), axes=(2,), routed=True,
             logical_coordinates=("0", "0"),
             member_variable="boxing_partial_member",
         )
@@ -173,10 +168,7 @@ def test_element_selected_peers_require_the_destination_domain():
 
     with pytest.raises(CodegenError, match="iterate its destination domain"):
         _cross_chip_partial_source(
-            _chip_split_source(),
-            (0, ),
-            axes=(2, ),
-            routed=False,
+            _chip_split_source(), (0,), axes=(2,), routed=False,
             logical_coordinates=("0", "0"),
             member_variable="boxing_partial_member",
         )

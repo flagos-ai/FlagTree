@@ -27,9 +27,8 @@ def test_input_copy_keeps_async_without_unsafe_cache_hint(request, fixture):
     producer = functions[call["symbol"] + "__producer"]
     assert ast.unparse(consumer.decorator_list[0]) == "triton.jit(noinline=True)"
     assert ast.unparse(producer.decorator_list[0]) == "triton.jit(noinline=True)"
-    copies = [
-        node for node in ast.walk(consumer) if isinstance(node, ast.Call) and ast.unparse(node.func) == "tle.gpu.copy"
-    ]
+    copies = [node for node in ast.walk(consumer)
+              if isinstance(node, ast.Call) and ast.unparse(node.func) == "tle.gpu.copy"]
     assert len(copies) == 1
     keywords = {item.arg: ast.literal_eval(item.value) for item in copies[0].keywords}
     assert keywords["is_async"] is True

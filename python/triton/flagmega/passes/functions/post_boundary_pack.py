@@ -19,8 +19,7 @@ from triton.flagmega.rules.ntt.vectorize.propagation.block_scaled_matmul import 
 from triton.flagmega.rules.ntt.vectorize.propagation.mhc_pre import mhc_pre_producer_rule
 from triton.flagmega.rules.ntt.vectorize.propagation.kda import kda_recurrent_producer_rule
 from triton.flagmega.rules.ntt.vectorize.propagation.kda_input_projection import (
-    kda_input_projection_input_rule,
-    kda_input_projection_producer_rule,
+    kda_input_projection_input_rule, kda_input_projection_producer_rule,
 )
 from triton.flagmega.rules.ntt.vectorize.propagation.reduce_sum import reduce_sum_producer_rule
 from triton.flagmega.rules.ntt.vectorize.propagation.rotary_embedding import rotary_embedding_producer_rule
@@ -42,7 +41,7 @@ def post_function_boundary_pack_propagation(module: IRModule, target) -> IRModul
         *registry.propagation_rules,
         *post_boundary_auto_packing_neutral_rules(),
     )
-    current = DataflowPass("FusePackedNormStatsInputCast", (fuse_norm_stats_input_cast_rule(), )).run(module)
+    current = DataflowPass("FusePackedNormStatsInputCast", (fuse_norm_stats_input_cast_rule(),)).run(module)
     for iteration in range(16):
         dumper = DumpScope.current()
         if iteration:
@@ -72,9 +71,9 @@ def _propagation_round(module, rules, boundary_rules, dumper):
                                rewrite_constants=False).run(current)
         current = DataflowPass(
             "PackResultProducers",
-            (embedding_producer_rule(), interleaved_projection_producer_rule(), rotary_embedding_producer_rule(),
-             mhc_pre_producer_rule(), block_scaled_matmul_producer_rule(), kda_recurrent_producer_rule(),
-             reduce_sum_producer_rule(), kda_input_projection_input_rule(), kda_input_projection_producer_rule()),
+            (embedding_producer_rule(), interleaved_projection_producer_rule(), rotary_embedding_producer_rule(), mhc_pre_producer_rule(),
+             block_scaled_matmul_producer_rule(), kda_recurrent_producer_rule(), reduce_sum_producer_rule(),
+             kda_input_projection_input_rule(), kda_input_projection_producer_rule()),
         ).run(current)
         return DataflowPass(
             "FoldProducerPackingLargeModel",
@@ -93,7 +92,9 @@ def _propagation_round(module, rules, boundary_rules, dumper):
         # Local rules may expose a new parameter Pack (e.g. a RoPE table).
         # Reconcile the reusable ABI before pushing caller demands further.
         FunctionalPass("PropagateExposedFunctionLayouts", propagate_function_boundary_layouts)
-    ).add(FunctionalPass("AbsorbRotaryOutputCasts", absorb_rotary_output_casts)).add(
+    ).add(
+        FunctionalPass("AbsorbRotaryOutputCasts", absorb_rotary_output_casts)
+    ).add(
         # Preserve each conversion inside a backend-supported Fusion; this
         # includes BF16 narrowing followed by FP32 widening of a residual.
         DataflowPass("AbsorbSupportedNumericBoundaries", tuple(boundary_rules), rewrite_constants=False)
@@ -101,14 +102,14 @@ def _propagation_round(module, rules, boundary_rules, dumper):
         # Rebuild shared/stateful producers once, at their original position.
         # This is a dataflow transformation: an effectful cos/sin generator
         # must not become a duplicated helper in an egraph alternative.
-        DataflowPass(
-            "PackResultProducers",
-            (embedding_producer_rule(), interleaved_projection_producer_rule(), rotary_embedding_producer_rule(),
-             mhc_pre_producer_rule(), block_scaled_matmul_producer_rule(), kda_recurrent_producer_rule(),
-             reduce_sum_producer_rule(), kda_input_projection_input_rule(), kda_input_projection_producer_rule()))).add(
-                 EGraphRulesPass("FoldProducerPacking", rules, cost=_representation_cost,
-                                 cost_model="representation-boundary-preference/v3",
-                                 max_iterations=128)).run(module).module
+        DataflowPass("PackResultProducers", (embedding_producer_rule(), interleaved_projection_producer_rule(), rotary_embedding_producer_rule(),
+                                           mhc_pre_producer_rule(), block_scaled_matmul_producer_rule(),
+                                           kda_recurrent_producer_rule(), reduce_sum_producer_rule(),
+                                           kda_input_projection_input_rule(), kda_input_projection_producer_rule()))
+    ).add(
+        EGraphRulesPass("FoldProducerPacking", rules, cost=_representation_cost,
+                        cost_model="representation-boundary-preference/v3", max_iterations=128)
+    ).run(module).module
 
 
 def _representation_cost(node: Node, _module: IRModule) -> float:
@@ -117,17 +118,18 @@ def _representation_cost(node: Node, _module: IRModule) -> float:
         # GetItem(Tuple(...)); make the neutral equality deterministic.
         base = 1.0
     elif node.op.startswith("builtin.") or node.op == "tensors.bitcast":
-        # A Bitcast is a zero-copy storage view.  In particular, the reference # UnpackToBitcast equality must win over a typed-vector boundary when
+        # A Bitcast is a zero-copy storage view.  In particular, nncase's
+        # UnpackToBitcast equality must win over a typed-vector boundary when
         # both represent the same final-axis bytes.
         # This is a representation preference, not a traffic estimate. A
         # small positive base also gives zero-copy and structural values a
         # strict packed/scalar ordering, without charging them copy cost.
         base = 0.125
     elif node.op in {
-            "tensors.pack",
-            "tensors.unpack",
-            "tensors.permute",
-            "tensors.reshape",
+        "tensors.pack",
+        "tensors.unpack",
+        "tensors.permute",
+        "tensors.reshape",
     }:
         base = 4.0
     else:
@@ -143,7 +145,7 @@ def _representation_weights(value_type):
     if isinstance(value_type, DistributedType):
         value_type = value_type.tensor
     if isinstance(value_type, TensorType):
-        return (0.5 if isinstance(value_type.dtype, VectorType) else 1.0, )
+        return (0.5 if isinstance(value_type.dtype, VectorType) else 1.0,)
     if isinstance(value_type, TupleType):
         return tuple(weight for field in value_type.fields for weight in _representation_weights(field))
     # References are state handles; their persistent storage representation

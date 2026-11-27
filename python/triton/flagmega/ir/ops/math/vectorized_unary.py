@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""vectorized unary operation."""
+"""nncase-style vectorized unary operation."""
 
 from __future__ import annotations
 
@@ -58,8 +58,7 @@ class VectorizedUnary(SameTypePointwiseOp):
         scalar = replace(tensor_of(value_type), dtype=tensor_of(value_type).dtype.elem_type)
         scalar_type = replace(value_type, tensor=scalar) if isinstance(value_type, DistributedType) else scalar
         scalar_attrs = {"math_mode": attrs["math_mode"]} if "math_mode" in attrs else {}
-        cls.scalar_definitions[str(attrs["unary_op"])].infer_type((replace(inputs[0], type=scalar_type), ),
-                                                                  scalar_attrs)
+        cls.scalar_definitions[str(attrs["unary_op"])].infer_type((replace(inputs[0], type=scalar_type),), scalar_attrs)
         return value_type
 
     @classmethod

@@ -9,7 +9,9 @@ from triton.flagmega.codegen.triton.templates import (
 
 def test_descriptor_gemv_template_uses_local_tile_coordinates_only():
     source = TritonTemplateRegistry().render_kernel(
-        KernelTemplateSpec("dense_matmul", "tensor_descriptor_gemv", "nvidia", "sm90"),
+        KernelTemplateSpec(
+            "dense_matmul", "tensor_descriptor_gemv", "nvidia", "sm90"
+        ),
         {},
     ).source
 

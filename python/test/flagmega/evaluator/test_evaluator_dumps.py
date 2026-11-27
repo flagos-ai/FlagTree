@@ -17,7 +17,7 @@ def _module():
     lhs = builder.var("lhs", value_type, id="lhs")
     rhs = builder.var("rhs", value_type, id="rhs")
     output = builder.call("math.add", (lhs, rhs), value_type, id="output")
-    builder.function("main", (lhs, rhs), (output, ))
+    builder.function("main", (lhs, rhs), (output,))
     return fm.verify_module(builder.build(entry="main"))
 
 
@@ -28,7 +28,9 @@ def test_evaluator_flag_dumps_arguments_results_and_exact_tensor_bytes(tmp_path)
     manager = DumpManager(tmp_path, DumpFlags.EVALUATOR)
 
     with DumpScope(manager.root):
-        output = TorchEvaluator(DictWeightResolver({})).run(module, {"lhs": lhs, "rhs": rhs})[0]
+        output = TorchEvaluator(DictWeightResolver({})).run(
+            module, {"lhs": lhs, "rhs": rhs}
+        )[0]
 
     call = tmp_path / "Evaluate" / "Run0000" / "0000_output"
     arguments = json.loads((call / "arguments.json").read_text(encoding="utf-8"))

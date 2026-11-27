@@ -16,12 +16,12 @@ from triton.flagmega.rules.ntt.vectorize.norm_apply import VectorizeNormApply
 from triton.flagmega.rules.ntt.vectorize.norm_stats import VectorizeNormStats
 from triton.flagmega.rules.ntt.vectorize.propagation import propagation_rules
 from triton.flagmega.rules.ntt.vectorize.qkv_rope_with_cache import (
-    VectorizeQKVRoPEWithCache, )
+    VectorizeQKVRoPEWithCache,
+)
 from triton.flagmega.rules.ntt.vectorize.unary import VectorizeUnary
 
 
 class NttVectorizationPolicy:
-
     def __init__(
         self,
         *,
@@ -39,8 +39,10 @@ class NttVectorizationPolicy:
     def identity(self) -> str:
         """Readable rule-set identity, deliberately independent of a machine."""
 
-        return ("ntt-auto-vectorize/v3"
-                f"(lane_bytes={self.lane_bytes},max_axes={self.max_axes})")
+        return (
+            "ntt-auto-vectorize/v3"
+            f"(lane_bytes={self.lane_bytes},max_axes={self.max_axes})"
+        )
 
     def register_rules(self, registry: VectorizeRuleRegistry) -> None:
         registry.add(VectorizeMatMul(

@@ -6,7 +6,6 @@ from triton.flagmega.targets import NvidiaSm90Target
 
 
 class _ViewLoweringTarget(NvidiaSm90Target):
-
     def plan_launch(self, module, kernel_nodes):
         del module, kernel_nodes
         return {"num_warps": 1}
@@ -23,12 +22,12 @@ def test_dense_static_reshape_lowers_to_explicit_zero_copy_tir_view():
     source = builder.var("source", source_type, id="source")
     result = builder.call(
         "tensors.reshape",
-        (source, ),
+        (source,),
         result_type,
         id="result",
         attrs={"shape": (1, 2, 8)},
     )
-    builder.function("main", (source, ), (result, ))
+    builder.function("main", (source,), (result,))
 
     lowered = _ViewLoweringTarget().lower_to_tir(builder.build(entry="main"))
 

@@ -7,13 +7,10 @@ import struct
 
 from triton.flagmega.ir import DType, DistributedType, TensorType, logical_type
 
+
 _VALUE_PRESERVING = frozenset({
-    "distributed.sharded_view",
-    "distributed.boxing",
-    "tensors.reshape",
-    "tensors.permute",
-    "tensors.broadcast_to",
-    "tensors.slice",
+    "distributed.sharded_view", "distributed.boxing", "tensors.reshape", "tensors.permute",
+    "tensors.broadcast_to", "tensors.slice",
 })
 
 

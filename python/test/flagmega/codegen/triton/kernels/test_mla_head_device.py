@@ -13,16 +13,17 @@ from python.test.flagmega.codegen.triton.kernels.test_mla_head_codegen import co
 @pytest.mark.parametrize(
     "direction,fp8,cyclic,staged,scale_sharded,reusable,lanes,output_lanes",
     [
-        ("absorb_query", False, False, False, False, False, (2, 4), (4, )),
-        ("expand_value", False, True, False, False, False, (8, ), (2, 4)),
+        ("absorb_query", False, False, False, False, False, (2, 4), (4,)),
+        ("expand_value", False, True, False, False, False, (8,), (2, 4)),
         ("absorb_query", True, True, False, False, True, (), (2, 4)),
         ("expand_value", True, False, True, True, True, (2, 2, 2), ()),
-        ("absorb_query", True, False, False, True, False, (1, ), (8, )),
-        ("expand_value", True, True, False, True, False, (2, 4), (4, )),
+        ("absorb_query", True, False, False, True, False, (1,), (8,)),
+        ("expand_value", True, True, False, True, False, (2, 4), (4,)),
     ],
 )
-def test_device_head_ownership_preserves_all_outputs(tmp_path, direction, fp8, cyclic, staged, scale_sharded, reusable,
-                                                     lanes, output_lanes):
+def test_device_head_ownership_preserves_all_outputs(
+    tmp_path, direction, fp8, cyclic, staged, scale_sharded, reusable, lanes, output_lanes
+):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 required")
     mesh = fm.Placement((2, 2), "yx", "bb")
@@ -38,7 +39,7 @@ def test_device_head_ownership_preserves_all_outputs(tmp_path, direction, fp8, c
         t = fm.logical_type(kind)
         shape = tuple(d.fixed_value for d in t.shape) + tuple(getattr(t.dtype, "lanes", ()))
         dtype = getattr(torch, getattr(t.dtype, "elem_type", t.dtype).value)
-        storage = torch.full((prod(shape) + 32, ), 64, dtype=torch.float32, device="cuda").to(dtype)
+        storage = torch.full((prod(shape) + 32,), 64, dtype=torch.float32, device="cuda").to(dtype)
         guards.append((storage, storage[:16].view(torch.uint8).clone(), storage[-16:].view(torch.uint8).clone()))
         return storage[16:-16].reshape(shape)
 
@@ -84,7 +85,7 @@ def test_device_head_ownership_preserves_all_outputs(tmp_path, direction, fp8, c
             shared[prefix + "x"].copy_(x.reshape(shared[prefix + "x"].shape))
             if fp8:
                 w = w.to(torch.float8_e4m3fn)
-                scale = (2.0**torch.randint(-3, 3, (heads * 4, 4), generator=g)).float()
+                scale = (2.0 ** torch.randint(-3, 3, (heads * 4, 4), generator=g)).float()
                 shared[prefix + "scale"].copy_(scale)
                 expected_w = (w.float() * scale.repeat_interleave(8, 0).repeat_interleave(8, 1)).bfloat16()
             else:
@@ -102,7 +103,8 @@ def test_device_head_ownership_preserves_all_outputs(tmp_path, direction, fp8, c
                 assert torch.equal(outputs[True].cpu().reshape(expected.shape), expected)
             for storage, before, after in guards:
                 assert torch.equal(storage[:16].view(torch.uint8), before) and torch.equal(
-                    storage[-16:].view(torch.uint8), after)
+                    storage[-16:].view(torch.uint8), after
+                )
     finally:
         for r in runtimes.values():
             r.close()

@@ -20,8 +20,7 @@ def test_empty_call_frames_execute_without_access(tmp_path, level, nested, distr
         pytest.skip("SM90 CUDA required")
     module = Compiler(CompileOptions(bufferize_opt_level=level)).compile(
         empty_chain(nested=nested, distributed=distributed)).module
-    runtime = load(write_artifact(module, tmp_path / "empty", target="nvidia-sm90", emit_executable=True),
-                   device="cuda:0")
+    runtime = load(write_artifact(module, tmp_path / "empty", target="nvidia-sm90", emit_executable=True), device="cuda:0")
     tensors = {}
     for value, buffers in (*runtime.buffer_plan.entry_inputs, *runtime.buffer_plan.entry_outputs):
         ty = fm.logical_type(module.node_map[value].type)

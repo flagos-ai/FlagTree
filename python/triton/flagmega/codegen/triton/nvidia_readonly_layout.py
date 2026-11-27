@@ -14,14 +14,13 @@ from math import prod
 from types import MappingProxyType
 
 from triton.flagmega.codegen.readonly_layout import (
-    READONLY_DEVICE_LAYOUT_SCHEMA,
-    readonly_roots,
-    owner_major_weight_records,
+    READONLY_DEVICE_LAYOUT_SCHEMA, readonly_roots, owner_major_weight_records,
 )
 from triton.flagmega.codegen.readonly_layout_policy import ReadonlyLayoutPolicy
 from triton.flagmega.codegen.triton.templates import module_template_target
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import verify_buffer_plan
+
 
 SCHEMA = "flagmega.triton-readonly-layout/v1"
 
@@ -51,8 +50,9 @@ class OwnerMajorWeightView:
 
     def __post_init__(self):
         if (not self.local_shape or any(type(v) is not int or v <= 0 for v in self.local_shape)
-                or type(self.scalar_lanes) is not int or self.scalar_lanes <= 0 or type(self.owners) is not int
-                or self.owners <= 1 or not self.roots):
+                or type(self.scalar_lanes) is not int or self.scalar_lanes <= 0
+                or type(self.owners) is not int or self.owners <= 1
+                or not self.roots):
             raise CodegenError("Invalid readonly owner-component geometry.")
 
     @property
@@ -63,23 +63,24 @@ class OwnerMajorWeightView:
         """Derive a real runtime component ABI; never mutate the artifact ABI."""
         if (digest(artifact_abi) != self.artifact_abi_sha256
                 or tuple(artifact_abi["local_capacity_shape"]) != self.local_shape
-                or artifact_abi["scalar_lane_count"] != self.scalar_lanes or artifact_abi["owner_count"] != self.owners
+                or artifact_abi["scalar_lane_count"] != self.scalar_lanes
+                or artifact_abi["owner_count"] != self.owners
                 or artifact_abi["scalar_dtype"] != "bfloat16"):
             raise CodegenError("Readonly device view does not match its canonical binding.")
-        return {
-            **artifact_abi, "storage_kind": "compact_per_owner", "coordinate_space": "local", "scalar_storage_strides":
-            _dense_strides(self.local_shape,
-                           self.scalar_lanes), "component_stride_scalar_elements": self.component_elements,
-            "component_stride_bytes": self.component_elements * 2, "owner_stride_bytes": self.component_elements * 2
-        }
+        return {**artifact_abi, "storage_kind": "compact_per_owner", "coordinate_space": "local",
+                "scalar_storage_strides": _dense_strides(self.local_shape, self.scalar_lanes),
+                "component_stride_scalar_elements": self.component_elements,
+                "component_stride_bytes": self.component_elements * 2,
+                "owner_stride_bytes": self.component_elements * 2}
 
     def to_data(self):
-        return {
-            "buffer": self.buffer, "artifact_abi_sha256": self.artifact_abi_sha256, "scalar_dtype": "bfloat16",
-            "local_shape": list(self.local_shape), "scalar_lanes": self.scalar_lanes, "owners": self.owners,
-            "component_nbytes": self.component_elements * 2, "total_nbytes": self.component_elements * self.owners * 2,
-            "scalar_strides": list(_dense_strides(self.local_shape, self.scalar_lanes)), "roots": list(self.roots)
-        }
+        return {"buffer": self.buffer, "artifact_abi_sha256": self.artifact_abi_sha256,
+                "scalar_dtype": "bfloat16", "local_shape": list(self.local_shape),
+                "scalar_lanes": self.scalar_lanes, "owners": self.owners,
+                "component_nbytes": self.component_elements * 2,
+                "total_nbytes": self.component_elements * self.owners * 2,
+                "scalar_strides": list(_dense_strides(self.local_shape, self.scalar_lanes)),
+                "roots": list(self.roots)}
 
 
 @dataclass(frozen=True)
@@ -101,7 +102,8 @@ def plan_readonly_layout(module, calls, policy):
         if call.get("family") not in policy.families:
             continue
         if (call.get("variant") != "packed_tensor_descriptor_smem_pipeline_gemv"
-                or call.get("descriptor_kind") != "table" or not call.get("paired_weight_fields")):
+                or call.get("descriptor_kind") != "table"
+                or not call.get("paired_weight_fields")):
             raise CodegenError("Selected readonly GLU requires paired owner-table descriptors.")
         pair = []
         for role in ("gate_weight", "up_weight"):
@@ -111,13 +113,14 @@ def plan_readonly_layout(module, calls, policy):
             binding = argument["buffers"][0]
             abi = binding["abi"]
             found = owner_major_weight_records(plan, binding, int(call["local_n_capacity"]),
-                                               int(call["local_k_capacity"]), int(abi["scalar_storage_strides"][0]))
+                                              int(call["local_k_capacity"]),
+                                              int(abi["scalar_storage_strides"][0]))
             if not found:
                 raise CodegenError("Readonly GLU weight lacks a closed full-K contiguous owner proof.")
             local_shape = tuple(int(v) for v in abi["local_capacity_shape"])
-            view = OwnerMajorWeightView(binding["actual"], digest(abi), local_shape, int(abi["scalar_lane_count"]),
-                                        int(abi["owner_count"]), tuple(sorted({v["buffer"]
-                                                                               for v in found})))
+            view = OwnerMajorWeightView(binding["actual"], digest(abi), local_shape,
+                                        int(abi["scalar_lane_count"]), int(abi["owner_count"]),
+                                        tuple(sorted({v["buffer"] for v in found})))
             if any(v["nbytes"] != view.component_elements * view.owners * 2 for v in found):
                 raise CodegenError("Readonly owner components do not cover their complete weight.")
             pair.append((role, binding, view, found))
@@ -138,14 +141,15 @@ def plan_readonly_layout(module, calls, policy):
 
     def intersects(buffer):
         span = buffer.physical_access_span
-        return any(span.offset < r["offset"] + r["nbytes"] and r["offset"] < span.offset + span.nbytes for r in ordered)
+        return any(span.offset < r["offset"] + r["nbytes"]
+                   and r["offset"] < span.offset + span.nbytes for r in ordered)
 
     for index, call in enumerate(calls):
         for argument in call.get("inputs", ()):
             for binding in argument.get("buffers", ()):
                 roots = readonly_roots(plan, plan.buffer_map[binding["actual"]])
-                if any(intersects(root)
-                       for root in roots) and (index, argument["formal"], binding["actual"]) not in selected:
+                if any(intersects(root) for root in roots) and (
+                        index, argument["formal"], binding["actual"]) not in selected:
                     raise CodegenError("A readonly device-layout root has an incompatible reader.")
     # Returning a selected root exposes a canonical reader outside this closed
     # executable.  Nested calls are already included in the reader census.
@@ -154,10 +158,9 @@ def plan_readonly_layout(module, calls, policy):
             if any(intersects(root) for root in readonly_roots(plan, plan.buffer_map[buffer_id])):
                 raise CodegenError("A readonly device-layout root escapes as a program output.")
     device_layout = {"schema": READONLY_DEVICE_LAYOUT_SCHEMA, "buffers": list(ordered)}
-    data = {
-        "schema": SCHEMA, "policy": policy.to_data(), "module_semantic_hash": module.semantic_hash, "device_layout":
-        device_layout, "bindings": [views[k].to_data() for k in sorted(views)]
-    }
+    data = {"schema": SCHEMA, "policy": policy.to_data(), "module_semantic_hash": module.semantic_hash,
+            "device_layout": device_layout,
+            "bindings": [views[k].to_data() for k in sorted(views)]}
     data["plan_sha256"] = digest(data)
     return ReadonlyDevicePlan(MappingProxyType(views), MappingProxyType(data))
 

@@ -31,10 +31,12 @@ def readonly_fingerprints(root, index, module, *, chip=0):
             identity = entry["buffer"]
             if identity in programs:
                 program = {k: v for k, v in programs[identity].items() if k not in {"buffer", "ranges"}}
-                program["operands"] = [{**o, "source": index["sources"][o["source"]]["sha256"]}
-                                       for o in program["operands"]]
-                program["components"] = [(offset - entry["offset"], shape, maps)
-                                         for offset, shape, maps in component_layouts(buffers[identity], chip)]
+                program["operands"] = [
+                    {**o, "source": index["sources"][o["source"]]["sha256"]}
+                    for o in program["operands"]]
+                program["components"] = [
+                    (offset - entry["offset"], shape, maps)
+                    for offset, shape, maps in component_layouts(buffers[identity], chip)]
                 digest = hashlib.sha256(json.dumps(program, sort_keys=True).encode()).hexdigest()
             else:
                 hasher = hashlib.sha256()
@@ -75,8 +77,9 @@ class SharedReadonlyPool:
     def _bind_verified(self, root, index, module, *, chip, device, expected_nbytes):
         import torch
         from triton.flagmega.runtime.source_rdata import load_source_rdata
-        if (index.get("digest_kind") != SOURCE_LAYOUT_DIGEST or expected_nbytes != self.nbytes
-                or index["segment_nbytes"] != self.nbytes or torch.device(device) != self.device):
+        if (index.get("digest_kind") != SOURCE_LAYOUT_DIGEST
+                or expected_nbytes != self.nbytes or index["segment_nbytes"] != self.nbytes
+                or torch.device(device) != self.device):
             raise ArtifactError("Shared readonly binding requires a matching source-layout extent and device.")
         fingerprints = readonly_fingerprints(root, index, module, chip=chip)
         buffers = verify_buffer_plan(module).buffer_map
@@ -94,7 +97,8 @@ class SharedReadonlyPool:
                 fresh.append(entry["buffer"])
         if self.tensor is None:
             self.tensor = torch.zeros(self.nbytes, dtype=torch.uint8, device=self.device)
-        load_source_rdata(root, index, module, chip=chip, device=device, pool=self.tensor, buffer_ids=tuple(fresh))
+        load_source_rdata(root, index, module, chip=chip, device=device,
+                          pool=self.tensor, buffer_ids=tuple(fresh))
         if self.device.type == "cuda":
             torch.cuda.synchronize(self.device)
         self._regions.update(claims)

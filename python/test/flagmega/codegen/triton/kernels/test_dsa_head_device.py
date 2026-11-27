@@ -21,7 +21,8 @@ def _arguments(runtime, module, state, query, topk, output):
                     ids,
                     (state.kv_caches, state.query_start_loc, state.seq_lens, state.slot_mapping, state.block_table),
                     strict=True,
-                ))
+                )
+            )
         else:
             buffers[ids[0]] = {"query": query, "topk": topk}[module.node_map[value].attrs["name"]]
     for _, ids in binding.outputs:
@@ -33,13 +34,14 @@ def _arguments(runtime, module, state, query, topk, output):
     "schedule,traversal,cyclic,kv_heads,lanes",
     [
         ("bf16_mma", "compact", False, 1, (2, 4)),
-        ("bf16_mma", "slots", True, 1, (4, )),
+        ("bf16_mma", "slots", True, 1, (4,)),
         ("simt", "slots", True, 1, (2, 4)),
         ("simt", "slots", False, 2, ()),
     ],
 )
-def test_attention_head_shards_keep_order_cache_mapping_and_guards(tmp_path, schedule, traversal, cyclic, kv_heads,
-                                                                   lanes):
+def test_attention_head_shards_keep_order_cache_mapping_and_guards(
+    tmp_path, schedule, traversal, cyclic, kv_heads, lanes
+):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 required")
     mesh = fm.Placement((2, 2), "yx", "bb")
@@ -50,9 +52,9 @@ def test_attention_head_shards_keep_order_cache_mapping_and_guards(tmp_path, sch
     state.block_table.copy_(torch.tensor([[3, 0, 6, 2, 7, 1, 5, 4]], dtype=torch.int32, device="cuda"))
     state.seq_lens.fill_(67)
     state.slot_mapping.fill_(66)
-    query_storage = torch.full((heads * 32 + 32, ), 123, dtype=torch.bfloat16, device="cuda")
+    query_storage = torch.full((heads * 32 + 32,), 123, dtype=torch.bfloat16, device="cuda")
     query = query_storage[16:-16].reshape((1, heads, 32 // prod(lanes)) + lanes)
-    topk_storage = torch.full((162, ), -7, dtype=torch.int32, device="cuda")
+    topk_storage = torch.full((162,), -7, dtype=torch.int32, device="cuda")
     topk = topk_storage[16:-16].reshape(1, 130)
     outputs = {}
     storages = {}
@@ -72,7 +74,7 @@ def test_attention_head_shards_keep_order_cache_mapping_and_guards(tmp_path, sch
             )
             r = load(p, device="cuda:0")
             runtimes[split] = r
-            storage = torch.full((heads * 32 + 32, ), 123, dtype=torch.bfloat16, device="cuda")
+            storage = torch.full((heads * 32 + 32,), 123, dtype=torch.bfloat16, device="cuda")
             storages[split] = storage
             out = storage[16:-16].reshape(1, heads, 4, 8)
             outputs[split] = out
@@ -128,7 +130,7 @@ def test_attention_head_shards_keep_order_cache_mapping_and_guards(tmp_path, sch
                     expected = 0 if mutation == 2 else (2 if mutation == 0 else 3) + (h // (heads // kv_heads)) * 16
                     assert bool((outputs[True][0, h] == expected).all())
             for original, current in zip(
-                    cache_before,
+                cache_before,
                 (state.kv_caches, state.query_start_loc, state.seq_lens, state.slot_mapping, state.block_table),
             ):
                 assert torch.equal(original, current)

@@ -7,47 +7,44 @@ from pathlib import Path
 from triton.flagmega import ir as fm
 
 
+
 def make_prim_module() -> fm.IRModule:
-    tensor = fm.tensor_type("float32", (4, ))
+    tensor = fm.tensor_type("float32", (4,))
     input_buffer = fm.T.buffer(
-        "input",
-        "float32",
+        "input", "float32",
         fm.T.mem_span(fm.T.physical_buffer("input.storage", "global", 16, 16, role="input")),
-        (4, ),
-        (1, ),
+        (4,), (1,),
     )
     output_buffer = fm.T.buffer(
-        "output",
-        "float32",
+        "output", "float32",
         fm.T.mem_span(fm.T.physical_buffer("output.storage", "global", 16, 16, role="output")),
-        (4, ),
-        (1, ),
+        (4,), (1,),
     )
     index = fm.dim("i", minimum=0, maximum=3)
-    load = fm.T.buffer_load(input_buffer, (index, ))
-    store = fm.T.buffer_store(output_buffer, (index, ), load)
+    load = fm.T.buffer_load(input_buffer, (index,))
+    store = fm.T.buffer_store(output_buffer, (index,), load)
     block = fm.T.block(
-        "copy",
-        fm.T.sequential((store, )),
-        reads=(fm.T.buffer_region(input_buffer, (fm.T.range(0, 4), )), ),
-        writes=(fm.T.buffer_region(output_buffer, (fm.T.range(0, 4), )), ),
+        "copy", fm.T.sequential((store,)),
+        reads=(fm.T.buffer_region(input_buffer, (fm.T.range(0, 4),)),),
+        writes=(fm.T.buffer_region(output_buffer, (fm.T.range(0, 4),)),),
     )
-    loop = fm.T.for_loop(index, fm.T.range(0, 4), fm.T.LoopMode.SERIAL, fm.T.sequential((block, )))
+    loop = fm.T.for_loop(
+        index, fm.T.range(0, 4), fm.T.LoopMode.SERIAL, fm.T.sequential((block,))
+    )
     prim = fm.T.prim_function(
-        "copy_4",
-        "triton",
+        "copy_4", "triton",
         (
             fm.T.prim_parameter("input", tensor, fm.T.PrimParameterRole.INPUT),
             fm.T.prim_parameter("output", tensor, fm.T.PrimParameterRole.OUTPUT),
         ),
-        fm.T.sequential((loop, )),
-        fm.T.return_((fm.T.return_binding(output_buffer, "output"), )),
+        fm.T.sequential((loop,)),
+        fm.T.return_((fm.T.return_binding(output_buffer, "output"),)),
     )
     builder = fm.IRBuilder(dialect="semantic_tir", stage="tir_selected")
     source = builder.var("source", tensor, id="source")
     builder.prim_function(prim)
-    result = builder.call("tir.call", (source, ), tensor, id="result", attrs={"callee": "copy_4"})
-    builder.function("main", (source, ), (result, ))
+    result = builder.call("tir.call", (source,), tensor, id="result", attrs={"callee": "copy_4"})
+    builder.function("main", (source,), (result,))
     return fm.verify_module(builder.build(entry="main"))
 
 
@@ -55,10 +52,10 @@ def test_prim_function_has_explicit_runtime_output_and_workspace_abi():
     module = make_prim_module()
     function = module.prim_function_map["copy_4"]
 
-    assert tuple(value.name for value in function.runtime_parameters) == ("input", )
-    assert tuple(value.name for value in function.output_parameters) == ("output", )
-    assert function.runtime_parameter_types == (fm.tensor_type("float32", (4, )), )
-    assert function.runtime_return_type == fm.tensor_type("float32", (4, ))
+    assert tuple(value.name for value in function.runtime_parameters) == ("input",)
+    assert tuple(value.name for value in function.output_parameters) == ("output",)
+    assert function.runtime_parameter_types == (fm.tensor_type("float32", (4,)),)
+    assert function.runtime_return_type == fm.tensor_type("float32", (4,))
     assert module.node_map["result"].attrs["callee"] == "copy_4"
 
 
@@ -83,14 +80,16 @@ def test_python_round_trip_preserves_tuple_and_list_values_in_prim_function_attr
     function = replace(
         module.prim_functions[0],
         attrs={
-            "buffer_layout_signature": ({
-                "parameter": "input",
-                "tuple_leaves": ("dense", "global"),
-                "list_leaves": ["dense", "global"],
-            }, ),
+            "buffer_layout_signature": (
+                {
+                    "parameter": "input",
+                    "tuple_leaves": ("dense", "global"),
+                    "list_leaves": ["dense", "global"],
+                },
+            ),
         },
     )
-    module = replace(module, prim_functions=(function, ))
+    module = replace(module, prim_functions=(function,))
 
     checkpoint = fm.emit_module(module, tmp_path / "tir_attrs.py")
     loaded = fm.load_module(checkpoint)

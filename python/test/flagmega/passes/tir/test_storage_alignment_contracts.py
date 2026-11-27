@@ -12,15 +12,14 @@ from triton.flagmega.passes.tir.bufferize.alignment import storage_alignment_req
 from python.test.flagmega.codegen.triton.microkernels.helpers import StubTarget, semantic_packed_qkv_module
 
 
-def _target(*, prefer_strict=True, supported=("async_matrix", )):
+def _target(*, prefer_strict=True, supported=("async_matrix",)):
     target = StubTarget(supported=supported)
     implementations = []
     for implementation, alignment in zip(target.triton_implementation_model.implementations, (16, 128), strict=True):
         workspace = fm.T.shared_workspace_descriptor("rhs_stage", fm.tensor_type("bfloat16", (2, 64, 16)), 16)
-        pipeline = fm.T.transfer_pipeline_contract(
-            (fm.T.transfer_pipeline_channel("rhs", source_argument_indices=(1, ), shared_workspace_indices=(0, ),
-                                            source_alignment_bytes=alignment), ))
-        implementations.append(replace(implementation, shared_workspaces=(workspace, ), transfer_pipeline=pipeline))
+        pipeline = fm.T.transfer_pipeline_contract((fm.T.transfer_pipeline_channel(
+            "rhs", source_argument_indices=(1,), shared_workspace_indices=(0,), source_alignment_bytes=alignment),))
+        implementations.append(replace(implementation, shared_workspaces=(workspace,), transfer_pipeline=pipeline))
     order = tuple(implementation.id for implementation in implementations)
     target.triton_implementation_model = TritonImplementationModel(
         tuple(implementations), {"qkv_parallel_linear": order[::-1] if prefer_strict else order}, "alignment-test")
@@ -28,13 +27,9 @@ def _target(*, prefer_strict=True, supported=("async_matrix", )):
 
 
 def _with_weight_alignment(module, alignment):
-    return replace(
-        module, prim_functions=tuple(
-            replace(
-                function, parameters=tuple(
-                    replace(parameter, alignment_bytes=alignment) if parameter.name == "fused_weight" else parameter
-                    for parameter in function.parameters))
-            for function in module.prim_functions))
+    return replace(module, prim_functions=tuple(replace(function, parameters=tuple(
+        replace(parameter, alignment_bytes=alignment) if parameter.name == "fused_weight" else parameter
+        for parameter in function.parameters)) for function in module.prim_functions))
 
 
 def test_planning_uses_compatible_interfaces_not_the_preferred_candidate(tmp_path):
@@ -60,7 +55,7 @@ def test_selection_only_consumes_the_declared_contract():
     proposed = target.propose_microkernels(planned)
     assert proposed.prim_functions == planned.prim_functions
     [point] = proposed.selection_points
-    assert tuple(candidate.id for candidate in point.candidates) == ("test.qkv.scalar", )
+    assert tuple(candidate.id for candidate in point.candidates) == ("test.qkv.scalar",)
     selected = target.select_microkernels(proposed)
     assert selected.nodes == planned.nodes
     assert selected.prim_function_map["packed_qkv"].parameter_map["fused_weight"].alignment_bytes == 16
@@ -87,8 +82,8 @@ def test_edited_selection_cannot_strengthen_a_storage_contract():
 
 def test_ir_verifier_rejects_an_implementation_that_exceeds_its_contract():
     target = _target()
-    selected = target.select_microkernels(
-        target.propose_microkernels(target.plan_storage_alignments(semantic_packed_qkv_module())))
+    selected = target.select_microkernels(target.propose_microkernels(
+        target.plan_storage_alignments(semantic_packed_qkv_module())))
     with pytest.raises(IRVerificationError, match="exceeds the declared alignment"):
         fm.verify_module(_with_weight_alignment(selected, 16))
 
@@ -96,4 +91,4 @@ def test_ir_verifier_rejects_an_implementation_that_exceeds_its_contract():
 @pytest.mark.parametrize("alignment", [0, -16, 3, True])
 def test_parameter_alignment_is_a_typed_power_of_two(alignment):
     with pytest.raises(IRSchemaError, match="alignment_bytes"):
-        fm.T.prim_parameter("x", fm.tensor_type("float32", (8, )), alignment_bytes=alignment)
+        fm.T.prim_parameter("x", fm.tensor_type("float32", (8,)), alignment_bytes=alignment)

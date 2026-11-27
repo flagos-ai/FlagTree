@@ -45,14 +45,18 @@ def test_equivalent_selected_kernels_share_one_definition_not_a_function():
     assert dispatch.semantic_op == "math.add"
     assert dispatch.candidate == "tir.add.vector"
     assert dispatch.arguments == ("lhs", "rhs")
-    assert dispatch.outputs == ("result", )
+    assert dispatch.outputs == ("result",)
     assert dispatch.reads == ("lhs", "rhs")
-    assert dispatch.writes == ("result", )
-    assert dispatch.inplace_alias_candidates == (fm.InplaceAliasCandidate(output="result", input="lhs"), )
+    assert dispatch.writes == ("result",)
+    assert dispatch.inplace_alias_candidates == (
+        fm.InplaceAliasCandidate(output="result", input="lhs"),
+    )
 
 
 def test_candidate_change_creates_a_distinct_prim_function():
-    result = materialize_kernel_prim_functions(_two_add_kernels(second_candidate="tir.add.scalar"))
+    result = materialize_kernel_prim_functions(
+        _two_add_kernels(second_candidate="tir.add.scalar")
+    )
 
     calls = [node for node in result.nodes if node.op == "tir.call"]
     assert len(result.kernel_definitions) == 2
@@ -63,16 +67,19 @@ def test_single_program_implementation_materializes_its_access_domain():
     from dataclasses import replace
 
     module = _two_add_kernels()
-    module = replace(
-        module, nodes=tuple(
-            replace(node, attrs={
-                **node.attrs,
-                "facts": {**node.attrs["facts"], "participant_scope": "single_program"},
-            }) if node.op == "tir.kernel" else node for node in module.nodes))
+    module = replace(module, nodes=tuple(
+        replace(node, attrs={
+            **node.attrs,
+            "facts": {**node.attrs["facts"], "participant_scope": "single_program"},
+        }) if node.op == "tir.kernel" else node
+        for node in module.nodes
+    ))
     result = materialize_kernel_prim_functions(module)
     dispatch = fm.kernel_dispatch_for_call(result, result.node_map["first"])
     for name in (*dispatch.reads, *dispatch.writes):
-        assert dispatch.memory_effect_map[name].access_domain == (fm.MemoryAccessDomain.fixed_block(0))
+        assert dispatch.memory_effect_map[name].access_domain == (
+            fm.MemoryAccessDomain.fixed_block(0)
+        )
 
 
 def test_boxing_sites_do_not_share_a_prim_function_before_buffer_layout_binding():
@@ -101,8 +108,12 @@ def test_boxing_sites_do_not_share_a_prim_function_before_buffer_layout_binding(
         "facts": {},
         "semantic_attrs": {"new_type": broadcast},
     }
-    first = builder.call("tir.kernel", (first_input, ), broadcast, id="first", attrs=attrs)
-    second = builder.call("tir.kernel", (second_input, ), broadcast, id="second", attrs=attrs)
+    first = builder.call(
+        "tir.kernel", (first_input,), broadcast, id="first", attrs=attrs
+    )
+    second = builder.call(
+        "tir.kernel", (second_input,), broadcast, id="second", attrs=attrs
+    )
     builder.function("main", (first_input, second_input), (first, second))
 
     result = materialize_kernel_prim_functions(builder.build(entry="main"))
@@ -130,7 +141,7 @@ def test_semantic_tir_candidate_materializes_without_a_target_microkernel():
             "semantic_attrs": {},
         },
     )
-    builder.function("main", (lhs, rhs), (result, ))
+    builder.function("main", (lhs, rhs), (result,))
 
     lowered = materialize_kernel_prim_functions(builder.build(entry="main"))
     dispatch = fm.kernel_dispatch_for_call(lowered, lowered.node_map["result"])
@@ -155,8 +166,9 @@ def test_materialized_kernel_python_checkpoint_round_trips(tmp_path):
     loaded = fm.load_module(path)
 
     assert loaded.semantic_hash == result.semantic_hash
-    assert fm.kernel_dispatch_for_call(loaded, loaded.node_map["first"]) == (fm.kernel_dispatch_for_call(
-        result, result.node_map["first"]))
+    assert fm.kernel_dispatch_for_call(loaded, loaded.node_map["first"]) == (
+        fm.kernel_dispatch_for_call(result, result.node_map["first"])
+    )
 
 
 def test_tuple_result_alias_contract_uses_named_kernel_abi():
@@ -185,12 +197,14 @@ def test_tuple_result_alias_contract_uses_named_kernel_abi():
             },
         },
     )
-    builder.function("main", (lhs, rhs, addend), (result, ))
+    builder.function("main", (lhs, rhs, addend), (result,))
 
     lowered = materialize_kernel_prim_functions(builder.build(entry="main"))
     dispatch = fm.kernel_dispatch_for_call(lowered, lowered.node_map["result"])
 
-    assert dispatch.inplace_alias_candidates == (fm.InplaceAliasCandidate(output="result_0", input="addend"), )
+    assert dispatch.inplace_alias_candidates == (
+        fm.InplaceAliasCandidate(output="result_0", input="addend"),
+    )
 
 
 def test_read_write_parameter_becomes_explicit_inout_abi():
@@ -198,14 +212,17 @@ def test_read_write_parameter_becomes_explicit_inout_abi():
     value_type = fm.tensor_type("bfloat16", (1, 16))
     scalar_i32 = fm.tensor_type("int32", ())
     scalar_bool = fm.tensor_type("bool", ())
-    state_type = fm.RefType("state", (("cache", value_type), ))
+    state_type = fm.RefType("state", (("cache", value_type),))
     types = (
         value_type,
         state_type,
         scalar_i32,
         scalar_bool,
     )
-    arguments = tuple(builder.var(f"arg{index}", value, id=f"arg{index}") for index, value in enumerate(types))
+    arguments = tuple(
+        builder.var(f"arg{index}", value, id=f"arg{index}")
+        for index, value in enumerate(types)
+    )
     result_type = fm.TupleType((value_type, state_type))
     output = builder.call(
         "tir.kernel",
@@ -221,7 +238,7 @@ def test_read_write_parameter_becomes_explicit_inout_abi():
             "semantic_attrs": {},
         },
     )
-    builder.function("main", arguments, (output, ))
+    builder.function("main", arguments, (output,))
 
     result = materialize_kernel_prim_functions(builder.build(entry="main"))
     function = result.kernel_definitions[0]

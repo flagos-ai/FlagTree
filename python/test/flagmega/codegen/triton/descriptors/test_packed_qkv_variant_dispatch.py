@@ -31,10 +31,9 @@ def raw_qkv_call(packed_qkv_simt_pipeline_module, monkeypatch):
     ("packed_ordered_mma", "mma_k16"),
 ])
 def test_direct_qkv_uses_selected_variant_without_requiring_pipeline(raw_qkv_call, variant, order):
-    raw = {
-        **raw_qkv_call, "variant": variant, "parameters": {"block_k": 128, "tile_n": 256}, "semantic_attrs":
-        {**raw_qkv_call["semantic_attrs"], "reduction_order": order}
-    }
+    raw = {**raw_qkv_call, "variant": variant,
+           "parameters": {"block_k": 128, "tile_n": 256},
+           "semantic_attrs": {**raw_qkv_call["semantic_attrs"], "reduction_order": order}}
     raw.pop("transfer_pipeline", None)
     raw.pop("shared_workspaces", None)
     call = _qkv_parallel_linear_call(raw)

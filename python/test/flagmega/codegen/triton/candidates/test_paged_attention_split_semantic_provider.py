@@ -21,7 +21,7 @@ def test_split_attention_ops_have_target_neutral_semantic_tir_candidates():
             "partial",
             "ntt.paged_attention_partial",
             (),
-            fm.TupleType((fm.tensor_type("float32", (1, 1, 1)), )),
+            fm.TupleType((fm.tensor_type("float32", (1, 1, 1)),)),
         ),
         None,
     ).selection_kind == "semantic_tir"

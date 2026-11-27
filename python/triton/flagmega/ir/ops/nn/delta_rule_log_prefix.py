@@ -67,7 +67,8 @@ class DeltaRuleLogPrefix(OpDefinition):
     def evaluate(cls, node, arguments, context):
         return delta_rule_log_prefix(cls.alpha.read(arguments), block_size=node.attrs["block_size"],
                                      scan_group_size=node.attrs["scan_group_size"], epsilon=node.attrs["epsilon"],
-                                     log2_mode=node.attrs["log2_mode"], torch=context.torch)
+                                     log2_mode=node.attrs["log2_mode"],
+                                     torch=context.torch)
 
     @classmethod
     def cost(cls, node):
@@ -75,7 +76,8 @@ class DeltaRuleLogPrefix(OpDefinition):
                       notes=("block-local-grouped-log2-scan", "fp32-addition-tree"))
 
 
-def delta_rule_log_prefix(alpha, *, block_size=64, scan_group_size=32, epsilon=1e-10, log2_mode="fast", torch):
+def delta_rule_log_prefix(alpha, *, block_size=64, scan_group_size=32, epsilon=1e-10,
+                          log2_mode="fast", torch):
     from triton.flagmega.evaluator.cuda_log_math import log2
     tokens, heads = alpha.shape
     blocks = (tokens + block_size - 1) // block_size

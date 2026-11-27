@@ -27,10 +27,8 @@ def apply_qwen3_vllm_profile(module):
         return verify_module(module)
     original = module.node_map
     decode = module.function_map["decode_layer"]
-    required = {
-        "decode_layer_input_norm", "decode_layer_after_attention", "decode_layer_output", "decode_layer_mlp_gate_up",
-        "decode_layer_query_norm", "decode_layer_key_norm"
-    }
+    required = {"decode_layer_input_norm", "decode_layer_after_attention", "decode_layer_output",
+                "decode_layer_mlp_gate_up", "decode_layer_query_norm", "decode_layer_key_norm"}
     if (not required.issubset(original) or original["decode_layer_input_norm"].op != "nn.rms_norm"
             or original["decode_layer_mlp_gate_up"].op != "nn.dense_matmul_glu"):
         raise IRSchemaError("Unexpected decode-layer topology for the pinned vLLM numerical contract")
@@ -50,11 +48,8 @@ def apply_qwen3_vllm_profile(module):
                           if original[value].type == hidden_type)
         if positions:
             wide_carries[region.name] = positions
-    wide_parameters = {
-        module.function_map[name].parameters[1 + index]
-        for name, positions in wide_carries.items()
-        for index in positions
-    }
+    wide_parameters = {module.function_map[name].parameters[1 + index]
+                       for name, positions in wide_carries.items() for index in positions}
     nodes, mapped = [], {}
 
     def emit(op, name, inputs=(), attrs=None):
@@ -67,17 +62,19 @@ def apply_qwen3_vllm_profile(module):
             return value
         # These conversions declare the profile's materialization boundaries.
         # Fusion may own the conversion, but must retain its requested rounding.
-        return emit("tensors.cast", name, (value, ), {"dtype": dtype.value, "rounding_contract": "preserve"})
+        return emit("tensors.cast", name, (value,),
+                    {"dtype": dtype.value, "rounding_contract": "preserve"})
 
     def norm(source, inputs, *, wide_output):
         value, weight = inputs
         value = cast(value, DType.FLOAT32, source.id + ".wide_input")
-        stats = emit("nn.norm_stats", source.id + ".stats", (value, ), {"axis": -1, "use_mean": False})
+        stats = emit("nn.norm_stats", source.id + ".stats", (value,), {"axis": -1, "use_mean": False})
         bias = emit("builtin.splat_const", source.id + ".zero", (), {"result_type": weight.type, "value": 0.0})
         if source.attrs["weight_bias"] != 0:
             raise IRSchemaError("Pinned Qwen3 normalization requires weight_bias=0")
-        result = emit("nn.norm_apply", source.id if wide_output else source.id + ".wide", (value, stats, weight, bias),
-                      {"axis": -1, "epsilon": source.attrs["epsilon"], "use_mean": False, "round_before_scale": False})
+        result = emit("nn.norm_apply", source.id if wide_output else source.id + ".wide",
+                      (value, stats, weight, bias), {"axis": -1, "epsilon": source.attrs["epsilon"],
+                                                   "use_mean": False, "round_before_scale": False})
         return result if wide_output else cast(result, DType.BFLOAT16, source.id)
 
     # Importer nodes are topological. Keep function identities and per-layer
@@ -92,7 +89,8 @@ def apply_qwen3_vllm_profile(module):
             arguments = [value.id for value in inputs]
             for index in positions:
                 initial = inputs[3 + index]
-                arguments[3 + index] = cast(initial, DType.FLOAT32, source.id + f".carry_{index}.wide").id
+                arguments[3 + index] = cast(initial, DType.FLOAT32,
+                                            source.id + f".carry_{index}.wide").id
             fields = tuple(wide_hidden if index in positions else field
                            for index, field in enumerate(source.type.fields[:count]))
             result = replace(source, inputs=tuple(arguments), type=TupleType(fields))
@@ -100,36 +98,32 @@ def apply_qwen3_vllm_profile(module):
             result = norm(source, inputs, wide_output=source.id in {"decode_layer_query_norm", "decode_layer_key_norm"})
         elif source.op == "nn.rope":
             value, cosine, sine = inputs
-            tables = tuple(
-                cast(cast(table, DType.BFLOAT16, source.id + f".table_{index}.bf16"), DType.FLOAT32, source.id +
-                     f".table_{index}.f32") for index, table in enumerate((cosine, sine)))
+            tables = tuple(cast(cast(table, DType.BFLOAT16, source.id + f".table_{index}.bf16"),
+                                DType.FLOAT32, source.id + f".table_{index}.f32")
+                           for index, table in enumerate((cosine, sine)))
             rotated = emit("nn.rope", source.id + ".wide", (value, *tables))
             result = cast(rotated, DType.BFLOAT16, source.id)
         elif source.op == "nn.dense_matmul_glu":
             value, gate_weight, up_weight = inputs
             gate = emit("math.matmul", source.id + ".gate", (value, gate_weight), {"transpose_b": True})
             up = emit("math.matmul", source.id + ".up", (value, up_weight), {"transpose_b": True})
-            activation = emit("math.silu", source.id + ".silu", (cast(gate, DType.FLOAT32, source.id + ".gate_wide"), ))
-            product = emit("math.mul", source.id + ".product",
-                           (activation, cast(up, DType.FLOAT32, source.id + ".up_wide")))
+            activation = emit("math.silu", source.id + ".silu", (cast(gate, DType.FLOAT32, source.id + ".gate_wide"),))
+            product = emit("math.mul", source.id + ".product", (activation, cast(up, DType.FLOAT32, source.id + ".up_wide")))
             result = cast(product, DType.BFLOAT16, source.id)
         elif source.id == "decode_layer_after_attention":
             # The residual is materialized at the attention boundary. The
             # unrounded input remains available to the preceding RMSNorm.
-            residual = cast(cast(inputs[0], DType.BFLOAT16, source.id + ".residual_bf16"), DType.FLOAT32,
-                            source.id + ".residual_wide")
-            result = emit("math.add", source.id,
-                          (residual, cast(inputs[1], DType.FLOAT32, source.id + ".projection_wide")))
+            residual = cast(cast(inputs[0], DType.BFLOAT16, source.id + ".residual_bf16"),
+                            DType.FLOAT32, source.id + ".residual_wide")
+            result = emit("math.add", source.id, (residual, cast(inputs[1], DType.FLOAT32, source.id + ".projection_wide")))
         elif source.id == "decode_layer_output":
-            result = emit("math.add", source.id,
-                          (inputs[0], cast(inputs[1], DType.FLOAT32, source.id + ".projection_wide")))
+            result = emit("math.add", source.id, (inputs[0], cast(inputs[1], DType.FLOAT32, source.id + ".projection_wide")))
         elif source.op == "builtin.call" and source.attrs.get("callee") == decode.name:
             argument = cast(inputs[0], DType.FLOAT32, source.id + ".wide_input")
-            result = replace(source, inputs=(argument.id, *(value.id for value in inputs[1:])), type=TupleType(
-                (wide_hidden, source.type.fields[1])))
+            result = replace(source, inputs=(argument.id, *(value.id for value in inputs[1:])),
+                             type=TupleType((wide_hidden, source.type.fields[1])))
         elif source.op == "builtin.get_item":
-            result = replace(source, inputs=tuple(value.id for value in inputs),
-                             type=inputs[0].type.fields[source.attrs["index"]])
+            result = replace(source, inputs=tuple(value.id for value in inputs), type=inputs[0].type.fields[source.attrs["index"]])
         elif source.op == "tensors.slice":
             # A slice follows its input's dtype (it only selects a sub-range).
             # When the profile widens that input to FP32, re-infer the result
@@ -143,6 +137,6 @@ def apply_qwen3_vllm_profile(module):
         if not nodes or nodes[-1] is not result:
             nodes.append(result)
         mapped[source.id] = result
-    specialized = replace(module, nodes=tuple(nodes),
-                          metadata={**module.metadata, "numerical_contract": "vllm-493bd8323-inductor-level3"})
+    specialized = replace(module, nodes=tuple(nodes), metadata={**module.metadata,
+                          "numerical_contract": "vllm-493bd8323-inductor-level3"})
     return verify_module(specialized)

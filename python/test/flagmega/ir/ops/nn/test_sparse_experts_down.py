@@ -45,10 +45,7 @@ def test_down_rejects_invalid_named_operand(parameter, dtype, shape):
 
 
 def test_combine_weighted_rounding_is_not_algebraically_elided():
-    modules = [
-        build_module(SparseExpertsCombine, attrs={"output_dtype": "bfloat16", "round_weighted_output": rounding})
-        for rounding in (False, True)
-    ]
+    modules = [build_module(SparseExpertsCombine, attrs={"output_dtype": "bfloat16", "round_weighted_output": rounding}) for rounding in (False, True)]
     values = values_for(modules[0])
     evaluator = TorchEvaluator(DictWeightResolver({}))
     wide, rounded = [evaluator.run(module, values)[0] for module in modules]

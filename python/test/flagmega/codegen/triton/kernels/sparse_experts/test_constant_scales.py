@@ -18,7 +18,6 @@ from python.test.flagmega.codegen.triton.kernels.sparse_experts import helpers
 
 
 class ConstantOnlyCheckpoint:
-
     def load_tensor(self, key, *, device="cpu"):
         raise AssertionError(f"Splat scales must not request checkpoint tensor {key!r}.")
 
@@ -26,14 +25,10 @@ class ConstantOnlyCheckpoint:
 def constant_scales_module(definition, value=1.0):
     module = helpers.stage_module(definition, tokens=1)
     scales = {node.id for node in module.nodes if node.id.endswith("_scale")}
-    nodes = tuple(
-        replace(node, op="builtin.splat_const", attrs={"value": value}) if node.id in scales else node
-        for node in module.nodes)
-    functions = tuple(
-        replace(function, parameters=tuple(name
-                                           for name in function.parameters
-                                           if name not in scales))
-        for function in module.functions)
+    nodes = tuple(replace(node, op="builtin.splat_const", attrs={"value": value}) if node.id in scales else node
+                  for node in module.nodes)
+    functions = tuple(replace(function, parameters=tuple(name for name in function.parameters if name not in scales))
+                      for function in module.functions)
     result = replace(module, nodes=nodes, functions=functions)
     fm.verify_module(result)
     return freeze_constant_islands(result)
@@ -68,5 +63,5 @@ def test_constant_scales_device_matches_evaluator(tmp_path, definition, constant
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA required")
     actual, expected, _ = helpers.execute_and_reference(constant_scales_module(definition, constant), tmp_path, torch,
-                                                        checkpoint=ConstantOnlyCheckpoint())
+                                                       checkpoint=ConstantOnlyCheckpoint())
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)

@@ -21,8 +21,8 @@ def _kernel(semantic_op="math.add", *, requires=(), parameters=None):
 @pytest.mark.parametrize(
     ("kernels", "expected"),
     (
-        ((_kernel(), ), 4),
-        ((_kernel(requires=("warp_specialize", )), ), 8),
+        ((_kernel(),), 4),
+        ((_kernel(requires=("warp_specialize",)),), 8),
     ),
 )
 def test_sm90_launch_policy_owns_entry_warp_geometry(kernels, expected):
@@ -41,13 +41,13 @@ def test_selected_implementation_declares_compute_warp_requirement(required, exp
 
 
 def test_compute_warp_requirements_combine_with_warp_specialization():
-    kernels = (_kernel(parameters={"compute_num_warps": 4}), _kernel(requires=("warp_specialize", )))
+    kernels = (_kernel(parameters={"compute_num_warps": 4}), _kernel(requires=("warp_specialize",)))
     assert sm90_launch_parameters(None, kernels) == {"num_warps": 8}
-    kernels += (_kernel(parameters={"compute_num_warps": 16}), )
+    kernels += (_kernel(parameters={"compute_num_warps": 16}),)
     assert sm90_launch_parameters(None, kernels) == {"num_warps": 16}
 
 
 @pytest.mark.parametrize("invalid", (None, True, 0, -1, 3, 64, 8.0, "8"))
 def test_invalid_compute_warp_requirement_is_not_silently_ignored(invalid):
     with pytest.raises(IRVerificationError, match="compute_num_warps"):
-        sm90_launch_parameters(None, (_kernel(parameters={"compute_num_warps": invalid}), ))
+        sm90_launch_parameters(None, (_kernel(parameters={"compute_num_warps": invalid}),))

@@ -15,10 +15,12 @@ from dataclasses import replace
 import pytest
 
 from triton.flagmega import ir as fm
+from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir.ops.ntt.matmul_norm_stats import MatMulNormStats
 from triton.flagmega.passes.tir import materialize_kernel_prim_functions
 from triton.flagmega.passes.tir.bufferize.alignment import (
-    transfer_source_alignment_requirements, )
+    transfer_source_alignment_requirements,
+)
 
 PLACEMENT = fm.Placement((2, 2), "yx", "bb")
 
@@ -26,7 +28,7 @@ PLACEMENT = fm.Placement((2, 2), "yx", "bb")
 def _broadcast(dtype, shape):
     return fm.DistributedType(
         fm.tensor_type(dtype, shape),
-        (fm.SBP.broadcast(), ) * len(shape),
+        (fm.SBP.broadcast(),) * len(shape),
         PLACEMENT,
     )
 
@@ -35,7 +37,8 @@ def _n_split(dtype, shape):
     """Split the last axis, so the value result is sharded per owner."""
     return fm.DistributedType(
         fm.tensor_type(dtype, shape),
-        (fm.SBP.broadcast(), ) * (len(shape) - 1) + (fm.SBP.split_contiguous((0, 1)), ),
+        (fm.SBP.broadcast(),) * (len(shape) - 1)
+        + (fm.SBP.split_contiguous((0, 1)),),
         PLACEMENT,
     )
 
@@ -57,10 +60,7 @@ def _module(*, value_alignment=16):
     )
     stats_type = prepared.result_type.fields[1]
     combined = builder.call(
-        "tir.kernel",
-        prepared.inputs,
-        prepared.result_type,
-        id="combined",
+        "tir.kernel", prepared.inputs, prepared.result_type, id="combined",
         attrs={
             "semantic_op": MatMulNormStats.op_name,
             "candidate": "tir.unit.matmul_norm_stats",
@@ -69,8 +69,10 @@ def _module(*, value_alignment=16):
             "semantic_attrs": prepared.attrs,
         },
     )
-    value = builder.call("builtin.get_item", (combined, ), value_type, id="value", attrs={"index": 0})
-    stats = builder.call("builtin.get_item", (combined, ), stats_type, id="stats", attrs={"index": 1})
+    value = builder.call(
+        "builtin.get_item", (combined,), value_type, id="value", attrs={"index": 0})
+    stats = builder.call(
+        "builtin.get_item", (combined,), stats_type, id="stats", attrs={"index": 1})
     # The layer also consumes incoming statistics, so the same physical ABI is
     # both a formal parameter and a call result.
     incoming = builder.var("incoming_stats", stats_type, id="incoming_stats")
@@ -80,15 +82,22 @@ def _module(*, value_alignment=16):
     main_rhs = builder.var("main_rhs", rhs_type, id="main_rhs")
     main_addend = builder.var("main_addend", value_type, id="main_addend")
     main_stats = builder.var("main_stats", stats_type, id="main_stats")
-    first = builder.call("builtin.call", (main_lhs, main_rhs, main_addend, main_stats), prepared.result_type,
-                         id="layer_0_call", attrs={"callee": "layer"})
-    first_value = builder.call("builtin.get_item", (first, ), value_type, id="layer_0_value", attrs={"index": 0})
+    first = builder.call(
+        "builtin.call", (main_lhs, main_rhs, main_addend, main_stats),
+        prepared.result_type, id="layer_0_call", attrs={"callee": "layer"})
+    first_value = builder.call(
+        "builtin.get_item", (first,), value_type,
+        id="layer_0_value", attrs={"index": 0})
     # The statistics result of layer 0 becomes the statistics parameter of
     # layer 1. This is the edge whose physical ABI used to disagree.
-    first_stats = builder.call("builtin.get_item", (first, ), stats_type, id="layer_0_stats", attrs={"index": 1})
-    second = builder.call("builtin.call", (main_lhs, main_rhs, first_value, first_stats), prepared.result_type,
-                          id="layer_1_call", attrs={"callee": "layer"})
-    builder.function("main", (main_lhs, main_rhs, main_addend, main_stats), (second, ))
+    first_stats = builder.call(
+        "builtin.get_item", (first,), stats_type,
+        id="layer_0_stats", attrs={"index": 1})
+    second = builder.call(
+        "builtin.call", (main_lhs, main_rhs, first_value, first_stats),
+        prepared.result_type, id="layer_1_call", attrs={"callee": "layer"})
+    builder.function(
+        "main", (main_lhs, main_rhs, main_addend, main_stats), (second,))
 
     module = materialize_kernel_prim_functions(builder.build(entry="main"))
     return _declare_alignment(module, "result_0", value_alignment)
@@ -97,11 +106,13 @@ def _module(*, value_alignment=16):
 def _declare_alignment(module, name, alignment):
     """Declare a contract on one named kernel parameter."""
     definitions = tuple(
-        replace(
-            definition, parameters=tuple(
-                replace(parameter, alignment_bytes=alignment) if parameter.name == name else parameter
-                for parameter in definition.parameters))
-        for definition in module.kernel_definitions)
+        replace(definition, parameters=tuple(
+            replace(parameter, alignment_bytes=alignment)
+            if parameter.name == name else parameter
+            for parameter in definition.parameters
+        ))
+        for definition in module.kernel_definitions
+    )
     return replace(module, kernel_definitions=definitions)
 
 
@@ -119,7 +130,9 @@ def test_a_strict_result_does_not_constrain_its_sibling_statistics():
 def test_chained_layers_agree_on_the_statistics_physical_abi():
     plan = fm.make_buffer_plan(_module(value_alignment=16))
     formal = plan.buffer_map["incoming_stats"]
-    actual = plan.buffer_map[dict(plan.function_map["main"].values)["layer_0_stats"][0]]
+    actual = plan.buffer_map[
+        dict(plan.function_map["main"].values)["layer_0_stats"][0]
+    ]
 
     assert formal.distributed_storage_kind is actual.distributed_storage_kind
     assert formal.distributed_type == actual.distributed_type
@@ -132,7 +145,9 @@ def test_chained_layers_agree_on_the_statistics_physical_abi():
 
 def test_the_declared_value_contract_is_still_honoured():
     plan = fm.make_buffer_plan(_module(value_alignment=16))
-    value = plan.buffer_map[dict(plan.function_map["main"].values)["layer_0_value"][0]]
+    value = plan.buffer_map[
+        dict(plan.function_map["main"].values)["layer_0_value"][0]
+    ]
 
     assert value.alignment % 16 == 0
     assert value.component_stride_bytes % 16 == 0

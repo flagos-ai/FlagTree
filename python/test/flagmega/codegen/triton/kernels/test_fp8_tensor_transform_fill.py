@@ -15,7 +15,7 @@ from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
 
 
 @pytest.mark.parametrize("operation,attrs", [
-    ("slice", {"starts": (1, ), "ends": (257, ), "axes": (1, ), "steps": (2, )}),
+    ("slice", {"starts": (1,), "ends": (257,), "axes": (1,), "steps": (2,)}),
     ("pad", {"pad_end": (0, 3), "pad_value": -2}),
 ])
 @pytest.mark.parametrize("lanes", ((), (2, 4)))
@@ -23,14 +23,11 @@ def test_fp8_slice_and_integral_pad_execute_without_integer_fp8_cast(tmp_path, o
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("requires SM90")
     kind = fm.tensor_type(fm.vector_type("float8_e4m3fn", lanes) if lanes else "float8_e4m3fn", (3, 257))
-    graph = replace(primitive_module(fm.get_definition("tensors." + operation), (kind, ), **attrs),
-                    stage="frozen_constants")
+    graph = replace(primitive_module(fm.get_definition("tensors." + operation), (kind,), **attrs), stage="frozen_constants")
     compiler = Compiler()
-    artifact = write_artifact(
-        compiler.compile(graph).module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
+    artifact = write_artifact(compiler.compile(graph).module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     values = (torch.arange(3 * 257 * (8 if lanes else 1), device="cuda").float() % 17 - 8).reshape(3, 257, *lanes)
-    expected = values[:, 1:257:2] if operation == "slice" else torch.cat((values, values.new_full(
-        (3, 3, *lanes), -2)), dim=1)
+    expected = values[:, 1:257:2] if operation == "slice" else torch.cat((values, values.new_full((3, 3, *lanes), -2)), dim=1)
     values, expected = values.to(torch.float8_e4m3fn), expected.to(torch.float8_e4m3fn)
     runtime = load(artifact, device="cuda:0")
     try:

@@ -17,8 +17,8 @@ from triton.flagmega.codegen.triton.function_pool_abi import (
 def test_call_record_crosses_the_function_boundary_as_a_scalar(row_index):
     values = bindings()
     plans, _ = plan_function_pool_abis(values)
-    actuals = function_pool_actuals(values["main"], SimpleNamespace(call_id="call1"), plans["worker"],
-                                    {"rdata": "rdata"}, has_tables=True, row_index=row_index)
+    actuals = function_pool_actuals(values["main"], SimpleNamespace(call_id="call1"),
+        plans["worker"], {"rdata": "rdata"}, has_tables=True, row_index=row_index)
     record = ast.parse(actuals[-1], mode="eval").body
     assert isinstance(record, ast.Call)
     assert isinstance(record.func, ast.Attribute) and record.func.attr == "cast"
@@ -64,7 +64,7 @@ def kernel(data, offsets, output):
         data[offset:offset + 4].copy_(torch.tensor([number], dtype=torch.float32, device="cuda").view(torch.uint8))
     offsets = torch.tensor(tables[0]["values"], dtype=torch.int64, device="cuda")
     output = torch.empty(64, dtype=torch.float32, device="cuda")
-    compiled = module.kernel[(1, )](data, offsets, output, num_warps=4)
+    compiled = module.kernel[(1,)](data, offsets, output, num_warps=4)
     torch.testing.assert_close(output, torch.tensor([8.5, 16.0], device="cuda").repeat(32), rtol=0, atol=0)
     assert compiled.n_spills == 0
 
@@ -77,35 +77,26 @@ def bindings(weight_alignment=128, scale_alignment=16):
             ("weight", "bfloat16", 2, 128, weight_alignment),
             ("scale", "float32", 4, 256, scale_alignment),
         ):
-            edges.append({
-                "formal": name, "actual_runtime_value_kind": "pointer", "actual_runtime_argument": "rdata",
-                "actual_abi": {
-                    "storage": "rdata", "pooled": True, "scalar_dtype": dtype, "scalar_itemsize": itemsize,
-                    "pool_byte_offset": start + index * 256, "physical_buffer": name, "alignment_bytes": alignment
-                }
-            })
-        events.append({
-            "kind": "function_call", "callee": "worker", "call": f"call{index}", "arguments": edges, "results": [],
-            "memory_pools": []
-        })
+            edges.append({"formal": name, "actual_runtime_value_kind": "pointer",
+                          "actual_runtime_argument": "rdata", "actual_abi": {
+                              "storage": "rdata", "pooled": True, "scalar_dtype": dtype,
+                              "scalar_itemsize": itemsize, "pool_byte_offset": start + index * 256,
+                              "physical_buffer": name, "alignment_bytes": alignment}})
+        events.append({"kind": "function_call", "callee": "worker", "call": f"call{index}",
+                       "arguments": edges, "results": [], "memory_pools": []})
     return {
-        "main": {
-            "function": "main", "arguments": [], "pools": [{"name": "rdata", "storage": "rdata"}], "call_abi":
-            {"events": events}
-        },
-        "worker": {
-            "function": "worker", "arguments": [{"name": "weight", "buffer": "weight"},
-                                                {"name": "scale", "buffer": "scale"}], "pools":
-            [{"name": "rdata", "storage": "rdata"}], "call_abi": {"events": []}
-        },
+        "main": {"function": "main", "arguments": [], "pools": [{"name": "rdata", "storage": "rdata"}],
+                 "call_abi": {"events": events}},
+        "worker": {"function": "worker", "arguments": [{"name": "weight", "buffer": "weight"},
+                                                         {"name": "scale", "buffer": "scale"}],
+                   "pools": [{"name": "rdata", "storage": "rdata"}], "call_abi": {"events": []}},
     }
 
 
 def alignment_hint(expression):
-    hints = [
-        node for node in ast.walk(ast.parse(expression, mode="eval"))
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "multiple_of"
-    ]
+    hints = [node for node in ast.walk(ast.parse(expression, mode="eval"))
+             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+             and node.func.attr == "multiple_of"]
     return ast.literal_eval(hints[0].args[1]) if hints else 1
 
 
@@ -148,16 +139,13 @@ def test_static_checkpoint_groups_are_not_dynamic_parameter_bank_rows():
 
     from triton.flagmega import ir as fm
 
-    schema = fm.ParameterBankSchema("rows", (fm.BankField("weight", fm.tensor_type("bfloat16",
-                                                                                   (32, )), "checkpoint"), ))
-    module = SimpleNamespace(
-        nodes=(fm.Node("bank", "builtin.parameter_bank", (), schema.type, attrs={"schema": schema}), ))
+    schema = fm.ParameterBankSchema("rows", (fm.BankField("weight", fm.tensor_type("bfloat16", (32,)), "checkpoint"),))
+    module = SimpleNamespace(nodes=(fm.Node("bank", "builtin.parameter_bank", (), schema.type,
+                                           attrs={"schema": schema}),))
     buffers = []
     for name in ("bank.weight", "decoder.weight"):
-        buffers.append(
-            SimpleNamespace(
-                rdata_group=name, mem_span=SimpleNamespace(size=SimpleNamespace(fixed_value=64),
-                                                           buffer=SimpleNamespace(id=name))))
+        buffers.append(SimpleNamespace(rdata_group=name, mem_span=SimpleNamespace(
+            size=SimpleNamespace(fixed_value=64), buffer=SimpleNamespace(id=name))))
     # Merely declaring a bank no longer makes every static field read
     # dynamically indexed; only an actual dynamic BankGet carries a stride.
     assert bank_row_strides(module, SimpleNamespace(buffers=buffers)) == {}
@@ -184,9 +172,8 @@ def test_function_frames_keep_the_weakest_proven_call_alignment():
     for name in values:
         values[name]["pools"].append({"name": "workspace", "storage": "workspace"})
     for index, event in enumerate(values["main"]["call_abi"]["events"]):
-        event["memory_pools"] = [{
-            "memory_space": "workspace", "offset": 1024 * (index + 1), "alignment_bytes": 128 if index == 0 else 32
-        }]
+        event["memory_pools"] = [{"memory_space": "workspace", "offset": 1024 * (index + 1),
+                                  "alignment_bytes": 128 if index == 0 else 32}]
     plans, _ = plan_function_pool_abis(values)
     assert alignment_hint(function_pool_aliases(plans["worker"])["workspace"]) == 32
 
@@ -199,6 +186,7 @@ def test_call_event_serializes_the_physical_frame_alignment(scope_count, expecte
     from triton.flagmega.ir.bufferization.memory_pool import CallMemoryPoolBinding
 
     plan = SimpleNamespace(physical_buffer_map={"frame": SimpleNamespace(alignment=64)})
-    event = _nested_event(plan, "call", "worker", (), (), (CallMemoryPoolBinding("workspace", "frame", 192, 128), ),
+    event = _nested_event(plan, "call", "worker", (), (),
+                          (CallMemoryPoolBinding("workspace", "frame", 192, 128),),
                           {"workspace": scope_count})
     assert event["memory_pools"][0]["alignment_bytes"] == expected

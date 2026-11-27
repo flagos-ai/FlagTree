@@ -7,7 +7,7 @@ from triton.flagmega import ir as fm
 from triton.flagmega.errors import IRSchemaError
 
 
-def _channel(name="rhs", sources=(1, ), workspaces=(0, ), alignment=16):
+def _channel(name="rhs", sources=(1,), workspaces=(0,), alignment=16):
     return fm.T.transfer_pipeline_channel(
         name,
         source_argument_indices=sources,
@@ -33,42 +33,52 @@ def test_transfer_channel_indices_and_alignment_are_typed():
 
 def test_pipeline_assigns_each_workspace_to_exactly_one_owner():
     contract = fm.T.transfer_pipeline_contract(
-        (_channel("lhs", (0, ), (0, )), _channel("rhs", (1, ), (1, ))),
-        consumer_shared_workspace_indices=(2, ),
-        auxiliary_consumer=fm.T.auxiliary_consumer_contract((1, ), consumer_shared_workspace_indices=(2, )),
+        (_channel("lhs", (0,), (0,)), _channel("rhs", (1,), (1,))),
+        consumer_shared_workspace_indices=(2,),
+        auxiliary_consumer=fm.T.auxiliary_consumer_contract(
+            (1,), consumer_shared_workspace_indices=(2,)
+        ),
         capacity=4,
     )
 
     assert contract.source_argument_indices == (0, 1)
     assert contract.shared_workspace_indices == (0, 1)
-    assert contract.consumer_shared_workspace_indices == (2, )
+    assert contract.consumer_shared_workspace_indices == (2,)
     assert contract.capacity == 4
 
     with pytest.raises(IRSchemaError, match="owned by multiple transfer channels"):
-        fm.T.transfer_pipeline_contract((_channel("lhs", (0, ), (0, )), _channel("rhs", (1, ), (0, ))))
+        fm.T.transfer_pipeline_contract(
+            (_channel("lhs", (0,), (0,)), _channel("rhs", (1,), (0,)))
+        )
     with pytest.raises(IRSchemaError, match="both a transfer channel and the consumer"):
-        fm.T.transfer_pipeline_contract((_channel(), ), consumer_shared_workspace_indices=(0, ))
+        fm.T.transfer_pipeline_contract(
+            (_channel(),), consumer_shared_workspace_indices=(0,)
+        )
     with pytest.raises(IRSchemaError, match="outside the transfer channel range"):
         fm.T.transfer_pipeline_contract(
-            (_channel(), ),
-            auxiliary_consumer=fm.T.auxiliary_consumer_contract((1, )),
+            (_channel(),),
+            auxiliary_consumer=fm.T.auxiliary_consumer_contract((1,)),
         )
     with pytest.raises(IRSchemaError, match="not owned by the transfer pipeline consumer"):
         fm.T.transfer_pipeline_contract(
-            (_channel(), ),
-            consumer_shared_workspace_indices=(1, ),
-            auxiliary_consumer=fm.T.auxiliary_consumer_contract((0, ), consumer_shared_workspace_indices=(2, )),
+            (_channel(),),
+            consumer_shared_workspace_indices=(1,),
+            auxiliary_consumer=fm.T.auxiliary_consumer_contract(
+                (0,), consumer_shared_workspace_indices=(2,)
+            ),
         )
 
 
 @pytest.mark.parametrize("capacity", (0, -1, True, 2.5))
 def test_pipeline_capacity_is_a_positive_integer(capacity):
     with pytest.raises(IRSchemaError, match="capacity must be a positive integer"):
-        fm.T.transfer_pipeline_contract((_channel(), ), capacity=capacity)
+        fm.T.transfer_pipeline_contract((_channel(),), capacity=capacity)
 
 
 def test_pipeline_capacity_round_trips_and_old_ir_defaults_to_unspecified():
-    contract = fm.T.transfer_pipeline_contract((_channel(), ), capacity=4)
+    contract = fm.T.transfer_pipeline_contract(
+        (_channel(),), capacity=4
+    )
 
     assert fm.tir_from_data(contract.to_data()) == contract
     legacy = contract.to_data()
@@ -78,8 +88,12 @@ def test_pipeline_capacity_round_trips_and_old_ir_defaults_to_unspecified():
 
 def test_microkernel_pipeline_requires_complete_workspace_ownership():
     descriptors = (
-        fm.T.shared_workspace_descriptor("rhs_stage", fm.tensor_type("bfloat16", (2, 64)), 16),
-        fm.T.shared_workspace_descriptor("accumulator", fm.tensor_type("float32", (64, )), 16),
+        fm.T.shared_workspace_descriptor(
+            "rhs_stage", fm.tensor_type("bfloat16", (2, 64)), 16
+        ),
+        fm.T.shared_workspace_descriptor(
+            "accumulator", fm.tensor_type("float32", (64,)), 16
+        ),
     )
     with pytest.raises(IRSchemaError, match="assign every shared workspace"):
         fm.T.microkernel_selection(
@@ -87,23 +101,24 @@ def test_microkernel_pipeline_requires_complete_workspace_ownership():
             family="dense",
             variant="pipeline",
             shared_workspaces=descriptors,
-            transfer_pipeline=fm.T.transfer_pipeline_contract((_channel(), )),
+            transfer_pipeline=fm.T.transfer_pipeline_contract((_channel(),)),
         )
 
 
 def test_producer_metadata_reads_do_not_inherit_transfer_alignment():
-    contract = fm.T.transfer_pipeline_contract((_channel(sources=(1, ), alignment=128), ),
-                                               producer_read_argument_indices=(0, 2))
-    assert contract.source_argument_indices == (1, )
+    contract = fm.T.transfer_pipeline_contract(
+        (_channel(sources=(1,), alignment=128),), producer_read_argument_indices=(0, 2)
+    )
+    assert contract.source_argument_indices == (1,)
     assert contract.read_argument_indices == (1, 0, 2)
     assert contract.channels[0].source_alignment_bytes == 128
     assert fm.tir_from_data(contract.to_data()) == contract
     legacy = contract.to_data()
     legacy.pop("producer_read_argument_indices")
-    assert fm.tir_from_data(legacy).read_argument_indices == (1, )
+    assert fm.tir_from_data(legacy).read_argument_indices == (1,)
 
 
-@pytest.mark.parametrize("indices", ((-1, ), (True, ), (1, 1), (0.5, )))
+@pytest.mark.parametrize("indices", ((-1,), (True,), (1, 1), (0.5,)))
 def test_producer_metadata_reads_validate_operand_indices(indices):
     with pytest.raises(IRSchemaError, match="Producer read operand indexes"):
-        fm.T.transfer_pipeline_contract((_channel(), ), producer_read_argument_indices=indices)
+        fm.T.transfer_pipeline_contract((_channel(),), producer_read_argument_indices=indices)

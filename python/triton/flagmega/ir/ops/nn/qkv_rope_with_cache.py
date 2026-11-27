@@ -8,6 +8,7 @@ from dataclasses import replace
 from typing import Mapping, Sequence
 
 from triton.flagmega.errors import EvaluationError, IRSchemaError
+from triton.flagmega.ir.ops._compute_profile import normalize_compute_profile, require_host_reference, verify_complete_f32
 from triton.flagmega.ir.distributed_inference import tensor_of, all_broadcast
 from triton.flagmega.ir.memory_effect import MemoryEffect
 from triton.flagmega.ir.model import (
@@ -42,13 +43,15 @@ from triton.flagmega.ir.ops.nn._norm import (
 )
 from triton.flagmega.ir.ops.nn._paged_attention_state import PagedAttentionState
 from triton.flagmega.ir.ops.nn._paged_attention_state import (
-    paged_attention_state_config_from_type, )
+    paged_attention_state_config_from_type,
+)
 from triton.flagmega.ir.ops.nn.norm_apply import NormApply
 from triton.flagmega.ir.ops.nn.norm_stats import _local_cost_tensor
 from triton.flagmega.ir.ops.nn.qwen3_paged_attention import _scalar_bool, _scalar_int
 from triton.flagmega.ir.ops.nn.rope import RoPE
 from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache import (
-    UpdatePagedAttentionKVCache, )
+    UpdatePagedAttentionKVCache,
+)
 from triton.flagmega.ir.ops.tensors.pack import Pack, pack_physical
 from triton.flagmega.ir.ops.tensors.unpack import Unpack, unpack_physical
 from triton.flagmega.ir.type_pattern import (
@@ -78,8 +81,7 @@ class QKVRoPEWithCache(OpDefinition):
     cos = input_parameter(is_tensor())
     sin = input_parameter(is_tensor())
     state = input_parameter(
-        is_ref(),
-        parameter_kind=ParameterKind.ATTRIBUTE,
+        is_ref(), parameter_kind=ParameterKind.ATTRIBUTE,
         memory_effect=MemoryEffect.CHIP_READ_WRITE.partitioned_by_argument(8),
     )
     layer_id = input_parameter(
@@ -105,13 +107,24 @@ class QKVRoPEWithCache(OpDefinition):
     rotary_dim = attribute_parameter(default=None)
     qkv_layout = attribute_parameter()
     attention_layout = attribute_parameter()
+    norm_compute_profile = attribute_parameter(default="default")
+    query_output_lanes = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
         attrs = super().normalize_attrs(attributes)
+        profile = normalize_compute_profile(attrs, "QKVRoPEWithCache", key="norm_compute_profile", supported="ggml_f32_v1")
+        output_lanes = attrs["query_output_lanes"]
+        if output_lanes is not None and (not isinstance(output_lanes, (tuple, list)) or output_lanes):
+            raise IRSchemaError("QKVRoPEWithCache query_output_lanes must be None or empty for scalar output.")
+        if profile and (output_lanes is None or attrs["q_use_mean"] or attrs["k_use_mean"]):
+            raise IRSchemaError("QKVRoPEWithCache ggml_f32_v1 requires RMS normalization and scalar query output.")
         q_axis = attrs["q_axis"]
         k_axis = attrs["k_axis"]
-        if any(isinstance(value, bool) or not isinstance(value, int) for value in (q_axis, k_axis)):
+        if any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in (q_axis, k_axis)
+        ):
             raise IRSchemaError("QKVRoPEWithCache normalization axes must be integers.")
         q_epsilon = float(attrs["q_epsilon"])
         k_epsilon = float(attrs["k_epsilon"])
@@ -122,6 +135,8 @@ class QKVRoPEWithCache(OpDefinition):
         if not isinstance(attrs["round_qk_intermediates"], bool):
             raise IRSchemaError("QKVRoPEWithCache intermediate rounding policy must be boolean.")
         return {
+            **profile,
+            **({"query_output_lanes": ()} if output_lanes is not None else {}),
             **RoPE.normalize_attrs({"rotary_dim": attrs["rotary_dim"]}),
             **({"round_qk_intermediates": False} if not attrs["round_qk_intermediates"] else {}),
             "q_axis": q_axis,
@@ -133,57 +148,74 @@ class QKVRoPEWithCache(OpDefinition):
             "k_use_mean": bool(attrs["k_use_mean"]),
             "k_round_before_scale": attrs["k_round_before_scale"],
             "qkv_layout": normalize_attention_layout(attrs["qkv_layout"]),
-            "attention_layout": normalize_attention_layout(attrs["attention_layout"]),
+            "attention_layout": normalize_attention_layout(
+                attrs["attention_layout"]
+            ),
         }
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         qkv_type = cls.qkv.type_of(inputs)
         if len(qkv_type.fields) != 3 or not all(
-                isinstance(field, (TensorType, DistributedType)) for field in qkv_type.fields):
-            raise IRSchemaError("QKVRoPEWithCache qkv must be a tuple of three tensor values.")
-        cache_config = paged_attention_state_config_from_type(cls.state.type_of(inputs))
-        q, k, v = (Node(f"__qkv_field_{index}", "builtin.var", (), field)
-                   for index, field in enumerate(qkv_type.fields))
+            isinstance(field, (TensorType, DistributedType))
+            for field in qkv_type.fields
+        ):
+            raise IRSchemaError(
+                "QKVRoPEWithCache qkv must be a tuple of three tensor values."
+            )
+        cache_config = paged_attention_state_config_from_type(
+            cls.state.type_of(inputs)
+        )
+        profile = attrs.get("norm_compute_profile", "default")
+        if profile != "default":
+            if cache_config.cache_dtype != DType.FLOAT16:
+                raise IRSchemaError("QKVRoPEWithCache ggml_f32_v1 requires F16 cache storage.")
+            for field in qkv_type.fields:
+                verify_complete_f32(field, "QKVRoPEWithCache")
+                if tensor_of(field).rank != 3 or tensor_of(field).shape[tuple(attrs["qkv_layout"]).index("seq")].value not in range(1, 9):
+                    raise IRSchemaError("QKVRoPEWithCache ggml_f32_v1 requires one to eight query tokens.")
+            head_axis = tuple(attrs["qkv_layout"]).index("head")
+            dim_axis = tuple(attrs["qkv_layout"]).index("dim")
+            seq_axis = tuple(attrs["qkv_layout"]).index("seq")
+            tensors = tuple(tensor_of(field) for field in qkv_type.fields)
+            if (len({value.shape[seq_axis].value for value in tensors}) != 1
+                    or any(value.shape[dim_axis].value != cache_config.head_dim for value in tensors)
+                    or any(value.shape[head_axis].value != cache_config.num_kv_heads for value in tensors[1:])
+                    or tensors[0].shape[head_axis].fixed_value % cache_config.num_kv_heads):
+                raise IRSchemaError("QKVRoPEWithCache Q/K/V heads must match the configured F16 cache.")
+            for parameter in (cls.cos, cls.sin):
+                verify_complete_f32(parameter.type_of(inputs), "QKVRoPEWithCache")
+        q, k, v = (
+            Node(f"__qkv_field_{index}", "builtin.var", (), field)
+            for index, field in enumerate(qkv_type.fields)
+        )
         qkv_layout = tuple(attrs["qkv_layout"])
         attention_layout = tuple(attrs["attention_layout"])
         q = _logical_attention_node(q, cache_config.lanes, qkv_layout, "q")
         k = _logical_attention_node(k, cache_config.lanes, qkv_layout, "k")
         v = _logical_attention_node(v, cache_config.lanes, qkv_layout, "v")
         q_scale = _logical_norm_parameter_node(
-            cls.q_scale.read(inputs),
-            q,
-            int(attrs["q_axis"]),
-            cache_config.lanes,
-            qkv_layout,
-            "q_scale",
+            cls.q_scale.read(inputs), q, int(attrs["q_axis"]),
+            cache_config.lanes, qkv_layout, "q_scale",
         )
         k_scale = _logical_norm_parameter_node(
-            cls.k_scale.read(inputs),
-            k,
-            int(attrs["k_axis"]),
-            cache_config.lanes,
-            qkv_layout,
-            "k_scale",
+            cls.k_scale.read(inputs), k, int(attrs["k_axis"]),
+            cache_config.lanes, qkv_layout, "k_scale",
         )
         q_bias = _logical_norm_parameter_node(
-            cls.q_bias.read(inputs),
-            q,
-            int(attrs["q_axis"]),
-            cache_config.lanes,
-            qkv_layout,
-            "q_bias",
+            cls.q_bias.read(inputs), q, int(attrs["q_axis"]),
+            cache_config.lanes, qkv_layout, "q_bias",
         )
         k_bias = _logical_norm_parameter_node(
-            cls.k_bias.read(inputs),
-            k,
-            int(attrs["k_axis"]),
-            cache_config.lanes,
-            qkv_layout,
-            "k_bias",
+            cls.k_bias.read(inputs), k, int(attrs["k_axis"]),
+            cache_config.lanes, qkv_layout, "k_bias",
         )
-        cos = _logical_rope_parameter_node(cls.cos.read(inputs), q, cache_config.lanes, qkv_layout, "cos")
-        sin = _logical_rope_parameter_node(cls.sin.read(inputs), q, cache_config.lanes, qkv_layout, "sin")
+        cos = _logical_rope_parameter_node(
+            cls.cos.read(inputs), q, cache_config.lanes, qkv_layout, "cos"
+        )
+        sin = _logical_rope_parameter_node(
+            cls.sin.read(inputs), q, cache_config.lanes, qkv_layout, "sin"
+        )
         state = cls.state.read(inputs)
         layer_id = cls.layer_id.read(inputs)
         advance = cls.advance_sequence.read(inputs)
@@ -197,6 +229,7 @@ class QKVRoPEWithCache(OpDefinition):
             epsilon=float(attrs["q_epsilon"]),
             use_mean=bool(attrs["q_use_mean"]),
             prefix="q",
+            compute_profile=profile,
         )
         k_norm = _infer_norm_apply(
             k,
@@ -207,6 +240,7 @@ class QKVRoPEWithCache(OpDefinition):
             epsilon=float(attrs["k_epsilon"]),
             use_mean=bool(attrs["k_use_mean"]),
             prefix="k",
+            compute_profile=profile,
         )
         q_rope = _infer_rope(q_norm, cos, sin, "q", attrs.get("rotary_dim"))
         k_rope = _infer_rope(k_norm, cos, sin, "k", attrs.get("rotary_dim"))
@@ -214,7 +248,7 @@ class QKVRoPEWithCache(OpDefinition):
             q_rope.type,
             qkv_layout,
             attention_layout,
-            cache_config.lanes,
+            None if "query_output_lanes" in attrs else cache_config.lanes,
         )
         k_slots_type = _transform_attention_layout_type(
             k_rope.type,
@@ -260,18 +294,27 @@ class QKVRoPEWithCache(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
+        require_host_reference(node, key="norm_compute_profile")
         qkv = cls.qkv.read(arguments)
         if not isinstance(qkv, (tuple, list)) or len(qkv) != 3:
             raise EvaluationError("QKVRoPEWithCache expects three Q/K/V values.")
         qkv_type = context.types[cls.qkv.read(node.inputs)]
         if not isinstance(qkv_type, TupleType):
             raise EvaluationError("QKVRoPEWithCache qkv input has no tuple type.")
-        cache_config = paged_attention_state_config_from_type(context.types[cls.state.read(node.inputs)])
+        cache_config = paged_attention_state_config_from_type(
+            context.types[cls.state.read(node.inputs)]
+        )
         qkv_layout = tuple(node.attrs["qkv_layout"])
         q_type, k_type, v_type = qkv_type.fields
-        q_value = _logical_attention_value(qkv[0], q_type, cache_config.lanes, qkv_layout, "q")
-        k_value = _logical_attention_value(qkv[1], k_type, cache_config.lanes, qkv_layout, "k")
-        v_value = _logical_attention_value(qkv[2], v_type, cache_config.lanes, qkv_layout, "v")
+        q_value = _logical_attention_value(
+            qkv[0], q_type, cache_config.lanes, qkv_layout, "q"
+        )
+        k_value = _logical_attention_value(
+            qkv[1], k_type, cache_config.lanes, qkv_layout, "k"
+        )
+        v_value = _logical_attention_value(
+            qkv[2], v_type, cache_config.lanes, qkv_layout, "v"
+        )
         q_scale = _logical_norm_parameter_value(
             cls.q_scale.read(arguments),
             context.types[cls.q_scale.read(node.inputs)],
@@ -354,12 +397,21 @@ class QKVRoPEWithCache(OpDefinition):
             rotary_dim=node.attrs.get("rotary_dim"),
             torch=context.torch,
         )
-        q = _physical_attention_value(q, qkv_layout, tuple(node.attrs["attention_layout"]), cache_config.lanes)
-        k = _permute_attention_value(k, qkv_layout, tuple(node.attrs["attention_layout"]))
-        v = _permute_attention_value(v_value, qkv_layout, tuple(node.attrs["attention_layout"]))
+        q = _physical_attention_value(
+            q, qkv_layout, tuple(node.attrs["attention_layout"]),
+            None if "query_output_lanes" in node.attrs else cache_config.lanes,
+        )
+        k = _permute_attention_value(
+            k, qkv_layout, tuple(node.attrs["attention_layout"])
+        )
+        v = _permute_attention_value(
+            v_value, qkv_layout, tuple(node.attrs["attention_layout"])
+        )
         state = cls.state.read(arguments)
         if not isinstance(state, PagedAttentionState):
-            raise EvaluationError("QKVRoPEWithCache state must evaluate to PagedAttentionState.")
+            raise EvaluationError(
+                "QKVRoPEWithCache state must evaluate to PagedAttentionState."
+            )
         state.update(
             require_decode_token(
                 to_seq_head_dim(k, tuple(node.attrs["attention_layout"])),
@@ -389,7 +441,7 @@ class QKVRoPEWithCache(OpDefinition):
             flops=None if elements is None else elements * 9,
             bytes_read=None if size is None else size * 4,
             bytes_written=size,
-            notes=("qk-normalization-apply-rope-cache-update", ),
+            notes=("qk-normalization-apply-rope-cache-update",),
         )
 
     @classmethod
@@ -410,8 +462,7 @@ class QKVRoPEWithCache(OpDefinition):
             operations += count * 11 + outer * (7 if components == 2 else 3)
             for name in (f"{role}_scale", f"{role}_bias", "cos", "sin"):
                 dtype = tensor_of(getattr(cls, name).type_of(inputs)).dtype
-                parameter_bytes += count * (dtype.itemsize // getattr(dtype, "lane_count", 1)) * (2 if name.endswith(
-                    ("scale", "bias")) else 1)
+                parameter_bytes += count * (dtype.itemsize // getattr(dtype, "lane_count", 1)) * (2 if name.endswith(("scale", "bias")) else 1)
         return OpCostFactors(
             elementwise_operations=operations,
             block_local_memory_load_bytes=sum(sizes) + sum(sizes[:2]) + sum(stats_sizes) + parameter_bytes + 8,
@@ -429,8 +480,11 @@ def _infer_norm_apply(
     epsilon: float,
     use_mean: bool,
     prefix: str,
+    compute_profile: str = "default",
 ) -> Node:
     norm_attrs = {"axis": axis, "epsilon": epsilon, "use_mean": use_mean}
+    if compute_profile != "default":
+        norm_attrs["compute_profile"] = compute_profile
     if isinstance(value.type, DistributedType):
         suffix = value.type.axis_policies[normalize_axis(axis, value.type.tensor.rank):]
         # Replicated parameters contain both the local and rotary partner slice.
@@ -471,8 +525,8 @@ def _logical_attention_node(
 ) -> Node:
     return _logical_vector_node(
         value,
-        expected_lanes=(lane, ),
-        axes=(layout.index("dim"), ),
+        expected_lanes=(lane,),
+        axes=(layout.index("dim"),),
         label=label,
     )
 
@@ -489,11 +543,13 @@ def _logical_norm_parameter_node(
     normalized_axis = normalize_axis(axis, input_tensor.rank)
     parameter_axis = layout.index("dim") - normalized_axis
     if parameter_axis < 0:
-        raise IRSchemaError(f"QKVRoPEWithCache {label} vector axis is outside the normalized suffix.")
+        raise IRSchemaError(
+            f"QKVRoPEWithCache {label} vector axis is outside the normalized suffix."
+        )
     return _logical_vector_node(
         parameter,
-        expected_lanes=(lane, ),
-        axes=(parameter_axis, ),
+        expected_lanes=(lane,),
+        axes=(parameter_axis,),
         label=label,
     )
 
@@ -509,7 +565,9 @@ def _logical_rope_parameter_node(
     parameter_rank = tensor_of(parameter.type).rank
     parameter_axis = layout.index("dim") - (input_rank - parameter_rank)
     if parameter_axis < 0 or parameter_axis >= parameter_rank:
-        raise IRSchemaError(f"QKVRoPEWithCache {label} cannot represent the rotary dimension.")
+        raise IRSchemaError(
+            f"QKVRoPEWithCache {label} cannot represent the rotary dimension."
+        )
     return _logical_vector_node(
         parameter,
         expected_lanes=(2, lane),
@@ -529,13 +587,15 @@ def _logical_vector_node(
     if not isinstance(value_type.dtype, VectorType):
         return value
     if value_type.dtype.lanes != expected_lanes:
-        raise IRSchemaError(f"QKVRoPEWithCache {label} vector lanes {value_type.dtype.lanes} "
-                            f"do not match cache lanes {expected_lanes}.")
-    logical_type = Unpack.infer_type((value, ), {"axes": axes})
+        raise IRSchemaError(
+            f"QKVRoPEWithCache {label} vector lanes {value_type.dtype.lanes} "
+            f"do not match cache lanes {expected_lanes}."
+        )
+    logical_type = Unpack.infer_type((value,), {"axes": axes})
     return Node(
         f"__qkv_logical_{label}",
         "tensors.unpack",
-        (value.id, ),
+        (value.id,),
         logical_type,
         attrs={"axes": axes},
     )
@@ -551,8 +611,8 @@ def _logical_attention_value(
     return _logical_vector_value(
         value,
         value_type,
-        expected_lanes=(lane, ),
-        axes=(layout.index("dim"), ),
+        expected_lanes=(lane,),
+        axes=(layout.index("dim"),),
         label=label,
     )
 
@@ -570,8 +630,8 @@ def _logical_norm_parameter_value(
     return _logical_vector_value(
         value,
         value_type,
-        expected_lanes=(lane, ),
-        axes=(parameter_axis, ),
+        expected_lanes=(lane,),
+        axes=(parameter_axis,),
         label=label,
     )
 
@@ -607,8 +667,10 @@ def _logical_vector_value(
     if not isinstance(tensor.dtype, VectorType):
         return value
     if tensor.dtype.lanes != expected_lanes:
-        raise EvaluationError(f"QKVRoPEWithCache {label} vector lanes {tensor.dtype.lanes} "
-                              f"do not match cache lanes {expected_lanes}.")
+        raise EvaluationError(
+            f"QKVRoPEWithCache {label} vector lanes {tensor.dtype.lanes} "
+            f"do not match cache lanes {expected_lanes}."
+        )
     return unpack_physical(value, tensor.rank, tensor.dtype.lanes, axes)
 
 
@@ -616,14 +678,16 @@ def _physical_attention_value(
     value,
     input_layout: tuple[str, str, str],
     output_layout: tuple[str, str, str],
-    lane: int,
+    lane: int | None,
 ):
     transposed = _permute_attention_value(value, input_layout, output_layout)
+    if lane is None:
+        return transposed
     return pack_physical(
         transposed,
         len(output_layout),
-        (lane, ),
-        (output_layout.index("dim"), ),
+        (lane,),
+        (output_layout.index("dim"),),
     )
 
 
@@ -631,7 +695,7 @@ def _transform_attention_layout_type(
     value_type: IRType,
     input_layout: tuple[str, str, str],
     output_layout: tuple[str, str, str],
-    lane: int,
+    lane: int | None,
 ) -> IRType:
     permutation = tuple(input_layout.index(axis) for axis in output_layout)
     tensor = tensor_of(value_type)
@@ -650,9 +714,11 @@ def _transform_attention_layout_type(
             value_type.placement,
             value_type.partial,
         )
+    if lane is None:
+        return transposed
     return Pack.infer_type(
-        (Node("__qkv_layout", "builtin.var", (), transposed), ),
-        {"lanes": (lane, ), "axes": (output_layout.index("dim"), )},
+        (Node("__qkv_layout", "builtin.var", (), transposed),),
+        {"lanes": (lane,), "axes": (output_layout.index("dim"),)},
     )
 
 

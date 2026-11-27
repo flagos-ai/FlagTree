@@ -30,7 +30,9 @@ def test_module_match_walks_outputs_before_operands_and_ignores_dead_nodes():
     assert match["root"].id == "live"
     assert pm.try_match(module, pm.F.math.is_add()) is None
     assert pm.find_matches(module, pm.F.math.is_add()) == ()
-    assert pm.try_match_root(module.node_map["dead"], pm.F.math.is_add(), module) is not None
+    assert pm.try_match_root(
+        module.node_map["dead"], pm.F.math.is_add(), module
+    ) is not None
 
 
 def test_match_options_suppress_by_node_identity_and_can_be_inherited():
@@ -67,7 +69,7 @@ def test_pattern_user_count_includes_distinct_ssa_and_function_output_users():
 
     assert pm.try_match_root(activated, two_users, module)["activation"] is activated
     assert pm.try_match_root(activated, one_user, module) is None
-    # Function outputs participate in the Users relation.
+    # Function outputs participate in the nncase-style Users relation.
     assert pm.try_match_root(lhs, pm.F.math.is_add().with_user_count(1), module)
 
 
@@ -80,8 +82,10 @@ def test_pattern_user_count_rejects_non_count_values(invalid):
 def test_const_pattern_supports_exact_predicate_and_type_constraints():
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
     scalar_type = fm.tensor_type("int32", [])
-    constant = builder.call("builtin.scalar_const", (), scalar_type, id="answer", attrs={"value": 42})
-    builder.function("main", (), (constant, ))
+    constant = builder.call(
+        "builtin.scalar_const", (), scalar_type, id="answer", attrs={"value": 42}
+    )
+    builder.function("main", (), (constant,))
     module = builder.build(entry="main")
 
     exact = pm.is_const(42, name="constant", type_pattern=fm.has_dtype("int32"))
@@ -90,4 +94,6 @@ def test_const_pattern_supports_exact_predicate_and_type_constraints():
     assert pm.try_match_root(constant, exact, module)["constant"] is constant
     assert pm.try_match_root(constant, predicate, module)
     assert pm.try_match_root(constant, pm.is_const(41), module) is None
-    assert pm.try_match_root(constant, pm.is_const(type_pattern=fm.has_dtype("float32")), module) is None
+    assert pm.try_match_root(
+        constant, pm.is_const(type_pattern=fm.has_dtype("float32")), module
+    ) is None

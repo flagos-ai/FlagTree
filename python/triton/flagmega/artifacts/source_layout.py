@@ -40,10 +40,8 @@ def _physical_byte_shape(value_type):
     tensor = tensor_of(value_type)
     dtype = tensor.dtype
     scalar = dtype.elem_type if isinstance(dtype, VectorType) else dtype
-    return [
-        *(dim.fixed_value for dim in tensor.shape), *(dtype.lanes if isinstance(dtype, VectorType) else ()),
-        scalar.itemsize
-    ]
+    return [*(dim.fixed_value for dim in tensor.shape),
+            *(dtype.lanes if isinstance(dtype, VectorType) else ()), scalar.itemsize]
 
 
 def _strip_views(nodes, node):
@@ -91,8 +89,7 @@ def _output_source(nodes, node):
                 axes = _pack_axes(node.attrs, len(lanes), tensor.rank)
                 expanded, outer, lane_positions = [], [], {}
                 for axis in range(tensor.rank):
-                    factors = [(i, lane)
-                               for i, (packed_axis, lane) in enumerate(zip(axes, lanes, strict=True))
+                    factors = [(i, lane) for i, (packed_axis, lane) in enumerate(zip(axes, lanes, strict=True))
                                if packed_axis == axis]
                     outer.append(len(expanded))
                     expanded.append(input_shape[axis] // prod(lane for _, lane in factors))
@@ -103,8 +100,8 @@ def _output_source(nodes, node):
                 expanded.extend(input_shape[tensor.rank:])
                 permutation = [*outer, *(lane_positions[i] for i in range(len(lanes))), *trailing]
             strides = _strides(expanded)
-            transforms.append(
-                {"shape": _physical_byte_shape(node.type), "source_strides": [strides[axis] for axis in permutation]})
+            transforms.append({"shape": _physical_byte_shape(node.type),
+                               "source_strides": [strides[axis] for axis in permutation]})
             node = source
             continue
         contracts = get_definition(node.op).byte_preserving_input_parameters
@@ -130,7 +127,7 @@ def build_program(buffer, nodes, output, range_getter):
         inputs = tuple(nodes[value] for value in node.inputs)
     else:
         # One contiguous source is the same program with one concat operand.
-        axis, inputs = 0, (node, )
+        axis, inputs = 0, (node,)
     operands = []
     for child in inputs:
         leaf = _strip_views(nodes, child)
@@ -142,29 +139,22 @@ def build_program(buffer, nodes, output, range_getter):
             return None
         if source.nbytes != tensor_nbytes(tensor_of(child.type)):
             raise ArtifactError(f"Source byte count for {key!r} differs from its constant recipe.")
-        operands.append({
-            "key": key, "path": str(source.path), "offset": source.offset, "nbytes": source.nbytes, "extent":
-            _physical_byte_shape(child.type)[axis]
-        })
-    final_shape = [
-        *buffer.shape, *(buffer.dtype.lanes if isinstance(buffer.dtype, VectorType) else ()),
-        (buffer.dtype.elem_type if isinstance(buffer.dtype, VectorType) else buffer.dtype).itemsize
-    ]
+        operands.append({"key": key, "path": str(source.path), "offset": source.offset,
+                         "nbytes": source.nbytes, "extent": _physical_byte_shape(child.type)[axis]})
+    final_shape = [*buffer.shape,
+                   *(buffer.dtype.lanes if isinstance(buffer.dtype, VectorType) else ()),
+                   (buffer.dtype.elem_type if isinstance(buffer.dtype, VectorType) else buffer.dtype).itemsize]
     if prod(final_shape) != prod(shape):
         raise ArtifactError(f"Source layout for {buffer.id!r} changes its byte count.")
-    return {
-        "buffer": buffer.id, "shape": final_shape, "concat_shape": shape, "axis": axis, "operands": operands,
-        "transforms": transforms
-    }
+    return {"buffer": buffer.id, "shape": final_shape, "concat_shape": shape,
+            "axis": axis, "operands": operands, "transforms": transforms}
 
 
 def prepare_programs(module, checkpoint, buffers, destination, *, readonly_source=None, require_reflink=False):
     if readonly_source is not None:
         from triton.flagmega.artifacts.materialized_source import prove_output_reuse
         proof = prove_output_reuse(module, readonly_source)
-        programs = [{**p, "operands": [{**o, "path": str(readonly_source.path)}
-                                       for o in p["operands"]]}
-                    for p in proof["programs"]]
+        programs = [{**p, "operands": [{**o, "path": str(readonly_source.path)} for o in p["operands"]]} for p in proof["programs"]]
         return _snapshot_programs(programs, readonly_source, destination, require_reflink=True)
     if not callable(getattr(checkpoint, "source_file_digest", None)):
         return [], []
@@ -188,7 +178,6 @@ def _snapshot_programs(programs, checkpoint, destination, *, require_reflink=Fal
     if not paths:
         return [], []
     from triton.flagmega.artifacts.rdata import _clone_file
-
     def snapshot(item, staging):
         index, name = item
         source = Path(name)
@@ -204,12 +193,12 @@ def _snapshot_programs(programs, checkpoint, destination, *, require_reflink=Fal
         after = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
         if before != after:
             raise ArtifactError(f"Source {source} changed while snapshotting readonly data.")
-        return ({"path": relative, "nbytes": before[2], "sha256": digest}, file_identity(staging / f"{index:04d}.bin"))
+        return ({"path": relative, "nbytes": before[2], "sha256": digest},
+                file_identity(staging / f"{index:04d}.bin"))
 
     with tempfile.TemporaryDirectory(prefix=".rdata-source-snapshots-", dir=destination) as temporary:
         staging = Path(temporary)
-        with ThreadPoolExecutor(max_workers=min(32, len(paths)),
-                                thread_name_prefix="flagmega-source-snapshot") as workers:
+        with ThreadPoolExecutor(max_workers=min(32, len(paths)), thread_name_prefix="flagmega-source-snapshot") as workers:
             snapshots = list(workers.map(lambda item: snapshot(item, staging), enumerate(paths)))
         (destination / "sources").mkdir(exist_ok=True)
         sources = []
@@ -234,10 +223,9 @@ def _snapshot_programs(programs, checkpoint, destination, *, require_reflink=Fal
 def component_layouts(buffer, chip):
     """Yield dense byte-coordinate maps, in physical block-owner order."""
     if buffer.distributed_storage_kind is not DistributedBufferStorageKind.COMPACT_PER_CHIP:
-        yield buffer.offset, [
-            *buffer.shape, *(buffer.dtype.lanes if isinstance(buffer.dtype, VectorType) else ()),
-            (buffer.dtype.elem_type if isinstance(buffer.dtype, VectorType) else buffer.dtype).itemsize
-        ], []
+        yield buffer.offset, [*buffer.shape,
+                              *(buffer.dtype.lanes if isinstance(buffer.dtype, VectorType) else ()),
+                              (buffer.dtype.elem_type if isinstance(buffer.dtype, VectorType) else buffer.dtype).itemsize], []
         return
     distributed = buffer.distributed_type
     chip_axes = chip_owner_axes(distributed)
@@ -256,16 +244,13 @@ def component_layouts(buffer, chip):
             stages = []
             for stage in reversed(axis.stages):
                 distribution = stage.stage.distribution
-                stages.append(
-                    (int(stage.linear_shard_index.fixed_value),
-                     distribution.block_size if isinstance(distribution, BlockCyclicSplit) else 0, stage.shard_count,
-                     int(stage.local_capacity.fixed_value)))
+                stages.append((int(stage.linear_shard_index.fixed_value),
+                               distribution.block_size if isinstance(distribution, BlockCyclicSplit) else 0,
+                               stage.shard_count, int(stage.local_capacity.fixed_value)))
             maps.append((int(axis.active_extent.fixed_value), tuple(stages)))
         dtype = buffer.dtype
-        shape = [
-            *buffer.component_shape, *(dtype.lanes if isinstance(dtype, VectorType) else ()),
-            (dtype.elem_type if isinstance(dtype, VectorType) else dtype).itemsize
-        ]
+        shape = [*buffer.component_shape, *(dtype.lanes if isinstance(dtype, VectorType) else ()),
+                 (dtype.elem_type if isinstance(dtype, VectorType) else dtype).itemsize]
         yield buffer.offset + owner * buffer.component_stride_bytes, shape, maps
 
 
@@ -287,8 +272,7 @@ def validate_source_layout(root, index, module, *, segment, verify_bytes, reuse_
     if segment is not None and not 0 <= segment < count:
         raise ArtifactError("Rdata source layout chip segment is out of range.")
     sources, programs, chunks = index.get("sources"), index.get("programs"), index.get("segment_chunks")
-    if not isinstance(sources, list) or not isinstance(programs, list) or not isinstance(chunks,
-                                                                                         list) or len(chunks) != count:
+    if not isinstance(sources, list) or not isinstance(programs, list) or not isinstance(chunks, list) or len(chunks) != count:
         raise ArtifactError("Rdata source layout tables are invalid.")
     paths = []
     for source in sources:
@@ -315,7 +299,8 @@ def validate_source_layout(root, index, module, *, segment, verify_bytes, reuse_
         for transform in transforms:
             dims, strides = transform.get("shape"), transform.get("source_strides")
             if (not _valid_shape(dims) or not isinstance(strides, list) or len(dims) != len(strides)
-                    or any(type(stride) is not int or stride <= 0 for stride in strides) or prod(dims) != prod(shape)):
+                    or any(type(stride) is not int or stride <= 0 for stride in strides)
+                    or prod(dims) != prod(shape)):
                 raise ArtifactError("Rdata source transform has invalid byte geometry.")
             cursor = 1
             for stride, extent in sorted((stride, extent) for stride, extent in zip(strides, dims) if extent != 1):
@@ -328,17 +313,16 @@ def validate_source_layout(root, index, module, *, segment, verify_bytes, reuse_
         extent = 0
         for operand in operands:
             source, offset, nbytes, length = (operand.get(k) for k in ("source", "offset", "nbytes", "extent"))
-            if (any(type(value) is not int
-                    for value in (source, offset, nbytes, length)) or not 0 <= source < len(sources) or offset < 0
-                    or nbytes <= 0 or length <= 0 or offset + nbytes > sources[source]["nbytes"]
+            if (any(type(value) is not int for value in (source, offset, nbytes, length))
+                    or not 0 <= source < len(sources) or offset < 0 or nbytes <= 0 or length <= 0
+                    or offset + nbytes > sources[source]["nbytes"]
                     or nbytes * concat_shape[axis] != prod(concat_shape) * length):
                 raise ArtifactError("Rdata source operand range is invalid.")
             extent += length
         if extent != concat_shape[axis]:
             raise ArtifactError("Rdata source concat operands do not cover its axis.")
         for offset, nbytes in program.get("ranges", []):
-            if type(offset) is not int or type(
-                    nbytes) is not int or offset < 0 or nbytes <= 0 or offset + nbytes > size:
+            if type(offset) is not int or type(nbytes) is not int or offset < 0 or nbytes <= 0 or offset + nbytes > size:
                 raise ArtifactError("Rdata source destination range is invalid.")
             ranges.append((offset, offset + nbytes))
     for table in chunks:
@@ -368,10 +352,8 @@ def validate_source_layout(root, index, module, *, segment, verify_bytes, reuse_
             buffer = buffers.get(program["buffer"])
             if buffer is None or buffer.weight_key not in recipes:
                 raise ArtifactError("Rdata source program does not name a constant recipe buffer.")
-            bindings = {
-                operand["key"]: TensorByteRange(paths[operand["source"]], operand["offset"], operand["nbytes"])
-                for operand in program["operands"]
-            }
+            bindings = {operand["key"]: TensorByteRange(paths[operand["source"]], operand["offset"], operand["nbytes"])
+                        for operand in program["operands"]}
             expected = build_program(buffer, recipes[buffer.weight_key].node_map, buffer.weight_key, bindings.get)
             if expected is None:
                 raise ArtifactError("Rdata source program defers a numeric constant operation.")
@@ -381,14 +363,12 @@ def validate_source_layout(root, index, module, *, segment, verify_bytes, reuse_
             if expected != program:
                 raise ArtifactError("Rdata source program differs from its constant recipe or buffer layout.")
     if verify_bytes:
-
         def audit(item):
             path, source = item
             actual = (verified_source_digest(path, source["sha256"], hash_file)
                       if reuse_source_proofs else hash_file(path))
             if actual != source["sha256"]:
                 raise ArtifactError(f"Rdata source hash mismatch: {source['path']}.")
-
         with ThreadPoolExecutor(max_workers=min(32, max(1, len(sources)))) as workers:
             list(workers.map(audit, zip(paths, sources, strict=True)))
         from triton.flagmega.artifacts.rdata import _verify_chunk_hashes

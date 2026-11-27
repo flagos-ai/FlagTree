@@ -28,8 +28,9 @@ def decompose_complex_ops(module: IRModule) -> IRModule:
 
     current = DataflowPass(
         "DecomposeComplexOps",
-        (fold_cast_rule(), decompose_layer_norm_rule(), decompose_rms_norm_rule(), fuse_wide_glu_rule(),
-         decompose_sparse_experts_rule(), fuse_norm_apply_cast_rule(), form_qkv_rope_with_cache_rule(),
+        (fold_cast_rule(), decompose_layer_norm_rule(), decompose_rms_norm_rule(),
+         fuse_wide_glu_rule(), decompose_sparse_experts_rule(),
+         fuse_norm_apply_cast_rule(), form_qkv_rope_with_cache_rule(),
          form_paged_attention_kv_cache_pair_rule()),
     ).run(verify_module(module))
     # Form larger semantic regions before canonicalizing their remaining
@@ -38,10 +39,7 @@ def decompose_complex_ops(module: IRModule) -> IRModule:
     # Infer a private MatMul's wider result before a consumer records that
     # widening as its own conversion boundary.
     return DataflowPass("FoldOutputConversions", (
-        fold_cast_rule(),
-        fold_matmul_cast_rule(),
-        fuse_norm_stats_input_cast_rule(),
-        fuse_norm_apply_input_cast_rule(),
+        fold_cast_rule(), fold_matmul_cast_rule(), fuse_norm_stats_input_cast_rule(), fuse_norm_apply_input_cast_rule(),
     )).run(current)
 
 

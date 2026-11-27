@@ -39,7 +39,7 @@ class ExtractionResult:
 class EGraphExtractor:
     """Globally extract a minimum-cost acyclic expression DAG with CP-SAT.
 
-    The constraints follow the reference extractor: a root must be selected and a
+    The constraints follow nncase's extractor: a root must be selected and a
     selected e-node requires one representative from each child e-class. Rank
     constraints rule out cyclic representatives. At-most-one constraints make
     reconstruction well-defined even when a target assigns zero cost.
@@ -48,18 +48,20 @@ class EGraphExtractor:
     _COST_SCALE = 1_000_000
 
     def __init__(
-            self,
-            graph: EGraph,
-            module: IRModule,
-            *,
-            cost: NodeCost | None = None,
-            cost_model: str | None = None,
-            forced: tuple[ForcedChoice, ...] = (),
+        self,
+        graph: EGraph,
+        module: IRModule,
+        *,
+        cost: NodeCost | None = None,
+        cost_model: str | None = None,
+        forced: tuple[ForcedChoice, ...] = (),
     ) -> None:
         self.graph = graph
         self.module = module
         self.cost = cost or (lambda _node, _module: 1.0)
-        self.cost_model = cost_model or ("structural-unit/v1" if cost is None else "custom-callable/unversioned")
+        self.cost_model = cost_model or (
+            "structural-unit/v1" if cost is None else "custom-callable/unversioned"
+        )
         if not self.cost_model:
             raise ValueError("EGraph extraction requires a cost model identifier.")
         self.forced = forced
@@ -92,11 +94,15 @@ class EGraphExtractor:
             for node in view.nodes:
                 for child in node.children:
                     child_view = class_map[self.graph.find(child)]
-                    model.AddBoolOr([variables[node].Not(), *[variables[value] for value in child_view.nodes]])
+                    model.AddBoolOr(
+                        [variables[node].Not(), *[variables[value] for value in child_view.nodes]])
 
         # 3. Selected dependency edges must be strictly descending, which is a
-        # compact CP-SAT encoding of the reference no-cycle extraction constraint.
-        rank = {view.id: model.NewIntVar(0, max(len(classes) - 1, 0), f"rank_e{view.id}") for view in classes}
+        # compact CP-SAT encoding of nncase's no-cycle extraction constraint.
+        rank = {
+            view.id: model.NewIntVar(0, max(len(classes) - 1, 0), f"rank_e{view.id}")
+            for view in classes
+        }
         for view in classes:
             for node in view.nodes:
                 for child in node.children:
@@ -115,7 +121,8 @@ class EGraphExtractor:
         tie_bound = sum(sum(node.ordinal + 1 for node in view.nodes if not node.original) for view in classes)
         tie_base = tie_bound + 1
         coefficients = {
-            node: int(round(costs[node] * self._COST_SCALE)) * tie_base + (0 if node.original else node.ordinal + 1)
+            node: int(round(costs[node] * self._COST_SCALE)) * tie_base
+            + (0 if node.original else node.ordinal + 1)
             for node in nodes
         }
         model.Minimize(sum(coefficients[node] * variables[node] for node in nodes))
@@ -127,21 +134,15 @@ class EGraphExtractor:
         enable_cost_dump = dumper.is_enabled(DumpFlags.EGRAPH_COST) and dumper.directory is not None
         if enable_cost_dump:
             with dumper.open_artifact(
-                    "Costs/Cost.dot",
-                    category=DumpFlags.EGRAPH_COST,
-                    kind="egraph-dot",
-                    producer="EGraphExtractor",
-                    source_semantic_hash=self.module.semantic_hash,
-                    encoding="utf-8",
+                "Costs/Cost.dot", category=DumpFlags.EGRAPH_COST,
+                kind="egraph-dot", producer="EGraphExtractor",
+                source_semantic_hash=self.module.semantic_hash, encoding="utf-8",
             ) as stream:
                 stream.write(self.graph.to_dot(roots=roots, costs=costs))
             with dumper.open_artifact(
-                    "Costs/Cost.txt",
-                    category=DumpFlags.EGRAPH_COST,
-                    kind="cost-report",
-                    producer="EGraphExtractor",
-                    source_semantic_hash=self.module.semantic_hash,
-                    encoding="utf-8",
+                "Costs/Cost.txt", category=DumpFlags.EGRAPH_COST,
+                kind="cost-report", producer="EGraphExtractor",
+                source_semantic_hash=self.module.semantic_hash, encoding="utf-8",
             ) as stream:
                 stream.write(f"model: {self.cost_model}\n")
                 _write_costs(stream, classes, costs)
@@ -151,15 +152,11 @@ class EGraphExtractor:
         default_workers = max((os.cpu_count() or 1) // 2, 1)
         solver.parameters.num_search_workers = _positive_env_int("SOLVE_PROCESSOR_COUNT", default_workers)
         with ExitStack() as artifacts:
-            solve_stream = artifacts.enter_context(
-                dumper.open_artifact(
-                    "Costs/Solve.txt",
-                    category=DumpFlags.EGRAPH_COST,
-                    kind="solver-log",
-                    producer="EGraphExtractor",
-                    source_semantic_hash=self.module.semantic_hash,
-                    encoding="utf-8",
-                )) if enable_cost_dump else None
+            solve_stream = artifacts.enter_context(dumper.open_artifact(
+                "Costs/Solve.txt", category=DumpFlags.EGRAPH_COST,
+                kind="solver-log", producer="EGraphExtractor",
+                source_semantic_hash=self.module.semantic_hash, encoding="utf-8",
+            )) if enable_cost_dump else None
             callback = _CostCallback(cp_model, variables, costs, solve_stream)
             status_code = solver.Solve(model, callback)
             status = solver.StatusName(status_code)
@@ -174,24 +171,20 @@ class EGraphExtractor:
         objective = sum(costs[node] for node, picked in picks.items() if picked)
         if enable_cost_dump:
             with dumper.open_artifact(
-                    "Costs/Pick.dot",
-                    category=DumpFlags.EGRAPH_COST,
-                    kind="egraph-pick-dot",
-                    producer="EGraphExtractor",
-                    source_semantic_hash=self.module.semantic_hash,
-                    encoding="utf-8",
+                "Costs/Pick.dot", category=DumpFlags.EGRAPH_COST,
+                kind="egraph-pick-dot", producer="EGraphExtractor",
+                source_semantic_hash=self.module.semantic_hash, encoding="utf-8",
             ) as stream:
                 stream.write(self.graph.to_dot(roots=roots, costs=costs, picks=picks))
             with dumper.open_artifact(
-                    "Costs/Pick.txt",
-                    category=DumpFlags.EGRAPH_COST,
-                    kind="selection-report",
-                    producer="EGraphExtractor",
-                    source_semantic_hash=self.module.semantic_hash,
-                    encoding="utf-8",
+                "Costs/Pick.txt", category=DumpFlags.EGRAPH_COST,
+                kind="selection-report", producer="EGraphExtractor",
+                source_semantic_hash=self.module.semantic_hash, encoding="utf-8",
             ) as stream:
-                stream.write(f"status: {status}\nmodel: {self.cost_model}\n"
-                             f"objective: {objective:.12g}\n")
+                stream.write(
+                    f"status: {status}\nmodel: {self.cost_model}\n"
+                    f"objective: {objective:.12g}\n"
+                )
                 for node in sorted((node for node, picked in picks.items() if picked), key=lambda value: value.ordinal):
                     stream.write(f"pick n{node.ordinal}: {node.op} source={node.source_node} cost={costs[node]:.12g}\n")
         post = _materialize(self.graph, self.module, picks)
@@ -210,12 +203,15 @@ class EGraphExtractor:
         class_id = self.graph.class_for_node(choice.source_node)
         view = class_map.get(class_id)
         if view is None:
-            raise IRVerificationError(f"Forced EGraph choice for {choice.source_node!r} is unreachable.",
-                                      node_id=choice.source_node)
+            raise IRVerificationError(
+                f"Forced EGraph choice for {choice.source_node!r} is unreachable.", node_id=choice.source_node)
         child_classes = tuple(self.graph.class_for_node(value) for value in choice.node.inputs)
-        matches = tuple(node for node in view.nodes
-                        if node.op == choice.node.op and node.attrs_key == _attrs_key(choice.node) and tuple(
-                            self.graph.find(value) for value in node.children) == child_classes)
+        matches = tuple(
+            node for node in view.nodes
+            if node.op == choice.node.op
+            and node.attrs_key == _attrs_key(choice.node)
+            and tuple(self.graph.find(value) for value in node.children) == child_classes
+        )
         if not matches:
             raise IRVerificationError(
                 "E-graph selector returned a node that is not one of the alternatives.",
@@ -229,9 +225,7 @@ class _CostCallback:
     """Adapter because OR-Tools requires callbacks to inherit its runtime type."""
 
     def __new__(cls, cp_model, variables, costs, stream):
-
         class Callback(cp_model.CpSolverSolutionCallback):
-
             def __init__(self) -> None:
                 super().__init__()
                 self.count = 0
@@ -279,7 +273,8 @@ def _materialize(graph: EGraph, module: IRModule, picks: Mapping[ENode, bool]) -
         try:
             enode = selected[class_id]
         except KeyError as error:
-            raise IRVerificationError(f"Required e-class {class_id} has no selected representative.") from error
+            raise IRVerificationError(
+                f"Required e-class {class_id} has no selected representative.") from error
         if enode.op == "egraph.opaque":
             return emit_original(enode.source_node)
         active_classes.add(class_id)
@@ -287,7 +282,8 @@ def _materialize(graph: EGraph, module: IRModule, picks: Mapping[ENode, bool]) -
         candidates = sorted(original_by_class.get(class_id, ()), key=original_order.__getitem__)
         node_id = next((value for value in candidates if value not in emitted_ids), enode.node.id)
         if node_id in emitted_ids:
-            raise IRVerificationError(f"E-graph extraction generated colliding helper id {node_id!r}.", node_id=node_id)
+            raise IRVerificationError(
+                f"E-graph extraction generated colliding helper id {node_id!r}.", node_id=node_id)
         emitted.append(replace(enode.node, id=node_id, inputs=inputs))
         emitted_ids.add(node_id)
         class_values[class_id] = node_id
@@ -333,12 +329,11 @@ def _materialize(graph: EGraph, module: IRModule, picks: Mapping[ENode, bool]) -
     for node in module.nodes:
         if not node.effect.is_pure:
             emit_original(node.id)
-    functions = tuple(
-        replace(
-            function,
-            parameters=tuple(emit_original(value) for value in function.parameters),
-            outputs=tuple(emit_original(value) for value in function.outputs),
-        ) for function in module.functions)
+    functions = tuple(replace(
+        function,
+        parameters=tuple(emit_original(value) for value in function.parameters),
+        outputs=tuple(emit_original(value) for value in function.outputs),
+    ) for function in module.functions)
     owners = {
         node_id: original_values[node_id]
         for node_id in original_values
@@ -347,7 +342,8 @@ def _materialize(graph: EGraph, module: IRModule, picks: Mapping[ENode, bool]) -
     points = tuple(
         replace(point, owner=owners[point.owner]) if point.owner in owners else point
         for point in module.selection_points
-        if point.owner is None or point.owner in owners)
+        if point.owner is None or point.owner in owners
+    )
     point_ids = {point.id for point in points}
     post = replace(
         module,
@@ -367,8 +363,9 @@ def _write_costs(stream: IO[str], classes: tuple[EClassView, ...], costs: Mappin
     for view in classes:
         stream.write(f"eclass {view.id}:\n")
         for node in sorted(view.nodes, key=lambda value: value.ordinal):
-            stream.write(f"  n{node.ordinal}: op={node.op} source={node.source_node} "
-                         f"cost={costs[node]:.12g} original={str(node.original).lower()}\n")
+            stream.write(
+                f"  n{node.ordinal}: op={node.op} source={node.source_node} "
+                f"cost={costs[node]:.12g} original={str(node.original).lower()}\n")
 
 
 def _load_cp_model():
@@ -377,7 +374,8 @@ def _load_cp_model():
     except ImportError as error:
         raise RuntimeError(
             "FlagMega EGraph extraction requires OR-Tools CP-SAT; install the FlagTree package dependencies "
-            "or run `python -m pip install ortools==9.10.4067`.") from error
+            "or run `python -m pip install ortools==9.10.4067`."
+        ) from error
     return cp_model
 
 

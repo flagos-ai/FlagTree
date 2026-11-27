@@ -13,17 +13,14 @@ def _two_function_module():
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
     value_type = fm.tensor_type("float32", [2])
     layer_arg = builder.var("layer_arg", value_type, id="layer_arg")
-    layer_out = builder.call("math.silu", (layer_arg, ), value_type, id="layer_out")
-    builder.function("decode_layer", (layer_arg, ), (layer_out, ))
+    layer_out = builder.call("math.silu", (layer_arg,), value_type, id="layer_out")
+    builder.function("decode_layer", (layer_arg,), (layer_out,))
     main_arg = builder.var("main_arg", value_type, id="main_arg")
     main_out = builder.call(
-        "builtin.call",
-        (main_arg, ),
-        value_type,
-        id="main_out",
+        "builtin.call", (main_arg,), value_type, id="main_out",
         attrs={"callee": "decode_layer"},
     )
-    builder.function("main", (main_arg, ), (main_out, ))
+    builder.function("main", (main_arg,), (main_out,))
     return fm.verify_module(builder.build(entry="main"))
 
 

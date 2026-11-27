@@ -12,20 +12,15 @@ from triton.flagmega.targets import NvidiaSm90Target
 
 @pytest.mark.parametrize("large", (False, True))
 def test_shared_partitioned_projection_reconciles_input_and_output_lanes(large):
-
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("x", fm.tensor_type(fm.vector_type("bfloat16", (2, 4)), (1, 128)), id="x")
             w = self.input("weight", fm.tensor_type("float8_e4m3fn", (80, 1024)), id="weight")
             scales = self.input("scales", fm.tensor_type("float32", (1, 8)), id="scales")
             scalar = fm.F.tensors.unpack(x, axes=(-1, -1))
             result = fm.F.nn.partitioned_block_scaled_linear(scalar, w, scales, partitions=4, name="projection")
-            outputs = [
-                result,
-                fm.F.tensors.pack(result, (2, 4), axes=(-1, -1)),
-                fm.F.tensors.pack(result, (4, ), axes=(-1, ))
-            ]
+            outputs = [result, fm.F.tensors.pack(result, (2, 4), axes=(-1, -1)),
+                       fm.F.tensors.pack(result, (4,), axes=(-1,))]
             if large:
                 padding = scales
                 for _ in range(20_001):
@@ -43,10 +38,8 @@ def test_shared_partitioned_projection_reconciles_input_and_output_lanes(large):
     assert post_function_boundary_pack_propagation(result, target).semantic_hash == result.semantic_hash
     if not large:
         generator = torch.Generator().manual_seed(98129)
-        values = {
-            "x": torch.randn((1, 128, 2, 4), generator=generator).bfloat16(), "weight": torch.randn(
-                (80, 1024), generator=generator).to(torch.float8_e4m3fn), "scales": torch.linspace(.01, .08,
-                                                                                                   8).reshape(1, 8)
-        }
+        values = {"x": torch.randn((1, 128, 2, 4), generator=generator).bfloat16(),
+                  "weight": torch.randn((80, 1024), generator=generator).to(torch.float8_e4m3fn),
+                  "scales": torch.linspace(.01, .08, 8).reshape(1, 8)}
         evaluator = TorchEvaluator(DictWeightResolver({}))
         torch.testing.assert_close(evaluator.run(original, values), evaluator.run(result, values), rtol=0, atol=0)

@@ -14,7 +14,6 @@ from triton.flagmega.runtime.module import _validate_artifact_device
 
 
 class _FakeCuda:
-
     def __init__(self, capability):
         self._capability = capability
 
@@ -26,7 +25,6 @@ class _FakeCuda:
 
 
 class _FakeTorch:
-
     def __init__(self, capability):
         self.cuda = _FakeCuda(capability)
 

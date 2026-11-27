@@ -33,12 +33,13 @@ def test_log_rate_interpretation_and_resume(tmp_path, phase):
         replace(
             module,
             nodes=tuple(
-                replace(n, attrs={k: v
-                                  for k, v in n.attrs.items()
-                                  if k != "decay_input"}) if n.op in
-                {"nn.kda_gated_step", "nn.kda_gated_recurrent_core"} else n
-                for n in module.nodes),
-        ))
+                replace(n, attrs={k: v for k, v in n.attrs.items() if k != "decay_input"})
+                if n.op in {"nn.kda_gated_step", "nn.kda_gated_recurrent_core"}
+                else n
+                for n in module.nodes
+            ),
+        )
+    )
     expected = evaluator.run(ordinary, {**values, "decay_rate": values["decay_rate"].exp()})
     for a, b in zip(actual, expected, strict=True):
         torch.testing.assert_close(a, b, rtol=0, atol=0)
@@ -46,9 +47,10 @@ def test_log_rate_interpretation_and_resume(tmp_path, phase):
 
 @pytest.mark.parametrize("request_phase", [False, True])
 def test_default_rate_preserves_canonical_ir(request_phase):
-    assert (_module(request_phase=request_phase, heads=2,
-                    dim=128).semantic_hash == _module(request_phase=request_phase, heads=2, dim=128,
-                                                      decay_input="rate").semantic_hash)
+    assert (
+        _module(request_phase=request_phase, heads=2, dim=128).semantic_hash
+        == _module(request_phase=request_phase, heads=2, dim=128, decay_input="rate").semantic_hash
+    )
 
 
 @pytest.mark.parametrize("definition", [KdaGatedRecurrentCore, KdaGatedStep])

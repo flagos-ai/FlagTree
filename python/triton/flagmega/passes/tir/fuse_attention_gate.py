@@ -12,8 +12,8 @@ from triton.flagmega.ir.ops.ntt.paged_attention_gated_combine import PagedAttent
 
 
 def _sigmoid(node):
-    return not has_ops(node.attrs) and (node.op == "math.sigmoid"
-                                        or node.op == "math.vectorized_unary" and node.attrs["unary_op"] == "sigmoid")
+    return not has_ops(node.attrs) and (node.op == "math.sigmoid" or
+                                      node.op == "math.vectorized_unary" and node.attrs["unary_op"] == "sigmoid")
 
 
 def fuse_attention_gate(module):
@@ -25,7 +25,8 @@ def fuse_attention_gate(module):
     removed, replacements = set(), {}
     for root in module.nodes:
         if not root.effect.is_pure or root.attrs.get("post_ops") or not (
-                root.op == "math.mul" or root.op == "math.vectorized_binary" and root.attrs["binary_op"] == "mul"):
+            root.op == "math.mul" or root.op == "math.vectorized_binary" and root.attrs["binary_op"] == "mul"
+        ):
             continue
         for gate_index in (0, 1):
             gate_name = ("lhs", "rhs")[gate_index]
@@ -36,8 +37,7 @@ def fuse_attention_gate(module):
                 body = pre.get(gate_name)
                 if set(pre) != {gate_name} or body is None or len(body.nodes) != 2:
                     continue
-                if not _sigmoid(body.nodes[1]) or body.nodes[1].inputs != (
-                        body.parameter.id, ) or body.output != body.nodes[1].id:
+                if not _sigmoid(body.nodes[1]) or body.nodes[1].inputs != (body.parameter.id,) or body.output != body.nodes[1].id:
                     continue
             elif _sigmoid(gate) and uses[gate.id] == 1:
                 private.append(gate.id)
@@ -59,19 +59,15 @@ def fuse_attention_gate(module):
             if prepared.result_type != root.type:
                 continue
             removed.update((*private, value.id))
-            replacements[root.id] = replace(root, op=PagedAttentionGatedCombine.op_name,
-                                            inputs=tuple(arg.id for arg in arguments), attrs=prepared.attrs,
-                                            effect=prepared.effect, metadata={"introduced_by": "FuseAttentionGate"})
+            replacements[root.id] = replace(
+                root, op=PagedAttentionGatedCombine.op_name, inputs=tuple(arg.id for arg in arguments),
+                attrs=prepared.attrs, effect=prepared.effect,
+                metadata={"introduced_by": "FuseAttentionGate"})
             break
     if not replacements:
         return module
-    invalid_points = {
-        point.id
-        for point in module.selection_points
-        if point.owner in removed or point.owner in replacements
-    }
-    return verify_module(
-        replace(
-            module, nodes=tuple(replacements.get(node.id, node) for node in module.nodes if node.id not in removed),
-            selection_points=tuple(point for point in module.selection_points if point.id not in invalid_points),
-            selections=tuple(selection for selection in module.selections if selection.point_id not in invalid_points)))
+    invalid_points = {point.id for point in module.selection_points if point.owner in removed or point.owner in replacements}
+    return verify_module(replace(
+        module, nodes=tuple(replacements.get(node.id, node) for node in module.nodes if node.id not in removed),
+        selection_points=tuple(point for point in module.selection_points if point.id not in invalid_points),
+        selections=tuple(selection for selection in module.selections if selection.point_id not in invalid_points)))

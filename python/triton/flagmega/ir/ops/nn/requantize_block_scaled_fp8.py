@@ -108,9 +108,8 @@ class RequantizeBlockScaledFP8(OpDefinition):
             closed_leaf = definition.constant_source and not source.inputs
             closed_expression = definition.const_evaluable and definition.deterministic and bool(source.inputs)
             if not source.effect.is_pure or not (closed_leaf or closed_expression):
-                raise IRVerificationError(
-                    "RequantizeBlockScaledFP8 requires closed constant inputs; "
-                    "runtime quantization is not supported.", node_id=node.id)
+                raise IRVerificationError("RequantizeBlockScaledFP8 requires closed constant inputs; "
+                                          "runtime quantization is not supported.", node_id=node.id)
             pending.extend(source.inputs)
 
     @classmethod
@@ -155,7 +154,7 @@ class RequantizeBlockScaledFP8(OpDefinition):
     @classmethod
     def cost(cls, node):
         size = sum(tensor_nbytes(field) for field in node.type.fields)
-        return OpCost(bytes_read=size, bytes_written=size, notes=("offline-fp8-requantization", ))
+        return OpCost(bytes_read=size, bytes_written=size, notes=("offline-fp8-requantization",))
 
 
 __all__ = ["RequantizeBlockScaledFP8"]

@@ -39,6 +39,7 @@ from triton.flagmega.ir.type_pattern import has_rank, is_none, is_tensor
 from triton.flagmega.ir.types import VectorType
 from triton.flagmega.ir.ops.math.matmul import normalize_reduction_order, validate_reduction_order
 
+
 _OPTIONAL_TENSOR = is_tensor() | is_none()
 
 
@@ -93,22 +94,21 @@ class PackedQKVParallelLinear(OpDefinition):
             "num_kv_heads": attrs["num_kv_heads"],
             "output_data_type": DType(attrs["output_data_type"]).value,
             "rhs_layout": attrs["rhs_layout"],
-            **({"reduction_order": attrs["reduction_order"]} if attrs["reduction_order"] != "relaxed" else {}),
+            **({"reduction_order": attrs["reduction_order"]}
+               if attrs["reduction_order"] != "relaxed" else {}),
         }
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         value = tensor_of(cls.input.type_of(inputs))
         validate_reduction_order(attrs, cls.input.type_of(inputs), 1)
-        weights = tuple(
-            tensor_of(parameter.type_of(inputs)) for parameter in (
-                cls.q_weight,
-                cls.k_weight,
-                cls.v_weight,
-            ))
+        weights = tuple(tensor_of(parameter.type_of(inputs)) for parameter in (
+            cls.q_weight, cls.k_weight, cls.v_weight,
+        ))
         lane_types = tuple(weight.dtype for weight in weights)
         if any(not isinstance(dtype, VectorType) or len(dtype.lanes) != 3 for dtype in lane_types):
-            raise IRSchemaError("PackedQKVParallelLinear K-major weights require VectorType(N,KPack,KVector).")
+            raise IRSchemaError(
+                "PackedQKVParallelLinear K-major weights require VectorType(N,KPack,KVector).")
         first = lane_types[0]
         assert isinstance(first, VectorType)
         if any(dtype != first for dtype in lane_types):
@@ -119,46 +119,46 @@ class PackedQKVParallelLinear(OpDefinition):
         output_dtype = DType(attrs["output_data_type"])
         outputs = tuple(
             tensor_type(
-                VectorType(output_dtype, (n_vector, )),
+                VectorType(output_dtype, (n_vector,)),
                 (value.shape[0], weight.shape[1]),
-            ) for weight in weights)
+            )
+            for weight in weights
+        )
         logical_outputs = tuple(
-            tensor_type(output_dtype, (value.shape[0], weight.shape[1] * n_vector)) for weight in weights)
+            tensor_type(output_dtype, (value.shape[0], weight.shape[1] * n_vector))
+            for weight in weights
+        )
         _check_heads(logical_outputs, int(attrs["num_heads"]), int(attrs["num_kv_heads"]))
         for bias_parameter, output in zip(
-            (cls.q_bias, cls.k_bias, cls.v_bias),
-                outputs,
+            (cls.q_bias, cls.k_bias, cls.v_bias), outputs,
         ):
             bias = bias_parameter.type_of(inputs)
             if isinstance(bias, NoneType):
                 continue
-            if tensor_of(bias) != tensor_type(output.dtype, (output.shape[-1], )):
+            if tensor_of(bias) != tensor_type(output.dtype, (output.shape[-1],)):
                 raise IRSchemaError("PackedQKVParallelLinear bias must use packed N lanes.")
-        scales = tuple(
-            parameter.type_of(inputs) for parameter in (
-                cls.q_input_scale,
-                cls.k_input_scale,
-                cls.v_input_scale,
-                cls.q_weight_scale,
-                cls.k_weight_scale,
-                cls.v_weight_scale,
-            ))
+        scales = tuple(parameter.type_of(inputs) for parameter in (
+            cls.q_input_scale, cls.k_input_scale, cls.v_input_scale,
+            cls.q_weight_scale, cls.k_weight_scale, cls.v_weight_scale,
+        ))
         presence = tuple(not isinstance(scale, NoneType) for scale in scales)
         if any(presence) and not all(presence):
-            raise IRSchemaError("PackedQKVParallelLinear requires either no scales or all six scales.")
+            raise IRSchemaError(
+                "PackedQKVParallelLinear requires either no scales or all six scales.")
         logical_result = TupleType(outputs)
         input_type = cls.input.type_of(inputs)
         weight_types = tuple(parameter.type_of(inputs) for parameter in (
-            cls.q_weight,
-            cls.k_weight,
-            cls.v_weight,
+            cls.q_weight, cls.k_weight, cls.v_weight,
         ))
         if not isinstance(input_type, DistributedType) and not any(
-                isinstance(weight, DistributedType) for weight in weight_types):
+            isinstance(weight, DistributedType) for weight in weight_types
+        ):
             return logical_result
         if not isinstance(input_type, DistributedType) or not all(
-                isinstance(weight, DistributedType) for weight in weight_types):
-            raise IRSchemaError("Distributed PackedQKVParallelLinear requires input and all weights distributed.")
+            isinstance(weight, DistributedType) for weight in weight_types
+        ):
+            raise IRSchemaError(
+                "Distributed PackedQKVParallelLinear requires input and all weights distributed.")
         placement = input_type.placement
         if any(weight.placement != placement or weight.partial is not None for weight in weight_types):
             raise IRSchemaError("PackedQKVParallelLinear operands must share one placement without partial weights.")
@@ -168,16 +168,30 @@ class PackedQKVParallelLinear(OpDefinition):
         for index, (weight_type, output) in enumerate(zip(weight_types, outputs)):
             assert isinstance(weight_type, DistributedType)
             weight_k, weight_n = weight_type.axis_policies
-            logical_weight_k = (scale_split_units(weight_k, k_pack *
-                                                  k_vector, 1) if isinstance(weight_k, SBPSplit) else weight_k)
+            logical_weight_k = (
+                scale_split_units(weight_k, k_pack * k_vector, 1)
+                if isinstance(weight_k, SBPSplit)
+                else weight_k
+            )
             if input_k != logical_weight_k:
-                raise IRSchemaError("PackedQKVParallelLinear input/weight reduction policies must match.")
-            reduction_axes = (tuple(input_k.hierarchy_axes) if isinstance(input_k, SBPSplit) else ())
-            output_axes = (set(weight_n.hierarchy_axes) if isinstance(weight_n, SBPSplit) else set())
+                raise IRSchemaError(
+                    "PackedQKVParallelLinear input/weight reduction policies must match.")
+            reduction_axes = (
+                tuple(input_k.hierarchy_axes)
+                if isinstance(input_k, SBPSplit)
+                else ()
+            )
+            output_axes = (
+                set(weight_n.hierarchy_axes)
+                if isinstance(weight_n, SBPSplit)
+                else set()
+            )
             if output_axes.intersection(reduction_axes):
-                raise IRSchemaError("PackedQKVParallelLinear output and reduction mesh axes must be disjoint.")
+                raise IRSchemaError(
+                    "PackedQKVParallelLinear output and reduction mesh axes must be disjoint.")
             if input_m != SBP.broadcast():
-                raise IRSchemaError("PackedQKVParallelLinear currently requires broadcast batch/M.")
+                raise IRSchemaError(
+                    "PackedQKVParallelLinear currently requires broadcast batch/M.")
             partial = SBPPartial(reduction_axes) if reduction_axes else None
             distributed_outputs.append(DistributedType(
                 output,
@@ -189,27 +203,30 @@ class PackedQKVParallelLinear(OpDefinition):
             if isinstance(bias, NoneType):
                 continue
             if partial is not None:
-                raise IRSchemaError("PackedQKVParallelLinear partial outputs require absent biases.")
-            if (not isinstance(bias, DistributedType) or bias.placement != placement or bias.partial is not None
-                    or bias.axis_policies != (weight_n, )):
-                raise IRSchemaError("PackedQKVParallelLinear packed bias must follow output N policy.")
+                raise IRSchemaError(
+                    "PackedQKVParallelLinear partial outputs require absent biases.")
+            if (
+                not isinstance(bias, DistributedType)
+                or bias.placement != placement
+                or bias.partial is not None
+                or bias.axis_policies != (weight_n,)
+            ):
+                raise IRSchemaError(
+                    "PackedQKVParallelLinear packed bias must follow output N policy.")
         return TupleType(tuple(distributed_outputs))
 
     @classmethod
     def evaluate(cls, node, arguments, context):
         packed_weights = tuple(parameter.read(arguments) for parameter in (
-            cls.q_weight,
-            cls.k_weight,
-            cls.v_weight,
+            cls.q_weight, cls.k_weight, cls.v_weight,
         ))
-        weight_types = tuple(
-            tensor_of(context.types[parameter.read(node.inputs)]) for parameter in (
-                cls.q_weight,
-                cls.k_weight,
-                cls.v_weight,
-            ))
+        weight_types = tuple(tensor_of(context.types[parameter.read(node.inputs)]) for parameter in (
+            cls.q_weight, cls.k_weight, cls.v_weight,
+        ))
         logical_weights = tuple(
-            _unpack_k_major(weight, weight_type) for weight, weight_type in zip(packed_weights, weight_types))
+            _unpack_k_major(weight, weight_type)
+            for weight, weight_type in zip(packed_weights, weight_types)
+        )
         output_dtype = context.torch_dtype(DType(node.attrs["output_data_type"]))
         logical = tuple(
             _project(
@@ -220,18 +237,23 @@ class PackedQKVParallelLinear(OpDefinition):
                 weight_scale.read(arguments),
                 output_dtype=output_dtype,
                 torch=context.torch,
-            ) for weight, bias, input_scale, weight_scale in zip(
+            )
+            for weight, bias, input_scale, weight_scale in zip(
                 logical_weights,
                 (cls.q_bias, cls.k_bias, cls.v_bias),
                 (cls.q_input_scale, cls.k_input_scale, cls.v_input_scale),
                 (cls.q_weight_scale, cls.k_weight_scale, cls.v_weight_scale),
-            ))
+            )
+        )
         n_vector = weight_types[0].dtype.lanes[0]
-        return tuple(value.reshape(value.shape[0], value.shape[1] // n_vector, n_vector) for value in logical)
+        return tuple(
+            value.reshape(value.shape[0], value.shape[1] // n_vector, n_vector)
+            for value in logical
+        )
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(notes=("three-packed-k-major-linear-projections", ))
+        return OpCost(notes=("three-packed-k-major-linear-projections",))
 
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
@@ -244,19 +266,14 @@ class PackedQKVParallelLinear(OpDefinition):
         for index, output in enumerate(return_type.fields):
             part = PackedMatMul.cost_factors(
                 (inputs[0], inputs[index + 1], none, inputs[index + 4]),
-                {
-                    "fused_reduce": False, "output_data_type": attrs["output_data_type"], "rhs_layout":
-                    attrs["rhs_layout"]
-                },
+                {"fused_reduce": False, "output_data_type": attrs["output_data_type"], "rhs_layout": attrs["rhs_layout"]},
                 output,
             )
             if part is None:
                 return None
             parts.append(part)
-        result = OpCostFactors(
-            **{field.name: sum(getattr(part, field.name)
-                               for part in parts)
-               for field in fields(OpCostFactors)})
+        result = OpCostFactors(**{field.name: sum(getattr(part, field.name) for part in parts)
+                                  for field in fields(OpCostFactors)})
         # The fused operation shares its LHS. Weight traffic and arithmetic
         # remain distinct for all three projections, including padded lanes.
         loads = result.block_local_memory_load_bytes - 2 * _fixed_tensor_nbytes(_local_cost_tensor(inputs[0].type))
@@ -281,8 +298,12 @@ def _unpack_k_major(value, value_type: TensorType):
     k_groups, n_groups = value_type.shape
     if not k_groups.is_fixed or not n_groups.is_fixed:
         raise IRSchemaError("Packed QKV reference evaluation requires fixed weight shape.")
-    return (value.permute(1, 2, 0, 3, 4).reshape(n_groups.fixed_value * n_vector,
-                                                 k_groups.fixed_value * k_pack * k_vector).transpose(0, 1).contiguous())
+    return (
+        value.permute(1, 2, 0, 3, 4)
+        .reshape(n_groups.fixed_value * n_vector, k_groups.fixed_value * k_pack * k_vector)
+        .transpose(0, 1)
+        .contiguous()
+    )
 
 
 __all__ = ["PackedQKVParallelLinear"]

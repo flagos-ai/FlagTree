@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
 import triton.experimental.tle.language as tle
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):

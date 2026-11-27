@@ -27,7 +27,9 @@ class PagedAttentionSplitSemanticTIRCandidateProvider:
         if node.op not in self.op_names:
             return None
         candidate = Candidate(f"semantic.{node.op}", {}, {})
-        return TritonCandidateProposal((candidate, ), candidate.id, selection_kind="semantic_tir")
+        return TritonCandidateProposal(
+            (candidate,), candidate.id, selection_kind="semantic_tir"
+        )
 
 
 __all__ = ["PagedAttentionSplitSemanticTIRCandidateProvider"]

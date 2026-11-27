@@ -88,8 +88,8 @@ class Qwen35MoeImporter:
                     del types["self_attn.k_proj.weight"]
                     del types["self_attn.v_proj.weight"]
                     types["self_attn.qkvg.weight"] = tensor_type(
-                        "bfloat16", (c.num_attention_heads * 2 * c.head_dim + 2 * c.num_key_value_heads * c.head_dim,
-                                     c.hidden_size))
+                        "bfloat16", (c.num_attention_heads * 2 * c.head_dim
+                                     + 2 * c.num_key_value_heads * c.head_dim, c.hidden_size))
                 elif kind == "full_attention":
                     # Checkpoint Q rows contain interleaved query/gate heads.
                     # The reusable ABI takes their independent logical weights.
@@ -107,9 +107,10 @@ class Qwen35MoeImporter:
                     attention = build_linear_attention(normalized, state, layer_id, weights, c, prefix=name)
                     updated = state  # The one-layer view writes into this owner.
                 else:
-                    attention, updated = build_full_attention(
-                        normalized, state, layer_id, advance, cosine, sine, weights, c, prefix=name,
-                        fused_projection=getattr(importer, "fused_qkvg_projection", False))
+                    attention, updated = build_full_attention(normalized, state, layer_id, advance, cosine, sine,
+                                                              weights, c, prefix=name,
+                                                              fused_projection=getattr(
+                                                                  importer, "fused_qkvg_projection", False))
                 residual = F.math.add(hidden, attention, name=f"{name}_attention_residual")
                 normalized = rms_norm(residual, weights["post_attention_layernorm.weight"], c.epsilon,
                                       name=f"{name}_post_norm")
@@ -162,21 +163,27 @@ class Qwen35MoeImporter:
                         v_weight = weights.pop("self_attn.v_proj.weight")
                         heads, dim = c.num_attention_heads, c.head_dim
                         query_rows = F.tensors.concat(
-                            *(F.tensors.slice(q_weight, starts=(head * 2 * dim, ), ends=(head * 2 * dim + dim, ),
-                                              axes=(-2, ), name=f"layer_{layer}_q_rows_{head}")
-                              for head in range(heads)), axis=-2, name=f"layer_{layer}_q_regrouped")
+                            *(F.tensors.slice(q_weight, starts=(head * 2 * dim, ),
+                                              ends=(head * 2 * dim + dim, ), axes=(-2, ),
+                                              name=f"layer_{layer}_q_rows_{head}")
+                              for head in range(heads)), axis=-2,
+                            name=f"layer_{layer}_q_regrouped")
                         gate_rows = F.tensors.concat(
-                            *(F.tensors.slice(q_weight, starts=(head * 2 * dim + dim, ), ends=((head + 1) * 2 * dim, ),
-                                              axes=(-2, ), name=f"layer_{layer}_gate_rows_{head}")
-                              for head in range(heads)), axis=-2, name=f"layer_{layer}_gate_regrouped")
-                        weights["self_attn.qkvg.weight"] = F.tensors.concat(query_rows, k_weight, v_weight, gate_rows,
-                                                                            axis=-2, name=f"layer_{layer}_qkvg_weight")
+                            *(F.tensors.slice(q_weight, starts=(head * 2 * dim + dim, ),
+                                              ends=((head + 1) * 2 * dim, ), axes=(-2, ),
+                                              name=f"layer_{layer}_gate_rows_{head}")
+                              for head in range(heads)), axis=-2,
+                            name=f"layer_{layer}_gate_regrouped")
+                        weights["self_attn.qkvg.weight"] = F.tensors.concat(
+                            query_rows, k_weight, v_weight, gate_rows, axis=-2,
+                            name=f"layer_{layer}_qkvg_weight")
                     elif kind == "full_attention":
-                        grouped = F.tensors.reshape(weights["self_attn.q_proj.weight"],
-                                                    (c.num_attention_heads, 2, c.head_dim, c.hidden_size),
-                                                    name=f"layer_{layer}_query_gate_rows")
+                        grouped = F.tensors.reshape(
+                            weights["self_attn.q_proj.weight"],
+                            (c.num_attention_heads, 2, c.head_dim, c.hidden_size),
+                            name=f"layer_{layer}_query_gate_rows")
                         for part, index in (("q", 0), ("gate", 1)):
-                            rows = F.tensors.slice(grouped, starts=(index, ), ends=(index + 1, ), axes=(1, ),
+                            rows = F.tensors.slice(grouped, starts=(index,), ends=(index + 1,), axes=(1,),
                                                    name=f"layer_{layer}_{part}_rows")
                             weights[f"self_attn.{part}_proj.weight"] = F.tensors.reshape(
                                 rows, (c.query_size, c.hidden_size), name=f"layer_{layer}_{part}_weight")
@@ -202,8 +209,8 @@ class Qwen35MoeImporter:
                 norm_weight = self.weight_at(importer.model_prefix + "norm.weight",
                                              tensor_type("bfloat16", (c.hidden_size, )))
                 if importer.execution_phase == "prefill":
-                    hidden = F.tensors.slice(hidden, starts=(importer.num_tokens - 1, ), ends=(importer.num_tokens, ),
-                                             axes=(0, ), name="prefill_last_hidden")
+                    hidden = F.tensors.slice(hidden, starts=(importer.num_tokens - 1,), ends=(importer.num_tokens,),
+                                             axes=(0,), name="prefill_last_hidden")
                 hidden = rms_norm(hidden, norm_weight, c.epsilon, name="final_norm")
                 lm_head = embedding if c.tie_word_embeddings else self.weight_at(
                     "lm_head.weight", tensor_type("bfloat16", (c.vocab_size, c.hidden_size)))
@@ -228,7 +235,7 @@ class Qwen35MoeImporter:
             "vocab_size": c.vocab_size,
             "num_experts": c.num_experts,
             "num_experts_per_tok": c.num_experts_per_tok,
-            "numerical_contract": "default",
+            "numerical_contract": "nncase",
         }
         graph = Graph(dialect="high_level", stage="imported", entry="main", metadata=metadata).build()
         return verify_module(

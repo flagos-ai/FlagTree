@@ -20,35 +20,33 @@ def _exposed_reuse_pair():
     mesh = fm.Placement((2, 4), "yx", "bb")
 
     def typ(size, partial=False):
-        value = fm.tensor_type("float32", (size, ))
-        return fm.DistributedType(value, (fm.SBP.broadcast(), ), mesh, fm.SBP.partial((0, 1))) if partial else value
+        value = fm.tensor_type("float32", (size,))
+        return fm.DistributedType(
+            value, (fm.SBP.broadcast(),), mesh, fm.SBP.partial((0, 1))
+        ) if partial else value
 
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
 
     def kernel(name, inputs, size, partial=False):
         # Opaque selected kernels declare their result and ordinary read/write
         # footprint. The planner need not know the arithmetic to place them.
-        return builder.call(
-            "tir.kernel", inputs, typ(size, partial), id=name, attrs={
-                "semantic_op": "test.opaque_memory_kernel",
-                "candidate": "test.opaque_memory_kernel",
-                "parameters": {},
-                "facts": {},
-                "semantic_attrs": {},
-            })
+        return builder.call("tir.kernel", inputs, typ(size, partial), id=name, attrs={
+            "semantic_op": "test.opaque_memory_kernel", "candidate": "test.opaque_memory_kernel",
+            "parameters": {}, "facts": {}, "semantic_attrs": {},
+        })
 
     source = builder.var("source", typ(16, True), id="source")
     other = builder.var("other", typ(16), id="other")
-    anchor = kernel("anchor", (other, ), 1024)
-    anchor_done = kernel("anchor_done", (anchor, ), 16)
-    early = kernel("early", (other, ), 16)
+    anchor = kernel("anchor", (other,), 1024)
+    anchor_done = kernel("anchor_done", (anchor,), 16)
+    early = kernel("early", (other,), 16)
     retained = kernel("retained", (other, source), 16, True)
-    first_output = kernel("first_output", (other, ), 16, True)
-    middle = kernel("middle", (anchor_done, ), 32, True)
+    first_output = kernel("first_output", (other,), 16, True)
+    middle = kernel("middle", (anchor_done,), 32, True)
     later = kernel("later", (middle, early), 16, True)
-    projected = kernel("projected", (retained, ), 128)
-    second_output = kernel("second_output", (projected, ), 128, True)
-    tail = kernel("tail", (retained, ), 16, True)
+    projected = kernel("projected", (retained,), 128)
+    second_output = kernel("second_output", (projected,), 128, True)
+    tail = kernel("tail", (retained,), 16, True)
     final_output = kernel("final_output", (tail, later), 128, True)
     builder.function("main", (source, other), (first_output, second_output, final_output))
     return fm.verify_module(builder.build(entry="main")), options
@@ -72,23 +70,19 @@ def test_unchanged_pair_set_stops_without_another_full_planning_round(monkeypatc
     from triton.flagmega.passes.tir.bufferize import planner
 
     module, options = _case()
-    module = fm.verify_module(
-        replace(
-            module, nodes=tuple(
-                replace(
-                    node, attrs={
-                        "semantic_op": "test.opaque_memory_kernel",
-                        "candidate": "test.opaque_memory_kernel",
-                        "parameters": {},
-                        "facts": {},
-                        "semantic_attrs": {},
-                    }) if node.op == "tir.kernel" else node for node in module.nodes)))
+    module = fm.verify_module(replace(module, nodes=tuple(
+        replace(node, attrs={
+            "semantic_op": "test.opaque_memory_kernel", "candidate": "test.opaque_memory_kernel",
+            "parameters": {}, "facts": {}, "semantic_attrs": {},
+        }) if node.op == "tir.kernel" else node for node in module.nodes
+    )))
     planned = []
     original = planner.BufferPlanner.run
 
     def observe(self):
         result = original(self)
-        key = (tuple(sorted(getattr(self, "completion_ends", {}).items())), self.options.barrier_bytes_budget,
+        key = (tuple(sorted(getattr(self, "completion_ends", {}).items())),
+               self.options.barrier_bytes_budget,
                tuple((name, tuple(pairs)) for name, pairs in sorted(self.reuse_preferences.items())))
         planned.append((key, result))
         return result

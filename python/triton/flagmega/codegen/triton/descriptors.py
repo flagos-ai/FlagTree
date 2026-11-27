@@ -31,7 +31,9 @@ def coalesce_dense_weight_groups(
     try:
         members = tuple(groups[role] for role in role_names)
     except KeyError as error:
-        raise CodegenError(f"A coalesced descriptor references unknown rdata role {error.args[0]!r}.") from error
+        raise CodegenError(
+            f"A coalesced descriptor references unknown rdata role {error.args[0]!r}."
+        ) from error
 
     shapes = tuple(tuple(int(value) for value in member["shape"]) for member in members)
     if any(len(shape) != 2 for shape in shapes):
@@ -54,9 +56,13 @@ def coalesce_dense_weight_groups(
         member_nbytes = int(member["member_nbytes"])
         stride = int(member["stride"])
         if stride != member_nbytes:
-            raise CodegenError(f"Coalesced descriptor role {role!r} is not a dense repeated rdata group.")
+            raise CodegenError(
+                f"Coalesced descriptor role {role!r} is not a dense repeated rdata group."
+            )
         if int(member["offset"]) != cursor:
-            raise CodegenError(f"Coalesced descriptor role {role!r} is not byte-adjacent to its predecessor.")
+            raise CodegenError(
+                f"Coalesced descriptor role {role!r} is not byte-adjacent to its predecessor."
+            )
         row_layout[role] = {
             "base_row": row_cursor,
             "rows_per_member": shape[0],
@@ -66,9 +72,15 @@ def coalesce_dense_weight_groups(
         row_cursor += count * shape[0]
 
     requested_block_shape = tuple(int(value) for value in block_shape)
-    if (len(requested_block_shape) != 2 or any(value <= 0 for value in requested_block_shape)
-            or requested_block_shape[1] > k_extent or k_extent % requested_block_shape[1]):
-        raise CodegenError("A coalesced descriptor block shape must be positive rank-2 and tile K exactly.")
+    if (
+        len(requested_block_shape) != 2
+        or any(value <= 0 for value in requested_block_shape)
+        or requested_block_shape[1] > k_extent
+        or k_extent % requested_block_shape[1]
+    ):
+        raise CodegenError(
+            "A coalesced descriptor block shape must be positive rank-2 and tile K exactly."
+        )
     return {
         "argument": argument,
         "groups": list(role_names),

@@ -78,8 +78,8 @@ def function_node_scopes(module: IRModule) -> dict[str, tuple[Node, ...]]:
     # scopes. They supply dependencies, not runtime function-ownership anchors.
     constants = set()
     for node in module.nodes:
-        if is_inline_leaf(node) or (node.effect.is_pure and node.inputs and all(value in constants
-                                                                                for value in node.inputs)):
+        if is_inline_leaf(node) or (node.effect.is_pure and node.inputs
+                                    and all(value in constants for value in node.inputs)):
             constants.add(node.id)
 
     def add_dependencies(values, roots):
@@ -100,15 +100,13 @@ def function_node_scopes(module: IRModule) -> dict[str, tuple[Node, ...]]:
             if node.id in referenced:
                 continue
             anchors = set(node.inputs) - constants
-            owners = {
-                name
-                for name, values in scopes.items()
-                if anchors and anchors <= values and any(
-                    sum(value in other for other in scopes.values()) == 1 for value in anchors)
-            }
+            owners = {name for name, values in scopes.items()
+                      if anchors and anchors <= values
+                      and any(sum(value in other for other in scopes.values()) == 1
+                              for value in anchors)}
             if len(owners) == 1:
                 values = scopes[owners.pop()]
-                add_dependencies(values, (node.id, ))
+                add_dependencies(values, (node.id,))
                 referenced.update(values)
                 progress = True
             else:

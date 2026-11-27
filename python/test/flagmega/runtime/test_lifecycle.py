@@ -8,7 +8,6 @@ from triton.flagmega.runtime import RuntimeModule, RuntimeState
 
 
 class _Module(RuntimeModule):
-
     def __init__(self):
         super().__init__()
         self.release_count = 0

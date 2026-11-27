@@ -22,7 +22,9 @@ def storage_alignment_requirements(module: IRModule) -> dict[str, int]:
     return _propagate(module, _declared_requirements(module))
 
 
-def effective_alignment(requirements: dict[str, int], value_id: str, leaf: str | None = None) -> int:
+def effective_alignment(
+    requirements: dict[str, int], value_id: str, leaf: str | None = None
+) -> int:
     """Strictest requirement constraining one physical leaf of a value."""
     result = int(requirements.get(str(value_id), 1))
     if leaf is not None:
@@ -164,8 +166,10 @@ def _view_leaf_pairs(module, node):
         if fields is None:
             return ()
         counts = [len(buffer_leaf_names("leaf", field)) for field in fields]
-        start = sum(counts[:int(node.attrs["index"])])
-        sources = _leaves(module, node.inputs[0])[start:start + counts[int(node.attrs["index"])]]
+        start = sum(counts[: int(node.attrs["index"])])
+        sources = _leaves(module, node.inputs[0])[
+            start : start + counts[int(node.attrs["index"])]
+        ]
     else:
         # A view reinterprets its first operand; any further operands are
         # index/shape metadata rather than storage.
@@ -195,7 +199,11 @@ def _result_leaves(module, node):
 
 def _output_parameter_leaves(function):
     """One entry per returned buffer leaf, naming the parameter writing it."""
-    return [parameter for parameter in function.output_parameters for _ in buffer_leaf_names("leaf", parameter.type)]
+    return [
+        parameter
+        for parameter in function.output_parameters
+        for _ in buffer_leaf_names("leaf", parameter.type)
+    ]
 
 
 def _unify(requirements, left, right):
@@ -223,7 +231,7 @@ def validate_storage_alignments(module: IRModule) -> None:
         alignment = requirements.get(node.id, 1)
         for parent, result in shapes:
             offset = dense_subspan_offset(tuple(d.fixed_value for d in parent), tuple(d.fixed_value for d in result),
-                                          node.attrs["offsets"], tensor.dtype.itemsize)
+                                           node.attrs["offsets"], tensor.dtype.itemsize)
             if offset % alignment:
                 raise IRVerificationError(
                     f"Subspan {node.id!r} offset {offset} violates its {alignment}-byte storage alignment contract.",

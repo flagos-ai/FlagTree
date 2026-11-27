@@ -59,7 +59,7 @@ class TopK(OpDefinition):
         value = cls.value.read(arguments)
         axis = int(node.attrs["axis"])
         # A sorted result also satisfies sorted=False's unspecified ordering.
-        # Stable sort implements ONNX/the reference lower-index tie rule explicitly;
+        # Stable sort implements ONNX/nncase's lower-index tie rule explicitly;
         # torch.topk alone does not guarantee it.
         order = context.torch.argsort(value, dim=axis, descending=node.attrs["largest"], stable=True)
         indices = order.narrow(axis, 0, node.attrs["k"])

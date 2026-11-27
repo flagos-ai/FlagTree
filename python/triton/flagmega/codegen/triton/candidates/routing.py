@@ -34,14 +34,16 @@ class _NamedFamilyCandidateProvider:
 
 class KdaCandidateProvider(_NamedFamilyCandidateProvider):
     family_aliases: ClassVar[dict[str, str]] = {"nn.kda_gated_step": "kda_gated_recurrent_core"}
-    op_names = frozenset(
-        {"nn.kda_convolution", "nn.kda_recurrent_core", "nn.kda_gated_recurrent_core", "nn.kda_gated_step"})
+    op_names = frozenset({"nn.kda_convolution", "nn.kda_recurrent_core",
+                          "nn.kda_gated_recurrent_core", "nn.kda_gated_step"})
 
     def propose(self, node, context):
         if ((node.op == "nn.kda_gated_step"
              or node.op == "nn.kda_gated_recurrent_core" and node.attrs.get("arithmetic") == "chunk_bf16")
                 and getattr(context.target, "codegen_platform", None) != "nvidia"):
-            raise CodegenError("KDA chunk_bf16 requires the implemented CUDA PTX fast-math contract.")
+            raise CodegenError(
+                "KDA chunk_bf16 requires the implemented CUDA PTX fast-math contract."
+            )
         return super().propose(node, context)
 
 
@@ -53,24 +55,23 @@ class MhcCandidateProvider(_NamedFamilyCandidateProvider):
     def propose(self, node, context):
         family = node.op.removeprefix("nn.")
         reduction = node.attrs.get("projection_reduction", "parallel") if node.op == "nn.mhc_pre" else "parallel"
-        if reduction == "contiguous_tf32" and (getattr(context.target, "codegen_platform", None) != "nvidia"
-                                               or getattr(context.target, "codegen_architecture", None) != "sm90"):
+        if reduction == "contiguous_tf32" and (
+                getattr(context.target, "codegen_platform", None) != "nvidia"
+                or getattr(context.target, "codegen_architecture", None) != "sm90"):
             raise CodegenError("mHC contiguous_tf32 requires the implemented SM90 WGMMA numerical contract.")
         if reduction == "stream_fma_128":
             capability = getattr(getattr(context.target, "machine", None), "capability", None)
             if (getattr(context.target, "codegen_platform", None) != "nvidia"
                     or getattr(capability, "warp_size", None) != 32):
                 raise CodegenError("mHC stream_fma_128 requires the implemented CUDA 32-lane numerical contract.")
-        candidates = tuple(
-            context.configure_implementation(implementation)
-            for implementation in context.implementations(family, indexing="local")
-            if implementation.contract.get("projection_reduction", "parallel") == reduction)
+        candidates = tuple(context.configure_implementation(implementation)
+                           for implementation in context.implementations(family, indexing="local")
+                           if implementation.contract.get("projection_reduction", "parallel") == reduction)
         if not candidates:
             return None
         variant = {"parallel": "local", "stream_fma_128": "stream_fma", "contiguous_tf32": "contiguous_tf32"}[reduction]
         fallback = f"tir.{family}.{variant}"
-        return TritonCandidateProposal(candidates, context.choose_default(family, candidates,
-                                                                          portable_fallback=fallback))
+        return TritonCandidateProposal(candidates, context.choose_default(family, candidates, portable_fallback=fallback))
 
 
 class StagedRoutingCandidateProvider:
@@ -92,10 +93,13 @@ class StagedRoutingCandidateProvider:
             if tile >= extent:
                 candidates.append(context.configure_implementation(implementation))
         if not candidates:
-            available = tuple(
-                int(implementation.parameters["elements_per_program"]) for implementation in implementations)
-            raise CodegenError("StagedRouting has no complete local tile for router extent "
-                               f"{extent}; available single-tile extents are {available}.")
+            available = tuple(int(implementation.parameters["elements_per_program"])
+                             for implementation in implementations)
+            raise CodegenError(
+                "StagedRouting has no complete local tile for router extent "
+                f"{extent}; available single-tile extents are {available}."
+            )
         candidates.sort(key=lambda candidate: int(candidate.parameters["elements_per_program"]))
         return TritonCandidateProposal(
-            candidates, context.choose_default("staged_routing", candidates, portable_fallback=candidates[0].id))
+            candidates, context.choose_default("staged_routing", candidates,
+                                               portable_fallback=candidates[0].id))

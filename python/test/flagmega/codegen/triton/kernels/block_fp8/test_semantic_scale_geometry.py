@@ -10,7 +10,9 @@ def _descriptor(name, dtype, shape):
     nbytes = dtype.itemsize
     for extent in shape:
         nbytes *= extent
-    physical = fm.PhysicalBuffer(f"physical:{name}", "workspace", fm.dim(nbytes), 16)
+    physical = fm.PhysicalBuffer(
+        f"physical:{name}", "workspace", fm.dim(nbytes), 16
+    )
     strides = []
     stride = 1
     for extent in reversed(shape):
@@ -38,7 +40,7 @@ def _binding(formal, descriptor):
 
 
 def _parameter(formal, descriptor):
-    return {"formal": formal, "buffers": (_binding(formal, descriptor), )}
+    return {"formal": formal, "buffers": (_binding(formal, descriptor),)}
 
 
 def test_block_fp8_scale_geometry_comes_from_semantic_weight_format():
@@ -47,22 +49,21 @@ def test_block_fp8_scale_geometry_comes_from_semantic_weight_format():
     scale = _descriptor("scale", fm.DType.FLOAT32, (2, 2))
     result = _descriptor("result", fm.DType.BFLOAT16, (1, 64))
 
-    call = prepare_kernel_calls(
-        ({
-            "call": "linear",
-            "family": "block_fp8",
-            "variant": "simt",
-            "execution_kind": "local_shard",
-            "parameters": {"tile_n": 16},
-            "semantic_attrs": {"weight_block_n": 32, "weight_block_k": 32},
-            "inputs": (
-                _parameter("value", value),
-                _parameter("weight", weight),
-                _parameter("weight_scale", scale),
-            ),
-            "outputs": (_parameter("result", result), ),
-            "workspaces": (),
-        }, ), function_name="main")[0]
+    call = prepare_kernel_calls(({
+        "call": "linear",
+        "family": "block_fp8",
+        "variant": "simt",
+        "execution_kind": "local_shard",
+        "parameters": {"tile_n": 16},
+        "semantic_attrs": {"weight_block_n": 32, "weight_block_k": 32},
+        "inputs": (
+            _parameter("value", value),
+            _parameter("weight", weight),
+            _parameter("weight_scale", scale),
+        ),
+        "outputs": (_parameter("result", result),),
+        "workspaces": (),
+    },), function_name="main")[0]
 
     assert "// 32" in call["scale_row_offset"]
     assert call["block_k"] == 32
@@ -70,7 +71,8 @@ def test_block_fp8_scale_geometry_comes_from_semantic_weight_format():
 
 def test_block_fp8_catalog_does_not_own_weight_format_geometry():
     from triton.flagmega.targets.portable_triton_implementations import (
-        portable_triton_implementation_model, )
+        portable_triton_implementation_model,
+    )
 
     model = portable_triton_implementation_model()
     for name in ("tir.block_fp8.simt", "tir.block_fp8.mma"):

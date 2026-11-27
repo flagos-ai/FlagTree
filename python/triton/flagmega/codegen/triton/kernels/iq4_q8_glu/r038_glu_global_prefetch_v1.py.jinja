@@ -1,0 +1,187 @@
+{# Static global_idle schedule, bounded prefetch issue, no weight staging. #}
+from triton.flagmega.codegen.triton.iq4_q8_kernels import E, packets_cached_tables
+from triton.flagmega.codegen.triton.iq4_q8_prefetch_rows import accumulate_prefetched_group
+from triton.flagmega.codegen.triton.iq4_q8_multi_column import column_layout, vector_group
+from triton.flagmega.codegen.triton.iq4_q8_batch_reduce import batch_partial_store,batch_typed_reduce
+from triton.flagmega.codegen.triton.iq4_q8_persistent_reduce import persistent_typed_reduce as typed_reduce
+import triton.experimental.tle.language.gpu as gpu
+{% for call in render_calls %}
+{% if call.variant == "r038_glu_global_prefetch_v1" and call.family in ("iq4_q8_glu", "iq4_q8_projection", "iq4_q8_interleaved") %}
+@triton.jit
+def {{ call.symbol }}__accumulate_pair(W, U, Q, row, kbx, g, active, p, u, K: tl.constexpr, ROWS: tl.constexpr):
+    base = row.to(tl.int32) * (K // 256) * 34 + kbx.to(tl.int32) * 34
+    WP = W.to(tl.pointer_type(tl.uint32))
+    UP = U.to(tl.pointer_type(tl.uint32))
+    QP = Q.to(tl.pointer_type(tl.uint32))
+    qb = (8 * kbx.to(tl.int32) + g) * 9
+    I = ()
+    H = ()
+    for r in tl.static_range(ROWS):
+        I += (gpu.set_layout(tl.full((4, 32), 0, tl.int32), E),)
+        H += (gpu.set_layout(tl.full((4, 32), 0, tl.int32), E),)
+    for pair_index in tl.static_range(2):
+        pair = gpu.set_layout(tl.load((WP + base + 2 + 4 * g + 2 * pair_index).to(tl.pointer_type(tl.uint64)), active, 0, eviction_policy='evict_first'), E)
+        upair = gpu.set_layout(tl.load((UP + base + 2 + 4 * g + 2 * pair_index).to(tl.pointer_type(tl.uint64)), active, 0, eviction_policy='evict_first'), E)
+        for half in tl.static_range(2):
+            j = 2 * pair_index + half
+            a, b = packets_cached_tables((pair >> (32 * half)).to(tl.uint32))
+            c, d = packets_cached_tables((upair >> (32 * half)).to(tl.uint32))
+            next_I = ()
+            next_H = ()
+            for r in tl.static_range(ROWS):
+                qr = qb + r * (K // 32) * 9
+                q0 = gpu.set_layout(tl.load(QP + qr + 1 + j, active, 0).to(tl.int32, bitcast=True), E)
+                q1 = gpu.set_layout(tl.load(QP + qr + 5 + j, active, 0).to(tl.int32, bitcast=True), E)
+                Ir = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[a, q0, I[r]], dtype=tl.int32, is_pure=True, pack=1)
+                Hr = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[c, q0, H[r]], dtype=tl.int32, is_pure=True, pack=1)
+                Ir = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[b, q1, Ir], dtype=tl.int32, is_pure=True, pack=1)
+                Hr = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[d, q1, Hr], dtype=tl.int32, is_pure=True, pack=1)
+                next_I += (Ir,)
+                next_H += (Hr,)
+            I = next_I
+            H = next_H
+    header = gpu.set_layout(tl.load((WP + base).to(tl.pointer_type(tl.uint64)), active, 0, eviction_policy='evict_first'), E)
+    uheader = gpu.set_layout(tl.load((UP + base).to(tl.pointer_type(tl.uint64)), active, 0, eviction_policy='evict_first'), E)
+    h, s = header.to(tl.uint32), (header >> 32).to(tl.uint32)
+    uh, us = uheader.to(tl.uint32), (uheader >> 32).to(tl.uint32)
+    sg = (((s >> (8 * (g // 2) + 4 * (g % 2))) & 15) | (((h >> (16 + 2 * g)) & 3) << 4)).to(tl.int32) - 32
+    usg = (((us >> (8 * (g // 2) + 4 * (g % 2))) & 15) | (((uh >> (16 + 2 * g)) & 3) << 4)).to(tl.int32) - 32
+    dw = (h & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    udw = (uh & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    pp, uu = (), ()
+    for r in tl.static_range(ROWS):
+        dq = gpu.set_layout(tl.load(QP + qb + r * (K // 32) * 9, active, 0), E)
+        dx = (dq & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+        J = (I[r] * sg).to(tl.float32)
+        UJ = (H[r] * usg).to(tl.float32)
+        D = tl.inline_asm_elementwise('mul.rn.f32 $0,$1,$2;', constraints='=f,f,f', args=[dw, dx], dtype=tl.float32, is_pure=True, pack=1)
+        UD = tl.inline_asm_elementwise('mul.rn.f32 $0,$1,$2;', constraints='=f,f,f', args=[udw, dx], dtype=tl.float32, is_pure=True, pack=1)
+        pn = tl.inline_asm_elementwise('fma.rn.f32 $0,$1,$2,$3;', constraints='=f,f,f,f', args=[D, J, p[r]], dtype=tl.float32, is_pure=True, pack=1)
+        un = tl.inline_asm_elementwise('fma.rn.f32 $0,$1,$2,$3;', constraints='=f,f,f,f', args=[UD, UJ, u[r]], dtype=tl.float32, is_pure=True, pack=1)
+        pp += (gpu.set_layout(tl.where(active, pn, p[r]), E),)
+        uu += (gpu.set_layout(tl.where(active, un, u[r]), E),)
+    return pp, uu
+
+@triton.jit
+def {{ call.symbol }}__store_rows(p, u, Y, row, w, l, ROWS: tl.constexpr):
+    S = gpu.alloc((ROWS * 128,), tl.uint64, layout=None, nv_mma_shared_layout=False, alignment_bytes=16)
+    B = gpu.alloc_barrier(arrive_count=128)
+    for token in tl.static_range(ROWS):
+        batch_partial_store(p[token], u[token], S, token, w, l)
+    gpu.barrier_wait(B)
+    for token_batch in tl.static_range((ROWS + 3) // 4):
+        token = 4 * token_batch + w
+        gate, up = batch_typed_reduce(S, token, w, l, ROWS)
+        value = gate / (1.0 + tl.exp(-gate)) * up
+        tl.store(Y + token * {{ call.transport_n }} + row, value, (token < ROWS) & (l == 0))
+    gpu.barrier_wait(B)
+
+@triton.jit
+def {{ call.symbol }}__store_plain_rows(p, Y, Z, row, w, l, ROWS: tl.constexpr):
+    S = gpu.alloc((ROWS * 128,), tl.uint64, layout=None, nv_mma_shared_layout=False, alignment_bytes=16)
+    B = gpu.alloc_barrier(arrive_count=128)
+    for token in tl.static_range(ROWS):
+        batch_partial_store(p[token], p[token], S, token, w, l)
+    gpu.barrier_wait(B)
+    for token_batch in tl.static_range((ROWS + 3) // 4):
+        token = 4 * token_batch + w
+        value, unused = batch_typed_reduce(S, token, w, l, ROWS)
+{% if call.transport_mode == 2 %}
+        out = tl.where(row % 512 // 256 == 0, Y, Z)
+        offset = token * ({{ call.transport_n }} // 2) + row // 512 * 256 + row % 256
+{% else %}
+        out = Y
+        offset = token * {{ call.transport_n }} + row
+{% endif %}
+        tl.store(out + offset, value, (token < ROWS) & (l == 0) & (row < {{ call.transport_n }}))
+    gpu.barrier_wait(B)
+
+@triton.jit
+def {{ call.symbol }}__producer({{ (call.pipeline_producer_parameters + (call.signature,) + ('_prefetch_progress',)) | join(', ') }}):
+    lane = gpu.set_layout(tl.arange(0,32),gpu.BlockEncoding([1],[32],[1],[0]))
+    # Every qualified tuple has a static integral number of columns per CTA.
+    row_count = {{ call.transport_n // (call.transport_grid_cap * (call.constexprs.COLS if call.constexprs.COLS is defined else 1)) }}
+    for row_iteration in range(row_count):
+        while row_iteration >= tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),0,tl.int32),)),volatile=True)+{{ call.prefetch_window }}:
+            tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+        row = (tl.program_id(0)+row_iteration*{{ call.transport_grid_cap }})*{{ call.constexprs.COLS if call.constexprs.COLS is defined else 1 }}
+{% for bank in ((1,2) if call.transport_mode == 1 else (1,)) %}
+{% for chunk in range((136 * (call.transport_k // 256) * (call.constexprs.COLS if call.constexprs.COLS is defined else 1) + 4095) // 4096) %}
+        ptr = {{ call.pointers[bank] }} + (row.to(tl.int32)*{{ 136 * (call.transport_k // 256) }}).to(tl.int64)+lane*128+{{ chunk * 4096 }}
+        tl.inline_asm_elementwise('{ .reg .pred p; setp.ne.u32 p,$1,0; @p prefetch.global.L2 [$2]; mov.u32 $0,0; }',constraints='=r,r,l',args=[lane+{{ chunk * 32 }}<{{ (136 * (call.transport_k // 256) * (call.constexprs.COLS if call.constexprs.COLS is defined else 1) + 127) // 128 }},ptr],dtype=tl.int32,is_pure=False,pack=1)
+{% endfor %}
+{% endfor %}
+
+@triton.jit
+def {{ call.symbol }}__consumer({{ (call.pipeline_consumer_parameters + (call.signature,) + ('_prefetch_progress',)) | join(', ') }}):
+{% if call.transport_mode == 1 %}
+    w = gpu.set_layout(tl.broadcast_to(tl.arange(0,4)[:,None],(4,32)),E)
+    l = gpu.set_layout(tl.broadcast_to(tl.arange(0,32)[None,:],(4,32)),E)
+    tid = w*32+l
+    g = tid%8
+    row_count = {{ call.transport_n // (call.transport_grid_cap * (call.constexprs.COLS if call.constexprs.COLS is defined else 1)) }}
+    for row_iteration in range(row_count):
+        row = gpu.set_layout(tl.full((4,32),tl.program_id(0)+row_iteration*{{ call.transport_grid_cap }},tl.int32),E)
+        p, u = (), ()
+        for token in tl.static_range({{ call.constexprs.ROWS }}):
+            p += (gpu.set_layout(tl.full((4,32),0.,tl.float32),E),)
+            u += (gpu.set_layout(tl.full((4,32),0.,tl.float32),E),)
+        for it in range(tl.cdiv({{ call.transport_k }}//256,16)):
+            kbx = tid//8+16*it
+            active = (row<{{ call.transport_n }}) & (kbx<{{ call.transport_k }}//256)
+{% if call.transport_mode == 1 %}
+            p,u = {{ call.symbol }}__accumulate_pair({{ call.pointers[1] }},{{ call.pointers[2] }},{{ call.pointers[0] }},row,kbx,g,active,p,u,{{ call.transport_k }},{{ call.constexprs.ROWS }})
+{% endif %}
+        tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),0,tl.int32),)),row_iteration+1)
+{% if call.transport_mode == 1 %}
+        {{ call.symbol }}__store_rows(p,u,{{ call.pointers[3] }},row,w,l,{{ call.constexprs.ROWS }})
+{% endif %}
+{% else %}
+{% if call.constexprs.COLS == 1 %}
+    w = gpu.set_layout(tl.broadcast_to(tl.arange(0, 4)[:, None], (4, 32)), E)
+    l = gpu.set_layout(tl.broadcast_to(tl.arange(0, 32)[None, :], (4, 32)), E)
+    tid = w * 32 + l
+    g = tid % 8
+    for row_iteration in range({{ call.transport_n // call.transport_grid_cap }}):
+        row = gpu.set_layout(tl.full((4, 32), tl.program_id(0) + row_iteration * {{ call.transport_grid_cap }}, tl.int32), E)
+        p = ()
+        for token in tl.static_range({{ call.constexprs.ROWS }}):
+            p += (gpu.set_layout(tl.full((4, 32), 0., tl.float32), E),)
+        for it in range(tl.cdiv({{ call.transport_k }} // 256, 16)):
+            kbx = tid // 8 + 16 * it
+            active = (row < {{ call.transport_n }}) & (kbx < {{ call.transport_k }} // 256)
+            p = accumulate_prefetched_group({{ call.pointers[1] }}, {{ call.pointers[0] }}, row, kbx, g, active, p, {{ call.transport_k }}, {{ call.constexprs.ROWS }})
+        tl.store(gpu.local_ptr(_prefetch_progress, (tl.full((), 0, tl.int32),)), row_iteration + 1)
+        {{ call.symbol }}__store_plain_rows(p, {{ call.pointers[3] }}, {{ call.pointers[4] }}, row, w, l, {{ call.constexprs.ROWS }})
+{% else %}
+    COLS: tl.constexpr = {{ call.constexprs.COLS }}
+    ce: tl.constexpr = column_layout(COLS)
+    c = gpu.set_layout(tl.broadcast_to(tl.arange(0, COLS)[:, None, None], (COLS, 4, 32)), ce)
+    w = gpu.set_layout(tl.broadcast_to(tl.arange(0, 4)[None, :, None], (COLS, 4, 32)), ce)
+    l = gpu.set_layout(tl.broadcast_to(tl.arange(0, 32)[None, None, :], (COLS, 4, 32)), ce)
+    w2 = gpu.set_layout(tl.broadcast_to(tl.arange(0, 4)[:, None], (4, 32)), E)
+    l2 = gpu.set_layout(tl.broadcast_to(tl.arange(0, 32)[None, :], (4, 32)), E)
+    tid = w * 32 + l
+    g = tid % 8
+    for row_iteration in range({{ call.transport_n // (call.transport_grid_cap * call.constexprs.COLS) }}):
+        output_base = (tl.program_id(0) + row_iteration * {{ call.transport_grid_cap }}) * COLS
+        row = output_base + c
+        p = ()
+        for token in tl.static_range({{ call.constexprs.ROWS }}):
+            p += (gpu.set_layout(tl.full((COLS, 4, 32), 0., tl.float32), ce),)
+        for it in range(tl.cdiv({{ call.transport_k }} // 256, 16)):
+            kbx = tid // 8 + 16 * it
+            active = (row < {{ call.transport_n }}) & (kbx < {{ call.transport_k }} // 256)
+            p = vector_group({{ call.pointers[1] }}, {{ call.pointers[0] }}, row, kbx, g, active, p, {{ call.transport_k }}, {{ call.constexprs.ROWS }}, COLS)
+        tl.store(gpu.local_ptr(_prefetch_progress, (tl.full((), 0, tl.int32),)), row_iteration + 1)
+        for col in tl.static_range(COLS):
+            partials = ()
+            for token in tl.static_range({{ call.constexprs.ROWS }}):
+                v = gpu.set_layout(tl.gather(p[token], tl.full((1, 4, 32), col, tl.int32), 0).reshape((4, 32)), E)
+                partials += (v,)
+            output_col = gpu.set_layout(tl.full((4, 32), output_base + col, tl.int32), E)
+            {{ call.symbol }}__store_plain_rows(partials, {{ call.pointers[3] }}, {{ call.pointers[4] }}, output_col, w2, l2, {{ call.constexprs.ROWS }})
+{% endif %}
+{% endif %}
+{% endif %}
+{% endfor %}

@@ -37,29 +37,27 @@ def test_partial_sum_publishes_each_device_before_collective(tmp_path, dtype, la
     runtime = None
     placement = fm.Placement((4, 8, 16), "cyx", "cbb")
     kind = fm.tensor_type(dtype, (4, 1, 4096))
-    distributed = fm.DistributedType(kind, (fm.SBP.split_contiguous(
-        (0, )), fm.SBP.broadcast(), fm.SBP.split_contiguous((1, 2), 32)), placement)
+    distributed = fm.DistributedType(kind, (fm.SBP.split_contiguous((0,)), fm.SBP.broadcast(),
+        fm.SBP.split_contiguous((1, 2), 32)), placement)
 
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("x", kind, id="x")
             local = fm.F.distributed.sharded_view(x, distributed)
-            partial = fm.F.math.reduce_sum(local, axes=(0, ), keep_dims=False, output_lanes=lanes, name="partial")
+            partial = fm.F.math.reduce_sum(local, axes=(0,), keep_dims=False, output_lanes=lanes, name="partial")
             result = fm.F.distributed.force_boxing(partial, fm.logical_type(partial.type), name="result")
-            self.function("main", (x, ), (result, ))
+            self.function("main", (x,), (result,))
 
     try:
-        module = Compiler().compile(
-            Graph(dialect="distributed", stage="frozen_constants", entry="main",
-                  metadata={"auto_distribution": {"placement": placement.to_data()}}).build()).module
+        module = Compiler().compile(Graph(dialect="distributed", stage="frozen_constants", entry="main",
+            metadata={"auto_distribution": {"placement": placement.to_data()}}).build()).module
         buffer = fm.verify_buffer_plan(module).buffer_map["partial"]
         assert buffer.distributed_storage_kind == fm.DistributedBufferStorageKind.COMPACT_PER_CHIP
         artifact = write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
         runtime = load(artifact, device=device)
         torch_dtype = getattr(torch, dtype)
         x = torch.empty((4, 1, 4096), dtype=torch_dtype, device=device)
-        storage = torch.full((4096 + 32, ), 123., dtype=torch_dtype, device=device)
+        storage = torch.full((4096 + 32,), 123., dtype=torch_dtype, device=device)
         result = storage[16:-16].reshape(1, 4096) if not lanes else storage[16:-16].reshape(1, 512, 2, 4)
         arguments = tuple(x if spec["role"] != "result" else result for spec in runtime.external_arguments)
         Runtime.prepare(runtime, *arguments)
@@ -75,12 +73,9 @@ def test_partial_sum_publishes_each_device_before_collective(tmp_path, dtype, la
             torch.testing.assert_close(result.reshape(1, 4096), expected, rtol=0, atol=0)
             assert bool((storage[:16] == 123.).all() & (storage[-16:] == 123.).all())
         assert runtime.resource_report["spill_bytes"] == 0
-        (tmp_path / "result.json").write_text(
-            json.dumps(
-                {
-                    "passed": True, "rank": dist.get_rank(), "dtype": dtype, "lanes": lanes, "mutations": 3, "guards":
-                    True, "source_sha256": runtime.codegen["source_sha256"], "resources": runtime.resource_report
-                }, indent=2) + "\n")
+        (tmp_path / "result.json").write_text(json.dumps({"passed": True, "rank": dist.get_rank(),
+            "dtype": dtype, "lanes": lanes, "mutations": 3, "guards": True,
+            "source_sha256": runtime.codegen["source_sha256"], "resources": runtime.resource_report}, indent=2) + "\n")
     finally:
         if runtime is not None:
             runtime.close()
@@ -100,11 +95,11 @@ def test_cross_mesh_partial_component_is_complete_before_the_collective(tmp_path
         plan = fm.verify_buffer_plan(module)
         source, view = (plan.buffer_map[name] for name in ('partial', 'repartitioned'))
         assert source.mem_span.must_alias(view.mem_span)
-        assert source.distributed_type.partial == view.distributed_type.partial == fm.SBP.partial((0, ))
+        assert source.distributed_type.partial == view.distributed_type.partial == fm.SBP.partial((0,))
         artifact = write_artifact(module, tmp_path / 'artifact', target='nvidia-sm90', emit_executable=True)
         runtime = load(artifact, device=device)
         x = torch.empty((4, 1, 4096), dtype=getattr(torch, dtype), device=device)
-        guard = torch.full((4096 + 32, ), 123., dtype=x.dtype, device=device)
+        guard = torch.full((4096 + 32,), 123., dtype=x.dtype, device=device)
         result = guard[16:-16].reshape(1, 4096) if not lanes else guard[16:-16].reshape(1, 512, 2, 4)
         rebound_x = torch.empty_like(x)
         rebound_guard = torch.full_like(guard, 123.)
@@ -121,7 +116,8 @@ def test_cross_mesh_partial_component_is_complete_before_the_collective(tmp_path
         assert [tuple(p.grid) for p in runtime._prepared] == [(64, 1, 1), (128, 1, 1)]
 
         def assert_result(output, storage, values):
-            torch.testing.assert_close(output.reshape(1, 4096), values.float().sum(0).to(x.dtype), rtol=0, atol=0)
+            torch.testing.assert_close(output.reshape(1, 4096), values.float().sum(0).to(x.dtype),
+                                       rtol=0, atol=0)
             assert bool((storage[:16] == 123.).all() & (storage[-16:] == 123.).all())
 
         for mutation in range(4):
@@ -159,22 +155,13 @@ def test_cross_mesh_partial_component_is_complete_before_the_collective(tmp_path
             assert_result(rebound_result, rebound_guard, values)
         reports = runtime.resource_report
         assert all(report['spill_bytes'] == 0 for report in reports)
-        (tmp_path / 'cross-mesh-result.json').write_text(
-            json.dumps(
-                {
-                    'passed': True,
-                    'rank': dist.get_rank(),
-                    'dtype': dtype,
-                    'lanes': lanes,
-                    'program_grids': [[64, 1, 1], [128, 1, 1]],
-                    'eager_mutations': 4,
-                    'pointer_rebind': True,
-                    'captured_requests': 3,
-                    'graph_replays': 3,
-                    'captured_input_mutations': 3,
-                    'guards': True,
-                    'resources': reports,
-                }, indent=2) + '\n')
+        (tmp_path / 'cross-mesh-result.json').write_text(json.dumps({
+            'passed': True, 'rank': dist.get_rank(), 'dtype': dtype, 'lanes': lanes,
+            'program_grids': [[64, 1, 1], [128, 1, 1]], 'eager_mutations': 4,
+            'pointer_rebind': True, 'captured_requests': 3, 'graph_replays': 3,
+            'captured_input_mutations': 3, 'guards': True,
+            'resources': reports,
+        }, indent=2) + '\n')
     finally:
         if runtime is not None:
             runtime.close()

@@ -41,8 +41,7 @@ from triton.flagmega.ir.types import VectorType
 class UpdatePagedAttentionKVCache(OpDefinition):
     slots = input_parameter(is_tensor() & has_rank(3))
     state = input_parameter(
-        is_ref(),
-        parameter_kind=ParameterKind.ATTRIBUTE,
+        is_ref(), parameter_kind=ParameterKind.ATTRIBUTE,
         memory_effect=MemoryEffect.CHIP_READ_WRITE.partitioned_by_argument(2),
     )
     layer_id = input_parameter(
@@ -70,12 +69,13 @@ class UpdatePagedAttentionKVCache(OpDefinition):
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         slots_type = cls.slots.type_of(inputs)
-        # layer_id/advance_sequence are Attribute operands.  They
+        # layer_id/advance_sequence are nncase-style Attribute operands.  They
         # remain scalar values at the launch ABI and do not participate in the
         # distributed type relation.
         if isinstance(slots_type, DistributedType):
             if slots_type.partial is not None:
-                raise IRSchemaError("UpdatePagedAttentionKVCache requires materialized slots.")
+                raise IRSchemaError(
+                    "UpdatePagedAttentionKVCache requires materialized slots.")
         return cls.state.type_of(inputs)
 
     @classmethod
@@ -87,20 +87,25 @@ class UpdatePagedAttentionKVCache(OpDefinition):
         slots = cls.slots.read(arguments)
         slots_type = tensor_of(context.types[cls.slots.read(node.inputs)])
         if isinstance(slots_type.dtype, VectorType):
-            config = paged_attention_state_config_from_type(context.types[cls.state.read(node.inputs)])
-            if slots_type.dtype.lanes != (config.lanes, ):
-                raise EvaluationError("UpdatePagedAttentionKVCache slot vector lanes do not match "
-                                      "the configured cache.")
+            config = paged_attention_state_config_from_type(
+                context.types[cls.state.read(node.inputs)]
+            )
+            if slots_type.dtype.lanes != (config.lanes,):
+                raise EvaluationError(
+                    "UpdatePagedAttentionKVCache slot vector lanes do not match "
+                    "the configured cache."
+                )
             slots = unpack_physical(
                 slots,
                 slots_type.rank,
                 slots_type.dtype.lanes,
-                (tuple(node.attrs["layout"]).index("dim"), ),
+                (tuple(node.attrs["layout"]).index("dim"),),
             )
         slots = to_seq_head_dim(slots, tuple(node.attrs["layout"]))
         state = cls.state.read(arguments)
         if not isinstance(state, PagedAttentionState):
-            raise EvaluationError("UpdatePagedAttentionKVCache state must evaluate to PagedAttentionState.")
+            raise EvaluationError(
+                "UpdatePagedAttentionKVCache state must evaluate to PagedAttentionState.")
         state.update(
             slots,
             cache_kind=str(node.attrs["cache_kind"]),
@@ -111,7 +116,7 @@ class UpdatePagedAttentionKVCache(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(notes=(f"paged-cache-{node.attrs['cache_kind']}-write", ))
+        return OpCost(notes=(f"paged-cache-{node.attrs['cache_kind']}-write",))
 
 
 __all__ = ["UpdatePagedAttentionKVCache"]

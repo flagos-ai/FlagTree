@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Function-scoped pass contracts aligned with reference PassManager groups."""
+"""Function-scoped pass contracts aligned with nncase PassManager groups."""
 
 from __future__ import annotations
 
@@ -28,8 +28,7 @@ class FunctionPass(Protocol):
         function: Function,
         module: IRModule,
         context: RunPassContext,
-    ) -> IRModule:
-        ...
+    ) -> IRModule: ...
 
 
 FunctionTransform = Callable[[Function, IRModule, RunPassContext], IRModule]

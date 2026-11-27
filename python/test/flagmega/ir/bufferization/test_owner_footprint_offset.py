@@ -9,11 +9,12 @@ from triton.flagmega import ir as fm
 
 def _descriptor(physical_bytes, offset):
     placement = fm.Placement((2, 3), "yx", "bb")
-    typ = fm.DistributedType(fm.tensor_type("float32", (48, )), (fm.SBP.split_contiguous((0, 1)), ), placement)
+    typ = fm.DistributedType(fm.tensor_type("float32", (48,)),
+                             (fm.SBP.split_contiguous((0, 1)),), placement)
     physical = fm.PhysicalBuffer("allocation", "workspace", physical_bytes, 32, 1024)
-    return fm.BufferDescriptor("view", fm.DType.FLOAT32, (48, ), (1, ), "workspace", 32,
-                               fm.MemSpan(physical, offset, 32), distributed_type=typ,
-                               distributed_storage_kind=fm.DistributedBufferStorageKind.COMPACT_PER_OWNER)
+    return fm.BufferDescriptor("view", fm.DType.FLOAT32, (48,), (1,), "workspace", 32,
+                                fm.MemSpan(physical, offset, 32), distributed_type=typ,
+                                distributed_storage_kind=fm.DistributedBufferStorageKind.COMPACT_PER_OWNER)
 
 
 def test_owner_footprint_preserves_component_origin_and_not_allocator_padding():

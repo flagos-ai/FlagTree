@@ -17,16 +17,21 @@ promotion, otherwise the module type-checks and only fails in codegen when
 
 from triton.flagmega import ir as fm
 from triton.flagmega.passes.auto_distributed import (
-    PyNttDistributedReshardRealizationPolicy, )
+    PyNttDistributedReshardRealizationPolicy,
+)
 from triton.flagmega.passes.functions import (
-    propagate_post_auto_distributed_function_boundary_layouts, )
+    propagate_post_auto_distributed_function_boundary_layouts,
+)
 
 # ``cbb``: axis 0 spans chips, axes 1 and 2 are block axes inside one chip.
 _PLACEMENT = fm.Placement((4, 2, 4), "cyx", "cbb")
 _TENSOR = fm.tensor_type("float32", (1, 64))
-_BROADCAST = fm.DistributedType(_TENSOR, (fm.SBP.broadcast(), fm.SBP.broadcast()), _PLACEMENT)
-_CHIP_SPLIT = fm.DistributedType(_TENSOR, (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 16)), _PLACEMENT)
-_BLOCK_SPLIT = fm.DistributedType(_TENSOR, (fm.SBP.broadcast(), fm.SBP.split_contiguous((1, ), 32)), _PLACEMENT)
+_BROADCAST = fm.DistributedType(
+    _TENSOR, (fm.SBP.broadcast(), fm.SBP.broadcast()), _PLACEMENT)
+_CHIP_SPLIT = fm.DistributedType(
+    _TENSOR, (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 16)), _PLACEMENT)
+_BLOCK_SPLIT = fm.DistributedType(
+    _TENSOR, (fm.SBP.broadcast(), fm.SBP.split_contiguous((1,), 32)), _PLACEMENT)
 
 
 def _module(demanded):
@@ -38,7 +43,6 @@ def _module(demanded):
     """
 
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="ntt", stage="distributed", entry="main")
 
@@ -48,27 +52,31 @@ def _module(demanded):
             second = fm.F.distributed.boxing(hidden, demanded, name="second")
             combined = fm.F.math.add(first, second, name="combined")
             raw = fm.F.math.silu(hidden, name="raw")
-            output = fm.F.math.add(raw, fm.F.distributed.boxing(combined, _BROADCAST, name="restore"), name="output")
+            output = fm.F.math.add(raw, fm.F.distributed.boxing(
+                combined, _BROADCAST, name="restore"), name="output")
             value = self.input("value", _BROADCAST, id="value")
-            call = fm.F.builtin.call(value, result_type=_BROADCAST, callee="layer", name="call")
-            self.function("main", (value, ), (call, ))
+            call = fm.F.builtin.call(
+                value, result_type=_BROADCAST, callee="layer", name="call")
+            self.function("main", (value,), (call,))
             self.function(
-                "layer",
-                (hidden, ),
-                (output, ),
-                attrs={"calling_convention": "device", "noinline": True, "reusable": True},
+                "layer", (hidden,), (output,),
+                attrs={"calling_convention": "device", "noinline": True,
+                       "reusable": True},
             )
 
     return Graph().build()
 
 
 def _restores(module):
-    return tuple(node for node in module.nodes if node.metadata.get("boundary_layout") == "raw_parameter_restore")
+    return tuple(
+        node for node in module.nodes
+        if node.metadata.get("boundary_layout") == "raw_parameter_restore"
+    )
 
 
 def test_a_chip_crossing_restore_blocks_the_promotion():
-    rewritten = propagate_post_auto_distributed_function_boundary_layouts(_module(_CHIP_SPLIT),
-                                                                          PyNttDistributedReshardRealizationPolicy())
+    rewritten = propagate_post_auto_distributed_function_boundary_layouts(
+        _module(_CHIP_SPLIT), PyNttDistributedReshardRealizationPolicy())
     parameter = rewritten.node_map[rewritten.function_map["layer"].parameters[0]]
     assert parameter.type == _BROADCAST
     # No restore exists, because nothing was promoted away from the logical type.
@@ -82,12 +90,12 @@ def test_a_block_only_restore_still_promotes():
     instance, so the restore is chip-local and the promotion is still taken.
     """
 
-    rewritten = propagate_post_auto_distributed_function_boundary_layouts(_module(_BLOCK_SPLIT),
-                                                                          PyNttDistributedReshardRealizationPolicy())
+    rewritten = propagate_post_auto_distributed_function_boundary_layouts(
+        _module(_BLOCK_SPLIT), PyNttDistributedReshardRealizationPolicy())
     parameter = rewritten.node_map[rewritten.function_map["layer"].parameters[0]]
     assert parameter.type == _BLOCK_SPLIT
     restore, = _restores(rewritten)
-    assert restore.inputs == (parameter.id, )
+    assert restore.inputs == (parameter.id,)
     assert restore.type == _BROADCAST
     assert fm.boxing_crossing_chip_axes(parameter.type, restore.type) == ()
 

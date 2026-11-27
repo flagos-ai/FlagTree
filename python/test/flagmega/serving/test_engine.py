@@ -1,5 +1,3 @@
-# Copyright 2026 FlagOS Contributors
-# SPDX-License-Identifier: MIT
 import pytest
 
 from triton.flagmega.serving import TextGenerationEngine
@@ -21,12 +19,10 @@ def test_compiled_batched_prefill_uses_one_backend_entry_and_retains_history(bac
     from unittest.mock import Mock
     calls = []
     original_append = backend.append
-
     def prefill(tokens):
         calls.append(tuple(tokens))
         for token in tokens:
             original_append(token)
-
     backend.prefill = prefill
     backend.append = Mock(wraps=original_append)
     engine = TextGenerationEngine(backend)
@@ -53,14 +49,14 @@ def test_eos_first_token_has_no_decode_interval_and_ignore_eos_is_explicit(backe
     engine = TextGenerationEngine(backend, eos_token_ids=[3])
     result = engine.generate([1, 2], max_new_tokens=4)
     assert result.finish_reason == "eos"
-    assert result.token_ids == (3, )
+    assert result.token_ids == (3,)
     assert result.metrics.to_dict()["decode_tokens_per_second"] is None
     assert "decode: 0 tokens" in result.metrics.format()
     engine.reset()
     assert len(engine.generate([1, 2], max_new_tokens=4, ignore_eos=True).token_ids) == 4
 
 
-@pytest.mark.parametrize("prompt,count", [([], 2), ([True], 2), ([32], 2), ([1], 0), ([1], True), ([1] * 63, 2)])
+@pytest.mark.parametrize("prompt,count", [([], 2), ([True], 2), ([32], 2), ([1], 0), ([1], True), ([1]*63, 2)])
 def test_invalid_request_does_not_mutate_existing_state(backend, prompt, count):
     engine = TextGenerationEngine(backend)
     engine.generate([2], max_new_tokens=2)
@@ -72,18 +68,14 @@ def test_invalid_request_does_not_mutate_existing_state(backend, prompt, count):
 
 def test_interrupted_or_reentrant_callback_invalidates_uncertain_state(backend):
     engine = TextGenerationEngine(backend)
-
     def interrupt(token):
         raise KeyboardInterrupt()
-
     with pytest.raises(KeyboardInterrupt):
         engine.generate([1, 2], max_new_tokens=2, on_token=interrupt)
     assert engine.cached_tokens == ()
     assert backend.length == 0
-
     def recurse(token):
         engine.generate([1], max_new_tokens=1)
-
     with pytest.raises(RuntimeError, match="reentrant"):
         engine.generate([1, 2], max_new_tokens=2, on_token=recurse)
     assert backend.length == 0

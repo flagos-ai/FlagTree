@@ -16,9 +16,9 @@ from triton.flagmega.ir.ops.math.packed_block_scaled_matmul import PackedBlockSc
 
 
 class DequantizedProjection(fm.Module):
-
-    def __init__(self, *, packed_weights=False, lanes=(), consumer_lanes=(), n=32, k=128, dtype="bfloat16",
-                 quantization="none", weight_dtype="bfloat16", constants=False, block_n=16, block_k=128):
+    def __init__(self, *, packed_weights=False, lanes=(), consumer_lanes=(), n=32, k=128,
+                 dtype="bfloat16", quantization="none", weight_dtype="bfloat16", constants=False,
+                 block_n=16, block_k=128):
         super().__init__(dialect="high_level", stage="imported", entry="main")
         self.packed_weights, self.lanes, self.consumer_lanes = packed_weights, lanes, consumer_lanes
         self.n, self.k, self.dtype = n, k, dtype
@@ -30,22 +30,19 @@ class DequantizedProjection(fm.Module):
         weight_type = (fm.tensor_type(fm.vector_type("float8_e4m3fn", (2, 16)), (self.n, self.k // 32))
                        if self.packed_weights else fm.tensor_type("float8_e4m3fn", (self.n, self.k)))
         scale_type = fm.tensor_type("float32", ((self.n + self.block_n - 1) // self.block_n,
-                                                (self.k + self.block_k - 1) // self.block_k))
+                                               (self.k + self.block_k - 1) // self.block_k))
         operands = []
         for name, value_type in (("weight", weight_type), ("scale", scale_type)):
-            operands.append(
-                self.weight(name, value_type, source="memory", key=name, id=name) if self.constants else self.
-                input(name, value_type, id=name))
-        attrs = {
-            "weight_block_n": self.block_n, "weight_block_k": self.block_k, "output_lanes": self.lanes,
-            "activation_quantization": self.quantization, "weight_dequant_dtype": self.weight_dtype, "name":
-            "projection"
-        }
+            operands.append(self.weight(name, value_type, source="memory", key=name, id=name) if self.constants
+                            else self.input(name, value_type, id=name))
+        attrs = {"weight_block_n": self.block_n, "weight_block_k": self.block_k, "output_lanes": self.lanes,
+                 "activation_quantization": self.quantization, "weight_dequant_dtype": self.weight_dtype,
+                 "name": "projection"}
         result = (fm.F.math.packed_block_scaled_matmul(value, *operands, k_pack=2, k_vector=16, **attrs)
                   if self.packed_weights else fm.F.math.block_scaled_matmul(value, *operands, **attrs))
         if self.consumer_lanes:
-            result = fm.F.tensors.pack(result, self.consumer_lanes, axes=(-1, ) * len(self.consumer_lanes))
-        self.function("main", (value, ) if self.constants else (value, *operands), (result, ))
+            result = fm.F.tensors.pack(result, self.consumer_lanes, axes=(-1,) * len(self.consumer_lanes))
+        self.function("main", (value,) if self.constants else (value, *operands), (result,))
 
 
 def boundary_operands(n=32, k=128, *, boundary="activation", dtype="bfloat16", packed=False):
@@ -68,10 +65,8 @@ def boundary_operands(n=32, k=128, *, boundary="activation", dtype="bfloat16", p
 
 
 def _evaluate(value, weight, scales, **precision):
-    attrs = {
-        "weight_block_n": 16, "weight_block_k": 128, "activation_quantization": "none", "weight_dequant_dtype":
-        "bfloat16", **precision
-    }
+    attrs = {"weight_block_n": 16, "weight_block_k": 128,
+             "activation_quantization": "none", "weight_dequant_dtype": "bfloat16", **precision}
     node = SimpleNamespace(attrs=attrs, type=fm.tensor_type("bfloat16", (1, weight.shape[0])))
     context = SimpleNamespace(torch=torch, torch_dtype=lambda dtype: getattr(torch, dtype.value))
     return BlockScaledMatMul.evaluate(node, (value, weight, scales), context)
@@ -98,7 +93,7 @@ def test_weight_rounds_before_multiplication_not_just_before_the_final_store():
 
 
 @pytest.mark.parametrize("packed", [False, True])
-@pytest.mark.parametrize("lanes", [(), (8, ), (2, 4)])
+@pytest.mark.parametrize("lanes", [(), (8,), (2, 4)])
 def test_precision_and_output_layout_survive_construction_and_evaluation(packed, lanes):
     module = DequantizedProjection(packed_weights=packed, lanes=lanes).build()
     values, expected = boundary_operands(packed=packed)
@@ -109,9 +104,9 @@ def test_precision_and_output_layout_survive_construction_and_evaluation(packed,
 
 
 @pytest.mark.parametrize("definition", [BlockScaledMatMul, PackedBlockScaledMatMul])
-@pytest.mark.parametrize(
-    "invalid", [{"activation_quantization": "bad"}, {"activation_quantization": []},
-                {"weight_dequant_dtype": "float32"}, {"weight_dequant_dtype": "int32"}, {"weight_dequant_dtype": []}])
+@pytest.mark.parametrize("invalid", [{"activation_quantization": "bad"}, {"activation_quantization": []},
+                                      {"weight_dequant_dtype": "float32"}, {"weight_dequant_dtype": "int32"},
+                                      {"weight_dequant_dtype": []}])
 def test_rejects_unknown_precision_contracts(definition, invalid):
     attrs = {"weight_block_n": 16, "weight_block_k": 128, **invalid}
     if definition is PackedBlockScaledMatMul:
@@ -123,9 +118,8 @@ def test_rejects_unknown_precision_contracts(definition, invalid):
 @pytest.mark.parametrize("encoding", ["IQ4_XS", "Q4_K"])
 def test_native_gguf_cannot_silently_ignore_precision_overrides(encoding):
     with pytest.raises(IRSchemaError, match="GGUF"):
-        BlockScaledMatMul.normalize_attrs({
-            "weight_block_n": 16, "weight_block_k": 128, "weight_encoding": encoding, "activation_quantization": "none"
-        })
+        BlockScaledMatMul.normalize_attrs({"weight_block_n": 16, "weight_block_k": 128,
+                                           "weight_encoding": encoding, "activation_quantization": "none"})
 
 
 @pytest.mark.parametrize("packed", [False, True])
@@ -159,10 +153,8 @@ def test_candidates_require_matching_tensor_core_operand_precision(dtype, quanti
 
     module = DequantizedProjection(dtype=dtype, quantization=quantization, weight_dtype=weight_dtype).build()
     proposed = Compiler().compile(module, stop_after="propose-tir").module
-    points = [
-        point for point in proposed.selection_points if any(
-            candidate.id.startswith("tir.block_fp8.") for candidate in point.candidates)
-    ]
+    points = [point for point in proposed.selection_points
+              if any(candidate.id.startswith("tir.block_fp8.") for candidate in point.candidates)]
     assert len(points) == 1
     candidates = {candidate.id for candidate in points[0].candidates}
     assert "tir.block_fp8.simt" in candidates

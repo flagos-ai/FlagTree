@@ -26,12 +26,18 @@ def _args(*extra):
 
 
 def test_cli_rdata_cache_defaults_to_artifact_parent_filesystem():
-    assert cli._rdata_cache_dir(_args(), _Checkpoint()) == Path("build/artifacts/.flagmega-rdata-cache")
+    assert cli._rdata_cache_dir(_args(), _Checkpoint()) == Path(
+        "build/artifacts/.flagmega-rdata-cache"
+    )
 
 
 def test_cli_rdata_cache_can_be_relocated_or_disabled():
-    assert cli._rdata_cache_dir(_args("--rdata-cache-dir", "build/cache"), _Checkpoint()) == Path("build/cache")
-    assert cli._rdata_cache_dir(_args("--no-rdata-cache"), _Checkpoint()) is None
+    assert cli._rdata_cache_dir(
+        _args("--rdata-cache-dir", "build/cache"), _Checkpoint()
+    ) == Path("build/cache")
+    assert cli._rdata_cache_dir(
+        _args("--no-rdata-cache"), _Checkpoint()
+    ) is None
 
 
 def test_cli_does_not_create_an_unused_cache_without_checkpoint():

@@ -4,7 +4,8 @@
 import pytest
 
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
-    _paged_attention_partial_call, )
+    _paged_attention_partial_call,
+)
 from triton.flagmega.codegen.triton.templates import (
     KernelTemplateSpec,
     TritonTemplateRegistry,
@@ -32,38 +33,39 @@ def _abi(
         strides.append(stride)
         stride *= extent
     return {
-        "storage":
-        storage,
-        "storage_kind":
-        storage_kind,
-        "pool_byte_offset":
-        0,
-        "scalar_dtype":
-        dtype,
-        "scalar_itemsize":
-        itemsize,
-        "logical_shape":
-        shape,
-        "local_capacity_shape":
-        shape,
-        "active_shape_expressions":
-        tuple(str(value) for value in shape),
-        "logical_coordinate_expressions":
-        tuple(f"local_coord_{axis}" for axis in range(len(shape))),
-        "scalar_storage_strides":
-        tuple(value * lanes for value in reversed(strides)),
-        "scalar_lane_shape": () if lanes == 1 else (lanes, ),
-        "scalar_lane_count":
-        lanes,
-        "component_stride_scalar_elements":
-        owner_stride,
-        "coordinate_space":
-        coordinate_space,
-        "distributed_type": ({
-            "placement": {"hierarchy": (2, 1)},
-            "axis_policies": tuple({"kind": "broadcast"} for _ in shape),
-            "partial": ({"axes": (0, ), "reduce_op": "sum"} if partial else None),
-        } if distributed else None),
+        "storage": storage,
+        "storage_kind": storage_kind,
+        "pool_byte_offset": 0,
+        "scalar_dtype": dtype,
+        "scalar_itemsize": itemsize,
+        "logical_shape": shape,
+        "local_capacity_shape": shape,
+        "active_shape_expressions": tuple(str(value) for value in shape),
+        "logical_coordinate_expressions": tuple(
+            f"local_coord_{axis}" for axis in range(len(shape))
+        ),
+        "scalar_storage_strides": tuple(
+            value * lanes for value in reversed(strides)
+        ),
+        "scalar_lane_shape": () if lanes == 1 else (lanes,),
+        "scalar_lane_count": lanes,
+        "component_stride_scalar_elements": owner_stride,
+        "coordinate_space": coordinate_space,
+        "distributed_type": (
+            {
+                "placement": {"hierarchy": (2, 1)},
+                "axis_policies": tuple(
+                    {"kind": "broadcast"} for _ in shape
+                ),
+                "partial": (
+                    {"axes": (0,), "reduce_op": "sum"}
+                    if partial
+                    else None
+                ),
+            }
+            if distributed
+            else None
+        ),
     }
 
 
@@ -95,9 +97,9 @@ def _raw():
     )
     state = (
         cache,
-        _abi((1, ), dtype="int32", storage="input", distributed=False),
-        _abi((1, ), dtype="int32", storage="input", distributed=False),
-        _abi((1, ), dtype="int64", itemsize=8, storage="input", distributed=False),
+        _abi((1,), dtype="int32", storage="input", distributed=False),
+        _abi((1,), dtype="int32", storage="input", distributed=False),
+        _abi((1,), dtype="int64", itemsize=8, storage="input", distributed=False),
         _abi((1, 4), dtype="int32", storage="input", distributed=False),
     )
     scalar = _abi((), dtype="int32", storage="scalar", distributed=False)
@@ -116,8 +118,7 @@ def _raw():
         partial=True,
     )
     return {
-        "variant":
-        "decode_t16",
+        "variant": "decode_t16",
         "semantic_attrs": {
             "layout": ("seq", "head", "dim"),
             "split_hierarchy_axis": 0,
@@ -157,7 +158,9 @@ def test_each_local_head_rebases_query_and_partial_state_pointers():
 
 
 def test_partial_microkernel_indexes_only_within_rebased_head():
-    implementation = KernelTemplateSpec("paged_attention_partial", "decode_t16", "nvidia", "sm90")
+    implementation = KernelTemplateSpec(
+        "paged_attention_partial", "decode_t16", "nvidia", "sm90"
+    )
     source = TritonTemplateRegistry().render_kernel(implementation, {}).source
 
     compile(source, "paged_attention_partial.py", "exec")
@@ -172,7 +175,7 @@ def test_query_and_cache_scalar_head_dimensions_must_agree():
     raw = _raw()
     cache = raw["inputs"][1]["buffers"][0]["abi"]
     cache["scalar_lane_count"] = 2
-    cache["scalar_lane_shape"] = (2, )
+    cache["scalar_lane_shape"] = (2,)
 
     with pytest.raises(CodegenError, match="scalar head dimensions differ"):
         _paged_attention_partial_call(raw)

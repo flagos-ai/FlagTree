@@ -7,13 +7,14 @@ import pytest
 
 from triton.flagmega import ir as fm
 from triton.flagmega.passes.form_qkv_rope_with_cache import (
-    form_qkv_rope_with_cache, )
+    form_qkv_rope_with_cache,
+)
 from triton.flagmega.ir.ops.nn._paged_attention_state import (
-    PagedAttentionStateConfig, )
+    PagedAttentionStateConfig,
+)
 
 
 class QKVRoPERegion(fm.Module):
-
     def __init__(self, *, extra_query_user: bool = False, wide: bool = False, rotary_dim=None):
         super().__init__(
             dialect="high_level",
@@ -27,7 +28,7 @@ class QKVRoPERegion(fm.Module):
     def forward(self):
         q_type = fm.tensor_type("bfloat16", (1, 2, 64))
         kv_type = fm.tensor_type("bfloat16", (1, 1, 64))
-        parameter_type = fm.tensor_type("bfloat16", (64, ))
+        parameter_type = fm.tensor_type("bfloat16", (64,))
         trig_type = fm.tensor_type("float32", (1, 1, self.rotary_dim or 64))
         q = self.input("q", q_type)
         k = self.input("k", kv_type)
@@ -41,7 +42,9 @@ class QKVRoPERegion(fm.Module):
         cos_input, sin_input = cos, sin
         state = self.input(
             "state",
-            PagedAttentionStateConfig(1, 1, 64, block_size=4, num_blocks=2, lanes=8).ref_type,
+            PagedAttentionStateConfig(
+                1, 1, 64, block_size=4, num_blocks=2, lanes=8
+            ).ref_type,
         )
         layer_id = self.input("layer_id", fm.tensor_type("int32", ()))
         advance = self.input("advance", fm.tensor_type("bool", ()))
@@ -49,11 +52,13 @@ class QKVRoPERegion(fm.Module):
         if self.wide:
             q_input = fm.F.tensors.cast(q, dtype="float32", name="q_wide")
             k_input = fm.F.tensors.cast(k, dtype="float32", name="k_wide")
-            cos = fm.F.tensors.cast(fm.F.tensors.cast(cos, dtype="bfloat16", name="cos_bf16"), dtype="float32",
-                                    name="cos_wide")
-            sin = fm.F.tensors.cast(fm.F.tensors.cast(sin, dtype="bfloat16", name="sin_bf16"), dtype="float32",
-                                    name="sin_wide")
-        q_stats = fm.F.nn.norm_stats(q_input, axis=-1, use_mean=False, name="q_stats")
+            cos = fm.F.tensors.cast(fm.F.tensors.cast(cos, dtype="bfloat16", name="cos_bf16"),
+                                    dtype="float32", name="cos_wide")
+            sin = fm.F.tensors.cast(fm.F.tensors.cast(sin, dtype="bfloat16", name="sin_bf16"),
+                                    dtype="float32", name="sin_wide")
+        q_stats = fm.F.nn.norm_stats(
+            q_input, axis=-1, use_mean=False, name="q_stats"
+        )
         q_norm = fm.F.nn.norm_apply(
             q_input,
             q_stats,
@@ -64,7 +69,9 @@ class QKVRoPERegion(fm.Module):
             use_mean=False,
             name="q_norm",
         )
-        k_stats = fm.F.nn.norm_stats(k_input, axis=-1, use_mean=False, name="k_stats")
+        k_stats = fm.F.nn.norm_stats(
+            k_input, axis=-1, use_mean=False, name="k_stats"
+        )
         k_norm = fm.F.nn.norm_apply(
             k_input,
             k_stats,
@@ -80,10 +87,18 @@ class QKVRoPERegion(fm.Module):
         if self.wide:
             q_rope = fm.F.tensors.cast(q_rope, dtype="bfloat16", name="q_rounded")
             k_rope = fm.F.tensors.cast(k_rope, dtype="bfloat16", name="k_rounded")
-        q_view = fm.F.tensors.pack(q_rope, lanes=(8, ), axes=(2, ), name="q_cache_pack")
-        k_view = fm.F.tensors.pack(k_rope, lanes=(8, ), axes=(2, ), name="k_cache_pack")
-        v_view = fm.F.tensors.pack(v, lanes=(8, ), axes=(2, ), name="v_cache_pack")
-        no_advance = fm.F.builtin.scalar_const(fm.tensor_type("bool", ()), False, name="no_advance")
+        q_view = fm.F.tensors.pack(
+            q_rope, lanes=(8,), axes=(2,), name="q_cache_pack"
+        )
+        k_view = fm.F.tensors.pack(
+            k_rope, lanes=(8,), axes=(2,), name="k_cache_pack"
+        )
+        v_view = fm.F.tensors.pack(
+            v, lanes=(8,), axes=(2,), name="v_cache_pack"
+        )
+        no_advance = fm.F.builtin.scalar_const(
+            fm.tensor_type("bool", ()), False, name="no_advance"
+        )
         key_state = fm.F.nn.update_paged_attention_kv_cache(
             k_view,
             state,
@@ -161,9 +176,13 @@ def test_pass_forms_one_effectful_semantic_region_and_preserves_boundaries(tmp_p
         "qkv_layout": ("seq", "head", "dim"),
         "attention_layout": ("seq", "head", "dim"),
     }
-    assert not [node for node in result.nodes if node.op == "nn.update_paged_attention_kv_cache"]
+    assert not [
+        node
+        for node in result.nodes
+        if node.op == "nn.update_paged_attention_kv_cache"
+    ]
     assert result.node_map["updated"].op == "builtin.get_item"
-    assert result.node_map["updated"].inputs == (fused.id, )
+    assert result.node_map["updated"].inputs == (fused.id,)
     assert result.node_map["attention"].inputs[:2] == (
         f"{fused.id}.query",
         "updated",
@@ -180,7 +199,11 @@ def test_pass_rejects_region_when_query_rope_has_an_external_user():
     result = form_qkv_rope_with_cache(source)
 
     assert not [node for node in result.nodes if node.op == "nn.qkv_rope_with_cache"]
-    assert len([node for node in result.nodes if node.op == "nn.update_paged_attention_kv_cache"]) == 2
+    assert len([
+        node
+        for node in result.nodes
+        if node.op == "nn.update_paged_attention_kv_cache"
+    ]) == 2
 
 
 def test_pass_allocates_fresh_ids_instead_of_looping_on_agent_name_collision():
@@ -195,20 +218,24 @@ def test_pass_allocates_fresh_ids_instead_of_looping_on_agent_name_collision():
 
     result = form_qkv_rope_with_cache(edited)
 
-    fused = tuple(node for node in result.nodes if node.op == "nn.qkv_rope_with_cache")
+    fused = tuple(
+        node for node in result.nodes if node.op == "nn.qkv_rope_with_cache"
+    )
     assert len(fused) == 1
     assert fused[0].id == "updated.qkv_rope_with_cache_1"
-    assert result.node_map["attention"].inputs[0] == ("updated.qkv_rope_with_cache_1.query_1")
+    assert result.node_map["attention"].inputs[0] == (
+        "updated.qkv_rope_with_cache_1.query_1"
+    )
 
 
 @pytest.mark.parametrize("q_round,k_round", [(False, True), (True, False), (True, True)])
 def test_qkv_fusion_preserves_independent_normalization_rounding(q_round, k_round, tmp_path):
     source = QKVRoPERegion().build()
     policies = {"q_norm": q_round, "k_norm": k_round}
-    source = replace(
-        source, nodes=tuple(
-            replace(node, attrs={**node.attrs, "round_before_scale": policies[node.id]}) if node.id in
-            policies else node for node in source.nodes))
+    source = replace(source, nodes=tuple(
+        replace(node, attrs={**node.attrs, "round_before_scale": policies[node.id]})
+        if node.id in policies else node for node in source.nodes
+    ))
     result = form_qkv_rope_with_cache(source)
     fused = next(node for node in result.nodes if node.op == "nn.qkv_rope_with_cache")
     assert fused.attrs["q_round_before_scale"] is q_round
@@ -234,7 +261,7 @@ def test_wide_qkv_is_formed_by_the_regular_pass_and_round_trips(tmp_path):
 def test_qkv_pass_preserves_function_output_boundaries(boundary, wide):
     source = QKVRoPERegion(wide=wide).build()
     function = source.functions[0]
-    source = fm.verify_module(replace(source, functions=(replace(function, outputs=(*function.outputs, boundary)), )))
+    source = fm.verify_module(replace(source, functions=(replace(function, outputs=(*function.outputs, boundary)),)))
     assert form_qkv_rope_with_cache(source) == source
 
 
@@ -247,14 +274,13 @@ def test_qkv_preserves_query_and_all_cache_bytes(round_before_scale, rotary_dim,
     from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator, create_paged_attention_state
 
     source = QKVRoPERegion(wide=wide, rotary_dim=rotary_dim).build()
-    source = replace(
-        source, nodes=tuple(
-            replace(node, attrs={**node.attrs, "round_before_scale": round_before_scale}) if node.op ==
-            "nn.norm_apply" else node for node in source.nodes))
+    source = replace(source, nodes=tuple(
+        replace(node, attrs={**node.attrs, "round_before_scale": round_before_scale})
+        if node.op == "nn.norm_apply" else node for node in source.nodes))
     if relaxed:
         from triton.flagmega.rules import DataflowRewriter
         from triton.flagmega.rules.neutral.fold_cast import fold_cast_rule
-        source = DataflowRewriter((fold_cast_rule(), )).rewrite(source)
+        source = DataflowRewriter((fold_cast_rule(),)).rewrite(source)
     result = form_qkv_rope_with_cache(source)
     fused = next(node for node in result.nodes if node.op == "nn.qkv_rope_with_cache")
     evaluator = TorchEvaluator(DictWeightResolver({}))
@@ -264,13 +290,11 @@ def test_qkv_preserves_query_and_all_cache_bytes(round_before_scale, rotary_dim,
         node = source.node_map[node_id]
         if isinstance(node.type, fm.TensorType) and node.type.dtype in {fm.DType.BFLOAT16, fm.DType.FLOAT32}:
             values[node.attrs["name"]] = torch.randn(
-                tuple(dim.fixed_value for dim in node.type.shape),
-                generator=generator).to(torch.bfloat16 if node.type.dtype == fm.DType.BFLOAT16 else torch.float32)
+                tuple(dim.fixed_value for dim in node.type.shape), generator=generator
+            ).to(torch.bfloat16 if node.type.dtype == fm.DType.BFLOAT16 else torch.float32)
     values.update(layer_id=torch.tensor(0, dtype=torch.int32), advance=torch.tensor(True))
-    states = [
-        create_paged_attention_state(PagedAttentionStateConfig(1, 1, 64, block_size=4, num_blocks=2, lanes=8))
-        for _ in range(2)
-    ]
+    states = [create_paged_attention_state(PagedAttentionStateConfig(
+        1, 1, 64, block_size=4, num_blocks=2, lanes=8)) for _ in range(2)]
     for state in states:
         state.block_table.copy_(torch.tensor([[1, 0]], dtype=torch.int32))
     original, before = evaluator.run_with_trace(source, {**values, "state": states[0]})

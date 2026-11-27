@@ -16,12 +16,10 @@ POINTWISE_OPS = frozenset({
     "math.add", "math.mul", "math.div", "math.sigmoid", "math.silu", "math.vectorized_binary", "math.vectorized_unary",
     "tensors.cast", "ntt.vectorized_cast"
 })
-FUSION_FAMILIES = {
-    **{op: "elementwise"
-       for op in POINTWISE_OPS}, "nn.softmax": "softmax", "ntt.vectorized_add_norm_stats": "vectorized_add_norm_stats",
-    "tensors.broadcast_to": "broadcast_to", "math.reduce_sum": "reduce_sum", "distributed.boxing": "distributed_boxing",
-    "distributed.force_boxing": "distributed_boxing"
-}
+FUSION_FAMILIES = {**{op: "elementwise" for op in POINTWISE_OPS}, "nn.softmax": "softmax",
+                   "ntt.vectorized_add_norm_stats": "vectorized_add_norm_stats",
+                   "tensors.broadcast_to": "broadcast_to", "math.reduce_sum": "reduce_sum",
+                   "distributed.boxing": "distributed_boxing", "distributed.force_boxing": "distributed_boxing"}
 _EXPRESSIONS = POINTWISE_OPS | {"builtin.splat_const", "builtin.scalar_const"}
 
 
@@ -33,11 +31,9 @@ def decode_fusion_attrs(attrs):
                 return Fusion.from_data(value["$fusion"])
             if set(value) == {"$ir_type"}:
                 return type_from_data(value["$ir_type"])
-            return {
-                key: type_from_data(item) if key == "new_type" and isinstance(item, Mapping)
-                and item.get("kind") in {"tensor", "distributed", "tuple", "ref", "none"} else decode(item)
-                for key, item in value.items()
-            }
+            return {key: type_from_data(item) if key == "new_type" and isinstance(item, Mapping)
+                    and item.get("kind") in {"tensor", "distributed", "tuple", "ref", "none"}
+                    else decode(item) for key, item in value.items()}
         if isinstance(value, (tuple, list)):
             return tuple(decode(item) for item in value)
         return value
@@ -79,17 +75,18 @@ def require_fusion(node, inputs, *, family=None):
     if expected == "distributed_boxing":
         target = node.attrs["new_type"]
         if (node.attrs.get("pre_ops") or len(inputs) != 1 or inputs[0].type == target
-                or any(not isinstance(kind, (TensorType, DistributedType)) or getattr(kind, "partial", None) is not None
-                       or getattr(kind, "exclusive", None) is not None for kind in (inputs[0].type, target))):
+                or any(not isinstance(kind, (TensorType, DistributedType))
+                       or getattr(kind, "partial", None) is not None or getattr(kind, "exclusive", None) is not None
+                       for kind in (inputs[0].type, target))):
             raise CodegenError("Numeric Boxing fusion requires a materialized tensor ownership copy with PostOps only.")
     raw_type = node.type
     if expected == "vectorized_add_norm_stats":
         definition = get_definition(node.op)
         operands = semantic_inputs(definition, inputs, node.attrs)
-        if (node.attrs.get("post_ops") or not isinstance(node.type, TupleType) or len(node.type.fields) != 2
+        if (node.attrs.get("post_ops") or not isinstance(node.type, TupleType)
+                or len(node.type.fields) != 2
                 or any(has_partial_type(value.type) for value in (*inputs, *operands))):
-            raise CodegenError(
-                "VectorizedAddNormStats supports materialized input PreOps and two explicit outputs only.")
+            raise CodegenError("VectorizedAddNormStats supports materialized input PreOps and two explicit outputs only.")
         raw_type = node.type.fields[0]
     types = [value.type for value in inputs] + [raw_type]
     for value_type in types:
@@ -113,15 +110,14 @@ def require_fusion(node, inputs, *, family=None):
 
 
 def _coordinate_preserving_casts(body):
-
     def geometry(kind):
         tensor = tensor_of(kind)
         dtype = VectorType(DType.FLOAT32, tensor.dtype.lanes) if isinstance(tensor.dtype, VectorType) else DType.FLOAT32
         tensor = replace(tensor, dtype=dtype)
         return replace(kind, tensor=tensor) if isinstance(kind, DistributedType) else tensor
 
-    return all(value.op in {"tensors.cast", "ntt.vectorized_cast"} and geometry(value.type) == geometry(body.input_type)
-               for value in body.nodes[1:])
+    return all(value.op in {"tensors.cast", "ntt.vectorized_cast"}
+               and geometry(value.type) == geometry(body.input_type) for value in body.nodes[1:])
 
 
 def _packed_accumulator_cast(node, inputs):
@@ -132,7 +128,7 @@ def _packed_accumulator_cast(node, inputs):
         return False
     body = post[0]
     if (len(body.nodes) != 2 or body.nodes[-1].op not in {"tensors.cast", "ntt.vectorized_cast"}
-            or body.nodes[-1].inputs != (body.parameter.id, )):
+            or body.nodes[-1].inputs != (body.parameter.id,)):
         return False
     if body.nodes[-1].op == "ntt.vectorized_cast":
         rank = tensor_of(body.input_type).rank
@@ -149,19 +145,21 @@ def _packed_accumulator_cast(node, inputs):
 
 def _producer_widening_cast(node, inputs):
     post = node.attrs.get("post_ops", ())
-    if (node.op not in {"nn.embedding", "ntt.packed_matmul"} or node.attrs.get("pre_ops") or len(post) != 1
-            or post[0] is None):
+    if (node.op not in {"nn.embedding", "ntt.packed_matmul"} or node.attrs.get("pre_ops")
+            or len(post) != 1 or post[0] is None):
         return False
     body = post[0]
     if (len(body.nodes) != 2 or body.nodes[-1].op not in {"tensors.cast", "ntt.vectorized_cast"}
-            or scalar_type(body.input_type) is not DType.BFLOAT16 or scalar_type(body.output_type) is not DType.FLOAT32
+            or scalar_type(body.input_type) is not DType.BFLOAT16
+            or scalar_type(body.output_type) is not DType.FLOAT32
             or not _coordinate_preserving_casts(body)):
         return False
     if node.op == "nn.embedding":
         return len(inputs) == 2 and (node.attrs.get("weight_encoding") is not None
                                      or scalar_type(inputs[1].type) is DType.BFLOAT16)
     return (len(inputs) == 4 and all(isinstance(value.type, NoneType) for value in inputs[2:])
-            and not node.attrs.get("fused_reduce", False) and node.attrs.get("output_data_type") == DType.BFLOAT16.value
+            and not node.attrs.get("fused_reduce", False)
+            and node.attrs.get("output_data_type") == DType.BFLOAT16.value
             and all(scalar_type(value.type) is DType.BFLOAT16 for value in inputs[:2]))
 
 
@@ -183,8 +181,8 @@ def fusion_rules():
     from triton.flagmega.rules.neutral.commute_cast_view import commute_cast_view_rules
     from triton.flagmega.rules.neutral.post_ops_view import post_ops_through_view_rules
     producers = ("nn.embedding", "ntt.packed_matmul")
-    return (*commute_cast_view_rules(), *pre_post_ops_rules(FUSION_FAMILIES, can_fuse), *post_ops_through_view_rules(
-        ("distributed.boxing", "distributed.force_boxing"), can_fuse),
+    return (*commute_cast_view_rules(), *pre_post_ops_rules(FUSION_FAMILIES, can_fuse),
+            *post_ops_through_view_rules(("distributed.boxing", "distributed.force_boxing"), can_fuse),
             *pre_post_ops_rules(producers, _can_fuse_producer_widening),
             *post_ops_through_view_rules(producers, _can_fuse_producer_widening))
 
@@ -249,8 +247,8 @@ def raw_semantics(raw):
         if not binding.get("buffers") and parameter.check_type(NoneType()):
             inputs.append(Node(f"arg{index}", "builtin.none", (), NoneType()))
         else:
-            inputs.append(
-                Node(f"arg{index}", "builtin.var", (), _tensor_type(_buffer(raw, "inputs", parameter.name)["abi"])))
+            inputs.append(Node(f"arg{index}", "builtin.var", (),
+                               _tensor_type(_buffer(raw, "inputs", parameter.name)["abi"])))
     inputs = tuple(inputs)
     operands = semantic_inputs(definition, inputs, attrs)
     result_type = definition.infer_call_type(operands, split_ops(attrs))

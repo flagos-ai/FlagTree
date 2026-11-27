@@ -23,21 +23,18 @@ def test_selected_bank_traffic_counts_active_slots_not_owner_capacity(definition
     mesh = fm.Placement((8, 2, 2), "xyz", "bbb" if chip_level is None else chip_level + "bb")
     r = {
         "broadcast": b,
-        "cyclic": fm.SBP.split_block_cyclic((0, ), 2),
-        "staged": fm.SBP.split(fm.SplitStage.block_cyclic((0, ), 2), fm.SplitStage.block_cyclic((1, ), 2)),
-        "empty": fm.SBP.split_block_cyclic((0, ), 4),
-        "contiguous": fm.SBP.split_contiguous((1, ), 4),
+        "cyclic": fm.SBP.split_block_cyclic((0,), 2),
+        "staged": fm.SBP.split(fm.SplitStage.block_cyclic((0,), 2),
+                               fm.SplitStage.block_cyclic((1,), 2)),
+        "empty": fm.SBP.split_block_cyclic((0,), 4),
+        "contiguous": fm.SBP.split_contiguous((1,), 4),
     }[layout]
-    n = fm.SBP.split_block_cyclic((2, ), 8)
+    n = fm.SBP.split_block_cyclic((2,), 8)
     types = operand_types(tokens=3, hidden=20, intermediate=12, routes=routes, experts=16)
-    policies = {
-        "dispatched": (b, r, b), "activations": (b, r, b), "router_expert_ids": (b, r), "gate_weight": (b, n, b),
-        "up_weight": (b, n, b), "down_weight": (b, n, b)
-    }
-    types = {
-        p.name: fm.DistributedType(types[p.name], policies.get(p.name, (b, b)), mesh)
-        for p in definition.input_parameters
-    }
+    policies = {"dispatched": (b, r, b), "activations": (b, r, b), "router_expert_ids": (b, r),
+                "gate_weight": (b, n, b), "up_weight": (b, n, b), "down_weight": (b, n, b)}
+    types = {p.name: fm.DistributedType(types[p.name], policies.get(p.name, (b, b)), mesh)
+             for p in definition.input_parameters}
     inputs = operands(definition, types)
     prepared = definition.prepare(inputs, {})
     factors = definition.cost_factors(inputs, prepared.attrs, prepared.result_type)
@@ -47,10 +44,10 @@ def test_selected_bank_traffic_counts_active_slots_not_owner_capacity(definition
     for owner in product(*(range(n) for n in mesh.hierarchy)):
         slots = prod(d.fixed_value for d in fm.local_shard_descriptor(types["router_expert_ids"], owner).active_shape)
         matrix = prod(d.fixed_value for d in fm.local_shard_descriptor(matrix_type, owner).active_shape[1:])
-        chip = () if chip_level is None else (owner[0], )
+        chip = () if chip_level is None else (owner[0],)
         per_chip[chip] = per_chip.get(chip, 0) + projections * slots * (matrix * matrix_type.tensor.dtype.itemsize + 8)
-    memory_only = replace(factors, simt_fma_operations=0, elementwise_operations=0, block_local_memory_load_bytes=0,
-                          block_local_memory_store_bytes=0)
+    memory_only = replace(factors, simt_fma_operations=0, elementwise_operations=0,
+                          block_local_memory_load_bytes=0, block_local_memory_store_bytes=0)
     assert DistributedOperationCostModel().get_latency(memory_only, prepared.result_type) == max(per_chip.values())
     # Masked arithmetic still runs over the maximum local domain.
     local_ids = fm.local_tensor_type(types["router_expert_ids"])
@@ -61,7 +58,7 @@ def test_selected_bank_traffic_counts_active_slots_not_owner_capacity(definition
 
 def test_chip_aggregate_factors_are_not_multiplied_by_owner_count():
     model = DistributedOperationCostModel(chip_global_latency_cycles=3)
-    result = fm.DistributedType(fm.tensor_type("float32", (1, )), (fm.SBP.broadcast(), ),
+    result = fm.DistributedType(fm.tensor_type("float32", (1,)), (fm.SBP.broadcast(),),
                                 fm.Placement((8, 16), "yx", "bb"))
     factors = fm.OpCostFactors(chip_global_memory_load_bytes=2, chip_global_memory_store_bytes=1,
                                chip_aggregate_memory_load_bytes=17, chip_aggregate_memory_store_bytes=5)
@@ -72,16 +69,13 @@ def test_chip_aggregate_factors_are_not_multiplied_by_owner_count():
 def test_down_split_k_fusion_preserves_aggregate_traffic_and_owner_reduction():
     from triton.flagmega.ir.ops.ntt.sparse_experts import SparseExpertsDownCombine
     b = fm.SBP.broadcast()
-    t, r, n, k = (fm.SBP.split_block_cyclic((axis, ), 2) for axis in range(4))
+    t, r, n, k = (fm.SBP.split_block_cyclic((axis,), 2) for axis in range(4))
     mesh = fm.Placement((2, 2, 2, 2), "abcd", "bbbb")
     types = operand_types(tokens=3, routes=3, hidden=20, intermediate=12)
-    policies = {
-        "activations": (t, r, k), "router_expert_ids": (t, r), "router_expert_weights": (t, r), "down_weight": (b, n, k)
-    }
-    types = {
-        p.name: fm.DistributedType(types[p.name], policies.get(p.name, (b, b)), mesh)
-        for p in SparseExpertsDownCombine.input_parameters
-    }
+    policies = {"activations": (t, r, k), "router_expert_ids": (t, r),
+                "router_expert_weights": (t, r), "down_weight": (b, n, k)}
+    types = {p.name: fm.DistributedType(types[p.name], policies.get(p.name, (b, b)), mesh)
+             for p in SparseExpertsDownCombine.input_parameters}
     inputs = operands(SparseExpertsDownCombine, types)
     down = SparseExpertsDown.prepare(inputs[:5], {})
     fused = SparseExpertsDownCombine.prepare(inputs, {})

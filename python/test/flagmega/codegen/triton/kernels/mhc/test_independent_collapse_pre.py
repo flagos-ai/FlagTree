@@ -21,11 +21,17 @@ def artifact(tmp_path, independent=None, *, declared=None):
 def test_independent_pre_schedule_has_only_the_projection_publication(tmp_path):
     m, source = artifact(tmp_path, True)
     tree = ast.parse(source)
-    (f, ) = (f for f in tree.body if isinstance(f, ast.FunctionDef) and any(
-        isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id.endswith("__project")
-        for n in ast.walk(f)))
+    (f,) = (
+        f
+        for f in tree.body
+        if isinstance(f, ast.FunctionDef)
+        and any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id.endswith("__project")
+            for n in ast.walk(f)
+        )
+    )
     assert sum(isinstance(n, ast.Call) and ast.unparse(n.func) == "tle.distributed_barrier" for n in ast.walk(f)) == 1
-    (dispatch, ) = (d.dispatch for d in m.kernel_definitions if d.dispatch.microkernel.family == "mhc_pre")
+    (dispatch,) = (d.dispatch for d in m.kernel_definitions if d.dispatch.microkernel.family == "mhc_pre")
     assert dispatch.microkernel.facts["internal_grid_barriers"] == 1
 
 
@@ -49,13 +55,15 @@ def test_default_schedule_keeps_the_same_source(tmp_path):
 def test_emitted_task_rotation_preserves_every_writer(tmp_path):
     _, source = artifact(tmp_path, True)
     tree = ast.parse(source)
-    (f, ) = (f for f in tree.body if isinstance(f, ast.FunctionDef) and f.name.endswith("__collapse"))
-    (loop, ) = (n for n in ast.walk(f)
-                if isinstance(n, ast.For) and isinstance(n.target, ast.Name) and n.target.id == "_fm_task")
+    (f,) = (f for f in tree.body if isinstance(f, ast.FunctionDef) and f.name.endswith("__collapse"))
+    (loop,) = (
+        n
+        for n in ast.walk(f)
+        if isinstance(n, ast.For) and isinstance(n.target, ast.Name) and n.target.id == "_fm_task"
+    )
     start = loop.iter.args[0]
     definitions = {
-        t.id: n.value
-        for n in ast.walk(f) if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)
+        t.id: n.value for n in ast.walk(f) if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)
     }
 
     def evaluate(n, env):
@@ -70,7 +78,8 @@ def test_emitted_task_rotation_preserves_every_writer(tmp_path):
     for ctas in (1, 2, 8, 128):
         for tasks in (1, 3, 16, 129, 528):
             writes = [
-                t for cta in range(ctas)
+                t
+                for cta in range(ctas)
                 for t in range(evaluate(start, {"_fm_cta": cta, "_fm_ctas": ctas}), tasks, ctas)
             ]
             assert sorted(writes) == list(range(tasks)), (ctas, tasks)
@@ -83,11 +92,19 @@ def test_nondefault_schedule_round_trips_before_rendering(tmp_path):
     assert restored.semantic_hash == compiled.semantic_hash
     path = write_artifact(restored, tmp_path / "resumed", target="nvidia-sm90", emit_executable=True)
     tree = ast.parse((path / "generated_kernels.py").read_text())
-    (wrapper, ) = (f for f in tree.body if isinstance(f, ast.FunctionDef) and any(
-        isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id.endswith("__project")
-        for n in ast.walk(f)))
-    assert (sum(
-        isinstance(n, ast.Call) and ast.unparse(n.func) == "tle.distributed_barrier" for n in ast.walk(wrapper)) == 1)
+    (wrapper,) = (
+        f
+        for f in tree.body
+        if isinstance(f, ast.FunctionDef)
+        and any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id.endswith("__project")
+            for n in ast.walk(f)
+        )
+    )
+    assert (
+        sum(isinstance(n, ast.Call) and ast.unparse(n.func) == "tle.distributed_barrier" for n in ast.walk(wrapper))
+        == 1
+    )
 
 
 def test_independent_schedule_rejects_a_noncooperative_renderer():
@@ -115,7 +132,7 @@ def stream_graph():
         hc=4,
         hidden=512,
         splits=4,
-        output_lanes=(8, ),
+        output_lanes=(8,),
         placement=mesh,
         collapsed_dtype="float32",
         collapse_input_dtype="bfloat16",

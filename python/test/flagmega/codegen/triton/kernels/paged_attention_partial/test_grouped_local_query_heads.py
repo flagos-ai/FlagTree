@@ -29,7 +29,8 @@ import pytest
 
 from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
-    _paged_attention_partial_call, )
+    _paged_attention_partial_call,
+)
 from triton.flagmega.codegen.triton.templates import TritonTemplateRegistry
 from triton.flagmega.codegen.triton.tir_package import _mesh_context
 from triton.flagmega.compiler import Compiler
@@ -41,8 +42,11 @@ from triton.flagmega.stages import get_stage
 
 HEAD_DIM = 128
 LANES = 8
-MMA_TEMPLATE = ("kernels/paged_attention_partial/platforms/nvidia/sm90/"
-                "mma_tma_smem_pipeline.py.jinja")
+MMA_TEMPLATE = (
+    "kernels/paged_attention_partial/platforms/nvidia/sm90/"
+    "mma_tma_smem_pipeline.py.jinja"
+)
+
 
 # --------------------------------------------------------------------------
 # selection, through the real stages on a packed GQA decode module
@@ -58,15 +62,19 @@ class _PackedDecodeAttention(fm.Module):
     """
 
     def __init__(self, *, query_heads: int, kv_heads: int):
-        super().__init__(dialect="high_level", stage="stats_threaded", entry="main")
+        super().__init__(
+            dialect="high_level", stage="stats_threaded", entry="main"
+        )
         self.query_heads = query_heads
-        self.cache = PagedAttentionStateConfig(28, kv_heads, HEAD_DIM, block_size=256, num_blocks=32)
+        self.cache = PagedAttentionStateConfig(
+            28, kv_heads, HEAD_DIM, block_size=256, num_blocks=32
+        )
 
     def forward(self):
         query = self.input(
             "query",
             fm.tensor_type(
-                fm.vector_type("bfloat16", (LANES, )),
+                fm.vector_type("bfloat16", (LANES,)),
                 (1, self.query_heads, HEAD_DIM // LANES),
             ),
         )
@@ -82,23 +90,29 @@ class _PackedDecodeAttention(fm.Module):
             name="attention",
             metadata={"source": "unit"},
         )
-        self.function("main", (query, state, layer), (attention, ))
+        self.function("main", (query, state, layer), (attention,))
 
 
 def _selected_partial(tmp_path, *, query_heads, kv_heads, hierarchy):
-    module = _PackedDecodeAttention(query_heads=query_heads, kv_heads=kv_heads).build()
-    compiler = Compiler(CompileOptions(
-        target="nvidia-sm90",
-        placement=fm.Placement(hierarchy, "yx", "bb"),
-    ))
+    module = _PackedDecodeAttention(
+        query_heads=query_heads, kv_heads=kv_heads
+    ).build()
+    compiler = Compiler(
+        CompileOptions(
+            target="nvidia-sm90",
+            placement=fm.Placement(hierarchy, "yx", "bb"),
+        )
+    )
     module = get_stage("decompose-paged-attention").run(module, compiler.target)
     selected = compiler.compile(module, stop_after="select-microkernels").module
     emitted = pathlib.Path(tmp_path) / "selected.py"
     emit_module(selected, emitted)
-    found = set(re.findall(
-        r"implementation='(tir\.paged_attention_partial\.[A-Za-z_0-9]+)'",
-        emitted.read_text(),
-    ))
+    found = set(
+        re.findall(
+            r"implementation='(tir\.paged_attention_partial\.[A-Za-z_0-9]+)'",
+            emitted.read_text(),
+        )
+    )
     assert len(found) == 1, found
     return found.pop()
 
@@ -107,16 +121,18 @@ def test_mma_is_selected_when_one_owner_holds_a_whole_gqa_group(tmp_path):
     # Qwen3-1.7B decode on one H800: 16 query heads over 8 KV heads on a
     # (8, 16) mesh.  Context splits 16 ways, so each participant owns the
     # whole group of 2 query heads of one KV head.
-    assert _selected_partial(tmp_path, query_heads=16, kv_heads=8,
-                             hierarchy=(8, 16)) == "tir.paged_attention_partial.mma_tma_smem_pipeline"
+    assert _selected_partial(
+        tmp_path, query_heads=16, kv_heads=8, hierarchy=(8, 16)
+    ) == "tir.paged_attention_partial.mma_tma_smem_pipeline"
 
 
 def test_mma_is_not_selected_when_owned_heads_cross_two_kv_groups(tmp_path):
     # 32 query heads over 8 KV heads on a (4, 16) mesh leaves 8 owner-local
     # heads against a group of 4, so one KV stream cannot feed the tile.  The
     # contract key is a real predicate, not an unconditional admission.
-    assert _selected_partial(tmp_path, query_heads=32, kv_heads=8,
-                             hierarchy=(4, 16)) != "tir.paged_attention_partial.mma_tma_smem_pipeline"
+    assert _selected_partial(
+        tmp_path, query_heads=32, kv_heads=8, hierarchy=(4, 16)
+    ) != "tir.paged_attention_partial.mma_tma_smem_pipeline"
 
 
 # --------------------------------------------------------------------------
@@ -148,38 +164,37 @@ def _abi(
             stride *= extent
         strides = tuple(value * lanes for value in reversed(packed))
     return {
-        "storage":
-        storage,
-        "storage_kind":
-        storage_kind,
-        "pool_byte_offset":
-        0,
-        "scalar_dtype":
-        dtype,
-        "scalar_itemsize":
-        itemsize,
-        "logical_shape":
-        logical_shape,
-        "local_capacity_shape":
-        local_shape,
-        "active_shape_expressions":
-        tuple(str(v) for v in local_shape),
-        "logical_coordinate_expressions":
-        tuple(f"local_coord_{axis}" for axis in range(len(local_shape))),
-        "scalar_storage_strides":
-        tuple(strides),
-        "scalar_lane_shape": () if lanes == 1 else (lanes, ),
-        "scalar_lane_count":
-        lanes,
-        "component_stride_scalar_elements":
-        owner_stride,
-        "coordinate_space":
-        coordinate_space,
-        "distributed_type": ({
-            "placement": {"hierarchy": (8, 16)},
-            "axis_policies": tuple({"kind": "broadcast"} for _ in local_shape),
-            "partial": ({"axes": partial_axes, "reduce_op": "sum"} if partial_axes else None),
-        } if distributed else None),
+        "storage": storage,
+        "storage_kind": storage_kind,
+        "pool_byte_offset": 0,
+        "scalar_dtype": dtype,
+        "scalar_itemsize": itemsize,
+        "logical_shape": logical_shape,
+        "local_capacity_shape": local_shape,
+        "active_shape_expressions": tuple(str(v) for v in local_shape),
+        "logical_coordinate_expressions": tuple(
+            f"local_coord_{axis}" for axis in range(len(local_shape))
+        ),
+        "scalar_storage_strides": tuple(strides),
+        "scalar_lane_shape": () if lanes == 1 else (lanes,),
+        "scalar_lane_count": lanes,
+        "component_stride_scalar_elements": owner_stride,
+        "coordinate_space": coordinate_space,
+        "distributed_type": (
+            {
+                "placement": {"hierarchy": (8, 16)},
+                "axis_policies": tuple(
+                    {"kind": "broadcast"} for _ in local_shape
+                ),
+                "partial": (
+                    {"axes": partial_axes, "reduce_op": "sum"}
+                    if partial_axes
+                    else None
+                ),
+            }
+            if distributed
+            else None
+        ),
     }
 
 
@@ -224,9 +239,9 @@ def _mma_raw(*, local_query_heads=2, query_heads=16, kv_heads=8, block_n=64):
     )
     state = (
         cache,
-        _abi((2, ), dtype="int32", storage="input", distributed=False),
-        _abi((1, ), dtype="int32", storage="input", distributed=False),
-        _abi((1, ), dtype="int64", itemsize=8, storage="input", distributed=False),
+        _abi((2,), dtype="int32", storage="input", distributed=False),
+        _abi((1,), dtype="int32", storage="input", distributed=False),
+        _abi((1,), dtype="int64", itemsize=8, storage="input", distributed=False),
         _abi((1, 32), dtype="int32", storage="input", distributed=False),
     )
     scalar = _abi((), dtype="int32", storage="scalar", distributed=False)
@@ -235,18 +250,17 @@ def _mma_raw(*, local_query_heads=2, query_heads=16, kv_heads=8, block_n=64):
         storage_kind="compact_per_owner",
         coordinate_space="local",
         owner_stride=local_query_heads,
-        partial_axes=(1, ),
+        partial_axes=(1,),
     )
     accumulator = _abi(
         (1, local_query_heads, HEAD_DIM),
         storage_kind="compact_per_owner",
         coordinate_space="local",
         owner_stride=local_query_heads * HEAD_DIM,
-        partial_axes=(1, ),
+        partial_axes=(1,),
     )
     return {
-        "variant":
-        "mma_tma_smem_pipeline",
+        "variant": "mma_tma_smem_pipeline",
         "semantic_attrs": {
             "layout": ("seq", "head", "dim"),
             "split_hierarchy_axis": 1,
@@ -272,7 +286,10 @@ def _mma_raw(*, local_query_heads=2, query_heads=16, kv_heads=8, block_n=64):
             _parameter("q", _binding("q", query)),
             _parameter(
                 "state",
-                *(_binding(f"state.{index}", abi) for index, abi in enumerate(state)),
+                *(
+                    _binding(f"state.{index}", abi)
+                    for index, abi in enumerate(state)
+                ),
             ),
             _parameter(
                 "layer_id",
@@ -290,7 +307,9 @@ def _mma_raw(*, local_query_heads=2, query_heads=16, kv_heads=8, block_n=64):
 
 @pytest.mark.parametrize("local_query_heads", [1, 2])
 def test_mma_renderer_passes_the_owned_row_count_and_head_stride(local_query_heads):
-    call = _paged_attention_partial_call(_mma_raw(local_query_heads=local_query_heads))
+    call = _paged_attention_partial_call(
+        _mma_raw(local_query_heads=local_query_heads)
+    )
 
     assert call["q_head_group_size"] == 2
     assert call["local_query_heads"] == local_query_heads
@@ -301,7 +320,9 @@ def test_mma_renderer_passes_the_owned_row_count_and_head_stride(local_query_hea
 
 def test_mma_renderer_rejects_owned_heads_crossing_a_kv_group():
     with pytest.raises(CodegenError, match="whole sub-block of one KV group"):
-        _paged_attention_partial_call(_mma_raw(local_query_heads=4, query_heads=16, kv_heads=8))
+        _paged_attention_partial_call(
+            _mma_raw(local_query_heads=4, query_heads=16, kv_heads=8)
+        )
 
 
 def test_mma_renderer_rejects_a_statistics_stride_the_template_cannot_address():
@@ -318,7 +339,9 @@ def test_mma_renderer_rejects_an_accumulator_stride_the_template_cannot_address(
     accumulator = raw["outputs"][2]["buffers"][0]["abi"]
     accumulator["scalar_storage_strides"] = (512, 256, 1)
 
-    with pytest.raises(CodegenError, match="partial_accumulator head rows with stride 128"):
+    with pytest.raises(
+        CodegenError, match="partial_accumulator head rows with stride 128"
+    ):
         _paged_attention_partial_call(raw)
 
 
@@ -340,53 +363,28 @@ def test_mma_renderer_rejects_a_partially_active_head_axis():
 
 def _render_mma(call_overrides):
     operands = (
-        "query",
-        "block_table",
-        "slot_mapping",
-        "layer_id",
-        "key_descriptor",
-        "value_descriptor",
-        "partial_max",
-        "partial_sum",
-        "partial_accumulator",
+        "query", "block_table", "slot_mapping", "layer_id", "key_descriptor",
+        "value_descriptor", "partial_max", "partial_sum", "partial_accumulator",
     )
     call = {
-        **{name: name
-           for name in operands},
-        "symbol":
-        "attention",
-        "signature":
-        ", ".join(operands),
-        "family":
-        "paged_attention_partial",
-        "variant":
-        "mma_tma_smem_pipeline",
-        "consumer_warps":
-        8,
-        "head_dim":
-        HEAD_DIM,
-        "query_token":
-        "0",
-        "query_dim_stride":
-        LANES,
-        "query_lanes":
-        LANES,
-        "accumulator_dim_stride":
-        1,
-        "q_head_group_size":
-        2,
-        "block_n":
-        64,
-        "block_size":
-        256,
-        "head":
-        "shard_coord0",
-        "context_shard":
-        "shard_coord1",
-        "context_shards":
-        16,
-        "scale":
-        HEAD_DIM**-0.5,
+        **{name: name for name in operands},
+        "symbol": "attention",
+        "signature": ", ".join(operands),
+        "family": "paged_attention_partial",
+        "variant": "mma_tma_smem_pipeline",
+        "consumer_warps": 8,
+        "head_dim": HEAD_DIM,
+        "query_token": "0",
+        "query_dim_stride": LANES,
+        "query_lanes": LANES,
+        "accumulator_dim_stride": 1,
+        "q_head_group_size": 2,
+        "block_n": 64,
+        "block_size": 256,
+        "head": "shard_coord0",
+        "context_shard": "shard_coord1",
+        "context_shards": 16,
+        "scale": HEAD_DIM**-0.5,
         "descriptor_block_shape": (1, 1, 64, 1, HEAD_DIM),
         "pipeline_consumer_parameters": ("key_reader", "value_reader"),
         "pipeline_producer_parameters": ("key_writer", "value_writer"),
@@ -399,16 +397,20 @@ def _render_mma(call_overrides):
     return TritonTemplateRegistry().render(
         MMA_TEMPLATE,
         {
-            **_mesh_context({"hierarchy": (8, 16), "hierarchy_levels": "bb", "name": "yx"}),
+            **_mesh_context(
+                {"hierarchy": (8, 16), "hierarchy_levels": "bb", "name": "yx"}
+            ),
             "distributed_entry": True,
-            "render_calls": (call, ),
+            "render_calls": (call,),
         },
     )
 
 
 @pytest.mark.parametrize("local_query_heads", [1, 2])
 def test_mma_template_publishes_exactly_the_owned_rows(local_query_heads):
-    source = _render_mma({"local_query_heads": local_query_heads, "query_head_stride": HEAD_DIM})
+    source = _render_mma(
+        {"local_query_heads": local_query_heads, "query_head_stride": HEAD_DIM}
+    )
     compile(source, "grouped_attention_render.py", "exec")
 
     # Every row predicate follows ownership.  At one owned head this is the

@@ -24,16 +24,25 @@ def device_descriptor_request(request, workspaces):
     encodings = set()
     for workspace in workspaces:
         shared_shape = tuple(int(value) for value in workspace["shape"])
-        if shared_shape[1:] != block_shape:
+        # R7 two-row destination packs both 2720-byte rows into the front
+        # of a 5632-byte slot through an aliasing reshape. The remaining
+        # 192 bytes belong to slot alignment, outside the logical TMA box.
+        padded_iq4 = (request["dtype"] == "uint8"
+            and (shared_shape[1:], block_shape) in (
+                ((1,592,16),(1,578,16)), ((1,176,16),(1,170,16)), ((2,176,16),(2,170,16)), ((4,176,16),(4,170,16)), ((8,176,16),(8,170,16))))
+        if shared_shape[1:] != block_shape and not padded_iq4:
             continue
         width = 0
         if workspace["matrix_compatible"] and prod(shared_shape[:-1]) >= 8:
             contiguous_bytes = shared_shape[-1] * item_size
-            width = next((value for value in (128, 64, 32) if contiguous_bytes % value == 0), 0)
+            width = next((value for value in (128, 64, 32)
+                          if contiguous_bytes % value == 0), 0)
         encodings.add(width)
     if len(encodings) != 1:
-        raise CodegenError(f"Descriptor {request['parameter']!r} must match one typed Shared "
-                           f"encoding, found {sorted(encodings)} for tile {block_shape}.")
+        raise CodegenError(
+            f"Descriptor {request['parameter']!r} must match one typed Shared "
+            f"encoding, found {sorted(encodings)} for tile {block_shape}."
+        )
     width, = encodings
     # Mirror getTMABlockShape: hardware boxes are at most 256 per dimension;
     # the contiguous box dimension matches the NVMMA swizzle width. TLE emits
@@ -44,9 +53,7 @@ def device_descriptor_request(request, workspaces):
     if request["kind"] == "table":
         return {**request, "block_shape": box_shape, "swizzle_mode": {0: 0, 32: 1, 64: 2, 128: 3}[width]}
     return {
-        **request,
-        "storage": "device",
-        "box_shape": box_shape,
+        **request, "storage": "device", "box_shape": box_shape,
         "swizzle_mode": {0: 0, 32: 1, 64: 2, 128: 3}[width],
     }
 

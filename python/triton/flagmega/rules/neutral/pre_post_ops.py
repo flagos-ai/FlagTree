@@ -95,7 +95,7 @@ def _post_rule(definition, boundary, can_fuse):
             # a same-type storage alias. The alias performs no conversion;
             # both numeric boundaries and rounding live in the supported body.
             candidate = replace(candidate, id=producer.id)
-            replacement = make_node("tensors.bitcast", root.id, (candidate, ),
+            replacement = make_node("tensors.bitcast", root.id, (candidate,),
                                     {"dtype": tensor_of(candidate.type).dtype}, root.metadata)
             if replacement.type != root.type:
                 return root
@@ -103,9 +103,9 @@ def _post_rule(definition, boundary, can_fuse):
             if proof is None:
                 return root
             extras, anchor = proof
-            return RewriteResult(replacement, (candidate, ), extra_replacements=extras, removed_ids=(producer.id, ),
-                                 insertion_before=anchor)
-        return RewriteResult(candidate, extra_replacements=extras, removed_ids=(producer.id, ), insertion_before=anchor)
+            return RewriteResult(replacement, (candidate,), extra_replacements=extras,
+                                 removed_ids=(producer.id,), insertion_before=anchor)
+        return RewriteResult(candidate, extra_replacements=extras, removed_ids=(producer.id,), insertion_before=anchor)
 
     return RewriteRule(f"FusePostOps.{definition.op_name}.{boundary}", pattern, rewrite, supports_fusion=True)
 

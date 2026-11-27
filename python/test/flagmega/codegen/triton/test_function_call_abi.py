@@ -29,15 +29,15 @@ def _bufferized_nested_module() -> fm.IRModule:
     worker_input = builder.var("worker_input", value_type, id="worker_input")
     worker_result = builder.call(
         "tir.kernel",
-        (worker_input, ),
+        (worker_input,),
         value_type,
         id="worker_result",
         attrs=_kernel_attrs("tir.silu.worker"),
     )
     builder.function(
         "worker",
-        (worker_input, ),
-        (worker_result, ),
+        (worker_input,),
+        (worker_result,),
         attrs={
             "calling_convention": "device",
             "noinline": True,
@@ -48,37 +48,36 @@ def _bufferized_nested_module() -> fm.IRModule:
     source = builder.var("source", value_type, id="source")
     prepared = builder.call(
         "tir.kernel",
-        (source, ),
+        (source,),
         value_type,
         id="prepared",
         attrs=_kernel_attrs("tir.silu.prepared"),
     )
     nested = builder.call(
         "tir.call",
-        (prepared, ),
+        (prepared,),
         value_type,
         id="nested",
         attrs={"callee": "worker"},
     )
     output = builder.call(
         "tir.kernel",
-        (nested, ),
+        (nested,),
         value_type,
         id="output",
         attrs=_kernel_attrs("tir.silu.output"),
     )
-    builder.function("main", (source, ), (output, ))
+    builder.function("main", (source,), (output,))
 
     selected = materialize_kernel_prim_functions(builder.build(entry="main"))
     plan = fm.make_buffer_plan(selected)
     bound = bind_prim_function_buffers(selected)
-    return fm.verify_module(
-        replace(
-            bound,
-            stage="bufferized_tir",
-            dialect="bufferized_tir",
-            metadata={**bound.metadata, "buffer_plan": plan.to_data()},
-        ))
+    return fm.verify_module(replace(
+        bound,
+        stage="bufferized_tir",
+        dialect="bufferized_tir",
+        metadata={**bound.metadata, "buffer_plan": plan.to_data()},
+    ))
 
 
 def test_function_call_abi_preserves_kernel_and_nested_call_order():
@@ -99,14 +98,20 @@ def test_function_call_abi_preserves_kernel_and_nested_call_order():
 
 
 def test_reusable_device_function_keeps_its_bufferized_local_call_contract():
-    described = describe_function_call_abi(_bufferized_nested_module(), function_name="worker")
+    described = describe_function_call_abi(
+        _bufferized_nested_module(), function_name="worker"
+    )
 
     assert described["calling_convention"] == "device"
     assert described["noinline"] is True
     assert described["reusable"] is True
     assert [event["call"] for event in described["events"]] == ["worker_result"]
-    assert described["parameters"][0]["buffers"][0]["abi"]["local_capacity_shape"] == (1, 16)
-    assert described["outputs"][0]["buffers"][0]["abi"]["local_capacity_shape"] == (1, 16)
+    assert described["parameters"][0]["buffers"][0]["abi"][
+        "local_capacity_shape"
+    ] == (1, 16)
+    assert described["outputs"][0]["buffers"][0]["abi"][
+        "local_capacity_shape"
+    ] == (1, 16)
 
 
 def test_repeated_call_analysis_reuses_bounded_immutable_buffer_abi_cache():

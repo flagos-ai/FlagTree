@@ -22,16 +22,13 @@ def test_wide_residual_preserves_projection_rounding_and_fp32_sum(tmp_path, impl
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
     module = _packed_norm_stats_pipeline_module(implementation, wide=True,
-                                                addend_cast_dtypes=("bfloat16", "float32") if round_addend else ())
-    weights = {
-        "weight": torch.zeros((2048, 2048), dtype=torch.bfloat16), "scale": torch.ones(2048, dtype=torch.bfloat16),
-        "bias": torch.zeros(2048, dtype=torch.bfloat16)
-    }
+        addend_cast_dtypes=("bfloat16", "float32") if round_addend else ())
+    weights = {"weight": torch.zeros((2048, 2048), dtype=torch.bfloat16),
+               "scale": torch.ones(2048, dtype=torch.bfloat16), "bias": torch.zeros(2048, dtype=torch.bfloat16)}
     weights["weight"][:, 0] = 1
     weights["weight"][:, 1] = 1 / 256
-    checkpoint = MemoryCheckpoint(
-        {}, {name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
-             for name, value in weights.items()}, weights)
+    checkpoint = MemoryCheckpoint({}, {name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
+                                       for name, value in weights.items()}, weights)
     artifact = write_artifact(module, tmp_path / "wide_residual", target="nvidia-sm90", checkpoint=checkpoint,
                               emit_executable=True)
     runtime = load(artifact, device="cuda:0")

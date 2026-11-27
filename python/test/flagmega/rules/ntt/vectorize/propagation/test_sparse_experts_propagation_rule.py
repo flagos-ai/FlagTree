@@ -20,11 +20,10 @@ def make_module(lanes, axes, *, shared=False, already_vector=False, generated=Fa
         def forward(self):
             types = operand_types()
             inputs = tuple(
-                self.input(parameter.name, types[parameter.name])
-                for parameter in SparseExpertsCombine.input_parameters)
-            down = fm.F.nn.sparse_experts_combine(
-                *inputs, round_weighted_output=True,
-                output_dtype=fm.vector_type("bfloat16", 2) if already_vector else "bfloat16", name="down")
+                self.input(parameter.name, types[parameter.name]) for parameter in SparseExpertsCombine.input_parameters)
+            down = fm.F.nn.sparse_experts_combine(*inputs, round_weighted_output=True,
+                                               output_dtype=fm.vector_type("bfloat16", 2) if already_vector else "bfloat16",
+                                               name="down")
             pack = fm.F.tensors.pack(
                 down, lanes=lanes, axes=axes, name="pack",
                 metadata={"vectorization_internal": True, "vectorization_root": "pack"} if generated else None)

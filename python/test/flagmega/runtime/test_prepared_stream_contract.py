@@ -49,7 +49,7 @@ def test_prepared_global_scratch_binds_to_first_stream(monkeypatch):
         _Compiled(),
         (),
         (),
-        grid=(1, ),
+        grid=(1,),
         contract=ResourceContract(1, 1),
     )
 

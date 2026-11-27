@@ -1,0 +1,66 @@
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family in ("update_paged_attention_kv_cache", "update_paged_attention_kv_cache_pair") and call.variant == "decode" %}
+static FTT_DEVICE void {{ call.symbol }}__write({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const cache_sequence_lengths = {{ call.sequence_lengths | cppexpr }};
+    auto *const cache_block_table = {{ call.block_table | cppexpr }};
+    auto *const cache_slots = {{ call.slots | cppexpr }};
+    auto *const cache_kv = {{ call.kv_cache | cppexpr }};
+    const ftt::dim_t cache_position = static_cast<ftt::dim_t>(cache_sequence_lengths[0]);
+{{ entry.strided_loop("cache_offsets", call.local_capacity) }} {
+        if (!(({{ call.active | cppexpr }}) && ({{ call.writer_active | cppexpr }}))) continue;
+        const ftt::dim_t cache_token_position = cache_position + ({{ call.logical_token | cppexpr }});
+        const ftt::dim_t cache_logical_block = cache_token_position / {{ call.block_size }}LL;
+        const ftt::dim_t cache_block_offset = cache_token_position % {{ call.block_size }}LL;
+        const ftt::dim_t cache_physical_block = static_cast<ftt::dim_t>(cache_block_table[cache_logical_block]);
+        const ftt::dim_t cache_head = {{ call.logical_head | cppexpr }};
+        const ftt::dim_t cache_dimension = {{ call.logical_dimension | cppexpr }};
+        const ftt::dim_t cache_destination =
+            (((((cache_physical_block * {{ call.num_layers }}LL + ({{ call.layer_id | cppexpr }}))
+                 * 2LL + ({{ call.cache_index | cppexpr }})) * {{ call.block_size }}LL
+                + cache_block_offset) * {{ call.num_kv_heads }}LL + cache_head)
+              * {{ call.head_dim }}LL + cache_dimension);
+        const float cache_value = ftt::to_float(cache_slots[{{ call.slots_offset | cppexpr }}]);
+        cache_kv[cache_destination] = ftt::store_as(cache_kv, cache_value);
+{% if call.shared_kv %}
+        cache_kv[cache_destination + {{ call.block_size * call.num_kv_heads * call.head_dim }}LL] =
+            ftt::store_as(cache_kv, cache_value);
+{% endif %}
+    }
+    if (({{ call.metadata_writer_active | cppexpr }}) && ftt_thread == 0) {
+        auto *const cache_slot_mapping = {{ call.slot_mapping | cppexpr }};
+        auto *const cache_query_start = {{ call.query_start_loc | cppexpr }};
+        cache_slot_mapping[0] = ftt::store_index(cache_slot_mapping, cache_position);
+        cache_query_start[0] = ftt::store_index(cache_query_start, 0);
+        cache_query_start[1] = ftt::store_index(cache_query_start, {{ call.num_tokens }});
+    }
+}
+
+static FTT_DEVICE void {{ call.symbol }}__advance({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    if (({{ call.metadata_writer_active | cppexpr }}) && ftt_thread == 0) {
+        auto *const cache_sequence_lengths = {{ call.sequence_lengths | cppexpr }};
+        const ftt::dim_t cache_position = static_cast<ftt::dim_t>(cache_sequence_lengths[0]);
+        cache_sequence_lengths[0] = ftt::store_index(cache_sequence_lengths, cache_position + {{ call.num_tokens }});
+    }
+}
+
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{% if distributed_entry and platform | default("") != "nvidia" %}
+    unsigned int *const ftt_grid_barrier = _ftt_grid_barrier_counters;
+{% endif %}
+{{ entry.mesh_coordinates() }}
+{{ entry.barrier_group_slots() }}
+    {{ call.symbol }}__write({{ call.arguments | join(", ") }}{% if platform | default("") == "nvidia" and distributed_entry %}{{ ", " if call.arguments }}ftt_grid_barrier{% endif %}{% if program_trace | default(false) %}, ftt_program_trace{% endif %});
+    if ({{ call.advance_sequence | cppexpr }}) {
+        // Every owner reads the old sequence position before its sole writer
+        // advances it. The rendezvous includes all entry CTAs.
+{{ entry.stage_barrier() | indent(8, true) }}
+        {{ call.symbol }}__advance({{ call.arguments | join(", ") }}{% if platform | default("") == "nvidia" and distributed_entry %}{{ ", " if call.arguments }}ftt_grid_barrier{% endif %}{% if program_trace | default(false) %}, ftt_program_trace{% endif %});
+    }
+}
+{% endif %}
+{% endfor %}

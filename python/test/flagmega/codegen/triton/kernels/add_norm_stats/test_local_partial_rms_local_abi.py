@@ -4,7 +4,8 @@
 import pytest
 
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
-    _add_norm_stats_call, )
+    _add_norm_stats_call,
+)
 from triton.flagmega.errors import CodegenError
 
 
@@ -31,7 +32,10 @@ def _abi(
         "logical_shape": tuple(shape),
         "local_capacity_shape": tuple(shape),
         "active_shape_expressions": tuple(str(value) for value in shape),
-        "logical_coordinate_expressions": tuple(coordinates or (f"local_coord_{axis}" for axis in range(len(shape)))),
+        "logical_coordinate_expressions": tuple(
+            coordinates
+            or (f"local_coord_{axis}" for axis in range(len(shape)))
+        ),
         "scalar_storage_strides": tuple(reversed(strides)),
         "scalar_lane_shape": (),
         "scalar_lane_count": 1,
@@ -39,8 +43,14 @@ def _abi(
         "coordinate_space": coordinate_space,
         "distributed_type": {
             "placement": {"hierarchy": (8, 16)},
-            "axis_policies": tuple({"kind": "broadcast"} for _ in shape),
-            "partial": (None if partial_axes is None else {"axes": tuple(partial_axes), "reduce_op": "sum"}),
+            "axis_policies": tuple(
+                {"kind": "broadcast"} for _ in shape
+            ),
+            "partial": (
+                None
+                if partial_axes is None
+                else {"axes": tuple(partial_axes), "reduce_op": "sum"}
+            ),
         },
     }
 
@@ -53,7 +63,7 @@ def _parameter(formal, abi):
             "actual": formal,
             "runtime_argument": formal,
             "abi": abi,
-        }, ),
+        },),
     }
 
 
@@ -68,7 +78,9 @@ def _raw(*, stats_partial=(0, 1), residual_coordinates=None):
         coordinates=residual_coordinates or value_coordinates,
     )
     result = _abi((1, 16), coordinates=value_coordinates)
-    stats = _abi((1, 1, 1), scalar_dtype="float32", partial_axes=stats_partial)
+    stats = _abi(
+        (1, 1, 1), scalar_dtype="float32", partial_axes=stats_partial
+    )
     return {
         "semantic_attrs": {"axis": -1, "use_mean": False},
         "parameters": {

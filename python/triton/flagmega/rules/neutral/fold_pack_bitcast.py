@@ -34,14 +34,14 @@ def _rewrite(result: MatchResult, _module: IRModule):
     if node.type == source.type:
         return RewriteRedirect(source.id)
     try:
-        prepared = get_definition("tensors.bitcast").prepare((source, ),
-                                                             {"dtype": data_type_to_data(tensor_of(node.type).dtype)})
+        prepared = get_definition("tensors.bitcast").prepare(
+            (source,), {"dtype": data_type_to_data(tensor_of(node.type).dtype)})
     except IRSchemaError:
         return node
     if prepared.result_type != node.type:
         return node
-    return Node(node.id, "tensors.bitcast", (source.id, ), prepared.result_type, prepared.effect, prepared.attrs,
-                {**dict(node.metadata), "rewritten_by": "FoldPackBitcast"})
+    return Node(node.id, "tensors.bitcast", (source.id,), prepared.result_type,
+                prepared.effect, prepared.attrs, {**dict(node.metadata), "rewritten_by": "FoldPackBitcast"})
 
 
 def fold_pack_bitcast_rule() -> RewriteRule:

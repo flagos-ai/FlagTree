@@ -13,25 +13,17 @@ from triton.flagmega.targets import NvidiaSm90Target
 
 
 def split_glu_graph():
-
     class Graph(fm.Module):
-
         def forward(self):
-            a = self.input('A', fm.tensor_type('bfloat16', (1, 2048)))
-            w = self.input('W', fm.tensor_type('bfloat16', (2048, 12288)))
-            partial = fm.F.ntt.split_k_dense_glu_projection(
-                a, w, name='projection', metadata={
-                    'execution_mesh': fm.ExecutionMesh.fixed((48, 2)), 'kernel_program_kind': 'ordinary',
-                    'kernel_num_warps': 8, 'kernel_maxnreg': 64
-                })
-            output = fm.F.ntt.split_k_dense_glu_epilogue(
-                partial, name='epilogue', metadata={
-                    'execution_mesh': fm.ExecutionMesh.fixed((24, )), 'kernel_program_kind': 'ordinary',
-                    'kernel_num_warps': 8
-                })
-            self.function('main', (a, w), (output, ))
-
-    return Graph(dialect='nn', stage='imported', entry='main').build()
+            a = self.input('A',fm.tensor_type('bfloat16',(1,2048)))
+            w = self.input('W',fm.tensor_type('bfloat16',(2048,12288)))
+            partial = fm.F.ntt.split_k_dense_glu_projection(a,w,name='projection',metadata={
+                'execution_mesh':fm.ExecutionMesh.fixed((48,2)), 'kernel_program_kind':'ordinary',
+                'kernel_num_warps':8,'kernel_maxnreg':64})
+            output = fm.F.ntt.split_k_dense_glu_epilogue(partial,name='epilogue',metadata={
+                'execution_mesh':fm.ExecutionMesh.fixed((24,)), 'kernel_program_kind':'ordinary','kernel_num_warps':8})
+            self.function('main',(a,w),(output,))
+    return Graph(dialect='nn',stage='imported',entry='main').build()
 
 
 def test_normal_split_glu_exports_real_two_dimensional_grid_and_independent_options(tmp_path):
@@ -41,18 +33,17 @@ def test_normal_split_glu_exports_real_two_dimensional_grid_and_independent_opti
     compiler.target = NvidiaSm90Target()
     compiler.target.distribution_policy = split_k_dense_glu_policy(compiler.target)
     module = compiler.compile(split_glu_graph()).module
-    artifact = write_artifact(module, tmp_path / 'island', target=compiler.target.name, emit_executable=True,
-                              codegen_backend='triton')
+    artifact = write_artifact(module,tmp_path/'island',target=compiler.target.name,emit_executable=True,codegen_backend='triton')
     import json
-    package = json.loads((artifact / 'artifact.json').read_text())['codegen']
-    assert [p['grid'] for p in package['kernels']] == [[48, 2, 1], [24, 1, 1]]
-    assert package['kernels'][0]['maxnreg'] == 64
+    package = json.loads((artifact/'artifact.json').read_text())['codegen']
+    assert [p['grid'] for p in package['kernels']]==[[48,2,1],[24,1,1]]
+    assert package['kernels'][0]['maxnreg']==64
     assert 'maxnreg' not in package['kernels'][1]
     from triton.flagmega.runtime import load
     runtime = load(artifact)
-    assert [spec['grid'] for spec in runtime._kernel_launch_specs()] == [(48, 2, 1), (24, 1, 1)]
-    reloaded = fm.load_module(fm.emit_module(module, tmp_path / 'split_glu.py'))
-    assert describe_tir_package(reloaded)['kernels'] == describe_tir_package(module)['kernels']
+    assert [spec['grid'] for spec in runtime._kernel_launch_specs()]==[(48,2,1),(24,1,1)]
+    reloaded = fm.load_module(fm.emit_module(module,tmp_path/'split_glu.py'))
+    assert describe_tir_package(reloaded)['kernels']==describe_tir_package(module)['kernels']
 
 
 def test_independent_mesh_program_does_not_inherit_unused_parent_barrier_groups():
@@ -65,41 +56,36 @@ def test_independent_mesh_program_does_not_inherit_unused_parent_barrier_groups(
     descriptor = describe_tir_package(module)
     # A surrounding 128-owner native program may use this subgroup. Neither
     # independent GU program has any corresponding rendezvous in its schedule.
-    descriptor['grid_barrier_axis_groups'] = ({
-        'key': '1x16', 'axes': (1, ), 'shape': (16, ), 'axis_names_repr': "('block_x',)", 'shape_repr': '(16,)'
-    }, )
-    programs = describe_kernel_programs(module, {'programs': module.metadata['kernel_program_partition']},
-                                        descriptor)['programs']
-    assert all(p['mesh_context']['grid_barrier_axis_groups'] == () for p in programs)
+    descriptor['grid_barrier_axis_groups'] = ({'key':'1x16','axes':(1,),
+        'shape':(16,),'axis_names_repr':"('block_x',)",'shape_repr':'(16,)'},)
+    programs = describe_kernel_programs(module,
+        {'programs':module.metadata['kernel_program_partition']},descriptor)['programs']
+    assert all(p['mesh_context']['grid_barrier_axis_groups']==() for p in programs)
 
 
-def graph(*, dynamic_kind='persistent', dynamic_warps=None, dynamic_max_ctas=None, dynamic_maxnreg=None,
-          second_dynamic=False, work_size=4096, annotate=True):
-
+def graph(*, dynamic_kind='persistent', dynamic_warps=None, dynamic_max_ctas=None,
+          dynamic_maxnreg=None, second_dynamic=False, work_size=4096, annotate=True):
     class Graph(fm.Module):
-
         def forward(self):
-            value_type = fm.tensor_type('float32', (work_size, ))
+            value_type = fm.tensor_type('float32', (work_size,))
             x = self.input('x', value_type)
             y = self.input('y', value_type)
             first = {'execution_mesh': fm.ExecutionMesh.fixed((8, 16))} if annotate else {}
             a = fm.F.math.add(x, y, name='a', metadata=first)
             b = fm.F.math.add(a, y, name='b', metadata=first)
-            c = fm.F.math.add(
-                b, x, name='c', metadata={
-                    'execution_mesh': '*',
-                    'kernel_program_kind': dynamic_kind,
-                    **({'kernel_num_warps': dynamic_warps} if dynamic_warps is not None else {}),
-                    **({'kernel_max_ctas': dynamic_max_ctas} if dynamic_max_ctas is not None else {}),
-                    **({'kernel_maxnreg': dynamic_maxnreg} if dynamic_maxnreg is not None else {}),
-                } if annotate else {})
+            c = fm.F.math.add(b, x, name='c', metadata={
+                'execution_mesh': '*', 'kernel_program_kind': dynamic_kind,
+                **({'kernel_num_warps': dynamic_warps} if dynamic_warps is not None else {}),
+                **({'kernel_max_ctas': dynamic_max_ctas} if dynamic_max_ctas is not None else {}),
+                **({'kernel_maxnreg': dynamic_maxnreg} if dynamic_maxnreg is not None else {}),
+            } if annotate else {})
             if second_dynamic:
-                c = fm.F.math.add(c, x, name='c2',
-                                  metadata={'execution_mesh': '*', 'kernel_program_kind': dynamic_kind})
+                c = fm.F.math.add(c, x, name='c2', metadata={'execution_mesh': '*',
+                                                         'kernel_program_kind': dynamic_kind})
             d = fm.F.math.add(c, y, name='d', metadata={
                 'execution_mesh': fm.ExecutionMesh.fixed((4, 16)),
             } if annotate else {})
-            self.function('main', (x, y), (d, ))
+            self.function('main', (x, y), (d,))
 
     return Graph(dialect='nn', stage='imported', entry='main').build()
 
@@ -113,29 +99,24 @@ def compile_graph(**options):
 @pytest.mark.parametrize('boundary', ['propose-distribution', 'distributed'])
 def test_mesh_chain_consumes_operand_pack_inside_vector_arithmetic(boundary):
     module = Compiler().compile(graph(), stop_after=boundary).module
-    forbidden = {
-        'tensors.pack', 'tensors.slice', 'tensors.slice_to_shape', 'tensors.cast', 'ntt.vectorized_cast',
-        'tensors.concat', 'tensors.unpack'
-    }
+    forbidden = {'tensors.pack', 'tensors.slice', 'tensors.slice_to_shape', 'tensors.cast',
+                 'ntt.vectorized_cast', 'tensors.concat', 'tensors.unpack'}
     assert not any(node.op in forbidden for node in module.nodes)
     compute = [n for n in module.nodes if n.op == 'math.vectorized_binary']
     assert len(compute) == 4
-    assert all(
-        isinstance(n.type.tensor.dtype if isinstance(n.type, fm.DistributedType) else n.type.dtype, fm.VectorType)
-        for n in compute)
+    assert all(isinstance(n.type.tensor.dtype if isinstance(n.type, fm.DistributedType) else n.type.dtype,
+                          fm.VectorType) for n in compute)
 
 
 @pytest.mark.parametrize('boundary', ['propose-distribution', 'distributed'])
 def test_ragged_mesh_chain_owns_its_load_and_store_tail_contracts(boundary):
     module = Compiler().compile(graph(work_size=4103), stop_after=boundary).module
-    forbidden = {
-        'tensors.pack', 'tensors.pad', 'tensors.slice', 'tensors.slice_to_shape', 'tensors.cast', 'ntt.vectorized_cast',
-        'tensors.concat', 'tensors.unpack'
-    }
+    forbidden = {'tensors.pack', 'tensors.pad', 'tensors.slice', 'tensors.slice_to_shape',
+                 'tensors.cast', 'ntt.vectorized_cast', 'tensors.concat', 'tensors.unpack'}
     assert not any(n.op in forbidden for n in module.nodes)
     compute = [n for n in module.nodes if n.op == 'math.vectorized_binary']
     assert len(compute) == 4
-    assert all(n.attrs['result_unpack']['shape'] == (4103, ) for n in compute)
+    assert all(n.attrs['result_unpack']['shape'] == (4103,) for n in compute)
 
 
 def test_agent_edits_a_uniform_search_ir_then_reproposes_and_resumes(tmp_path):
@@ -192,10 +173,9 @@ def test_render_and_reload_use_each_programs_actual_mesh(tmp_path):
     tree = ast.parse((tmp_path / 'generated_kernels.py').read_text())
     shapes = []
     for builder in (n for n in tree.body if isinstance(n, ast.FunctionDef)):
-        topology = next(n.value.args[0]
-                        for n in builder.body
-                        if isinstance(n, ast.Assign) and isinstance(n.value, ast.Call)
-                        and isinstance(n.value.func, ast.Attribute) and n.value.func.attr == 'device_mesh')
+        topology = next(n.value.args[0] for n in builder.body if isinstance(n, ast.Assign)
+                        and isinstance(n.value, ast.Call) and isinstance(n.value.func, ast.Attribute)
+                        and n.value.func.attr == 'device_mesh')
         shapes.append(tuple(size for name, size in ast.literal_eval(topology)['block']))
     assert shapes == [(8, 16), (1, 1), (4, 16)]
     reloaded = fm.load_module(fm.emit_module(module, tmp_path / 'checkpoint.py'))
@@ -250,8 +230,8 @@ def test_cannot_forge_a_different_task_count_with_the_same_public_pointers():
     requests = plan['programs']
     requests[1]['launch_recipe']['tile_size'] *= 2
     requests[1]['grid'] = [16, 1, 1]
-    changed = replace(module,
-                      metadata={**module.metadata, 'kernel_program_partition': requests, 'codegen_package_plan': plan})
+    changed = replace(module, metadata={**module.metadata, 'kernel_program_partition': requests,
+                                       'codegen_package_plan': plan})
     with pytest.raises(CodegenError, match='task/tail coverage'):
         describe_tir_package(changed)
 
@@ -261,7 +241,8 @@ def test_program_register_control_requires_backend_capability():
     from triton.flagmega.codegen.triton.kernel_programs import target_kernel_programs
     from triton.flagmega.errors import IRVerificationError
     module = compile_graph(dynamic_maxnreg=64)
-    unsupported = SimpleNamespace(warp_size=32, max_threads_per_block=1024, supported_program_compile_options=())
+    unsupported = SimpleNamespace(warp_size=32, max_threads_per_block=1024,
+                                  supported_program_compile_options=())
     with pytest.raises(IRVerificationError, match='register cap is unsupported'):
         target_kernel_programs(module, unsupported)
 
@@ -286,8 +267,7 @@ def test_device_uniform_fixed_loop_preserves_recurrence(tmp_path, stop):
     from triton.flagmega.runtime import load
     from triton.flagmega.runtime.module import GeneratedTirCallGraphModule as Runtime
     module = Compiler().compile(fm.with_execution_mesh(loop_module(stop=stop), (8, 16))).module
-    runtime = load(write_artifact(module, tmp_path / 'artifact', target='nvidia-sm90', emit_executable=True),
-                   device='cuda:0')
+    runtime = load(write_artifact(module, tmp_path / 'artifact', target='nvidia-sm90', emit_executable=True), device='cuda:0')
     value = torch.arange(4, dtype=torch.float32, device='cuda')
     increment = torch.tensor([1., 2., 3., 4.], device='cuda')
     output = torch.full_like(value, float('nan'))
@@ -303,7 +283,7 @@ def test_device_uniform_fixed_loop_preserves_recurrence(tmp_path, stop):
 
 
 @pytest.mark.parametrize('kind,work_size,cap', [('ordinary', 4096, None), ('persistent', 4096, 7),
-                                                ('ordinary', 131072, None), ('persistent', 4103, 2)])
+                                             ('ordinary', 131072, None), ('persistent', 4103, 2)])
 def test_device_mesh_cuts_preserve_values_rebinding_and_graph(tmp_path, kind, work_size, cap):
     torch = pytest.importorskip('torch')
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
@@ -311,13 +291,13 @@ def test_device_mesh_cuts_preserve_values_rebinding_and_graph(tmp_path, kind, wo
     from triton.flagmega.artifacts import write_artifact
     from triton.flagmega.runtime import load
     from triton.flagmega.runtime.module import GeneratedTirCallGraphModule as Runtime
-    module = compile_graph(dynamic_kind=kind, dynamic_warps=2, dynamic_max_ctas=cap, dynamic_maxnreg=64,
-                           work_size=work_size)
+    module = compile_graph(dynamic_kind=kind, dynamic_warps=2, dynamic_max_ctas=cap,
+                           dynamic_maxnreg=64, work_size=work_size)
     runtime = load(write_artifact(module, tmp_path / 'artifact', target='nvidia-sm90', emit_executable=True),
                    device='cuda:0')
     generator = torch.Generator(device='cuda').manual_seed(20261027)
-    values = [torch.empty((work_size, ), device='cuda') for _ in range(2)]
-    guard = torch.full((work_size + 32, ), -123.0, device='cuda')
+    values = [torch.empty((work_size,), device='cuda') for _ in range(2)]
+    guard = torch.full((work_size + 32,), -123.0, device='cuda')
     output = guard[16:-16]
 
     def arguments():

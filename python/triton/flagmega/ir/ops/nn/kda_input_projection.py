@@ -20,7 +20,7 @@ from triton.flagmega.ir.ops.core import (
 )
 from triton.flagmega.ir.type_pattern import is_tensor
 
-_NO_LANES = ((), ) * 6
+_NO_LANES = ((),) * 6
 
 
 def _typed(tensor, placement, head, axis):
@@ -32,9 +32,10 @@ def _typed(tensor, placement, head, axis):
 
 def _chip_head(head, placement):
     # Blocks cooperate on complete chip tensors rather than owning head shards.
-    return isinstance(head, SBPBroadCast) or (isinstance(head, SBPSplit) and head.is_contiguous
-                                              and all(not placement.is_physical_block_axis(axis)
-                                                      for axis in head.hierarchy_axes))
+    return isinstance(head, SBPBroadCast) or (
+        isinstance(head, SBPSplit) and head.is_contiguous
+        and all(not placement.is_physical_block_axis(axis) for axis in head.hierarchy_axes)
+    )
 
 
 @op_definition("nn.kda_input_projection", namespace="nn", functional_name="kda_input_projection",
@@ -67,8 +68,11 @@ class KdaInputProjection(OpDefinition):
     def normalize_attrs(cls, attributes):
         attrs = super().normalize_attrs(attributes)
         lanes = attrs["output_lanes"]
-        if not isinstance(lanes, (tuple, list)) or len(lanes) != 6 or any(not isinstance(field, (tuple, list)) or any(
-                isinstance(lane, bool) or not isinstance(lane, int) or lane <= 0 for lane in field) for field in lanes):
+        if not isinstance(lanes, (tuple, list)) or len(lanes) != 6 or any(
+            not isinstance(field, (tuple, list)) or any(
+                isinstance(lane, bool) or not isinstance(lane, int) or lane <= 0 for lane in field
+            ) for field in lanes
+        ):
             raise IRSchemaError("KdaInputProjection output_lanes requires six positive-integer lane shapes.")
         return {**attrs, "output_lanes": tuple(tuple(field) for field in lanes)}
 
@@ -95,43 +99,41 @@ class KdaInputProjection(OpDefinition):
         if any(w.shape[-1].fixed_value != reduction for w in tensors[1:]):
             raise IRSchemaError("KdaInputProjection weights must match the complete input K.")
         heads, width = q.shape[0].fixed_value, q.shape[1].fixed_value
-        shapes = ((1, heads, width), ) * 3 + ((1, heads), (1, f.shape[0].fixed_value), (1, g.shape[0].fixed_value))
+        shapes = ((1, heads, width),) * 3 + ((1, heads), (1, f.shape[0].fixed_value),
+                                                          (1, g.shape[0].fixed_value))
         fields = []
         for shape, lanes in zip(shapes, attrs.get("output_lanes", _NO_LANES), strict=True):
             if shape[-1] % prod(lanes):
                 raise IRSchemaError("KdaInputProjection result width must be divisible by its output_lanes.")
-            fields.append(
-                tensor_type(
-                    VectorType(DType.BFLOAT16, lanes) if lanes else DType.BFLOAT16,
-                    (*shape[:-1], shape[-1] // prod(lanes))))
+            fields.append(tensor_type(VectorType(DType.BFLOAT16, lanes) if lanes else DType.BFLOAT16,
+                                      (*shape[:-1], shape[-1] // prod(lanes))))
         if not any(isinstance(kind, DistributedType) for kind in kinds):
             return TupleType(tuple(fields))
         if not all(isinstance(kind, DistributedType) for kind in kinds):
             raise IRSchemaError("KdaInputProjection operands must be all plain or all distributed.")
         placement, head = kinds[1].placement, kinds[1].axis_policies[0]
-        expected = tuple(_typed(t, placement, head, 0 if 1 <= i <= 4 else None) for i, t in enumerate(tensors))
+        expected = tuple(_typed(t, placement, head, 0 if 1 <= i <= 4 else None)
+                         for i, t in enumerate(tensors))
         if kinds != expected or not _chip_head(head, placement):
             raise IRSchemaError("KdaInputProjection requires common chip head ownership and broadcast K/low ranks.")
         # Packing beta's head axis changes its ownership units, unlike packing
         # the within-head Q/K/V dimension. Keep that unsupported case explicit.
         if isinstance(head, SBPSplit) and attrs.get("output_lanes", _NO_LANES)[3]:
             raise IRSchemaError("Head-sharded KdaInputProjection beta must have scalar elements.")
-        return TupleType(tuple(_typed(field, placement, head, 1 if i < 4 else None) for i, field in enumerate(fields)))
+        return TupleType(tuple(_typed(field, placement, head, 1 if i < 4 else None)
+                               for i, field in enumerate(fields)))
 
     @classmethod
     def distributed_input_type_tuples(cls, choices, attrs):
         del attrs
-        keys = dict.fromkeys(
-            (kind.placement, kind.axis_policies[0]) for kind in choices[1] if isinstance(kind, DistributedType))
+        keys = dict.fromkeys((kind.placement, kind.axis_policies[0])
+                             for kind in choices[1] if isinstance(kind, DistributedType))
         for placement, head in keys:
             if not _chip_head(head, placement):
                 continue
-            values = tuple(
-                next((kind
-                      for kind in options
-                      if isinstance(kind, DistributedType)
-                      and kind == _typed(kind.tensor, placement, head, 0 if 1 <= i <= 4 else None)), None)
-                for i, options in enumerate(choices))
+            values = tuple(next((kind for kind in options if isinstance(kind, DistributedType)
+                                 and kind == _typed(kind.tensor, placement, head, 0 if 1 <= i <= 4 else None)), None)
+                           for i, options in enumerate(choices))
             if all(kind is not None for kind in values):
                 yield values
 
@@ -140,14 +142,10 @@ class KdaInputProjection(OpDefinition):
         del attrs
         results = []
         keys = dict.fromkeys((kind.placement, kind.axis_policies[0])
-                             for options in choices[1:5]
-                             for kind in options
-                             if isinstance(kind, DistributedType))
+                             for options in choices[1:5] for kind in options if isinstance(kind, DistributedType))
         # Tuple results need explicit output seeds. A weight-side constant view
         # may not itself offer the head layout until this inverse demand exists.
-        for placement in dict.fromkeys(kind.placement
-                                       for options in choices
-                                       for kind in options
+        for placement in dict.fromkeys(kind.placement for options in choices for kind in options
                                        if isinstance(kind, DistributedType)):
             axes = tuple(i for i in range(len(placement.hierarchy)) if not placement.is_physical_block_axis(i))
             for count in range(1, len(axes) + 1):
@@ -157,11 +155,8 @@ class KdaInputProjection(OpDefinition):
             if not _chip_head(head, placement):
                 continue
             try:
-                results.append(
-                    TupleType(
-                        tuple(
-                            _typed(tensor_of(field), placement, head, 1 if i < 4 else None)
-                            for i, field in enumerate(output_type.fields))))
+                results.append(TupleType(tuple(_typed(tensor_of(field), placement, head, 1 if i < 4 else None)
+                                               for i, field in enumerate(output_type.fields))))
             except IRSchemaError:
                 continue
         return tuple(results)
@@ -175,20 +170,21 @@ class KdaInputProjection(OpDefinition):
         if not all(isinstance(field, DistributedType) for field in fields):
             return ()
         placement, head = fields[0].placement, fields[0].axis_policies[1]
-        if not _chip_head(head, placement) or any(field != _typed(field.tensor, placement, head, 1 if i < 4 else None)
-                                                  for i, field in enumerate(fields)):
+        if not _chip_head(head, placement) or any(
+            field != _typed(field.tensor, placement, head, 1 if i < 4 else None)
+            for i, field in enumerate(fields)
+        ):
             return ()
         if any(not isinstance(t, TensorType) for t in logical_input_types):
             return ()
-        return (tuple(
-            _typed(t, placement, head, 0 if 1 <= i <= 4 else None) for i, t in enumerate(logical_input_types)), )
+        return (tuple(_typed(t, placement, head, 0 if 1 <= i <= 4 else None)
+                      for i, t in enumerate(logical_input_types)),)
 
     @classmethod
     def evaluate(cls, node, arguments, context):
         value = cls.value.read(arguments).reshape(1, -1).float()
         results = []
-        for weight, field, lanes in zip(arguments[1:], node.type.fields, node.attrs.get("output_lanes", _NO_LANES),
-                                        strict=True):
+        for weight, field, lanes in zip(arguments[1:], node.type.fields, node.attrs.get("output_lanes", _NO_LANES), strict=True):
             # The evaluator's FP32 projection keeps the sole BF16 boundary at
             # the result. Packed types reshape that already rounded result.
             result = (value @ weight.reshape(-1, value.shape[-1]).float().T).bfloat16()
@@ -208,11 +204,10 @@ class KdaInputProjection(OpDefinition):
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
         del attrs
-        tensors = tuple(
-            local_tensor_type(value.type) if isinstance(value.type, DistributedType) else value.type
-            for value in inputs)
-        fields = tuple(
-            local_tensor_type(field) if isinstance(field, DistributedType) else field for field in return_type.fields)
+        tensors = tuple(local_tensor_type(value.type) if isinstance(value.type, DistributedType)
+                        else value.type for value in inputs)
+        fields = tuple(local_tensor_type(field) if isinstance(field, DistributedType) else field
+                       for field in return_type.fields)
         reduction = tensors[0].shape[-1].fixed_value * getattr(tensors[0].dtype, "lane_count", 1)
         outputs = sum(tensor_nbytes(field) // 2 for field in fields)
         # Aggregate chip work is shared by CTAs, not repeated in every block.

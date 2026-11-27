@@ -15,14 +15,12 @@ def module(*, tokens=1, hidden=512, hc=3, splits=2, reduction="stream_fma_128", 
     count = hc * (hc + 2)
 
     class Graph(fm.Module):
-
         def forward(self):
-            inputs = tuple(
-                self.input(name, fm.tensor_type("float32", shape), id=name)
-                for name, shape in (("streams", (tokens, hc, hidden)), ("projection", (count, hc * hidden)),
-                                    ("base", (count, )), ("scale", (3, ))))
+            inputs = tuple(self.input(name, fm.tensor_type("float32", shape), id=name)
+                           for name, shape in (("streams", (tokens, hc, hidden)), ("projection", (count, hc * hidden)),
+                                               ("base", (count,)), ("scale", (3,))))
             result = fm.F.nn.mhc_pre(*inputs, epsilon=1e-5, sinkhorn_iterations=3, sinkhorn_epsilon=1e-6,
-                                     projection_reduction=reduction, projection_splits=splits, **attrs)
+                                    projection_reduction=reduction, projection_splits=splits, **attrs)
             self.function("main", inputs, fm.F.tensors.get_items(result, 0, 1, 2))
 
     return Graph(dialect="high_level", stage="imported", entry="main").build()
@@ -71,14 +69,14 @@ def scalar_reference(streams, weights, splits):
 
 
 def test_projection_contract_round_trips_and_retains_packed_output(tmp_path):
-    source = module(output_lanes=(8, ), collapsed_dtype="float32", collapse_input_dtype="bfloat16",
+    source = module(output_lanes=(8,), collapsed_dtype="float32", collapse_input_dtype="bfloat16",
                     collapse_reduction="sequential_fma")
     reloaded = fm.load_module(fm.emit_module(source, tmp_path / "ordered.py"))
     assert source.semantic_hash == reloaded.semantic_hash
     node, = [node for node in reloaded.nodes if node.op == "nn.mhc_pre"]
     assert node.attrs["projection_reduction"] == "stream_fma_128"
     assert node.attrs["projection_splits"] == 2
-    assert node.type.fields[2].dtype == fm.VectorType(fm.DType.FLOAT32, (8, ))
+    assert node.type.fields[2].dtype == fm.VectorType(fm.DType.FLOAT32, (8,))
 
 
 @pytest.mark.parametrize("splits", [0, -1, 3, True])
@@ -87,9 +85,8 @@ def test_projection_split_count_is_a_typed_power_of_two(splits):
         module(splits=splits)
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [{"hidden": 72}, {"hidden": 128, "splits": 2}, {"reduction": "unknown"}, {"reduction": "parallel", "splits": 2}])
+@pytest.mark.parametrize("kwargs", [{"hidden": 72}, {"hidden": 128, "splits": 2},
+                                    {"reduction": "unknown"}, {"reduction": "parallel", "splits": 2}])
 def test_invalid_algorithm_or_incomplete_split_is_rejected(kwargs):
     with pytest.raises(IRSchemaError, match="projection_reduction|projection_splits"):
         module(**kwargs)
@@ -114,9 +111,9 @@ def test_ordered_projection_matches_scalar_fmaf_and_differs_from_parallel_dot():
 
 
 def test_cpu_fma_does_not_double_round_tiny_addends_at_float32_midpoints():
-    a = torch.tensor([1. + 2.**-23, 1. + 2.**-23])
+    a = torch.tensor([1. + 2. ** -23, 1. + 2. ** -23])
     b = torch.tensor([1.5, -1.5])
-    c = torch.tensor([-2.**-60, 2.**-60])
+    c = torch.tensor([-2. ** -60, 2. ** -60])
     fma = ctypes.CDLL("libm.so.6").fmaf
     fma.argtypes = (ctypes.c_float, ctypes.c_float, ctypes.c_float)
     fma.restype = ctypes.c_float

@@ -16,6 +16,7 @@ from triton.flagmega.runtime import load as load_runtime
 
 from .helpers import full_checkpoint
 
+
 torch = pytest.importorskip("torch")
 
 
@@ -39,9 +40,13 @@ def test_two_layer_call_graph_runtime_matches_evaluator_on_h800(tmp_path):
     # CUDA caching allocator's previous occupant.
     runtime._pool_values["workspace"].fill_(0xA5)
     state = runtime.create_state()
-    reference_state = create_paged_attention_state(runtime.state_config, device="cuda:0")
+    reference_state = create_paged_attention_state(
+        runtime.state_config, device="cuda:0"
+    )
     input_ids = torch.tensor([3], dtype=torch.int32, device="cuda:0")
-    evaluator = TorchEvaluator(CheckpointWeightResolver(checkpoint, device="cuda:0"))
+    evaluator = TorchEvaluator(
+        CheckpointWeightResolver(checkpoint, device="cuda:0")
+    )
     expected_logits, expected_token, _ = evaluator.run(
         imported,
         {
@@ -51,7 +56,9 @@ def test_two_layer_call_graph_runtime_matches_evaluator_on_h800(tmp_path):
     )
     logits, next_token = runtime.create_outputs()
 
-    runtime.prepare(input_ids, state, logits=logits, next_token=next_token)
+    runtime.prepare(
+        input_ids, state, logits=logits, next_token=next_token
+    )
     runtime.run_into(logits, next_token, input_ids, state)
     torch.cuda.synchronize()
 
@@ -72,7 +79,13 @@ def test_two_layer_call_graph_runtime_matches_evaluator_on_h800(tmp_path):
     )
     diagnostic_views = runtime.diagnostic_workspace()
     assert diagnostic_views["token_embedding"].shape == (1, 16)
-    assert any(name.startswith("layer_0_decode_layer_call::decode_layer_") for name in diagnostic_views)
-    assert any(name.startswith("layer_1_decode_layer_call::decode_layer_") for name in diagnostic_views)
+    assert any(
+        name.startswith("layer_0_decode_layer_call::decode_layer_")
+        for name in diagnostic_views
+    )
+    assert any(
+        name.startswith("layer_1_decode_layer_call::decode_layer_")
+        for name in diagnostic_views
+    )
     assert all(value.device == logits.device for value in diagnostic_views.values())
     assert state.sequence_length == reference_state.sequence_length == 1

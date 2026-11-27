@@ -35,47 +35,42 @@ def _case(*, widening, source_scope=fm.MemorySharingScope.BLOCK):
         (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, 1), 8)),
         placement,
     )
-    broadcast = fm.DistributedType(split.tensor, (fm.SBP.broadcast(), fm.SBP.broadcast()), placement)
+    broadcast = fm.DistributedType(
+        split.tensor, (fm.SBP.broadcast(), fm.SBP.broadcast()), placement
+    )
     builder = fm.IRBuilder(dialect="semantic_tir", stage="packaged_tir")
     source = builder.var("source", split, id="source")
     rhs = builder.var("rhs", split, id="rhs")
 
     def kernel(name, inputs, value_type, op="math.silu"):
         return builder.call(
-            "tir.kernel",
-            inputs,
-            value_type,
-            id=name,
+            "tir.kernel", inputs, value_type, id=name,
             attrs={
                 "semantic_op": op,
                 "candidate": "tir.silu.local",
                 "parameters": {"family": "elementwise", "variant": "silu"},
-                "facts": {},
-                "semantic_attrs": {},
+                "facts": {}, "semantic_attrs": {},
             },
         )
 
-    temporary = kernel("temporary", (source, ), split)
+    temporary = kernel("temporary", (source,), split)
     added = kernel("added", (temporary, rhs), split, "math.add")
     consumer_input = added
     if widening:
         consumer_input = builder.call(
-            "distributed.sharded_view",
-            (added, ),
-            broadcast,
-            id="widened",
+            "distributed.sharded_view", (added,), broadcast, id="widened",
             attrs={"new_type": broadcast},
         )
-    result = kernel("result", (consumer_input, ), consumer_input.type)
-    builder.function("main", (source, rhs), (result, ))
+    result = kernel("result", (consumer_input,), consumer_input.type)
+    builder.function("main", (source, rhs), (result,))
     module = materialize_kernel_prim_functions(builder.build(entry="main"))
     if source_scope is fm.MemorySharingScope.BLOCK:
         module = plan_function_memory(module, options)
     else:
-        module = replace(
-            module, nodes=tuple(
-                replace(node, metadata={MEMORY_SPACE_METADATA: "private_data"}) if node.id == "temporary" else node
-                for node in module.nodes))
+        module = replace(module, nodes=tuple(
+            replace(node, metadata={MEMORY_SPACE_METADATA: "private_data"})
+            if node.id == "temporary" else node for node in module.nodes
+        ))
     return module, options
 
 
@@ -116,7 +111,8 @@ def test_resume_rejects_private_inplace_result_without_private_placement():
     fm.verify_buffer_plan(module)
     edited = replace(
         module,
-        nodes=tuple(replace(node, metadata={}) if node.id == "added" else node for node in module.nodes),
+        nodes=tuple(replace(node, metadata={}) if node.id == "added" else node
+                    for node in module.nodes),
     )
 
     with pytest.raises(IRVerificationError, match="In-place result 'added'.*default memory domain"):

@@ -5,12 +5,7 @@
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir.model import IRModule, Node
 from triton.flagmega.ir.ops.core import (
-    OpCost,
-    OpDefinition,
-    attribute_parameter,
-    context_independent_verifier,
-    op_definition,
-    tensor_nbytes,
+    OpCost, OpDefinition, attribute_parameter, context_independent_verifier, op_definition, tensor_nbytes,
 )
 
 
@@ -45,4 +40,4 @@ class Weight(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         size = tensor_nbytes(node.type) if hasattr(node.type, "dtype") else None
-        return OpCost(bytes_read=size, notes=("readonly-data", ))
+        return OpCost(bytes_read=size, notes=("readonly-data",))

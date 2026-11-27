@@ -70,8 +70,9 @@ class Concat(OpDefinition):
             raise IRSchemaError("Distributed Concat requires explicit placement on every input.")
         first = values[0]
         if first.axis_policies[axis] != SBP.broadcast() or any(
-                value.axis_policies != first.axis_policies or value.partial != first.partial
-                or value.exclusive != first.exclusive for value in values):
+            value.axis_policies != first.axis_policies or value.partial != first.partial
+            or value.exclusive != first.exclusive for value in values
+        ):
             raise IRSchemaError("Concat requires a broadcast concatenation axis and matching owners; insert Boxing.")
         return DistributedType(output, first.axis_policies, placement, first.partial, first.exclusive)
 
@@ -83,13 +84,13 @@ class Concat(OpDefinition):
     @classmethod
     def materialize_numpy(cls, node, arguments, context):
         return context.as_contiguous(
-            context.numpy.concatenate(tuple(arguments), axis=normalize_axis(node.attrs["axis"],
-                                                                            tensor_of(node.type).rank)))
+            context.numpy.concatenate(tuple(arguments), axis=normalize_axis(node.attrs["axis"], tensor_of(node.type).rank))
+        )
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         size = tensor_nbytes(tensor_of(node.type))
-        return OpCost(bytes_read=size, bytes_written=size, notes=("concat", ))
+        return OpCost(bytes_read=size, bytes_written=size, notes=("concat",))
 
 
 __all__ = ["Concat"]

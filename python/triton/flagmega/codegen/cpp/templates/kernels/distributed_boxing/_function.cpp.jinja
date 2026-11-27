@@ -1,0 +1,66 @@
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "distributed_boxing" and call.variant == distributed_boxing_variant %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+{% for leaf in call.leaves %}
+{% if leaf.reduction %}
+{# Partial-owner reduction: sum one logical element across the owners that
+   hold a partial value for it. The Triton form loads a 2-D
+   [owner_tile, element_tile] block and reduces along the owner axis; one
+   scalar thread per element walks the owner axis serially instead. #}
+{{ entry.strided_loop("boxing_offsets", leaf.capacity) }} {
+        if (!({{ leaf.active | cppexpr }})) {
+            continue;
+        }
+        auto *const ftt_source = {{ leaf.source | cppexpr }};
+        float boxing_accumulator = {{ leaf.neutral | cppfloat }};
+        for (ftt::dim_t boxing_partial_member = 0;
+             boxing_partial_member < {{ leaf.partial_owner_count }}LL;
+             ++boxing_partial_member) {
+            const ftt::dim_t boxing_partial_owner = {{ leaf.partial_owner | cppexpr }};
+            const ftt::dim_t boxing_source_offset = {{ leaf.source_offset | cppexpr }};
+            const float boxing_partial_values = ftt::to_float(
+                ftt_source[boxing_partial_owner * {{ leaf.owner_stride }}LL
+                           + boxing_source_offset]);
+{# The Triton form reduces a whole [owner_tile, element_tile] block per
+   iteration, so `reduction_expression` collapses the owner axis and
+   `combine_expression` folds that into the accumulator. Here one owner is
+   loaded per iteration, so the owner-axis reduction is already done -- the
+   reduction expression's input is a single value and the two expressions
+   compose to just the combine. #}
+            const float boxing_reduced = boxing_partial_values;
+            boxing_accumulator = {{ leaf.combine_expression | cppexpr }};
+        }
+        if ({{ leaf.writer_active | cppexpr }}) {
+            auto *const ftt_result = {{ leaf.result | cppexpr }};
+            ftt_result[{{ leaf.result_offset | cppexpr }}] =
+                ftt::store_as(ftt_result, boxing_accumulator);
+        }
+    }
+{% else %}
+{{ entry.strided_loop("boxing_offsets", leaf.capacity) }} {
+        if (!({{ leaf.active | cppexpr }})) {
+            continue;
+        }
+{% if leaf.source_is_scalar | default(false) %}
+        const float boxing_value = ftt::to_float({{ leaf.source | cppexpr }});
+{% else %}
+        auto *const ftt_source = {{ leaf.source | cppexpr }};
+        const float boxing_value =
+            ftt::to_float(ftt_source[{{ leaf.source_offset | cppexpr }}]);
+{% endif %}
+        if ({{ leaf.writer_active | cppexpr }}) {
+            auto *const ftt_result = {{ leaf.result | cppexpr }};
+            ftt_result[{{ leaf.result_offset | cppexpr }}] =
+                ftt::store_as(ftt_result, boxing_value);
+        }
+    }
+{% endif %}
+{% endfor %}
+}
+
+
+{% endif %}
+{% endfor %}

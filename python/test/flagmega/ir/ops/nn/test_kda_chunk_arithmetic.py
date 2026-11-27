@@ -18,13 +18,13 @@ def test_chunk_boundary_is_observable_and_exports_bf16_state(tmp_path):
     values = _values(torch, heads=2, dim=128)
     values['state'].zero_()
     evaluator = TorchEvaluator(DictWeightResolver({}))
-    module = _module(heads=2, dim=128, arithmetic='chunk_bf16', query_scale=128**-.5)
+    module = _module(heads=2, dim=128, arithmetic='chunk_bf16', query_scale=128 ** -.5)
     path = tmp_path / 'chunk.py'
     fm.emit_module(module, path)
     restored = fm.load_module(path)
     assert restored.semantic_hash == module.semantic_hash
     output, state = evaluator.run(restored, values)
-    recurrent, recurrent_state = evaluator.run(_module(heads=2, dim=128, query_scale=128**-.5), values)
+    recurrent, recurrent_state = evaluator.run(_module(heads=2, dim=128, query_scale=128 ** -.5), values)
     assert torch.count_nonzero(output != recurrent) > 0
     assert torch.count_nonzero(state != recurrent_state) > 0
     # FlashKDA's final state export rounds to BF16 even though the cache is FP32.

@@ -45,15 +45,12 @@ class DistributedReshardRealizationContext:
 
 
 class DistributedReshardRealizationPolicy(Protocol):
-
-    def uses_sharded_views_for_constants(self) -> bool:
-        ...
+    def uses_sharded_views_for_constants(self) -> bool: ...
 
     def classify(
         self,
         context: DistributedReshardRealizationContext,
-    ) -> DistributedReshardRealization:
-        ...
+    ) -> DistributedReshardRealization: ...
 
 
 class NttDistributedReshardRealizationPolicy:
@@ -79,7 +76,10 @@ class NttDistributedReshardRealizationPolicy:
         """
 
         realization = self._classify_realization(context)
-        if (realization is DistributedReshardRealization.BOXING and reads_unaddressable_peer_instance(context)):
+        if (
+            realization is DistributedReshardRealization.BOXING
+            and reads_unaddressable_peer_instance(context)
+        ):
             return DistributedReshardRealization.UNSUPPORTED
         return realization
 
@@ -101,14 +101,19 @@ class NttDistributedReshardRealizationPolicy:
         self,
         context: DistributedReshardRealizationContext,
     ) -> bool:
-        if (not self._unified_shared_storage or context.source_kind != DistributedReshardSourceKind.CONSTANT
-                or not isinstance(context.target_type, DistributedType)
-                or sharded_view_error(context.source_type, context.target_type) is not None):
+        if (
+            not self._unified_shared_storage
+            or context.source_kind != DistributedReshardSourceKind.CONSTANT
+            or not isinstance(context.target_type, DistributedType)
+            or sharded_view_error(context.source_type, context.target_type) is not None
+        ):
             return False
         if isinstance(context.source_type, TensorType):
             return True
-        return (isinstance(context.source_type, DistributedType)
-                and is_local_shard_subview(context.source_type, context.target_type))
+        return (
+            isinstance(context.source_type, DistributedType)
+            and is_local_shard_subview(context.source_type, context.target_type)
+        )
 
 
 class PyNttDistributedReshardRealizationPolicy(NttDistributedReshardRealizationPolicy):
@@ -127,8 +132,10 @@ class PyNttDistributedReshardRealizationPolicy(NttDistributedReshardRealizationP
             return DistributedReshardRealization.UNSUPPORTED
         if _is_exclusive_transition(context.source_type, context.target_type):
             return DistributedReshardRealization.SHARDED_VIEW
-        if (not isinstance(context.target_type, DistributedType)
-                or sharded_view_error(context.source_type, context.target_type) is not None):
+        if (
+            not isinstance(context.target_type, DistributedType)
+            or sharded_view_error(context.source_type, context.target_type) is not None
+        ):
             return DistributedReshardRealization.BOXING
         if self.can_alias_constant(context):
             return DistributedReshardRealization.SHARDED_VIEW
@@ -138,32 +145,43 @@ class PyNttDistributedReshardRealizationPolicy(NttDistributedReshardRealizationP
         # and tie this boundary to a default mesh. Prove the chip coordinates,
         # dtype and ownership before treating the requested distribution as a
         # read-only view. Partial values still require explicit publication.
-        if (isinstance(context.source_type, TensorType) and context.usage_kind == DistributedReshardUsageKind.INTERNAL):
+        if (isinstance(context.source_type, TensorType)
+                and context.usage_kind == DistributedReshardUsageKind.INTERNAL):
             from triton.flagmega.ir.distributed_type import chip_view_error
             if chip_view_error(context.source_type, context.target_type) is None:
                 return DistributedReshardRealization.SHARDED_VIEW
-        if (context.usage_kind not in {
+        if (
+            context.usage_kind not in {
                 DistributedReshardUsageKind.INTERNAL,
                 # Callee-owned canonical storage has the same layout proof
                 # at a return as at an internal use. Its completion is still
                 # priced/scheduled before the caller can read remote shards.
                 DistributedReshardUsageKind.FUNCTION_BOUNDARY,
                 DistributedReshardUsageKind.PROGRAM_OUTPUT,
-        } or not isinstance(context.source_type, DistributedType)):
+            }
+            or not isinstance(context.source_type, DistributedType)
+        ):
             return DistributedReshardRealization.BOXING
 
         source_type = context.source_type
         target_type = context.target_type
-        if (is_local_shard_subview(source_type, target_type)
-                and _can_materialize_canonical_chip_view(source_type, target_type)):
+        if (
+            is_local_shard_subview(source_type, target_type)
+            and _can_materialize_canonical_chip_view(source_type, target_type)
+        ):
             return DistributedReshardRealization.SHARDED_VIEW
         if context.source_kind != DistributedReshardSourceKind.INTERNAL:
             return DistributedReshardRealization.BOXING
-        return (DistributedReshardRealization.SHARDED_VIEW if _can_materialize_canonical_chip_view(
-            source_type, target_type) else DistributedReshardRealization.BOXING)
+        return (
+            DistributedReshardRealization.SHARDED_VIEW
+            if _can_materialize_canonical_chip_view(source_type, target_type)
+            else DistributedReshardRealization.BOXING
+        )
 
 
-def reads_unaddressable_peer_instance(context: DistributedReshardRealizationContext, ) -> bool:
+def reads_unaddressable_peer_instance(
+    context: DistributedReshardRealizationContext,
+) -> bool:
     """Whether this reshard would read a peer chip's copy of opaque storage.
 
     A chip-crossing Boxing addresses the source on every peer chip through the
@@ -182,17 +200,24 @@ def reads_unaddressable_peer_instance(context: DistributedReshardRealizationCont
 
 
 def _is_exclusive_transition(source_type: IRType, target_type: IRType) -> bool:
-    if (isinstance(target_type, DistributedType) and target_type.exclusive is not None
-            and isinstance(source_type, TensorType)):
+    if (
+        isinstance(target_type, DistributedType)
+        and target_type.exclusive is not None
+        and isinstance(source_type, TensorType)
+    ):
         return True
     return (
-        isinstance(source_type, DistributedType) and isinstance(target_type, DistributedType)
-        and source_type.placement == target_type.placement and source_type.partial is None
-        and target_type.partial is None and source_type.exclusive != target_type.exclusive
+        isinstance(source_type, DistributedType)
+        and isinstance(target_type, DistributedType)
+        and source_type.placement == target_type.placement
+        and source_type.partial is None
+        and target_type.partial is None
+        and source_type.exclusive != target_type.exclusive
         and (source_type.exclusive is not None or target_type.exclusive is not None)
         # Exclusive changes participation, not which bytes reside on a chip.
         # In particular, Sc -> E(block) and E(chip) -> B still need a gather.
-        and not boxing_crossing_chip_axes(source_type, target_type))
+        and not boxing_crossing_chip_axes(source_type, target_type)
+    )
 
 
 def _can_materialize_canonical_chip_view(

@@ -15,7 +15,6 @@ _clear = driver._clear_cooperative_grid_scratch
 
 
 class _Zeroable:
-
     def __init__(self):
         self.zeroed = False
 
@@ -24,7 +23,6 @@ class _Zeroable:
 
 
 class _Fillable:
-
     def __init__(self):
         self.filled = None
 

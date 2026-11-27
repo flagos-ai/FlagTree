@@ -31,7 +31,8 @@ class SliceToShape(OpDefinition):
         attrs = super().normalize_attrs(attributes)
         shape = attrs["shape"]
         if not isinstance(shape, (tuple, list)) or any(
-                isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in shape):
+            isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in shape
+        ):
             raise IRSchemaError("F.tensors.slice_to_shape shape must be a sequence of non-negative integers.")
         return {"shape": tuple(shape)}
 
@@ -68,7 +69,7 @@ class SliceToShape(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         size = tensor_nbytes(node.type)
-        return OpCost(bytes_read=size, bytes_written=size, notes=("vector-unpad", ))
+        return OpCost(bytes_read=size, bytes_written=size, notes=("vector-unpad",))
 
 
 __all__ = ["SliceToShape"]

@@ -36,13 +36,10 @@ from triton.flagmega.ir.ops.core import get_definition
 
 
 class WeightResolver(Protocol):
-
-    def resolve(self, node: Node):
-        ...
+    def resolve(self, node: Node): ...
 
 
 class CheckpointWeightResolver:
-
     def __init__(
         self,
         checkpoint: Checkpoint,
@@ -65,7 +62,6 @@ class CheckpointWeightResolver:
 
 
 class DictWeightResolver:
-
     def __init__(self, values: Mapping[str, Any]) -> None:
         self.values = dict(values)
 
@@ -78,7 +74,6 @@ class DictWeightResolver:
 
 
 class TorchEvaluator:
-
     def __init__(self, weights: WeightResolver) -> None:
         self.weights = weights
 
@@ -115,13 +110,14 @@ class TorchEvaluator:
                 raise EvaluationError(f"Recursive FlagMega evaluation is unsupported: {cycle}.")
             function = module.function_map[function_name]
             if len(arguments) != len(function.parameters):
-                raise EvaluationError(f"Function @{function_name} expects {len(function.parameters)} arguments, "
-                                      f"got {len(arguments)}.")
+                raise EvaluationError(
+                    f"Function @{function_name} expects {len(function.parameters)} arguments, "
+                    f"got {len(arguments)}."
+                )
             local = dict(zip(function.parameters, arguments))
             remaining = Counter()
             if not retain_trace:
                 scoped = set(function.parameters)
-
                 def include(identity):
                     if identity in scoped:
                         return
@@ -129,7 +125,6 @@ class TorchEvaluator:
                     for dependency in node_map[identity].inputs:
                         remaining[dependency] += 1
                         include(dependency)
-
                 for identity in function.outputs:
                     remaining[identity] += 1
                     include(identity)
@@ -138,7 +133,6 @@ class TorchEvaluator:
                 context.record_value(node_map[parameter_id], value)
             active_calls.append(function_name)
             try:
-
                 def evaluate_node(node_id: str):
                     if node_id in local:
                         return local[node_id]
@@ -160,7 +154,10 @@ class TorchEvaluator:
                                 str(region.parameters[0]),
                                 f"{node.id}_iv",
                             }
-                            previous = {symbol: context.dimension_bindings.get(symbol) for symbol in iv_symbols}
+                            previous = {
+                                symbol: context.dimension_bindings.get(symbol)
+                                for symbol in iv_symbols
+                            }
                             try:
                                 for index in range(lower, upper, step):
                                     # Values derived from the induction
@@ -171,12 +168,15 @@ class TorchEvaluator:
                                     for symbol in iv_symbols:
                                         context.dimension_bindings[symbol] = index
                                     iv = context.torch.tensor(
-                                        index,
-                                        dtype=context.torch.int64,
-                                        device=getattr(next((v for v in value if hasattr(v, "device")), None), "device",
-                                                       None),
+                                        index, dtype=context.torch.int64,
+                                        device=getattr(
+                                            next((v for v in value
+                                                  if hasattr(v, "device")), None),
+                                            "device", None),
                                     )
-                                    value = evaluate_function(str(node.attrs["callee"]), (iv, *value, *captures))
+                                    value = evaluate_function(
+                                        str(node.attrs["callee"]), (iv, *value, *captures)
+                                    )
                             finally:
                                 for symbol, old_value in previous.items():
                                     if old_value is None:
@@ -184,10 +184,18 @@ class TorchEvaluator:
                                     else:
                                         context.dimension_bindings[symbol] = old_value
                         elif node.op == "builtin.call":
-                            callee_outputs = evaluate_function(str(node.attrs["callee"]), node_arguments)
-                            value = (callee_outputs[0] if len(callee_outputs) == 1 else callee_outputs)
+                            callee_outputs = evaluate_function(
+                                str(node.attrs["callee"]), node_arguments
+                            )
+                            value = (
+                                callee_outputs[0]
+                                if len(callee_outputs) == 1
+                                else callee_outputs
+                            )
                         else:
-                            value = get_definition(node.op).evaluate(node, node_arguments, context)
+                            value = get_definition(node.op).evaluate(
+                                node, node_arguments, context
+                            )
                     context.validate_value(node, value)
                     dump_writer.after(dump_token, function_name, node, value)
                     local[node_id] = value
@@ -209,10 +217,16 @@ class TorchEvaluator:
                 local.clear()
 
         entry = module.function_map[module.entry]
-        entry_arguments = tuple(context.input_value(node_map[parameter]) for parameter in entry.parameters)
+        entry_arguments = tuple(
+            context.input_value(node_map[parameter]) for parameter in entry.parameters
+        )
         try:
             outputs = evaluate_function(module.entry, entry_arguments)
-            trace = {node.id: context.values[node.id] for node in module.nodes if node.id in context.values}
+            trace = {
+                node.id: context.values[node.id]
+                for node in module.nodes
+                if node.id in context.values
+            }
             return EvaluationResult(outputs, trace)
         finally:
             # This visitor is recursive too. Releasing its closure drops the
@@ -271,14 +285,21 @@ def iter_materialized_constant_assets(
 
     verify_module(module)
     requested = None if outputs is None else frozenset(str(value) for value in outputs)
-    available = {output for recipe in module.constant_recipes for output in recipe.outputs}
+    available = {
+        output
+        for recipe in module.constant_recipes
+        for output in recipe.outputs
+    }
     if requested is not None and not requested <= available:
         missing = ", ".join(sorted(requested - available))
         raise EvaluationError(f"Unknown constant recipe outputs: {missing}.")
     dump_writer = EvaluatorDumpWriter(module)
     for recipe in module.constant_recipes:
-        selected = (recipe.outputs if requested is None else tuple(output for output in recipe.outputs
-                                                                   if output in requested))
+        selected = (
+            recipe.outputs
+            if requested is None
+            else tuple(output for output in recipe.outputs if output in requested)
+        )
         if not selected:
             continue
         context = EvaluationContext(
@@ -391,7 +412,7 @@ def _validate_ir_value(
         if value_type.is_variadic:
             if not value_type.fields:
                 return
-            field_types = (value_type.fields[0], ) * len(value)
+            field_types = (value_type.fields[0],) * len(value)
         else:
             field_types = value_type.fields
         for index, (field_type, field_value) in enumerate(zip(field_types, value)):

@@ -14,7 +14,7 @@ from triton.flagmega.rules.neutral._utility import make_node
 
 
 def fold_materialized_packed_qkv_parallel_linear_combine_rule() -> RewriteRule:
-    """Port the reference exact materialized-identity fold."""
+    """Port nncase's exact materialized-identity fold."""
 
     pattern = F.ntt.is_packed_qkv_parallel_linear_combine(
         wildcard("qkv"),
@@ -39,7 +39,7 @@ def fold_materialized_packed_qkv_parallel_linear_combine_rule() -> RewriteRule:
 
 
 def lower_packed_qkv_parallel_linear_combine_rule(*, materialize_rounding=False) -> RewriteRule:
-    """Port the reference remaining partial combine to generic tuple Boxing."""
+    """Port nncase's remaining partial combine to generic tuple Boxing."""
 
     pattern = F.ntt.is_packed_qkv_parallel_linear_combine(
         wildcard("qkv"),
@@ -53,19 +53,18 @@ def lower_packed_qkv_parallel_linear_combine_rule(*, materialize_rounding=False)
         assert isinstance(call, Node) and isinstance(qkv, Node)
         if not _is_three_field_partial_tuple(qkv.type):
             return call
-        if any(source.tensor.dtype != target.tensor.dtype for source, target in zip(qkv.type.fields, call.type.fields)):
+        if any(source.tensor.dtype != target.tensor.dtype
+               for source, target in zip(qkv.type.fields, call.type.fields)):
             # Retain the semantic rounding boundary until post-distribution
             # fusion has had its opportunity to consume the complete region.
             if not materialize_rounding:
                 return call
             # A typed combine can round AFTER the complete owner sum. Keep
             # generic Boxing dtype-preserving and express each result cast.
-            wide_type = TupleType(
-                tuple(
-                    replace(target, tensor=replace(target.tensor, dtype=source.tensor.dtype))
-                    for source, target in zip(qkv.type.fields, call.type.fields)))
+            wide_type = TupleType(tuple(replace(target, tensor=replace(
+                target.tensor, dtype=source.tensor.dtype))
+                for source, target in zip(qkv.type.fields, call.type.fields)))
             used = set(module.node_map)
-
             def fresh(base):
                 name, index = base, 0
                 while name in used:
@@ -73,23 +72,21 @@ def lower_packed_qkv_parallel_linear_combine_rule(*, materialize_rounding=False)
                     name = f"{base}.{index}"
                 used.add(name)
                 return name
-
-            wide = make_node("distributed.boxing", fresh(call.id + ".accumulator"), (qkv, ), {"new_type": wide_type},
-                             call.metadata)
+            wide = make_node("distributed.boxing", fresh(call.id + ".accumulator"), (qkv,),
+                             {"new_type": wide_type}, call.metadata)
             prefix, results = [wide], []
             for index, target in enumerate(call.type.fields):
-                field = make_node("builtin.get_item", fresh(call.id + f".field{index}"), (wide, ), {"index": index},
-                                  call.metadata)
+                field = make_node("builtin.get_item", fresh(call.id + f".field{index}"), (wide,),
+                                  {"index": index}, call.metadata)
                 dtype = target.tensor.dtype
-                cast = make_node("ntt.vectorized_cast", fresh(call.id + f".rounded{index}"), (field, ),
-                                 {"new_type": dtype, "vectorize_axes":
-                                  (-1, ), "rounding_contract": "preserve"}, call.metadata)
+                cast = make_node("ntt.vectorized_cast", fresh(call.id + f".rounded{index}"), (field,),
+                                 {"new_type": dtype, "vectorize_axes": (-1,), "rounding_contract": "preserve"}, call.metadata)
                 prefix.extend((field, cast))
                 results.append(cast)
             result = make_node("builtin.tuple", call.id, tuple(results), {}, call.metadata)
             assert result.type == call.type
             return RewriteResult(result, prefix_nodes=tuple(prefix))
-        prepared = Boxing.prepare((qkv, ), {"new_type": call.type})
+        prepared = Boxing.prepare((qkv,), {"new_type": call.type})
         return Node(
             call.id,
             Boxing.op_name,
@@ -111,13 +108,21 @@ def lower_packed_qkv_parallel_linear_combine_rule(*, materialize_rounding=False)
 
 
 def _is_materialized_tuple(value_type) -> bool:
-    return isinstance(value_type, TupleType) and all(not isinstance(field, DistributedType) or field.partial is None
-                                                     for field in value_type.fields)
+    return isinstance(value_type, TupleType) and all(
+        not isinstance(field, DistributedType) or field.partial is None
+        for field in value_type.fields
+    )
 
 
 def _is_three_field_partial_tuple(value_type) -> bool:
-    return (isinstance(value_type, TupleType) and len(value_type.fields) == 3
-            and all(isinstance(field, DistributedType) and field.partial is not None for field in value_type.fields))
+    return (
+        isinstance(value_type, TupleType)
+        and len(value_type.fields) == 3
+        and all(
+            isinstance(field, DistributedType) and field.partial is not None
+            for field in value_type.fields
+        )
+    )
 
 
 __all__ = [

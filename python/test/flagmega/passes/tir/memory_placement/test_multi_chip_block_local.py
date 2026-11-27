@@ -30,30 +30,23 @@ def _chain(mesh, *, narrow=False, full_replica=False):
     chip = next(i for i, level in enumerate(mesh.hierarchy_levels) if level != "b")
     blocks = tuple(i for i, level in enumerate(mesh.hierarchy_levels) if level == "b")
     tensor = fm.tensor_type("float32", (16, 32))
-    rows = fm.SBP.broadcast() if full_replica else fm.SBP.split_contiguous((chip, ), 4)
+    rows = fm.SBP.broadcast() if full_replica else fm.SBP.split_contiguous((chip,), 4)
     source_type = fm.DistributedType(tensor, (rows, fm.SBP.broadcast()), mesh)
     target_type = fm.DistributedType(tensor, (
-        rows,
-        fm.SBP.split_contiguous(blocks, 4) if narrow else fm.SBP.broadcast(),
+        rows, fm.SBP.split_contiguous(blocks, 4) if narrow else fm.SBP.broadcast(),
     ), mesh)
     builder = fm.IRBuilder(dialect="semantic_tir", stage="packaged_tir")
     value = builder.var("value", source_type, id="value")
-    produced = builder.call("tir.kernel", (value, ), source_type, id="producer", attrs=_kernel_attrs())
-    viewed = (builder.call("distributed.sharded_view", (produced, ), target_type, id="view",
+    produced = builder.call("tir.kernel", (value,), source_type, id="producer", attrs=_kernel_attrs())
+    viewed = (builder.call("distributed.sharded_view", (produced,), target_type, id="view",
                            attrs={"new_type": target_type}) if narrow else produced)
-    output = builder.call("tir.kernel", (viewed, ), target_type, id="consumer", attrs=_kernel_attrs())
-    builder.function("main", (value, ), (output, ))
+    output = builder.call("tir.kernel", (viewed,), target_type, id="consumer", attrs=_kernel_attrs())
+    builder.function("main", (value,), (output,))
     module = materialize_kernel_prim_functions(builder.build(entry="main"))
-    return fm.verify_module(
-        replace(
-            module, metadata={
-                **module.metadata, "launch_contract": {
-                    "kind": "single_prepared_entry",
-                    "entry": "flagmega_main",
-                    "cooperative_grid": True,
-                    "grid_mesh": mesh.to_data(),
-                }
-            }))
+    return fm.verify_module(replace(module, metadata={**module.metadata, "launch_contract": {
+        "kind": "single_prepared_entry", "entry": "flagmega_main", "cooperative_grid": True,
+        "grid_mesh": mesh.to_data(),
+    }}))
 
 
 @pytest.mark.parametrize("mesh", MESHES, ids=("cbb", "bcb", "dbb"))
@@ -76,30 +69,27 @@ def test_owner_local_edges_do_not_require_an_all_block_mesh(tmp_path, mesh, narr
     specialized = specialize_prim_functions_for_buffer_layouts(placed, plan)
     plan = fm.make_buffer_plan(specialized, options=_options())
     bound = bind_prim_function_buffers(specialized, plan=plan)
-    bound = fm.verify_module(
-        replace(bound, stage="bufferized_tir", dialect="bufferized_tir",
-                metadata={**bound.metadata, "buffer_plan": plan.to_data()}))
+    bound = fm.verify_module(replace(bound, stage="bufferized_tir", dialect="bufferized_tir",
+        metadata={**bound.metadata, "buffer_plan": plan.to_data()}))
     assert fm.load_module(fm.emit_module(bound, tmp_path / "selected.py")).semantic_hash == bound.semantic_hash
 
 
 @pytest.mark.parametrize("mesh", MESHES, ids=("cbb", "bcb", "dbb"))
 def test_block_pool_index_is_bounded_with_every_chip_coordinate(mesh):
     module = _chain(mesh)
-    module = replace(
-        module, nodes=tuple(
-            replace(n, metadata={**n.metadata, MEMORY_SPACE_METADATA: "block_local_data"}) if n.id == "producer" else n
-            for n in module.nodes))
+    module = replace(module, nodes=tuple(
+        replace(n, metadata={**n.metadata, MEMORY_SPACE_METADATA: "block_local_data"})
+        if n.id == "producer" else n for n in module.nodes
+    ))
     plan = fm.make_buffer_plan(module, options=_options())
     module = specialize_prim_functions_for_buffer_layouts(module, plan)
     plan = fm.make_buffer_plan(module, options=_options())
     bound = bind_prim_function_buffers(module, plan=plan)
-    bound = fm.verify_module(
-        replace(bound, stage="bufferized_tir", dialect="bufferized_tir",
-                metadata={**bound.metadata, "buffer_plan": plan.to_data()}))
+    bound = fm.verify_module(replace(bound, stage="bufferized_tir", dialect="bufferized_tir",
+        metadata={**bound.metadata, "buffer_plan": plan.to_data()}))
     binding = describe_function_runtime_binding(bound)
     pool, = (p for p in binding["pools"] if p["storage"] == "block_local_data")
-    abi = next(c for c in binding["call_abi"]["kernel_calls"]
-               if c["call"] == "producer")["outputs"][0]["buffers"][0]["abi"]
+    abi = next(c for c in binding["call_abi"]["kernel_calls"] if c["call"] == "producer")["outputs"][0]["buffers"][0]["abi"]
     count = prod(size for size, level in zip(mesh.hierarchy, mesh.hierarchy_levels) if level == "b")
     assert pool["scope_count"] == count
     for coordinates in product(*(range(size) for size in mesh.hierarchy)):
@@ -118,30 +108,27 @@ def private_view_stage(world, layout, full_replica):
     from triton.flagmega.compiler import Compiler
     from triton.flagmega.options import CompileOptions
 
-    mesh = (fm.Placement((world, 8, 16), "cyx", "cbb") if layout == "cbb" else fm.Placement(
-        (8, world, 16), "ycx", "bcb"))
+    mesh = (fm.Placement((world, 8, 16), "cyx", "cbb") if layout == "cbb"
+            else fm.Placement((8, world, 16), "ycx", "bcb"))
     chip, = (i for i, level in enumerate(mesh.hierarchy_levels) if level == "c")
     blocks = tuple(i for i, level in enumerate(mesh.hierarchy_levels) if level == "b")
 
     class Graph(fm.Module):
-
         def forward(self):
             source = self.input("value", fm.tensor_type("float32", (512, 2)), id="value")
             parent = fm.DistributedType(source.type, (
-                fm.SBP.broadcast() if full_replica else fm.SBP.split_contiguous((chip, )),
+                fm.SBP.broadcast() if full_replica else fm.SBP.split_contiguous((chip,)),
                 fm.SBP.broadcast(),
             ), mesh)
             viewed = fm.F.distributed.sharded_view(source, parent)
             stats = fm.F.nn.norm_stats(viewed, axis=1, use_mean=False, name="private_stats")
             narrowed = fm.DistributedType(stats.type.tensor, (
-                fm.SBP.broadcast(),
-                fm.SBP.split_contiguous((chip, *blocks)),
-                fm.SBP.broadcast(),
+                fm.SBP.broadcast(), fm.SBP.split_contiguous((chip, *blocks)), fm.SBP.broadcast(),
             ), mesh)
             view = fm.F.distributed.sharded_view(stats, narrowed, name="private_narrow")
             doubled = fm.F.math.add(view, view)
             result = fm.F.distributed.force_boxing(doubled, stats.type.tensor)
-            self.function("main", (source, ), (result, ))
+            self.function("main", (source,), (result,))
 
     source = Graph(dialect="distributed", stage="frozen_constants", entry="main",
                    metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()
@@ -150,8 +137,9 @@ def private_view_stage(world, layout, full_replica):
     assert plan.buffer_map["private_stats"].storage == "block_local_data"
     assert plan.buffer_map["private_narrow"].storage == "block_local_data"
     assert plan.buffer_map["private_narrow"].distributed_storage_kind is (
-        fm.DistributedBufferStorageKind.REPLICATED_LOCAL
-        if full_replica else fm.DistributedBufferStorageKind.COMPACT_LOCAL)
+        fm.DistributedBufferStorageKind.REPLICATED_LOCAL if full_replica
+        else fm.DistributedBufferStorageKind.COMPACT_LOCAL
+    )
     return module
 
 

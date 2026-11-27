@@ -12,7 +12,6 @@ from triton.flagmega.pattern_match.pattern import Pattern
 
 
 class ConstPattern(Pattern):
-
     def __init__(
         self,
         value: bool | int | float | None = None,
@@ -29,13 +28,15 @@ class ConstPattern(Pattern):
 
     def match_leaf(self, node: Node) -> bool:
         if not super().match_leaf(node) or node.op not in {
-                "builtin.scalar_const",
-                "tir.scalar_const",
+            "builtin.scalar_const",
+            "tir.scalar_const",
         }:
             return False
         value = node.attrs.get("value")
-        return (bool(self.condition(value))
-                if self.condition is not None else self.value is None or value == self.value)
+        return (
+            bool(self.condition(value)) if self.condition is not None
+            else self.value is None or value == self.value
+        )
 
 
 def is_const(

@@ -1,6 +1,5 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: qkv_parallel_linear/packed_gemv_smem_pipeline platform=generic
-{# reference qkv_parallel_linear/simt_fma_smem_pipeline: owner-local packed
+# flagmega-kernel: qkv_parallel_linear/packed_gemv_smem_pipeline platform=generic
+{# nncase qkv_parallel_linear/simt_fma_smem_pipeline: owner-local packed
    [N,K] FMA reduction, TMA RHS staging and cached or direct consumer LHS.
    The target owns geometry; this variant does not require a matrix ISA.
    The ordinary stage helper stays inline across the op's noinline boundary. #}

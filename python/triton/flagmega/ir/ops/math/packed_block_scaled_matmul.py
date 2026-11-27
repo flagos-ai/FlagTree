@@ -107,7 +107,8 @@ class PackedBlockScaledMatMul(OpDefinition):
         output_n = try_div_exactly(weight.shape[0], prod(lanes))
         if output_n is None:
             raise IRSchemaError("PackedBlockScaledMatMul N must be divisible by output_lanes.")
-        output = tensor_type(VectorType(value.dtype, lanes) if lanes else value.dtype, (value.shape[0], output_n))
+        output = tensor_type(VectorType(value.dtype, lanes) if lanes else value.dtype,
+                             (value.shape[0], output_n))
         scale_type = cls.weight_scale.type_of(inputs)
         placement = placement_of(value_type, weight_type, scale_type)
         if placement is None:
@@ -121,15 +122,21 @@ class PackedBlockScaledMatMul(OpDefinition):
         output_split = split_policy(weight_type, 0)
         reduction_split = split_policy(weight_type, 1)
         value_reduction_split = split_policy(value_type, 1)
-        logical_reduction_split = (None if reduction_split is None else scale_split_units(
-            reduction_split, weight.dtype.lane_count, 1))
+        logical_reduction_split = (
+            None
+            if reduction_split is None
+            else scale_split_units(reduction_split, weight.dtype.lane_count, 1)
+        )
         if output_split is not None and all_broadcast(value_type) and all_broadcast(scale_type):
             packed_split = scale_split_units(output_split, 1, prod(lanes))
             if packed_split is None:
                 raise IRSchemaError("PackedBlockScaledMatMul N split must align with output_lanes.")
             return DistributedType(output, (SBP.broadcast(), packed_split), placement)
-        if (reduction_split is not None and logical_reduction_split == value_reduction_split
-                and all_broadcast(scale_type)):
+        if (
+            reduction_split is not None
+            and logical_reduction_split == value_reduction_split
+            and all_broadcast(scale_type)
+        ):
             return DistributedType(
                 output,
                 (SBP.broadcast(), SBP.broadcast()),
@@ -160,7 +167,7 @@ class PackedBlockScaledMatMul(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         size = tensor_nbytes(node.type) if isinstance(node.type, TensorType) else None
-        return OpCost(flops=None, bytes_read=None, bytes_written=size, notes=("packed-block-fp8-matmul", ))
+        return OpCost(flops=None, bytes_read=None, bytes_written=size, notes=("packed-block-fp8-matmul",))
 
 
 __all__ = ["PackedBlockScaledMatMul"]

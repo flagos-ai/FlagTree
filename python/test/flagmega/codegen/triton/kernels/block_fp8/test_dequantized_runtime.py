@@ -25,20 +25,18 @@ def _artifact(tmp_path, module, variant, *, options=None, checkpoint=None, dequa
     if dequant_mma_splits is not None:
         from triton.flagmega.targets import NvidiaSm90Target
         base = NvidiaSm90Target().triton_implementation_model
-        catalog = replace(
-            base, implementations=tuple(
-                replace(value, parameters={**value.parameters, "dequant_mma_splits": dequant_mma_splits}) if value.id ==
-                "tir.block_fp8.mma" else value for value in base.implementations))
+        catalog = replace(base, implementations=tuple(
+            replace(value, parameters={**value.parameters, "dequant_mma_splits": dequant_mma_splits})
+            if value.id == "tir.block_fp8.mma" else value for value in base.implementations))
         compiler.target = NvidiaSm90Target(triton_implementation_model=catalog)
     proposed = compiler.compile(module, stop_after="propose-tir").module
     assert not any(node.op == "tensors.pack" for node in proposed.nodes)
-    choices = [(point.id, variant) for point in proposed.selection_points if any(candidate.id == variant
-                                                                                 for candidate in point.candidates)]
+    choices = [(point.id, variant) for point in proposed.selection_points
+               if any(candidate.id == variant for candidate in point.candidates)]
     assert choices
     selected = apply_plan(proposed, override_plan(proposed, choices))
-    path = write_artifact(
-        compiler.compile(selected).module, tmp_path / "dequantized", target="nvidia-sm90", checkpoint=checkpoint,
-        emit_executable=True)
+    path = write_artifact(compiler.compile(selected).module, tmp_path / "dequantized",
+                          target="nvidia-sm90", checkpoint=checkpoint, emit_executable=True)
     return path
 
 
@@ -81,8 +79,8 @@ def test_dequantized_mma_keeps_the_accumulator_across_scale_blocks(tmp_path, pac
     weight[:, 0] = 1.
     weight[:, 128:256] = 1.
     weight[:, 256] = -1.
-    weight[n // 2:, -1] = 2.**-9
-    scales = torch.tensor([[2.**24, 2.**-6, 2.**24]]).repeat(2, 1)
+    weight[n // 2:, -1] = 2. ** -9
+    scales = torch.tensor([[2. ** 24, 2. ** -6, 2. ** 24]]).repeat(2, 1)
     weight = weight.to(torch.float8_e4m3fn)
     decoded = (weight.float() * scales.repeat_interleave(16, 0).repeat_interleave(128, 1)).bfloat16()
     # An independent full BF16 GEMM retains its FP32 MMA accumulator across
@@ -110,8 +108,8 @@ def test_dequantized_mma_preserves_the_selected_split_partitions(tmp_path, packe
     value = torch.ones((1, k), dtype=torch.bfloat16)
     weight = torch.zeros((n, k), dtype=torch.float32)
     weight[:, 0], weight[:, 256:384], weight[:, 384] = 1., 1., -1.
-    weight[n // 2:, -1] = 2.**-9
-    scale = torch.tensor([[2.**24, 1., 2.**-6, 2.**24]]).repeat(2, 1)
+    weight[n // 2:, -1] = 2. ** -9
+    scale = torch.tensor([[2. ** 24, 1., 2. ** -6, 2. ** 24]]).repeat(2, 1)
     encoded = weight.to(torch.float8_e4m3fn)
     decoded = (encoded.float() * scale.repeat_interleave(16, 0).repeat_interleave(128, 1)).bfloat16()
     # Within each chosen partition the exact partial sum is representable in
@@ -122,8 +120,8 @@ def test_dequantized_mma_preserves_the_selected_split_partitions(tmp_path, packe
     physical = encoded.reshape(n, k // 32, 2, 16) if packed else encoded
     values = {"value": value, "weight": physical, "scale": scale}
     graph = DequantizedProjection(n=n, k=k, packed_weights=packed).build()
-    split = _run(_artifact(tmp_path / "split", graph, "tir.block_fp8.mma", dequant_mma_splits=2), values, (1, n),
-                 "bfloat16")
+    split = _run(_artifact(tmp_path / "split", graph, "tir.block_fp8.mma", dequant_mma_splits=2),
+                  values, (1, n), "bfloat16")
     full = _run(_artifact(tmp_path / "full", graph, "tir.block_fp8.mma"), values, (1, n), "bfloat16")
     torch.testing.assert_close(split, expected, rtol=0, atol=0)
     assert torch.equal(full[:, :16], torch.zeros((1, 16), dtype=torch.bfloat16))
@@ -132,7 +130,8 @@ def test_dequantized_mma_preserves_the_selected_split_partitions(tmp_path, packe
 
 @pytest.mark.parametrize("variant", ["tir.block_fp8.simt", "tir.block_fp8.mma"])
 @pytest.mark.parametrize("boundary", ["activation", "weight"])
-@pytest.mark.parametrize("packed,lanes,n,k", [(False, (), 17, 129), (True, (8, ), 40, 160), (True, (2, 4), 40, 160)])
+@pytest.mark.parametrize("packed,lanes,n,k", [(False, (), 17, 129), (True, (8,), 40, 160),
+                                              (True, (2, 4), 40, 160)])
 def test_dequantized_precision_survives_gpu_packing_and_tail_geometry(tmp_path, variant, boundary, packed, lanes, n, k):
     _require_sm90()
     values, expected = boundary_operands(n, k, boundary=boundary, packed=packed)
@@ -154,10 +153,10 @@ def test_matching_float16_inputs_use_the_declared_weight_rounding(tmp_path, vari
 def test_float32_activation_keeps_bits_that_bfloat16_would_discard(tmp_path):
     _require_sm90()
     values, _ = boundary_operands(dtype="float32")
-    values["value"][0, 1] += 2**-20
+    values["value"][0, 1] += 2 ** -20
     module = DequantizedProjection(dtype="float32").build()
     output = _run(_artifact(tmp_path, module, "tir.block_fp8.simt"), values, (1, 32), "float32")
-    torch.testing.assert_close(output, torch.full_like(output, .81640625 + 2**-20), rtol=0, atol=0)
+    torch.testing.assert_close(output, torch.full_like(output, .81640625 + 2 ** -20), rtol=0, atol=0)
 
 
 def test_mma_selects_one_repeated_row_without_overflowing_an_extra_sum(tmp_path):
@@ -179,34 +178,28 @@ def test_dequantization_uses_global_scale_coordinates_for_distributed_owners(tmp
     _require_sm90()
     placement = parse_placement("x=2/b")
     broadcast = fm.SBP.broadcast()
-    split = fm.SBP.split_contiguous((0, ), granularity=32)
-    reduction = fm.SBP.split_contiguous((0, ), granularity=128)
-    packed_reduction = fm.SBP.split_contiguous((0, ), granularity=4)
+    split = fm.SBP.split_contiguous((0,), granularity=32)
+    reduction = fm.SBP.split_contiguous((0,), granularity=128)
+    packed_reduction = fm.SBP.split_contiguous((0,), granularity=4)
 
     class Graph(fm.Module):
-
         def forward(self):
-            value = self.input(
-                "value",
-                fm.DistributedType(fm.tensor_type("bfloat16", (1, 256)),
-                                   (broadcast, reduction if axis == "k" else broadcast), placement), id="value")
-            weight = self.input(
-                "weight",
-                fm.DistributedType(
-                    fm.tensor_type(fm.vector_type("float8_e4m3fn", (2, 16)), (64, 8)),
-                    (split if axis == "n" else broadcast, packed_reduction if axis == "k" else broadcast), placement),
+            value = self.input("value", fm.DistributedType(fm.tensor_type("bfloat16", (1, 256)),
+                               (broadcast, reduction if axis == "k" else broadcast), placement), id="value")
+            weight = self.input("weight", fm.DistributedType(
+                fm.tensor_type(fm.vector_type("float8_e4m3fn", (2, 16)), (64, 8)),
+                (split if axis == "n" else broadcast, packed_reduction if axis == "k" else broadcast), placement),
                 id="weight")
-            scale = self.input("scale",
-                               fm.DistributedType(fm.tensor_type("float32", (4, 2)), (broadcast, broadcast), placement),
-                               id="scale")
-            result = fm.F.math.packed_block_scaled_matmul(value, weight, scale, k_pack=2, k_vector=16,
-                                                          output_lanes=(2, 4), weight_block_n=16, weight_block_k=128,
-                                                          activation_quantization="none",
-                                                          weight_dequant_dtype="bfloat16")
+            scale = self.input("scale", fm.DistributedType(fm.tensor_type("float32", (4, 2)),
+                                (broadcast, broadcast), placement), id="scale")
+            result = fm.F.math.packed_block_scaled_matmul(
+                value, weight, scale, k_pack=2, k_vector=16, output_lanes=(2, 4),
+                weight_block_n=16, weight_block_k=128, activation_quantization="none",
+                weight_dequant_dtype="bfloat16")
             if axis == "k":
-                assert result.type.partial == fm.SBP.partial((0, ))
+                assert result.type.partial == fm.SBP.partial((0,))
             result = fm.F.distributed.boxing(result, result.type.tensor)
-            self.function("main", (value, weight, scale), (result, ))
+            self.function("main", (value, weight, scale), (result,))
 
     module = Graph(dialect="high_level", stage="frozen_constants", entry="main",
                    metadata={"auto_distribution": {"placement": placement.to_data()}}).build()
@@ -233,7 +226,7 @@ def test_dequantization_uses_global_scale_coordinates_for_distributed_owners(tmp
 
 
 @pytest.mark.parametrize("quantization,weight_dtype,expected", [("dynamic_fp8", "bfloat16", .859375),
-                                                                ("none", None, .8203125)])
+                                                               ("none", None, .8203125)])
 def test_simt_preserves_independent_activation_and_weight_precision(tmp_path, quantization, weight_dtype, expected):
     _require_sm90()
     values, _ = boundary_operands()
@@ -252,20 +245,15 @@ def test_readonly_weight_artifact_keeps_fp8_bytes_and_rounds_only_in_the_consume
     _require_sm90()
     values, expected = boundary_operands(boundary="weight")
     weights = {name: values[name] for name in ("weight", "scale")}
-    infos = {
-        name:
-        TensorInfo(name, fm.DType.FLOAT8_E4M3FN if name == "weight" else fm.DType.FLOAT32, tuple(value.shape), "memory")
-        for name, value in weights.items()
-    }
+    infos = {name: TensorInfo(name, fm.DType.FLOAT8_E4M3FN if name == "weight" else fm.DType.FLOAT32,
+                               tuple(value.shape), "memory") for name, value in weights.items()}
     checkpoint = MemoryCheckpoint({}, infos, weights)
     frozen = Compiler().compile(DequantizedProjection(constants=True).build(), stop_after="freeze-constants").module
     assets = [node for node in frozen.nodes if node.op == "builtin.const_asset"]
-    codes = [
-        node for node in assets if getattr(tensor_of(node.type).dtype, "elem_type",
-                                           tensor_of(node.type).dtype) == fm.DType.FLOAT8_E4M3FN
-    ]
+    codes = [node for node in assets if getattr(tensor_of(node.type).dtype, "elem_type", tensor_of(node.type).dtype)
+             == fm.DType.FLOAT8_E4M3FN]
     assert len(codes) == 1 and tensor_nbytes(tensor_of(codes[0].type)) == 32 * 128
     assert not any(node.op == "tensors.cast" for recipe in frozen.constant_recipes for node in recipe.nodes)
-    output = _run(_artifact(tmp_path, frozen, "tir.block_fp8.mma", checkpoint=checkpoint), {"value": values["value"]},
-                  (1, 32), "bfloat16")
+    output = _run(_artifact(tmp_path, frozen, "tir.block_fp8.mma", checkpoint=checkpoint),
+                   {"value": values["value"]}, (1, 32), "bfloat16")
     torch.testing.assert_close(output, torch.full_like(output, expected), rtol=0, atol=0)

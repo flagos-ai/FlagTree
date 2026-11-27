@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """A dimension expression used as a rank-zero value.
 
-This mirrors the reference ``IR.Shapes.AsTensor``: a ``Dimension`` is an expression
+This mirrors nncase's ``IR.Shapes.AsTensor``: a ``Dimension`` is an expression
 in its own right, and this op is the boundary where one becomes an ordinary
 scalar operand. It lets a value that is a function of symbolic extents -- a
 loop's induction value, for instance -- stay an expression instead of being
@@ -48,7 +48,8 @@ class DimAsTensor(OpDefinition):
         if not isinstance(result_type, TensorType) or result_type.rank != 0:
             raise IRSchemaError("F.shapes.dim_as_tensor requires a rank-zero TensorType.")
         if not isinstance(expression, (Dimension, LogicalExpr)):
-            raise IRSchemaError("F.shapes.dim_as_tensor requires a Dimension or LogicalExpr.")
+            raise IRSchemaError(
+                "F.shapes.dim_as_tensor requires a Dimension or LogicalExpr.")
         if isinstance(expression, LogicalExpr) and result_type.dtype is not DType.BOOL:
             raise IRSchemaError("A LogicalExpr value must be typed bool.")
         return {"result_type": result_type, "expression": expression}
@@ -71,12 +72,13 @@ class DimAsTensor(OpDefinition):
                 node_id=node.id,
             )
         if not isinstance(node.attrs["expression"], (Dimension, LogicalExpr)):
-            raise IRVerificationError("shapes.dim_as_tensor expression must be a Dimension or LogicalExpr.",
-                                      node_id=node.id)
+            raise IRVerificationError(
+                "shapes.dim_as_tensor expression must be a Dimension or LogicalExpr.",
+                node_id=node.id)
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost.exact_zero(notes=("dimension-expression", ))
+        return OpCost.exact_zero(notes=("dimension-expression",))
 
     @classmethod
     def evaluate(cls, node, arguments, context):
@@ -84,8 +86,8 @@ class DimAsTensor(OpDefinition):
         # interpreter resolves the same expression the kernel computes.
         bindings = getattr(context, "dimension_bindings", None) or {}
         expression = node.attrs["expression"]
-        value = (expression.evaluate(bindings) if isinstance(expression, LogicalExpr) else evaluate_dim(
-            expression, bindings))
+        value = (expression.evaluate(bindings) if isinstance(expression, LogicalExpr)
+                 else evaluate_dim(expression, bindings))
         return context.torch.tensor(value, dtype=context.torch_dtype(node.type.dtype))
 
     @classmethod

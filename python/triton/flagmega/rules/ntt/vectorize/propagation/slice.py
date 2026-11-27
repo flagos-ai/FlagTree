@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""reference aligned Slice/Pack propagation, in both boundary directions."""
+"""nncase aligned Slice/Pack propagation, in both boundary directions."""
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
@@ -38,8 +38,9 @@ def _pack_slice(node, module):
         return None
     source = module.node_map[sliced.inputs[0]]
     lanes = tuple(node.attrs["lanes"])
-    axes = normalize_axes(tuple(node.attrs.get("axes", (node.attrs.get("axis", -1), ) * len(lanes))),
-                          tensor_of(source.type).rank)
+    axes = normalize_axes(
+        tuple(node.attrs.get("axes", (node.attrs.get("axis", -1),) * len(lanes))), tensor_of(source.type).rank
+    )
     attrs = _scaled_ranges(source, sliced.attrs, axes, lanes)
     if attrs is None:
         return None
@@ -47,23 +48,24 @@ def _pack_slice(node, module):
         packed = make_node(
             "tensors.pack",
             f"{node.id}.propagated.pack",
-            (source, ),
+            (source,),
             {"axes": axes, "lanes": lanes},
             propagation_helper_metadata(node, node.id, "propagated-pack"),
         )
         result = make_node(
             Slice.op_name,
             node.id,
-            (packed, ),
+            (packed,),
             attrs,
-            propagation_result_metadata(sliced, node, axes=axes, lanes=lanes, rule="VectorizeSlicePropagation",
-                                        internal_role="propagated-slice"),
+            propagation_result_metadata(
+                sliced, node, axes=axes, lanes=lanes, rule="VectorizeSlicePropagation", internal_role="propagated-slice"
+            ),
         )
     except IRSchemaError:
         # The full input, unlike the slice result, may not be packable, or
         # its distributed split may cut lanes. Do not insert padding/boxing.
         return None
-    return RewriteResult(result, (packed, )) if result.type == node.type else None
+    return RewriteResult(result, (packed,)) if result.type == node.type else None
 
 
 def _slice_unpack(node, module):
@@ -74,9 +76,9 @@ def _slice_unpack(node, module):
     dtype = tensor_of(vector.type).dtype
     if not isinstance(dtype, VectorType):
         return None
-    raw_axes = tuple(unpack.attrs.get("axes", (unpack.attrs.get("axis", -1), ) * len(dtype.lanes)))
+    raw_axes = tuple(unpack.attrs.get("axes", (unpack.attrs.get("axis", -1),) * len(dtype.lanes)))
     axes = normalize_axes(raw_axes, tensor_of(vector.type).rank)
-    lanes = dtype.lanes[:len(axes)]
+    lanes = dtype.lanes[: len(axes)]
     attrs = _scaled_ranges(unpack, node.attrs, axes, lanes)
     if attrs is None:
         return None
@@ -84,7 +86,7 @@ def _slice_unpack(node, module):
         sliced = make_node(
             Slice.op_name,
             f"{node.id}.propagated.slice",
-            (vector, ),
+            (vector,),
             attrs,
             propagation_result_metadata(
                 node,
@@ -98,13 +100,13 @@ def _slice_unpack(node, module):
         result = make_node(
             "tensors.unpack",
             node.id,
-            (sliced, ),
+            (sliced,),
             {"axes": axes},
             propagation_result_metadata(node, unpack, axes=axes, lanes=lanes, rule="SliceDevectorizePropagation"),
         )
     except IRSchemaError:
         return None
-    return RewriteResult(result, (sliced, )) if result.type == node.type else None
+    return RewriteResult(result, (sliced,)) if result.type == node.type else None
 
 
 def slice_propagation_rules():
@@ -113,13 +115,13 @@ def slice_propagation_rules():
             "VectorizeSlicePropagation",
             lambda node, _: node.op == "tensors.pack",
             _pack_slice,
-            root_ops=("tensors.pack", ),
+            root_ops=("tensors.pack",),
         ),
         RewriteRule(
             "SliceDevectorizePropagation",
             lambda node, _: node.op == Slice.op_name,
             _slice_unpack,
-            root_ops=("tensors.slice", ),
+            root_ops=("tensors.slice",),
         ),
     )
 

@@ -41,22 +41,18 @@ def form_interleaved_projection(module):
         valid = True
         for selection in users[factored.id]:
             if selection.op != "tensors.slice" or selection.id in exported:
-                valid = False
-                break
+                valid = False; break
             ranges = Slice.ranges(factored.type, selection.attrs)
             changed = [(a, r) for a, r in ranges if r != range(shape[a].fixed_value)]
             if len(changed) != 1 or changed[0][0] != 2 or len(changed[0][1]) != 1 or changed[0][1].step != 1:
-                valid = False
-                break
+                valid = False; break
             field = changed[0][1].start
             if field not in (0, 1) or not users[selection.id]:
-                valid = False
-                break
+                valid = False; break
             seen.add(field)
             for view in users[selection.id]:
                 if view.op != "tensors.reshape" or view.type.shape != (shape[0], shape[1], shape[3]):
-                    valid = False
-                    break
+                    valid = False; break
                 selected.append((view, field))
             intermediates.append(selection.id)
             if not valid: break
@@ -64,21 +60,19 @@ def form_interleaved_projection(module):
             continue
         inputs = tuple(module.node_map[n] for n in projection.inputs)
         formed = make_node("nn.interleaved_projection", projection.id, inputs,
-                           {k: projection.attrs[k]
-                            for k in ("weight_block_n", "weight_block_k", "weight_encoding")}
-                           | {"feature_shape":
-                              (heads, width)}, {**projection.metadata, "formed_by": "FormInterleavedProjection"})
+                           {k: projection.attrs[k] for k in ("weight_block_n", "weight_block_k", "weight_encoding")}
+                           | {"feature_shape": (heads, width)},
+                           {**projection.metadata, "formed_by": "FormInterleavedProjection"})
         replacements[projection.id] = formed
         for view, field in selected:
-            replacement = make_node("builtin.get_item", view.id, (formed, ), {"index": field},
+            replacement = make_node("builtin.get_item", view.id, (formed,), {"index": field},
                                     {**view.metadata, "formed_by": "FormInterleavedProjection"})
             assert replacement.type == view.type
             replacements[view.id] = replacement
         removed.update((factored.id, *intermediates))
     if not replacements:
         return module
-    return verify_module(
-        replace(module, nodes=tuple(replacements.get(n.id, n) for n in module.nodes if n.id not in removed)))
+    return verify_module(replace(module, nodes=tuple(replacements.get(n.id, n) for n in module.nodes if n.id not in removed)))
 
 
 __all__ = ["form_interleaved_projection"]

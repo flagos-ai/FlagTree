@@ -1,0 +1,403 @@
+{% set named = call_dummy | default(false) %}
+{# Generated from the accepted numerical AST by the r006 transport lowering. #}
+from triton.flagmega.codegen.triton.iq4_q8_kernels import E
+{% if render_calls | selectattr('packet_mode','defined') | selectattr('packet_mode', 'equalto', 'cached_tables') | list %}
+from triton.flagmega.codegen.triton.iq4_q8_kernels import packets_cached_tables as packets
+{% else %}
+from triton.flagmega.codegen.triton.iq4_q8_kernels import packets
+{% endif %}
+from triton.flagmega.codegen.triton.iq4_q8_persistent_reduce import persistent_typed_reduce as typed_reduce
+{% if render_calls | selectattr('barrier_batch_g', 'defined') | list %}
+from triton.flagmega.codegen.triton.iq4_q8_batch_reduce import batch_partial_store,batch_typed_reduce
+{% endif %}
+import triton.experimental.tle.language.gpu as gpu
+{% for call in render_calls %}
+{% set named = call.transport_kind | default("tma") in ("vector_named","cp_named","global_named","global_idle") %}
+{% if call.variant in ('r006_glu_transport_t2','r006_glu_transport_t3') and call.family in ('iq4_q8_glu','iq4_q8_projection') %}
+@triton.jit
+def {{ call.symbol }}__row_ptr(W, byte):
+{% if call.rows_per_transaction > 1 %}
+    phase_base = (tl.program_id(0) * {{ call.rows_per_transaction }} % 4) * 32
+    phase_row = ((tl.program_id(0) * {{ call.rows_per_transaction }} + W[1]) % 4) * 32
+    byte = byte + phase_row - phase_base
+    return gpu.local_ptr(W[0],(W[1],byte // 16,byte % 16),shape=(4,32))
+{% else %}
+{% if call.transport_kind in ('global_named','global_idle') %}
+    return W[0] + byte
+{% else %}
+    return gpu.local_ptr(W[0],(0,byte // 16,byte % 16),shape=(4,32))
+{% endif %}
+{% endif %}
+
+{% if call.consumer_mode == 'load_only' %}
+@triton.jit
+def {{ call.symbol }}__load_group_stage(W, kbx, g, active):
+    base = kbx.to(tl.int32) * 34
+    header = gpu.set_layout(tl.load({{ call.symbol }}__row_ptr(W,4*base).to(tl.pointer_type(tl.uint64,3)),active,0,volatile=True),E)
+    packed0 = gpu.set_layout(tl.load({{ call.symbol }}__row_ptr(W,4*(base+2+4*g)).to(tl.pointer_type(tl.uint64,3)),active,0,volatile=True),E)
+    packed1 = gpu.set_layout(tl.load({{ call.symbol }}__row_ptr(W,4*(base+2+4*g+2)).to(tl.pointer_type(tl.uint64,3)),active,0,volatile=True),E)
+    sentinel = header ^ packed0 ^ packed1
+    return (sentinel.to(tl.uint32) ^ (sentinel >> 32).to(tl.uint32)).to(tl.float32,bitcast=True)
+{% else %}
+@triton.jit
+def {{ call.symbol }}__dot_group_stage(W, Q, row, kbx, g, active, K: tl.constexpr):
+    base = kbx.to(tl.int32) * 34
+    QP = Q.to(tl.pointer_type(tl.uint32))
+    header = gpu.set_layout(tl.load({{ call.symbol }}__row_ptr(W, 4 * base).to(tl.pointer_type(tl.uint64, {{ 1 if call.transport_kind in ("global_named","global_idle") else 3 }})), active, 0), E)
+    h = (header & 0xffffffff).to(tl.uint32)
+    s = (header >> 32).to(tl.uint32)
+    sg = s >> 8 * (g // 2) + 4 * (g % 2) & 15 | (h >> 16 + 2 * g & 3) << 4
+    sg = sg.to(tl.int32) - 32
+    dq = gpu.set_layout(tl.load(QP + (8 * kbx.to(tl.int32) + g) * 9, active, 0), E)
+    I = tl.full((4, 32), 0, tl.int32)
+    I = gpu.set_layout(I, E)
+    packed0 = gpu.set_layout(tl.load({{ call.symbol }}__row_ptr(W, 4 * (base + 2 + 4 * g)).to(tl.pointer_type(tl.uint64, {{ 1 if call.transport_kind in ("global_named","global_idle") else 3 }})), active, 0), E)
+    packed1 = gpu.set_layout(tl.load({{ call.symbol }}__row_ptr(W, 4 * (base + 2 + 4 * g + 2)).to(tl.pointer_type(tl.uint64, {{ 1 if call.transport_kind in ("global_named","global_idle") else 3 }})), active, 0), E)
+    for j in tl.static_range(4):
+        pair = packed0 if j < 2 else packed1
+        word = gpu.set_layout((pair >> (32 * (j % 2))).to(tl.uint32), E)
+        (a, b) = packets(word)
+        q0 = gpu.set_layout(tl.load(QP + (8 * kbx.to(tl.int32) + g) * 9 + 1 + j, active, 0).to(tl.int32, bitcast=True), E)
+        q1 = gpu.set_layout(tl.load(QP + (8 * kbx.to(tl.int32) + g) * 9 + 5 + j, active, 0).to(tl.int32, bitcast=True), E)
+        I = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[a, q0, I], dtype=tl.int32, is_pure=True, pack=1)
+        I = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[b, q1, I], dtype=tl.int32, is_pure=True, pack=1)
+    dw = (h & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    dx = (dq & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    D = tl.inline_asm_elementwise('mul.rn.f32 $0,$1,$2;', constraints='=f,f,f', args=[dw, dx], dtype=tl.float32, is_pure=True, pack=1)
+    return (gpu.set_layout((I * sg).to(tl.float32), E), gpu.set_layout(D, E))
+
+{% if call.prefetch_depth | default(0) %}
+@triton.jit
+def {{ call.symbol }}__dot_group_prefetched(H, P0, P1, Q, row, kbx, g, active, K: tl.constexpr):
+    base = kbx.to(tl.int32) * 34
+    QP = Q.to(tl.pointer_type(tl.uint32))
+    header = H
+    h = (header & 0xffffffff).to(tl.uint32)
+    s = (header >> 32).to(tl.uint32)
+    sg = s >> 8 * (g // 2) + 4 * (g % 2) & 15 | (h >> 16 + 2 * g & 3) << 4
+    sg = sg.to(tl.int32) - 32
+    dq = gpu.set_layout(tl.load(QP + (8 * kbx.to(tl.int32) + g) * 9, active, 0), E)
+    I = tl.full((4, 32), 0, tl.int32)
+    I = gpu.set_layout(I, E)
+    packed0 = P0
+    packed1 = P1
+    for j in tl.static_range(4):
+        pair = packed0 if j < 2 else packed1
+        word = gpu.set_layout((pair >> (32 * (j % 2))).to(tl.uint32), E)
+        (a, b) = packets(word)
+        q0 = gpu.set_layout(tl.load(QP + (8 * kbx.to(tl.int32) + g) * 9 + 1 + j, active, 0).to(tl.int32, bitcast=True), E)
+        q1 = gpu.set_layout(tl.load(QP + (8 * kbx.to(tl.int32) + g) * 9 + 5 + j, active, 0).to(tl.int32, bitcast=True), E)
+        I = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[a, q0, I], dtype=tl.int32, is_pure=True, pack=1)
+        I = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[b, q1, I], dtype=tl.int32, is_pure=True, pack=1)
+    dw = (h & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    dx = (dq & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    D = tl.inline_asm_elementwise('mul.rn.f32 $0,$1,$2;', constraints='=f,f,f', args=[dw, dx], dtype=tl.float32, is_pure=True, pack=1)
+    return (gpu.set_layout((I * sg).to(tl.float32), E), gpu.set_layout(D, E))
+{% endif %}
+
+{% endif %}
+
+{% for producer_bank in range(call.producer_warps) %}
+@triton.jit
+def {{ call.symbol }}__producer{% if call.producer_warps == 2 %}_{{ "gate" if producer_bank == 0 else "up" }}{% endif %}({{ (call.pipeline_producer_parameters + (call.signature,)) | join(', ') }}):
+{% for d in call.transport_descriptors %}{% if call.producer_warps == 1 or loop.index0 == producer_bank %}
+{% if call.transport_kind == 'tma' %}
+    tle.gpu.tensor_map_fenceproxy_acquire({{ d }})
+{% endif %}
+{% endif %}{% endfor %}
+    row_count = tl.cdiv({{ call.transport_n }} - {{ call.rows_per_transaction }} * tl.program_id(0), {{ call.rows_per_transaction }} * tl.num_programs(0))
+{% if call.producer_pipeline == 'prime' %}
+    for initial_epoch in range(tl.minimum(row_count, {{ call.reserve_depth or call.num_stages }})):
+        {{ call.pipeline_channels[0].writer_parameter }}[0].reserve(initial_epoch.to(tl.int32))
+{% endif %}
+    for row_iteration in range(row_count):
+{% if call.producer_pipeline == 'batch' %}
+        if row_iteration % {{ call.reserve_depth or call.num_stages }} == 0:
+            for reserve_offset in range(tl.minimum({{ call.reserve_depth or call.num_stages }}, row_count - row_iteration)):
+                {{ call.pipeline_channels[0].writer_parameter }}[0].reserve((row_iteration + reserve_offset).to(tl.int32))
+{% endif %}
+        row_index = {{ call.rows_per_transaction }} * (tl.program_id(0) + row_iteration * tl.num_programs(0))
+        epoch = row_iteration.to(tl.int32)
+{% for channel in call.pipeline_channels %}{% if call.producer_warps == 1 or loop.index0 == producer_bank %}
+{% if named %}
+        _slot{{ loop.index0 }} = {{ channel.writer_parameter }}[0].slot(epoch % {{ call.num_stages }})
+{% else %}
+{% if call.single_epoch and loop.first and call.issue_credits and call.issue_credits < call.num_stages %}
+        if epoch >= {{ call.issue_credits }}:
+            {{ channel.writer_parameter }}[0].credit_wait(epoch, {{ call.issue_credits }})
+{% endif %}
+{% if call.producer_pipeline != 'serial' %}
+        _slot{{ loop.index0 }}={{ channel.writer_parameter }}[0].reserved_slot(epoch)
+{% else %}
+        _slot{{ loop.index0 }}={{ channel.writer_parameter }}{{ '[0]' if call.cp_aligned_carrier else '' }}.acquire(epoch)
+{% endif %}
+{% if call.cp_aligned_carrier %}
+        _copy_slot{{ loop.index0 }} = {{ channel.writer_parameter }}[1].slot(epoch % {{ call.num_stages }})
+        _copy_rows = tl.arange(0,1)[:,None,None]
+{% endif %}
+{% endif %}
+{% set bank=loop.index0 %}
+{% for field in channel.fields %}
+{% if not (call.cross_shape_down | default(false)) or bank == 0 %}
+{% if call.rows_per_transaction > 1 %}
+        _destination{{ bank }} = _slot{{ bank }}{% if not named %}.{{ field.name }}{% endif %}.subslice(0,{{ call.transport_row_vectors | default(170) }},dim=1)
+{% else %}
+        _destination{{ bank }} = _slot{{ bank }}{% if not named %}.{{ field.name }}{% endif %}.subslice(0,{{ call.transport_row_vectors | default(170) }},dim=1)
+{% endif %}
+{% if call.transport_kind in ('global_named','global_idle') %}
+        control_ptr = gpu.local_ptr(_slot{{ bank }},(0,175,15))
+        tl.store(control_ptr,0)
+{% elif call.transport_kind == 'tma' %}
+        _map{{ bank }}_{{ loop.index0 }}=tle.gpu.reinterpret_tensor_map({{ call.transport_descriptors[bank*(call.transport_segments | length)+loop.index0] }},_destination{{ bank }})
+        tle.gpu.copy(_map{{ bank }}_{{ loop.index0 }},_destination{{ bank }},[{{ call.rows_per_transaction }},170,16],[row_index.to(tl.int32),0,0])
+{% else %}
+{% if call.rows_per_transaction == 8 %}
+        for copy_row in range(8):
+            _copy_phase = ((row_index + copy_row) % 4) * 32
+{% for begin,size in (((0,32),(32,32),(64,32),(96,32),(128,32),(160,8),(168,8)) if call.transport_kind == "vector_chunk" else ((0,128),(128,32),(160,16)) if call.cp_merged_tail else (call.transport_copy_tiles | default(((0,128),(128,32),(160,8),(168,8))))) %}
+            tile{{ loop.index0 }} = {% if call.cp_aligned_carrier %}_copy_slot{{ bank }}.slot(copy_row.to(tl.int32)).reshape((1,176,16)){% else %}_slot{{ bank }}{% if not named %}.{{ field.name }}{% endif %}{% endif %}.subslice({{ begin }},{{ size }},dim=1)
+            rr{{ loop.index0 }} = tl.arange(0,{{ size }})[None,:,None]
+            bb{{ loop.index0 }} = tl.arange(0,16)[None,None,:]
+            offs{{ loop.index0 }} = gpu.set_layout(tl.broadcast_to((rr{{ loop.index0 }}+{{ begin }})*16+bb{{ loop.index0 }}{{ "-_copy_phase" if call.cp_aligned_carrier else "" }},(1,{{ size }},16)),gpu.BlockEncoding([1,1,16],[1,32,1],[1,1,1],[2,1,0]))
+            source{{ loop.index0 }} = {{ call.pointers[1 if bank == 0 else 2] }} + (row_index + copy_row).to(tl.int64) * {{ call.transport_row_bytes | default(2720) }} + offs{{ loop.index0 }}
+{% if call.transport_kind in ('vector_direct','vector_chunk','vector_named') %}
+            dst_ptr{{ loop.index0 }} = gpu.local_ptr(tile{{ loop.index0 }},(tl.full((1,{{ size }},16),0,tl.int32),tl.broadcast_to(rr{{ loop.index0 }},(1,{{ size }},16)),tl.broadcast_to(bb{{ loop.index0 }},(1,{{ size }},16))))
+            dst_ptr{{ loop.index0 }} = gpu.set_layout(dst_ptr{{ loop.index0 }},gpu.BlockEncoding([1,1,16],[1,32,1],[1,1,1],[2,1,0]))
+            data{{ loop.index0 }} = tl.load(source{{ loop.index0 }},offs{{ loop.index0 }}<{{ call.transport_row_bytes | default(2720) }},0)
+            tl.store(dst_ptr{{ loop.index0 }},data{{ loop.index0 }})
+{% else %}
+            tle.gpu.copy(source{{ loop.index0 }},tile{{ loop.index0 }},[1,{{ size }},16],mask=((row_index + copy_row)<{{ call.transport_n }}) & (offs{{ loop.index0 }}<{{ call.transport_row_bytes | default(2720) }}){{ " & (offs" ~ loop.index0 ~ ">=0)" if call.cp_aligned_carrier else "" }},is_async={{ 'True' if call.transport_kind in ('cp_async','cp_mbarrier','cp_named') else 'False' }},cache_modifier={{ call.cp_cache_modifier | tojson }})
+{% endif %}
+{% endfor %}
+{% else %}
+{% for copy_row in range(call.rows_per_transaction) %}
+        _copy_phase = ((row_index + {{ copy_row }}) % 4) * 32
+{% for begin,size in (((0,32),(32,32),(64,32),(96,32),(128,32),(160,8),(168,8)) if call.transport_kind == "vector_chunk" else ((0,128),(128,32),(160,16)) if call.cp_merged_tail else (call.transport_copy_tiles | default(((0,128),(128,32),(160,8),(168,8))))) %}
+        tile{{ loop.index0 }} = {% if call.cp_aligned_carrier %}_copy_slot{{ bank }}.subslice({{ copy_row }},1,dim=0){% else %}_slot{{ bank }}{% if not named %}.{{ field.name }}{% endif %}{% endif %}.subslice({{ begin }},{{ size }},dim=1)
+        rr{{ loop.index0 }} = tl.arange(0,{{ size }})[None,:,None]
+        bb{{ loop.index0 }} = tl.arange(0,16)[None,None,:]
+        offs{{ loop.index0 }} = gpu.set_layout(tl.broadcast_to((rr{{ loop.index0 }}+{{ begin }})*16+bb{{ loop.index0 }}{{ "-_copy_phase" if call.cp_aligned_carrier else "" }},(1,{{ size }},16)),gpu.BlockEncoding([1,1,16],[1,32,1],[1,1,1],[2,1,0]))
+        source{{ loop.index0 }} = {{ call.pointers[1 if bank == 0 else 2] }} + (row_index + {{ copy_row }}).to(tl.int64) * {{ call.transport_row_bytes | default(2720) }} + offs{{ loop.index0 }}
+{% if call.transport_kind in ('vector_direct','vector_chunk','vector_named') %}
+        dst_ptr{{ loop.index0 }} = gpu.local_ptr(tile{{ loop.index0 }},(tl.full((1,{{ size }},16),0,tl.int32),tl.broadcast_to(rr{{ loop.index0 }},(1,{{ size }},16)),tl.broadcast_to(bb{{ loop.index0 }},(1,{{ size }},16))))
+        dst_ptr{{ loop.index0 }} = gpu.set_layout(dst_ptr{{ loop.index0 }},gpu.BlockEncoding([1,1,16],[1,32,1],[1,1,1],[2,1,0]))
+        data{{ loop.index0 }} = tl.load(source{{ loop.index0 }},offs{{ loop.index0 }}<{{ call.transport_row_bytes | default(2720) }},0)
+        tl.store(dst_ptr{{ loop.index0 }},data{{ loop.index0 }})
+{% else %}
+        tle.gpu.copy(source{{ loop.index0 }},tile{{ loop.index0 }},[1,{{ size }},16],mask=((row_index + {{ copy_row }})<{{ call.transport_n }}) & (offs{{ loop.index0 }}<{{ call.transport_row_bytes | default(2720) }}){{ " & (offs" ~ loop.index0 ~ ">=0)" if call.cp_aligned_carrier else "" }},is_async={{ 'True' if call.transport_kind in ('cp_async','cp_mbarrier','cp_named') else 'False' }},cache_modifier={{ call.cp_cache_modifier | tojson }})
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% if call.transport_kind in ('cp_async','cp_mbarrier','cp_named') %}
+{% if call.cp_commit_group and (not call.cp_group_per_stage or bank == 1) %}
+        gpu.async_commit_group()
+{% endif %}
+{% if call.transport_kind in ('cp_async','cp_named') %}
+        gpu.async_wait_group(0)
+{% endif %}
+{% endif %}
+{% endif %}
+{% else %}
+        # Empty second endpoint: zero-fill its carrier; no global read occurs.
+        _empty_offsets = gpu.set_layout((tl.arange(0,32)[None,:,None]*16+tl.arange(0,16)[None,None,:]),gpu.BlockEncoding([1,1,16],[1,32,1],[1,1,1],[2,1,0]))
+        _empty_source = {{ call.pointers[1] }} + _empty_offsets
+        tle.gpu.copy(_empty_source,_copy_slot{{ bank }},[1,32,16],mask=False,is_async=True,cache_modifier={{ call.cp_cache_modifier | tojson }})
+        gpu.async_commit_group()
+{% endif %}
+{% endfor %}
+{% if not named %}
+        {{ channel.writer_parameter }}{{ '[0]' if call.cp_aligned_carrier else '' }}.commit(epoch)
+{% endif %}
+{% endif %}{% endfor %}
+{% if call.producer_pipeline == 'prime' %}
+        next_epoch = row_iteration + 1
+        if next_epoch >= {{ call.reserve_depth or call.num_stages }} and next_epoch < row_count:
+            {{ call.pipeline_channels[0].writer_parameter }}[0].reserve(next_epoch.to(tl.int32))
+{% endif %}
+{% if named and call.transport_kind != "global_idle" %}
+        gpu.barrier_wait({{ call.pipeline_channels[0].writer_parameter }}[1])
+        gpu.barrier_wait({{ call.pipeline_channels[0].writer_parameter }}[2])
+{% endif %}
+{% for channel in call.pipeline_channels %}{% if not named and (call.producer_warps == 1 or loop.index0 == producer_bank) %}
+    {{ channel.writer_parameter }}{{ '[0]' if call.cp_aligned_carrier else '' }}.close(row_count.to(tl.int32))
+{% endif %}{% endfor %}
+
+{% endfor %}
+@triton.jit
+def {{ call.symbol }}__consumer({{ (call.pipeline_consumer_parameters + (call.signature,)) | join(', ') }}):
+    w = gpu.set_layout(tl.broadcast_to(tl.arange(0, 4)[:, None], (4, 32)), E)
+    l = gpu.set_layout(tl.broadcast_to(tl.arange(0, 32)[None, :], (4, 32)), E)
+    tid = w * 32 + l
+    g = tid % 8
+    row_count = {{ call.rows_per_transaction }} * tl.cdiv({{ call.transport_n }} - {{ call.rows_per_transaction }} * tl.program_id(0), {{ call.rows_per_transaction }} * tl.num_programs(0))
+{% if call.barrier_batch_g > 1 %}
+    B = gpu.alloc_barrier(arrive_count=128)
+    S = gpu.alloc(({{ 128 if call.g4_recycle else call.barrier_batch_g * 128 }},), tl.uint64, layout=None, nv_mma_shared_layout=False, alignment_bytes=16)
+    for batch_base in range(0, row_count, {{ call.barrier_batch_g }}):
+{% set prefix = '      ' %}{% set base = 'batch_base' %}
+{% if call.prefetch_depth | default(0) %}
+{{ prefix }}pr = tl.arange(0,{{ call.prefetch_depth }})[:,None,None,None] + {{ base }}
+{{ prefix }}pi = tl.arange(0,2)[None,:,None,None]
+{{ prefix }}pw = w[None,None,:,:]
+{{ prefix }}pl = l[None,None,:,:]
+{{ prefix }}pk = (pw*32+pl)//8 + 16*pi
+{{ prefix }}pg = pl % 8
+{{ prefix }}pfmask = (pr < row_count) & (pk < 20)
+{{ prefix }}pb = (tl.program_id(0) + pr*tl.num_programs(0)).to(tl.int64)*2720 + pk*136
+{% for bank in (0,1) %}
+{% for field,off in (('h','0'),('p0','8+16*pg'),('p1','16+16*pg')) %}
+{{ prefix }}pt{{bank}}_{{field}} = tl.broadcast_to({{ call.pointers[bank+1] }} + pb + ({{off}}),({{call.prefetch_depth}},2,4,32))
+{{ prefix }}pc{{bank}}_{{field}} = tl.load(pt{{bank}}_{{field}}.to(tl.pointer_type(tl.uint64)),pfmask,0)
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% if call.g4_recycle %}
+      saved_p = gpu.set_layout(tl.full((4,32),0.0,tl.float32),E)
+      saved_u = gpu.set_layout(tl.full((4,32),0.0,tl.float32),E)
+{% endif %}
+      for batch_slot in range({{ call.barrier_batch_g }}):
+        row_iteration = batch_base + batch_slot
+        if row_iteration < row_count:
+{% else %}
+    for row_iteration in range(row_count):
+{% set prefix = '        ' %}{% set base = 'row_iteration' %}
+{% if call.prefetch_depth | default(0) %}
+{{ prefix }}pr = tl.arange(0,{{ call.prefetch_depth }})[:,None,None,None] + {{ base }}
+{{ prefix }}pi = tl.arange(0,2)[None,:,None,None]
+{{ prefix }}pw = w[None,None,:,:]
+{{ prefix }}pl = l[None,None,:,:]
+{{ prefix }}pk = (pw*32+pl)//8 + 16*pi
+{{ prefix }}pg = pl % 8
+{{ prefix }}pfmask = (pr < row_count) & (pk < 20)
+{{ prefix }}pb = (tl.program_id(0) + pr*tl.num_programs(0)).to(tl.int64)*2720 + pk*136
+{% for bank in (0,1) %}
+{% for field,off in (('h','0'),('p0','8+16*pg'),('p1','16+16*pg')) %}
+{{ prefix }}pt{{bank}}_{{field}} = tl.broadcast_to({{ call.pointers[bank+1] }} + pb + ({{off}}),({{call.prefetch_depth}},2,4,32))
+{{ prefix }}pc{{bank}}_{{field}} = tl.load(pt{{bank}}_{{field}}.to(tl.pointer_type(tl.uint64)),pfmask,0)
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% endif %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        row_index = {{ call.rows_per_transaction }} * (tl.program_id(0) + (row_iteration // {{ call.rows_per_transaction }}) * tl.num_programs(0)) + row_iteration % {{ call.rows_per_transaction }}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        row = gpu.set_layout(tl.full((4, 32), row_index, tl.int32), E)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        p = gpu.set_layout(tl.full((4, 32), 0.0, tl.float32), E)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        u = gpu.set_layout(tl.full((4, 32), 0.0, tl.float32), E)
+{% if named %}
+{% if call.transport_kind != 'global_idle' %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        gpu.barrier_wait({{ call.pipeline_channels[0].reader_parameter }}[1])
+{% endif %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        __READY0__ = {{ call.pipeline_channels[0].reader_parameter }}[0].slot(row_iteration % {{ call.num_stages }})
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        __READY1__ = {{ call.pipeline_channels[1].reader_parameter }}[0].slot(row_iteration % {{ call.num_stages }})
+{% else %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        __READY0__ = {{ call.pipeline_channels[0].reader_parameter }}.wait((row_iteration // {{ call.rows_per_transaction }}).to(tl.int32))
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        __READY1__ = {{ call.pipeline_channels[1].reader_parameter }}.wait((row_iteration // {{ call.rows_per_transaction }}).to(tl.int32))
+{% endif %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        for it in range(tl.cdiv({{ call.transport_k }} // 256, 16)):
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            kbx = tid // 8 + 16 * it
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            active = (row < {{ call.transport_n }}) & (kbx < {{ call.transport_k }} // 256)
+{% if call.consumer_mode == 'load_only' %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            pv = {{ call.symbol }}__load_group_stage(({% if call.transport_kind in ('global_named','global_idle') %}{{ call.pointers[1] }} + row_index.to(tl.int64)*2720{% elif named %}__READY0__{% else %}__READY0__.slot.gate{% endif %}{% if call.rows_per_transaction > 1 %},row_iteration % {{ call.rows_per_transaction }}{% endif %},),kbx,g,active)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            uv = {{ call.symbol }}__load_group_stage(({% if call.transport_kind in ('global_named','global_idle') %}{{ call.pointers[2] }} + row_index.to(tl.int64)*2720{% elif named %}__READY1__{% else %}__READY1__.slot.up{% endif %}{% if call.rows_per_transaction > 1 %},row_iteration % {{ call.rows_per_transaction }}{% endif %},),kbx,g,active)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            p = (p.to(tl.uint32,bitcast=True) ^ pv.to(tl.uint32,bitcast=True)).to(tl.float32,bitcast=True)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            u = (u.to(tl.uint32,bitcast=True) ^ uv.to(tl.uint32,bitcast=True)).to(tl.float32,bitcast=True)
+{% else %}
+{% if call.prefetch_depth | default(0) %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_h = tl.sum(tl.where(pr == row_iteration,pc0_h,0),axis=0)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_h = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_h,0),axis=0),E)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_p0 = tl.sum(tl.where(pr == row_iteration,pc0_p0,0),axis=0)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_p0 = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_p0,0),axis=0),E)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_p1 = tl.sum(tl.where(pr == row_iteration,pc0_p1,0),axis=0)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_p1 = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_p1,0),axis=0),E)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            (J, D) = {{ call.symbol }}__dot_group_prefetched(v_h,v_p0,v_p1,{{ call.pointers[0] }},row,kbx,g,active,{{ call.transport_k }})
+{% else %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            (J, D) = {{ call.symbol }}__dot_group_stage(({% if call.transport_kind in ('global_named','global_idle') %}{{ call.pointers[1] }} + row_index.to(tl.int64)*2720{% elif named %}__READY0__{% else %}__READY0__.slot.gate{% endif %}{% if call.rows_per_transaction > 1 %},row_iteration % {{ call.rows_per_transaction }}{% endif %},), {{ call.pointers[0] }}, row, kbx, g, active, {{ call.transport_k }})
+{% endif %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            pn = tl.inline_asm_elementwise('fma.rn.f32 $0,$1,$2,$3;', constraints='=f,f,f,f', args=[D, J, p], dtype=tl.float32, is_pure=True, pack=1)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            p = tl.where(active, pn, p)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            if {{ call.transport_mode }} == 1:
+{% if call.prefetch_depth | default(0) %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_h = tl.sum(tl.where(pr == row_iteration,pc1_h,0),axis=0)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_h = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_h,0),axis=0),E)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_p0 = tl.sum(tl.where(pr == row_iteration,pc1_p0,0),axis=0)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_p0 = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_p0,0),axis=0),E)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_p1 = tl.sum(tl.where(pr == row_iteration,pc1_p1,0),axis=0)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_p1 = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_p1,0),axis=0),E)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}                (J, D) = {{ call.symbol }}__dot_group_prefetched(v_h,v_p0,v_p1,{{ call.pointers[0] }},row,kbx,g,active,{{ call.transport_k }})
+{% else %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}                (J, D) = {{ call.symbol }}__dot_group_stage(({% if call.transport_kind in ('global_named','global_idle') %}{{ call.pointers[2] }} + row_index.to(tl.int64)*2720{% elif named %}__READY1__{% else %}__READY1__.slot.up{% endif %}{% if call.rows_per_transaction > 1 %},row_iteration % {{ call.rows_per_transaction }}{% endif %},), {{ call.pointers[0] }}, row, kbx, g, active, {{ call.transport_k }})
+{% endif %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}                un = tl.inline_asm_elementwise('fma.rn.f32 $0,$1,$2,$3;', constraints='=f,f,f,f', args=[D, J, u], dtype=tl.float32, is_pure=True, pack=1)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}                u = tl.where(active, un, u)
+{% endif %}
+{% if call.rows_per_transaction > 1 %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        if row_iteration % {{ call.rows_per_transaction }} == {{ call.rows_per_transaction - 1 }}:
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            {{ call.pipeline_channels[0].reader_parameter }}.release((row_iteration // {{ call.rows_per_transaction }}).to(tl.int32))
+{{ '    ' if call.barrier_batch_g > 1 else '' }}            {{ call.pipeline_channels[1].reader_parameter }}.release((row_iteration // {{ call.rows_per_transaction }}).to(tl.int32))
+{% else %}
+{% if named %}
+{% if call.transport_kind != 'global_idle' %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        gpu.barrier_wait({{ call.pipeline_channels[0].reader_parameter }}[2])
+{% else %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        pass
+{% endif %}
+{% else %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        {{ call.pipeline_channels[0].reader_parameter }}.release(row_iteration.to(tl.int32))
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        {{ call.pipeline_channels[1].reader_parameter }}.release(row_iteration.to(tl.int32))
+{% endif %}
+{% endif %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        tl.static_assert({{ call.transport_k }} % 256 == 0, 'R003 requires complete original K256 blocks')
+{% if call.barrier_batch_g > 1 %}
+{% if call.g4_recycle %}
+            batch_partial_store(p,u,S,0,w,l)
+            gpu.barrier_wait(B)
+            selected_owner = tl.where(w == batch_slot,0,1)
+            (rp,ru) = batch_typed_reduce(S,selected_owner,w,l,1)
+            saved_p = tl.where(w == batch_slot,rp,saved_p)
+            saved_u = tl.where(w == batch_slot,ru,saved_u)
+            gpu.barrier_wait(B)
+      for owner_round in tl.static_range(1):
+        owner_slot = w
+{% else %}
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        batch_partial_store(p,u,S,batch_slot,w,l)
+      gpu.barrier_wait(B)
+      for owner_round in tl.static_range({{ (call.barrier_batch_g + 3) // 4 }}):
+        owner_slot = w + 4 * owner_round
+{% endif %}
+{% if call.g4_recycle %}
+        p = saved_p
+        u = saved_u
+{% elif call.consumer_mode == 'load_only' %}
+        sp = gpu.set_layout(gpu.local_ptr(S,(owner_slot*128+l,),shape=(4,32)),E)
+        pair = tl.load(sp,owner_slot<{{ call.barrier_batch_g }},0,volatile=True)
+        p = ((pair.to(tl.uint32) ^ (pair >> 32).to(tl.uint32)) & 127).to(tl.float32)
+{% else %}
+        (p,u) = batch_typed_reduce(S,owner_slot,w,l,{{ call.barrier_batch_g }})
+{% endif %}
+        owner_iteration = batch_base + owner_slot
+        row = {{ call.rows_per_transaction }} * (tl.program_id(0) + (owner_iteration // {{ call.rows_per_transaction }}) * tl.num_programs(0)) + owner_iteration % {{ call.rows_per_transaction }}
+        row = gpu.set_layout(row,E)
+{% if call.consumer_mode != 'load_only' and call.transport_mode == 1 %}
+        p = p / (1.0 + tl.exp(-p)) * u
+{% endif %}
+        writer = (row < {{ call.transport_n }}) & (owner_slot < {{ call.barrier_batch_g }}) & (l == 0)
+{% if not call.diagnostic_no_output %}
+        tl.store({{ call.pointers[3] }} + row,p,writer)
+{% endif %}
+{% if not call.g4_recycle %}
+      gpu.barrier_wait(B)
+{% endif %}
+{% else %}
+        (p, u) = typed_reduce(p, u, w, l, {{ call.transport_mode }} == 1)
+        if {{ call.transport_mode }} == 1:
+            p = p / (1.0 + tl.exp(-p)) * u
+        writer = (row < {{ call.transport_n }}) & (w == 0) & (l == 0)
+        if {{ call.transport_mode }} == 2:
+            out = tl.where(row % 512 // 256 == 0, {{ call.pointers[3] }}, {{ call.pointers[4] }})
+            offset = row // 512 * 256 + row % 256
+            tl.store(out + offset, p.to(tl.bfloat16), writer)
+        else:
+            tl.store({{ call.pointers[3] }} + row, p, writer)
+{% endif %}
+{% endif %}
+{% endfor %}

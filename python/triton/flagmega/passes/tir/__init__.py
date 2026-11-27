@@ -17,8 +17,7 @@ from .materialize_kernel_functions import (
     materialize_kernel_prim_functions,
 )
 from .materialize_kernel_definitions import (
-    MaterializeKernelDefinitionsPass,
-    materialize_kernel_definitions,
+    MaterializeKernelDefinitionsPass, materialize_kernel_definitions,
 )
 from .bind_prim_function_buffers import BindPrimFunctionBuffersPass, bind_prim_function_buffers
 from .fuse_bank_qkv_weights import fuse_bank_qkv_weights
@@ -35,7 +34,8 @@ from .fuse_gather_reduce_add_norm_apply import (
     fuse_gather_reduce_add_norm_apply,
 )
 from .specialize_prim_function_layouts import (
-    specialize_prim_functions_for_buffer_layouts, )
+    specialize_prim_functions_for_buffer_layouts,
+)
 from .lower_transfer_pipeline_regions import lower_transfer_pipeline_regions
 from .lower_tuple_boxing import lower_tuple_boxing
 from .materialize_execution_functions import materialize_execution_functions
@@ -50,8 +50,7 @@ from .plan_function_memory import (
 )
 
 __all__ = [
-    "MaterializeKernelDefinitionsPass",
-    "materialize_kernel_definitions",
+    "MaterializeKernelDefinitionsPass", "materialize_kernel_definitions",
     "ProjectionResidualNormMatch",
     "ProjectionLogitsArgmaxMatch",
     "NormConsumerMatch",

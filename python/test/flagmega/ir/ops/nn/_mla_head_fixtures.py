@@ -8,21 +8,23 @@ from triton.flagmega.ir.distributed_type import scale_split_units
 def policies(mesh, heads=8, cyclic=False, staged=False):
     axis = mesh.rank - 1
     if staged:
-        head = fm.SBP.split(fm.SplitStage.contiguous((axis, ), 4), fm.SplitStage.block_cyclic((0, ), 1))
+        head = fm.SBP.split(fm.SplitStage.contiguous((axis,), 4), fm.SplitStage.block_cyclic((0,), 1))
     else:
-        head = (fm.SBP.split_block_cyclic((axis, ), 2) if cyclic else fm.SBP.split_contiguous(
-            (axis, ), (heads + mesh.hierarchy[axis] - 1) // mesh.hierarchy[axis]))
+        head = (
+            fm.SBP.split_block_cyclic((axis,), 2)
+            if cyclic
+            else fm.SBP.split_contiguous((axis,), (heads + mesh.hierarchy[axis] - 1) // mesh.hierarchy[axis])
+        )
     return head, scale_split_units(head, 32, 1)
 
 
 class Projection(fm.Module):
-
     def __init__(
         self,
         *,
         direction="absorb_query",
         lanes=(2, 4),
-        output_lanes=(4, ),
+        output_lanes=(4,),
         heads=8,
         mesh=None,
         head_policy=None,
@@ -52,9 +54,12 @@ class Projection(fm.Module):
         kind = fm.vector_type("bfloat16", self.lanes) if self.lanes else "bfloat16"
         x = self.input("x", fm.tensor_type(kind, (1, self.heads, width // prod(self.lanes))), id="x")
         w = self.input("w", fm.tensor_type("float8_e4m3fn" if self.fp8 else "bfloat16", (self.heads * 32, 32)), id="w")
-        scale = (self.input("scale", fm.tensor_type("float32", (self.heads * 4,
-                                                                4)), id="scale") if self.fp8 else fm.F.builtin.none())
-        parameters = [x, w, *((scale, ) if self.fp8 else ())]
+        scale = (
+            self.input("scale", fm.tensor_type("float32", (self.heads * 4, 4)), id="scale")
+            if self.fp8
+            else fm.F.builtin.none()
+        )
+        parameters = [x, w, *((scale,) if self.fp8 else ())]
         values = [x, w, scale]
         if self.mesh:
             source_policies = [b, self.head_policy or b, b]
@@ -70,7 +75,8 @@ class Projection(fm.Module):
                         target[axis] = policy
             values = [
                 fm.F.distributed.boxing(v, fm.DistributedType(v.type, tuple(p), self.mesh))
-                if not isinstance(v.type, fm.NoneType) else v
+                if not isinstance(v.type, fm.NoneType)
+                else v
                 for v, p in zip(values, (source_policies, weight_policies, scale_policies))
             ]
         result = fm.F.nn.mla_projection(
@@ -86,14 +92,14 @@ class Projection(fm.Module):
         if self.mesh:
             result = fm.F.distributed.boxing(result, result.type.tensor)
         if self.reusable:
-            self.function("project", parameters, (result, ), attrs={"reusable": True, "noinline": True})
+            self.function("project", parameters, (result,), attrs={"reusable": True, "noinline": True})
             outer = [
                 self.input("outer_" + name, v.type, id="outer_" + name)
                 for name, v in zip(("x", "w", "scale"), parameters)
             ]
             result = fm.F.builtin.call(*outer, callee="project", result_type=result.type)
             parameters = outer
-        self.function("main", parameters, (result, ))
+        self.function("main", parameters, (result,))
 
 
 def graph(**kwargs):

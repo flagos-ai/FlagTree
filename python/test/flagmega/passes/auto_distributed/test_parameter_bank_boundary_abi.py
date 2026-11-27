@@ -14,14 +14,14 @@ def _bank_ref():
         tensor_type("bfloat16", [2048]),
         tensor_type("bfloat16", [128, 256]),
     ))
-    return RefType("parameter_bank", (("element", element), ))
+    return RefType("parameter_bank", (("element", element),))
 
 
 @pytest.mark.xfail(
     reason="AutoDistributed gives the bank handle a distributed element via "
-    "search candidates, not via broadcast_ir_type, so this helper is "
-    "still logical-only.  The round trip is fixed far enough that the "
-    "call ABI survives; a For capture check fails next.",
+           "search candidates, not via broadcast_ir_type, so this helper is "
+           "still logical-only.  The round trip is fixed far enough that the "
+           "call ABI survives; a For capture check fails next.",
     strict=True,
 )
 def test_broadcast_reaches_tensors_behind_a_parameter_bank():
@@ -35,8 +35,10 @@ def test_broadcast_reaches_tensors_behind_a_parameter_bank():
     # these fields logical makes the arguments disagree with the callee, and
     # codegen then emits sharded addressing against an unsharded weight.
     kinds = {type(field).__name__ for field in element.fields}
-    assert kinds == {"DistributedType"}, ("a destructured reference's leaves must be broadcast like any other "
-                                          f"call argument; got {kinds}")
+    assert kinds == {"DistributedType"}, (
+        "a destructured reference's leaves must be broadcast like any other "
+        f"call argument; got {kinds}"
+    )
     for field in element.fields:
         assert field.placement == placement
 

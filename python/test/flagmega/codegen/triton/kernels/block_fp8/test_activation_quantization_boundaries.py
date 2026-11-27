@@ -19,7 +19,6 @@ def test_bf16_activation_at_fp8_round_to_even_boundary(tmp_path, family, variant
         pytest.skip("SM90 CUDA is required")
 
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("value", fm.tensor_type("bfloat16", (1, 128)), id="value")
             w = self.input("weight", fm.tensor_type("float8_e4m3fn", (32, 128)), id="weight")
@@ -27,20 +26,20 @@ def test_bf16_activation_at_fp8_round_to_even_boundary(tmp_path, family, variant
             if family == "linear":
                 y = fm.F.math.block_scaled_matmul(x, w, s, weight_block_n=16, weight_block_k=128, name="projection")
             else:
-                y = fm.F.nn.matmul_glu(x, w, w, s, s, activation="silu", weight_block_n=16, weight_block_k=128,
-                                       name="projection")
-            self.function("main", (x, w, s), (y, ))
+                y = fm.F.nn.matmul_glu(x, w, w, s, s, activation="silu", weight_block_n=16,
+                                      weight_block_k=128, name="projection")
+            self.function("main", (x, w, s), (y,))
 
     compiler = Compiler()
-    proposed = compiler.compile(
-        Graph(dialect="ntt", stage="frozen_constants", entry="main").build(), stop_after="propose-tir").module
+    proposed = compiler.compile(Graph(dialect="ntt", stage="frozen_constants", entry="main").build(),
+                                stop_after="propose-tir").module
     candidate = f"tir.{'block_fp8' if family == 'linear' else 'matmul_glu'}.{variant}"
-    choices = [(point.id, candidate) for point in proposed.selection_points if any(value.id == candidate
-                                                                                   for value in point.candidates)]
+    choices = [(point.id, candidate) for point in proposed.selection_points
+               if any(value.id == candidate for value in point.candidates)]
     assert len(choices) == 1
     selected = apply_plan(proposed, override_plan(proposed, choices))
-    path = write_artifact(
-        compiler.compile(selected).module, tmp_path / "tie", target="nvidia-sm90", emit_executable=True)
+    path = write_artifact(compiler.compile(selected).module, tmp_path / "tie",
+                          target="nvidia-sm90", emit_executable=True)
     runtime = load(path, device="cuda:0")
     try:
         x = torch.zeros((1, 128), dtype=torch.bfloat16, device="cuda")

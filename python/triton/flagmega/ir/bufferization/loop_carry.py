@@ -15,16 +15,14 @@ class LoopCarryBinding:
     result: str
 
     def __post_init__(self):
-        if any(not isinstance(v, str) or not v for v in self.to_data().values()):
+        if any(not isinstance(v,str) or not v for v in self.to_data().values()):
             raise IRSchemaError('Loop carry bindings require named physical buffers.')
-        if self.current == self.staging:
+        if self.current==self.staging:
             raise IRSchemaError('Loop carry current and staging storage must differ.')
 
     def to_data(self):
-        return {name: getattr(self, name) for name in ('formal', 'initial', 'current', 'staging', 'yielded', 'result')}
+        return {name:getattr(self,name) for name in ('formal','initial','current','staging','yielded','result')}
 
     @classmethod
-    def from_data(cls, data):
-        return cls(
-            **{name: str(data[name])
-               for name in ('formal', 'initial', 'current', 'staging', 'yielded', 'result')})
+    def from_data(cls,data):
+        return cls(**{name:str(data[name]) for name in ('formal','initial','current','staging','yielded','result')})

@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""rewrite passes accepted directly by PassManager."""
+"""nncase-shaped rewrite passes accepted directly by PassManager."""
 
 from __future__ import annotations
 
@@ -103,12 +103,12 @@ def _dump_graph(prefix: str, graph, module: IRModule) -> None:
     dumper = DumpScope.current()
     if dumper.is_enabled(DumpFlags.PASS_IR) and dumper.directory is not None:
         with dumper.open_artifact(
-                f"{prefix}/V{graph.version}.dot",
-                category=DumpFlags.PASS_IR,
-                kind="egraph-boundary-dot",
-                producer="EGraphPass",
-                source_semantic_hash=module.semantic_hash,
-                encoding="utf-8",
+            f"{prefix}/V{graph.version}.dot",
+            category=DumpFlags.PASS_IR,
+            kind="egraph-boundary-dot",
+            producer="EGraphPass",
+            source_semantic_hash=module.semantic_hash,
+            encoding="utf-8",
         ) as stream:
             stream.write(graph.to_dot(roots=graph.roots_for_module(module)))
 

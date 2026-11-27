@@ -13,6 +13,7 @@ from triton.flagmega.pattern_match import F, wildcard
 from triton.flagmega.rules.core import RewriteResult, RewriteRule
 from triton.flagmega.rules.ntt.fuse_gather_reduce_norm_apply import _users
 
+
 _VIEWS = frozenset({"builtin.identity", "distributed.sharded_view", "tensors.reshape", "tensors.bitcast"})
 
 
@@ -58,8 +59,7 @@ def _trace(node, module, removed, *, casts=False):
 def fuse_gather_reduce_qkv_rope_with_cache_rule():
     return RewriteRule(
         "FuseGatherReduceQKVStatisticsRoPEWithCache",
-        F.nn.is_qkv_rope_with_cache(wildcard("qkv"), call_name="consumer"),
-        _rewrite,
+        F.nn.is_qkv_rope_with_cache(wildcard("qkv"), call_name="consumer"), _rewrite,
     )
 
 
@@ -107,13 +107,8 @@ def _rewrite(match, module):
         return consumer
     if prepared.result_type != consumer.type:
         return consumer
-    return RewriteResult(
-        replace(
-            consumer,
-            op=GatherReduceQKVRoPEWithCache.op_name,
-            inputs=tuple(node.id for node in prepared.inputs),
-            type=prepared.result_type,
-            attrs=prepared.attrs,
-            effect=prepared.effect,
-            metadata={**dict(consumer.metadata), "fused_qkv_statistics_region": tuple(sorted(removed))},
-        ), removed_ids=tuple(sorted(removed)))
+    return RewriteResult(replace(
+        consumer, op=GatherReduceQKVRoPEWithCache.op_name, inputs=tuple(node.id for node in prepared.inputs),
+        type=prepared.result_type, attrs=prepared.attrs, effect=prepared.effect,
+        metadata={**dict(consumer.metadata), "fused_qkv_statistics_region": tuple(sorted(removed))},
+    ), removed_ids=tuple(sorted(removed)))

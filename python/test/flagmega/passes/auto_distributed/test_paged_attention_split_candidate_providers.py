@@ -1,6 +1,8 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
+import inspect
+
 from triton.flagmega import ir as fm
 from triton.flagmega.passes.auto_distributed import DistributedCandidateContext
 from triton.flagmega.rules.neutral._utility import make_node
@@ -8,6 +10,7 @@ from triton.flagmega.passes.auto_distributed.paged_attention_providers import (
     PagedAttentionCombineCandidateProvider,
     PagedAttentionPartialCandidateProvider,
 )
+
 
 PLACEMENT = fm.Placement((8, 16), "yx", "bb")
 LAYOUT = ("seq", "head", "dim")
@@ -39,7 +42,7 @@ def _partial_module():
         "ntt",
         "attention_decomposed",
         (query, state, layer, partial),
-        (fm.Function("main", ("query", "state", "layer"), ("partial", )), ),
+        (fm.Function("main", ("query", "state", "layer"), ("partial",)),),
         "main",
     )
     return fm.verify_module(module), partial
@@ -52,25 +55,27 @@ def test_partial_provider_delegates_layout_legality_to_op_type_inference():
         query_type,
         (
             fm.SBP.broadcast(),
-            fm.SBP.split_contiguous((1, ), 1),
+            fm.SBP.split_contiguous((1,), 1),
             fm.SBP.broadcast(),
         ),
         PLACEMENT,
     )
-    # the reference ParameterKind.Attribute is a graph operand, but it does not
+    # nncase's ParameterKind.Attribute is a graph operand, but it does not
     # participate in the distributed/SBP relation.
     layer = fm.tensor_type("int32", ())
     context = DistributedCandidateContext(
         module,
         partial,
         PLACEMENT,
-        ((head_split, ), (module.node_map["state"].type, ), (layer, )),
+        ((head_split,), (module.node_map["state"].type,), (layer,)),
     )
 
     candidates = PagedAttentionPartialCandidateProvider().get_candidates(context)
 
-    selected = next(candidate for candidate in candidates
-                    if candidate.input_types == (head_split, module.node_map["state"].type, layer))
+    selected = next(
+        candidate for candidate in candidates
+        if candidate.input_types == (head_split, module.node_map["state"].type, layer)
+    )
     assert isinstance(selected.return_type, fm.TupleType)
     assert tuple(field.partial.reduce_op for field in selected.return_type.fields) == (
         fm.ReduceOp.MAX,
@@ -83,20 +88,26 @@ def test_combine_provider_rebuilds_output_type_and_exposes_released_axis_choices
     module, partial = _partial_module()
     query_policies = (
         fm.SBP.broadcast(),
-        fm.SBP.split_contiguous((1, ), 1),
+        fm.SBP.split_contiguous((1,), 1),
         fm.SBP.broadcast(),
     )
-    query = fm.DistributedType(module.node_map["query"].type, query_policies, PLACEMENT)
+    query = fm.DistributedType(
+        module.node_map["query"].type, query_policies, PLACEMENT
+    )
     layer = fm.tensor_type("int32", ())
     partial_candidates = PagedAttentionPartialCandidateProvider().get_candidates(
         DistributedCandidateContext(
             module,
             partial,
             PLACEMENT,
-            ((query, ), (module.node_map["state"].type, ), (layer, )),
-        ))
-    partial_candidate = next(candidate for candidate in partial_candidates
-                             if candidate.input_types == (query, module.node_map["state"].type, layer))
+            ((query,), (module.node_map["state"].type,), (layer,)),
+        )
+    )
+    partial_candidate = next(
+        candidate
+        for candidate in partial_candidates
+        if candidate.input_types == (query, module.node_map["state"].type, layer)
+    )
     states = partial_candidate.return_type.fields
     max_node, sum_node, acc_node = (
         _var("max_state", states[0].tensor),
@@ -122,7 +133,7 @@ def test_combine_provider_rebuilds_output_type_and_exposes_released_axis_choices
         "ntt",
         "attention_decomposed",
         (max_node, sum_node, acc_node, combine),
-        (fm.Function("main", tuple(node.id for node in (max_node, sum_node, acc_node)), (combine.id, )), ),
+        (fm.Function("main", tuple(node.id for node in (max_node, sum_node, acc_node)), (combine.id,)),),
         "main",
     )
     provider = PagedAttentionCombineCandidateProvider()
@@ -132,19 +143,37 @@ def test_combine_provider_rebuilds_output_type_and_exposes_released_axis_choices
             combine_module,
             combine,
             PLACEMENT,
-            ((states[0], ), (states[1], ), (states[2], )),
-        ))
+            ((states[0],), (states[1],), (states[2],)),
+        )
+    )
 
     assert candidates
     assert all(candidate.target_attrs["output_type"] == candidate.return_type for candidate in candidates)
-    assert any(candidate.return_type.axis_policies == query_policies for candidate in candidates)
+    assert any(
+        candidate.return_type.axis_policies == query_policies
+        for candidate in candidates
+    )
     assert any(
         any(
-            isinstance(policy, fm.SBPSplit) and 0 in policy.hierarchy_axes
-            for policy in candidate.return_type.axis_policies)
-        for candidate in candidates)
+            isinstance(policy, fm.SBPSplit)
+            and 0 in policy.hierarchy_axes
+            for policy in candidate.return_type.axis_policies
+        )
+        for candidate in candidates
+    )
     assert PagedAttentionCombineCandidateProvider.allows_partial_inputs
     assert PagedAttentionCombineCandidateProvider.is_exhaustive
+
+
+def test_split_candidate_providers_are_target_neutral():
+    source = inspect.getsource(
+        __import__(
+            "triton.flagmega.passes.auto_distributed.paged_attention_providers",
+            fromlist=("PagedAttentionCombineCandidateProvider",),
+        )
+    ).lower()
+    for spelling in ("nvidia", "sm90", "cuda", "mma", "tma", "warp"):
+        assert spelling not in source
 
 
 def test_gated_combine_candidates_bind_gate_and_output_owners_together():
@@ -157,14 +186,14 @@ def test_gated_combine_candidates_bind_gate_and_output_owners_together():
     types = tuple(distributed.node_map[key].type for key in typed.inputs)
     # An upstream producer can offer a valid layout outside the default leaf
     # generator's contiguous policies; the gate/output equality still applies.
-    output = fm.DistributedType(typed.type.tensor, (*typed.type.axis_policies[:2], fm.SBP.split_block_cyclic((0, ), 1)),
-                                typed.type.placement)
+    output = fm.DistributedType(typed.type.tensor,
+        (*typed.type.axis_policies[:2], fm.SBP.split_block_cyclic((0,), 1)), typed.type.placement)
     types = (*types[:3], output)
     inferred = fm.get_definition(root.op).prepare(
         tuple(_var(f"input{index}", value) for index, value in enumerate(types)), {**root.attrs, "output_type": output})
     assert inferred.result_type == output
     candidates = PagedAttentionCombineCandidateProvider().get_candidates(
-        DistributedCandidateContext(logical, root, typed.type.placement, tuple((value, ) for value in types)))
+        DistributedCandidateContext(logical, root, typed.type.placement, tuple((value,) for value in types)))
     assert candidates
     assert any(candidate.return_type == output for candidate in candidates)
     assert all(candidate.input_types[3] == candidate.return_type for candidate in candidates)

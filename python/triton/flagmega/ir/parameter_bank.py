@@ -36,7 +36,7 @@ class BankFieldProgram:
 
     def __post_init__(self):
         if isinstance(self.sources, str):
-            object.__setattr__(self, "sources", (self.sources, ))
+            object.__setattr__(self, "sources", (self.sources,))
         object.__setattr__(self, "sources", tuple(str(value) for value in self.sources))
         object.__setattr__(self, "nodes", tuple(self.nodes))
         ids = {node.id for node in self.nodes}
@@ -52,16 +52,17 @@ class BankFieldProgram:
             produced.add(node.id)
 
     def to_data(self):
-        return {"sources": list(self.sources), "nodes": [node.to_data() for node in self.nodes], "output": self.output}
+        return {"sources": list(self.sources), "nodes": [node.to_data() for node in self.nodes],
+                "output": self.output}
 
     @classmethod
     def from_data(cls, data):
         from triton.flagmega.ir.model import Node
 
         # Accept the single-source spelling so earlier checkpoints still load.
-        sources = data["sources"] if "sources" in data else (data["source"], )
-        return cls(tuple(str(value) for value in sources), tuple(Node.from_data(value) for value in data["nodes"]),
-                   str(data["output"]))
+        sources = data["sources"] if "sources" in data else (data["source"],)
+        return cls(tuple(str(value) for value in sources),
+                   tuple(Node.from_data(value) for value in data["nodes"]), str(data["output"]))
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,7 @@ class BankField:
 
     def __post_init__(self):
         if self.source_type is not None and self.source_types is None:
-            object.__setattr__(self, "source_types", (self.source_type, ))
+            object.__setattr__(self, "source_types", (self.source_type,))
         if self.source_types is not None:
             object.__setattr__(self, "source_types", tuple(self.source_types))
             object.__setattr__(self, "source_type", self.source_types[0])
@@ -103,7 +104,7 @@ class BankField:
     @property
     def stored_types(self):
         """Every tensor held in readonly storage for one row of this field."""
-        return (self.type, ) if self.source_types is None else self.source_types
+        return (self.type,) if self.source_types is None else self.source_types
 
     def to_data(self):
         data = {"name": self.name, "type": self.type.to_data(), "transform": self.transform}
@@ -116,11 +117,13 @@ class BankField:
     def from_data(cls, data):
         program = data.get("program")
         if program is None:
-            return cls(str(data["name"]), type_from_data(data["type"]), str(data.get("transform", "identity")))
+            return cls(str(data["name"]), type_from_data(data["type"]),
+                       str(data.get("transform", "identity")))
         # Accept the single-type spelling so earlier checkpoints still load.
-        raw = data["source_types"] if "source_types" in data else (data["source_type"], )
+        raw = data["source_types"] if "source_types" in data else (data["source_type"],)
         return cls(str(data["name"]), type_from_data(data["type"]), str(data.get("transform", "identity")),
-                   BankFieldProgram.from_data(program), None, tuple(type_from_data(value) for value in raw))
+                   BankFieldProgram.from_data(program), None,
+                   tuple(type_from_data(value) for value in raw))
 
 
 @dataclass(frozen=True)
@@ -141,7 +144,7 @@ class ParameterBankSchema:
 
     @property
     def type(self):
-        return RefType("parameter_bank", (("element", self.element_type), ))
+        return RefType("parameter_bank", (("element", self.element_type),))
 
     def to_data(self):
         return {"name": self.name, "fields": [field.to_data() for field in self.fields]}

@@ -56,13 +56,11 @@ def test_gather_allows_an_index_axis_larger_than_the_source():
 
 
 def test_gather_rejects_mixed_distribution_contract():
-    placement = fm.Placement((2, ), "x", "b")
+    placement = fm.Placement((2,), "x", "b")
     value = fm.Node("value", "builtin.var", (), fm.tensor_type("float32", [1, 4]))
     indices = fm.Node(
-        "indices",
-        "builtin.var",
-        (),
-        fm.DistributedType(fm.tensor_type("int32", [1, 2]), (fm.SBP.broadcast(), ) * 2, placement),
+        "indices", "builtin.var", (),
+        fm.DistributedType(fm.tensor_type("int32", [1, 2]), (fm.SBP.broadcast(),) * 2, placement),
     )
     with pytest.raises(IRSchemaError, match="same distribution contract"):
         Gather.infer_type((value, indices), {"axis": -1})

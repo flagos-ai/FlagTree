@@ -16,9 +16,11 @@ from triton.flagmega.codegen.triton.implementation import (
 )
 from triton.flagmega.passes.tir.norm_consumer import NormConsumerMatch
 from triton.flagmega.passes.tir.projection_logits_argmax import (
-    ProjectionLogitsArgmaxMatch, )
+    ProjectionLogitsArgmaxMatch,
+)
 from triton.flagmega.passes.tir.projection_residual_norm import (
-    ProjectionResidualNormMatch, )
+    ProjectionResidualNormMatch,
+)
 
 
 @dataclass(frozen=True)
@@ -32,12 +34,18 @@ class TritonCandidateProposal:
             raise CodegenError("A Triton candidate proposal cannot be empty.")
         candidate_ids = tuple(candidate.id for candidate in self.candidates)
         if len(set(candidate_ids)) != len(candidate_ids):
-            raise CodegenError(f"A Triton candidate proposal contains duplicate ids: {candidate_ids}.")
+            raise CodegenError(
+                f"A Triton candidate proposal contains duplicate ids: {candidate_ids}."
+            )
         if self.default_candidate not in candidate_ids:
-            raise CodegenError(f"Triton default candidate {self.default_candidate!r} is not in "
-                               f"the proposal {candidate_ids}.")
+            raise CodegenError(
+                f"Triton default candidate {self.default_candidate!r} is not in "
+                f"the proposal {candidate_ids}."
+            )
         if self.selection_kind not in {"tir", "semantic_tir"}:
-            raise CodegenError(f"Unknown Triton candidate selection kind {self.selection_kind!r}.")
+            raise CodegenError(
+                f"Unknown Triton candidate selection kind {self.selection_kind!r}."
+            )
 
 
 @dataclass(frozen=True)
@@ -76,8 +84,10 @@ class TritonCandidateContext:
             if name in semantic and semantic[name] != value
         }
         if conflicts:
-            raise CodegenError(f"Semantic candidate {implementation.id!r} conflicts with target-owned "
-                               f"implementation parameters: {conflicts}.")
+            raise CodegenError(
+                f"Semantic candidate {implementation.id!r} conflicts with target-owned "
+                f"implementation parameters: {conflicts}."
+            )
         semantic_facts = dict(facts or {})
         implementation_facts = dict(implementation.facts)
         fact_conflicts = {
@@ -86,8 +96,10 @@ class TritonCandidateContext:
             if name in semantic_facts and semantic_facts[name] != value
         }
         if fact_conflicts:
-            raise CodegenError(f"Semantic candidate {implementation.id!r} conflicts with target-owned "
-                               f"implementation facts: {fact_conflicts}.")
+            raise CodegenError(
+                f"Semantic candidate {implementation.id!r} conflicts with target-owned "
+                f"implementation facts: {fact_conflicts}."
+            )
         semantic_requires = tuple(semantic_facts.pop("requires", ()))
         requires = tuple(dict.fromkeys((*implementation.requires, *semantic_requires)))
         combined_facts = {
@@ -128,8 +140,7 @@ class TritonCandidateProvider(Protocol):
         self,
         node: Node,
         context: TritonCandidateContext,
-    ) -> TritonCandidateProposal | None:
-        ...
+    ) -> TritonCandidateProposal | None: ...
 
 
 class TritonCandidateProviderRegistry:
@@ -149,12 +160,19 @@ class TritonCandidateProviderRegistry:
 
     def add(self, provider: TritonCandidateProvider) -> None:
         if not provider.op_names:
-            raise CodegenError(f"Triton candidate provider {type(provider).__name__} owns no ops.")
+            raise CodegenError(
+                f"Triton candidate provider {type(provider).__name__} owns no ops."
+            )
         duplicates = tuple(sorted(provider.op_names & self._by_op.keys()))
         if duplicates:
-            owners = {op: type(self._by_op[op]).__name__ for op in duplicates}
-            raise CodegenError(f"Triton candidate provider {type(provider).__name__} duplicates "
-                               f"reviewed op ownership {owners}.")
+            owners = {
+                op: type(self._by_op[op]).__name__
+                for op in duplicates
+            }
+            raise CodegenError(
+                f"Triton candidate provider {type(provider).__name__} duplicates "
+                f"reviewed op ownership {owners}."
+            )
         self._providers.append(provider)
         for op in provider.op_names:
             self._by_op[op] = provider

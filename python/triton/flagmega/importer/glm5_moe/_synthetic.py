@@ -8,33 +8,21 @@ from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType
 
 REDUCED = {
-    "hidden_size":
-    16,
-    "vocab_size":
-    32,
-    "num_attention_heads":
-    2,
-    "q_lora_rank":
-    8,
-    "kv_lora_rank":
-    8,
-    "qk_nope_head_dim":
-    8,
-    "v_head_dim":
-    8,
-    "moe_intermediate_size":
-    8,
-    "intermediate_size":
-    8,
-    "num_experts":
-    4,
-    "num_experts_per_tok":
-    2,
+    "hidden_size": 16,
+    "vocab_size": 32,
+    "num_attention_heads": 2,
+    "q_lora_rank": 8,
+    "kv_lora_rank": 8,
+    "qk_nope_head_dim": 8,
+    "v_head_dim": 8,
+    "moe_intermediate_size": 8,
+    "intermediate_size": 8,
+    "num_experts": 4,
+    "num_experts_per_tok": 2,
     "layer_types": ("linear_attention", "linear_attention", "linear_attention", "deepseek_sparse_attention",
                     "linear_attention", "linear_attention", "linear_attention", "deepseek_sparse_attention"),
     "mlp_layer_types": ("dense", "dense", "dense", "sparse", "sparse", "sparse", "sparse", "sparse"),
-    "first_k_dense_replace":
-    3,
+    "first_k_dense_replace": 3,
 }
 
 PUBLISHED = {
@@ -71,7 +59,8 @@ def _is_fp8_weight(key, shape, config=None, attention_kind=None):
                     return False
             except (ValueError, IndexError, KeyError):
                 pass
-        return key.endswith(("q_a_proj.weight", "q_b_proj.weight", "kv_a_proj_with_mqa.weight", "o_proj.weight"))
+        return key.endswith(("q_a_proj.weight", "q_b_proj.weight",
+                             "kv_a_proj_with_mqa.weight", "o_proj.weight"))
     return (key.startswith("mlp.") or ".mlp." in key) and not key.endswith("gate.weight")
 
 
@@ -82,10 +71,11 @@ def _add_fp8_scales(config, shapes, attention_kind=None):
         if not _is_fp8_weight(key, shape, config, attention_kind):
             continue
         if len(shape) == 3:
-            shapes[key + "_scale_inv"] = (shape[0], (shape[1] + block_n - 1) // block_n,
-                                          (shape[2] + block_k - 1) // block_k)
+            shapes[key + "_scale_inv"] = (
+                shape[0], (shape[1] + block_n - 1) // block_n, (shape[2] + block_k - 1) // block_k)
         else:
-            shapes[key + "_scale_inv"] = ((shape[0] + block_n - 1) // block_n, (shape[1] + block_k - 1) // block_k)
+            shapes[key + "_scale_inv"] = ((shape[0] + block_n - 1) // block_n,
+                                           (shape[1] + block_k - 1) // block_k)
 
 
 def configuration(scale=REDUCED):
@@ -106,10 +96,9 @@ def configuration(scale=REDUCED):
         "tie_word_embeddings": False,
         "text_config": {
             "dtype": "bfloat16",
-            "linear_attn_config": {
-                "num_heads": kda_heads, "head_dim": kda_dim, "short_conv_kernel_size": kda_kernel, "gate_lower_bound":
-                -5.0
-            },
+            "linear_attn_config": {"num_heads": kda_heads, "head_dim": kda_dim,
+                                   "short_conv_kernel_size": kda_kernel,
+                                   "gate_lower_bound": -5.0},
             "kda_num_heads": kda_heads,
             "kda_head_dim": kda_dim,
             "kda_conv_kernel_size": kda_kernel,
@@ -148,24 +137,16 @@ def configuration(scale=REDUCED):
     }
     if scale.get("indexer_types") is not None:
         result["text_config"].update({
-            "indexer_types":
-            list(scale["indexer_types"]),
-            "index_topk":
-            int(scale["index_topk"]),
-            "index_head_dim":
-            int(scale["index_head_dim"]),
-            "index_n_heads":
-            int(scale["index_n_heads"]),
-            "index_kpool":
-            int(scale["index_kpool"]),
-            "index_kpool_always_select_tail":
-            bool(scale.get("index_kpool_always_select_tail", True)),
+            "indexer_types": list(scale["indexer_types"]),
+            "index_topk": int(scale["index_topk"]),
+            "index_head_dim": int(scale["index_head_dim"]),
+            "index_n_heads": int(scale["index_n_heads"]),
+            "index_kpool": int(scale["index_kpool"]),
+            "index_kpool_always_select_tail": bool(scale.get("index_kpool_always_select_tail", True)),
         })
     if scale.get("quantized", False):
         result["quantization_config"] = {
-            "quant_method": "fp8",
-            "activation_scheme": "dynamic",
-            "fmt": "e4m3",
+            "quant_method": "fp8", "activation_scheme": "dynamic", "fmt": "e4m3",
             "weight_block_size": list(scale.get("fp8_block_size", (128, 128))),
         }
     return result
@@ -178,11 +159,11 @@ def _hc_shapes(text):
     coefficients = (2 + hc) * hc
     return {
         "hc_attn_fn": (coefficients, hc * text["hidden_size"]),
-        "hc_attn_base": (coefficients, ),
-        "hc_attn_scale": (3, ),
+        "hc_attn_base": (coefficients,),
+        "hc_attn_scale": (3,),
         "hc_ffn_fn": (coefficients, hc * text["hidden_size"]),
-        "hc_ffn_base": (coefficients, ),
-        "hc_ffn_scale": (3, ),
+        "hc_ffn_base": (coefficients,),
+        "hc_ffn_scale": (3,),
     }
 
 
@@ -207,12 +188,14 @@ def _weight_shapes(config, layer, mlp_kind="sparse"):
     weights.update(_hc_shapes(text))
     if text.get("indexer_types") and text["indexer_types"][layer] == "full":
         weights.update({
-            "self_attn.indexer.wq_b.weight": (text["index_n_heads"] * text["index_head_dim"], q_lora),
+            "self_attn.indexer.wq_b.weight":
+            (text["index_n_heads"] * text["index_head_dim"], q_lora),
             "self_attn.indexer.wk.weight": (text["index_head_dim"], h),
-            "self_attn.indexer.k_norm.weight": (text["index_head_dim"], ),
-            "self_attn.indexer.k_norm.bias": (text["index_head_dim"], ),
+            "self_attn.indexer.k_norm.weight": (text["index_head_dim"],),
+            "self_attn.indexer.k_norm.bias": (text["index_head_dim"],),
             "self_attn.indexer.weights_proj.weight": (text["index_n_heads"], h),
-            "self_attn.indexer.index_kpool_compress_ape": (text["index_kpool"], text["index_head_dim"]),
+            "self_attn.indexer.index_kpool_compress_ape":
+            (text["index_kpool"], text["index_head_dim"]),
             "self_attn.indexer.index_kpool_compress_gate": (text["index_head_dim"], h),
         })
     if mlp_kind == "dense":
@@ -320,8 +303,8 @@ def checkpoint_layer(scale=REDUCED, *, requested=None):
     return requested
 
 
-def checkpoint(scale=REDUCED, *, seed=20260916, with_values=True, layer=None, kind="mla", full_model=False,
-               expert_layout="packed"):
+def checkpoint(scale=REDUCED, *, seed=20260916, with_values=True, layer=None, kind="mla",
+               full_model=False, expert_layout="packed"):
     config = configuration(scale)
     config["text_config"]["expert_layout"] = expert_layout
     text = config["text_config"]
@@ -363,13 +346,15 @@ def checkpoint(scale=REDUCED, *, seed=20260916, with_values=True, layer=None, ki
             shapes[f"model.language_model.layers.{layer}.{key}"] = shape
     quantized = scale.get("quantized", False)
     infos = {
-        key:
-        TensorInfo(
-            key, DType.FLOAT32 if key.endswith(
-                ("self_attn.dt_bias", "self_attn.A_log", "_scale_inv", "hc_attn_base", "hc_attn_scale", "hc_ffn_base",
-                 "hc_ffn_scale", "mlp.gate.e_score_correction_bias")) else
-            DType.FLOAT8_E4M3FN if quantized and _is_fp8_weight(key, shape, config) else DType.BFLOAT16, shape,
-            "model.safetensors")
+        key: TensorInfo(
+            key,
+            DType.FLOAT32 if key.endswith(("self_attn.dt_bias", "self_attn.A_log", "_scale_inv",
+                                            "hc_attn_base", "hc_attn_scale",
+                                            "hc_ffn_base", "hc_ffn_scale",
+                                            "mlp.gate.e_score_correction_bias"))
+            else DType.FLOAT8_E4M3FN if quantized and _is_fp8_weight(key, shape, config)
+            else DType.BFLOAT16,
+            shape, "model.safetensors")
         for key, shape in shapes.items()
     }
 

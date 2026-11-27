@@ -43,7 +43,7 @@ class SparseExpertsDispatch(OpDefinition):
     @classmethod
     def cost(cls, node):
         size = tensor_nbytes(node.type)
-        return OpCost(bytes_read=size, bytes_written=size, notes=("token-to-route-expansion", ))
+        return OpCost(bytes_read=size, bytes_written=size, notes=("token-to-route-expansion",))
 
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):

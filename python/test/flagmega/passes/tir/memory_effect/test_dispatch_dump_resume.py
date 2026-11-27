@@ -10,16 +10,13 @@ from triton.flagmega.passes.tir import materialize_kernel_prim_functions
 
 @pytest.mark.parametrize("result_effect", [fm.MemoryEffect.WRITE, fm.MemoryEffect.CHIP_WRITE])
 def test_typed_dispatch_effects_are_editable_python_ir(tmp_path, monkeypatch, result_effect):
-    monkeypatch.setattr(fm.get_definition("math.add"), "result_memory_effects", (result_effect, ))
+    monkeypatch.setattr(fm.get_definition("math.add"), "result_memory_effects", (result_effect,))
     builder = fm.IRBuilder(dialect="semantic_tir", stage="selected_tir")
     value_type = fm.tensor_type("bfloat16", (1, 16))
     lhs = builder.var("lhs", value_type, id="lhs")
     rhs = builder.var("rhs", value_type, id="rhs")
     result = builder.call(
-        "tir.kernel",
-        (lhs, rhs),
-        value_type,
-        id="result",
+        "tir.kernel", (lhs, rhs), value_type, id="result",
         attrs={
             "semantic_op": "math.add",
             "candidate": "tir.add.unit",
@@ -28,7 +25,7 @@ def test_typed_dispatch_effects_are_editable_python_ir(tmp_path, monkeypatch, re
             "semantic_attrs": {},
         },
     )
-    builder.function("main", (lhs, rhs), (result, ))
+    builder.function("main", (lhs, rhs), (result,))
     module = materialize_kernel_prim_functions(builder.build(entry="main"))
 
     path = fm.emit_module(module, tmp_path / "selected.py")
@@ -49,22 +46,18 @@ def test_typed_dispatch_effects_are_editable_python_ir(tmp_path, monkeypatch, re
 
 def test_declared_result_effect_arity_is_verified_before_materialization(monkeypatch):
     monkeypatch.setattr(fm.get_definition("math.add"), "result_memory_effects", (
-        fm.MemoryEffect.WRITE,
-        fm.MemoryEffect.WRITE,
+        fm.MemoryEffect.WRITE, fm.MemoryEffect.WRITE,
     ))
     builder = fm.IRBuilder(dialect="semantic_tir", stage="selected_tir")
-    value_type = fm.tensor_type("float32", (1, ))
+    value_type = fm.tensor_type("float32", (1,))
     lhs = builder.var("lhs", value_type)
     rhs = builder.var("rhs", value_type)
-    result = builder.call(
-        "tir.kernel", (lhs, rhs), value_type, attrs={
-            "semantic_op": "math.add",
-            "candidate": "tir.add.unit",
-            "parameters": {"family": "add", "variant": "unit"},
-            "facts": {},
-            "semantic_attrs": {},
-        })
-    builder.function("main", (lhs, rhs), (result, ))
+    result = builder.call("tir.kernel", (lhs, rhs), value_type, attrs={
+        "semantic_op": "math.add", "candidate": "tir.add.unit",
+        "parameters": {"family": "add", "variant": "unit"},
+        "facts": {}, "semantic_attrs": {},
+    })
+    builder.function("main", (lhs, rhs), (result,))
     with pytest.raises(IRVerificationError, match="2 result memory effects for 1"):
         materialize_kernel_prim_functions(builder.build(entry="main"))
 
@@ -73,7 +66,9 @@ def test_qkv_effect_schema_keeps_apply_owner_local_and_cache_partitioned():
     definition = fm.get_definition("nn.qkv_rope_with_cache")
 
     assert definition.qkv.memory_effect == fm.MemoryEffect.READ
-    assert definition.state.memory_effect == (fm.MemoryEffect.CHIP_READ_WRITE.partitioned_by_argument(8))
+    assert definition.state.memory_effect == (
+        fm.MemoryEffect.CHIP_READ_WRITE.partitioned_by_argument(8)
+    )
     assert definition.layer_id.memory_effect is fm.MemoryEffect.NONE
 
 
@@ -87,7 +82,7 @@ def test_none_effect_tensor_is_a_metadata_only_prim_function_parameter():
     )
     state_type = fm.RefType(
         "state",
-        (("seq_lens", fm.tensor_type("int32", (1, ))), ),
+        (("seq_lens", fm.tensor_type("int32", (1,))),),
     )
     result_type = fm.DistributedType(
         fm.tensor_type("float32", (1, 1, 8)),
@@ -117,7 +112,7 @@ def test_none_effect_tensor_is_a_metadata_only_prim_function_parameter():
             },
         },
     )
-    builder.function("main", (reference, state), (result, ))
+    builder.function("main", (reference, state), (result,))
 
     module = materialize_kernel_prim_functions(builder.build(entry="main"))
     primitive = module.kernel_definitions[0]

@@ -19,7 +19,7 @@ def origin_parameter(name):
 
 
 def _entries(spec):
-    return spec["entries"] if spec["kind"] == "table" else (spec, )
+    return spec["entries"] if spec["kind"] == "table" else (spec,)
 
 
 def _geometry(spec):
@@ -40,7 +40,9 @@ class DescriptorResources(list):
     def bind(self, spec, rebase_axis=None):
         if rebase_axis not in (None, -1):
             raise CodegenError("Only a proven contiguous last-axis descriptor rebase is supported.")
-        if rebase_axis is not None and any(int(entry["strides"][-1]) != 1 for entry in _entries(spec)):
+        if rebase_axis is not None and any(
+            int(entry["strides"][-1]) != 1 for entry in _entries(spec)
+        ):
             raise CodegenError("Descriptor origin requires a stride-one last coordinate.")
         if rebase_axis is not None and any(entry["source_shape_axes"][-1] for entry in _entries(spec)):
             raise CodegenError("Descriptor origin requires a fixed last coordinate, not a runtime shape override.")
@@ -53,15 +55,11 @@ class DescriptorResources(list):
                 continue
             if axis is not None:
                 for physical, logical, candidate in zip(
-                        _entries(resource),
-                        _entries(original),
-                        _entries(spec),
-                        strict=True,
+                    _entries(resource), _entries(original), _entries(spec), strict=True,
                 ):
                     physical["shape"] = (
                         *physical["shape"][:-1],
-                        max(int(physical["shape"][-1]),
-                            int(candidate["shape"][-1]) + origin),
+                        max(int(physical["shape"][-1]), int(candidate["shape"][-1]) + origin),
                     )
             return self._binding(resource["name"], origin, axis)
         if any(resource["name"] == spec["name"] for resource in self):
@@ -102,26 +100,30 @@ class DescriptorResources(list):
     def _binding(self, name, origin, axis):
         self.argument_bindings.append({"kind": "argument", "source": name})
         if axis is None:
-            return (name, )
+            return (name,)
         # A Python integer at a noinline call would specialize every layer.
         value = f"tl.full((), {origin}, tl.int32)"
         if self.formal_origins:
             value = origin_parameter(name) if not origin else f"({origin_parameter(name)} + {value})"
-            self.argument_bindings.append(
-                {"kind": "scalar_argument", "source": origin_parameter(name), "dtype": "int32", "add": origin})
+            self.argument_bindings.append({"kind": "scalar_argument", "source": origin_parameter(name),
+                                           "dtype": "int32", "add": origin})
         else:
             self.argument_bindings.append({"kind": "immediate", "dtype": "int32", "value": origin})
         return (name, value)
 
     def parameters(self):
-        return tuple(parameter for spec in self for parameter in (
-            (spec["name"],
-             origin_parameter(spec["name"])) if self._contracts[spec["name"]][1] is not None else (spec["name"], )))
+        return tuple(
+            parameter
+            for spec in self
+            for parameter in (
+                (spec["name"], origin_parameter(spec["name"]))
+                if self._contracts[spec["name"]][1] is not None else (spec["name"],)
+            )
+        )
 
     def requests(self):
         return tuple({
-            **_geometry(spec),
-            "parameter": spec["name"],
+            **_geometry(spec), "parameter": spec["name"],
             **({"rebase_axis": -1} if self._contracts[spec["name"]][1] is not None else {}),
         } for spec in self)
 

@@ -14,13 +14,11 @@ from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 
 @pytest.mark.parametrize("dtype", [dtype.value for dtype in fm.DType])
 def test_rank_zero_tensor_dump_keeps_shape_and_exact_bytes(tmp_path, dtype):
-
     class Graph(fm.Module):
-
         def forward(self):
             value = self.input("value", fm.tensor_type(dtype, ()), id="value")
             output = fm.F.tensors.cast(value, dtype=dtype, name="output")
-            self.function("main", (value, ), (output, ))
+            self.function("main", (value,), (output,))
 
     module = Graph(dialect="high_level", stage="imported", entry="main").build()
     value = torch.tensor(1, dtype=getattr(torch, dtype))

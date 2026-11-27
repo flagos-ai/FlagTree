@@ -22,20 +22,19 @@ class DistributedSplitCandidateContext:
 
     def __post_init__(self) -> None:
         if self.purpose not in {"generic", "output", "reduction"}:
-            raise ValueError(f"Unknown distributed split candidate purpose {self.purpose!r}.")
+            raise ValueError(
+                f"Unknown distributed split candidate purpose {self.purpose!r}."
+            )
 
 
 class DistributedSplitCandidateProvider(Protocol):
-
     @property
-    def identity(self) -> str:
-        ...
+    def identity(self) -> str: ...
 
     def get_candidates(
         self,
         context: DistributedSplitCandidateContext,
-    ) -> tuple[SBPSplit, ...]:
-        ...
+    ) -> tuple[SBPSplit, ...]: ...
 
 
 class ContiguousDistributedSplitCandidateProvider:
@@ -47,10 +46,12 @@ class ContiguousDistributedSplitCandidateProvider:
         self,
         context: DistributedSplitCandidateContext,
     ) -> tuple[SBPSplit, ...]:
-        return (SBP.split_contiguous(
-            context.hierarchy_axes,
-            context.contiguous_granularity,
-        ), )
+        return (
+            SBP.split_contiguous(
+                context.hierarchy_axes,
+                context.contiguous_granularity,
+            ),
+        )
 
 
 __all__ = [

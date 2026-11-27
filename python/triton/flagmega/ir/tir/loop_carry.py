@@ -8,7 +8,7 @@ commits the stages to the current slots. On exit, including zero trips, current
 slots are published to the results. Slots belong to the ordinary BufferPlan.
 """
 from dataclasses import dataclass
-from triton.flagmega.ir.tir.base import TIRNode, tir_node
+from triton.flagmega.ir.tir.base import TIRNode,tir_node
 
 
 @tir_node('loop_carry')
@@ -23,6 +23,4 @@ class LoopCarry(TIRNode):
 
     def __post_init__(self):
         from triton.flagmega.ir.bufferization.loop_carry import LoopCarryBinding
-        LoopCarryBinding(
-            **{name: getattr(self, name)
-               for name in ('formal', 'initial', 'current', 'staging', 'yielded', 'result')})
+        LoopCarryBinding(**{name:getattr(self,name) for name in ('formal','initial','current','staging','yielded','result')})

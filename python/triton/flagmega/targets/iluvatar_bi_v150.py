@@ -1,5 +1,3 @@
-# Copyright 2026 FlagOS Contributors
-# SPDX-License-Identifier: MIT
 """Iluvatar BI-V150 (COREX) physical target for FlagMega."""
 
 from __future__ import annotations
@@ -24,50 +22,56 @@ def corex_triton_implementation_model():
     from dataclasses import replace
     from triton.flagmega.codegen.triton.implementation import TritonImplementation
     from triton.flagmega.ir import tensor_type
-    from triton.flagmega.ir.tir import (TIRSharedWorkspaceDescriptor, TIRTransferPipelineChannel,
-                                        TIRTransferPipelineContract)
+    from triton.flagmega.ir.tir import (TIRSharedWorkspaceDescriptor,
+        TIRTransferPipelineChannel, TIRTransferPipelineContract)
     qkv_pipeline_stages = int(os.environ.get("FLAGMEGA_QKV_PIPELINE_STAGES", "2"))
     if qkv_pipeline_stages not in {2, 4}:
-        raise ValueError("FLAGMEGA_QKV_PIPELINE_STAGES must be 2 or 4; "
-                         "COREX shared layouts require a power-of-two stage extent")
+        raise ValueError(
+            "FLAGMEGA_QKV_PIPELINE_STAGES must be 2 or 4; "
+            "COREX shared layouts require a power-of-two stage extent"
+        )
     qkv_block_n = int(os.environ.get("FLAGMEGA_QKV_BLOCK_N", "32"))
     if qkv_block_n not in {16, 32, 64}:
         raise ValueError("FLAGMEGA_QKV_BLOCK_N must be 16, 32, or 64")
     pointer_pipeline_id = "tir.qkv_parallel_linear.packed_gemv_async_smem_pipeline"
     pointer_pipeline = TritonImplementation(
-        pointer_pipeline_id, "qkv_parallel_linear", "packed_pointer_smem_pipeline", {
-            "block_n": qkv_block_n, "block_k": 64, "num_stages": qkv_pipeline_stages, "producer_warps": 4,
-            "producer_registers": 64, "consumer_warps": 16, "worker_width": 64, "compute_num_warps": 16,
-            "descriptor_kind": "pointer",
-            # This variant stages only the weight: its template reads the
-            # activation with a plain `tl.load` inside the consumer rather than
-            # through a pipeline slot, so it declares one shared workspace, not
-            # two. Without this the renderer rejects it for missing an LHS stage.
-            "direct_lhs": True,
-            # The template walks `num_n_tiles`, so a block_n smaller than the
-            # owner-local N extent is tiled rather than a mismatch. block_n is
-            # tunable down to 16 against a 256-wide shard, so this is the normal
-            # case here, not a tail.
-            "n_tiling": True,
-            # Two physical Shared slots let layer i+1 overlap layer i; the
-            # source scheduler retains the lifetime drain before slot i is reused.
-            "inter_stage_buffer_slots": 2
-        },
+        pointer_pipeline_id, "qkv_parallel_linear", "packed_pointer_smem_pipeline",
+        {"block_n": qkv_block_n, "block_k": 64, "num_stages": qkv_pipeline_stages,
+         "producer_warps": 4, "producer_registers": 64,
+         "consumer_warps": 16, "worker_width": 64, "compute_num_warps": 16,
+         "descriptor_kind": "pointer",
+         # This variant stages only the weight: its template reads the
+         # activation with a plain `tl.load` inside the consumer rather than
+         # through a pipeline slot, so it declares one shared workspace, not
+         # two. Without this the renderer rejects it for missing an LHS stage.
+         "direct_lhs": True,
+         # The template walks `num_n_tiles`, so a block_n smaller than the
+         # owner-local N extent is tiled rather than a mismatch. block_n is
+         # tunable down to 16 against a 256-wide shard, so this is the normal
+         # case here, not a tail.
+         "n_tiling": True,
+         # Two physical Shared slots let layer i+1 overlap layer i; the
+         # source scheduler retains the lifetime drain before slot i is reused.
+         "inter_stage_buffer_slots": 2},
         # Trial 80: the original contract over-specified one particular
         # site shape (reduction extent 2048, f32 outputs, lanes (4,2,8),
         # full placement ownership) and rejected every other legal
         # fused-RHS site, including the sharded decode tutorial. Keep only
         # structural requirements; _applicable's generic checks plus the
         # renderer ABI handle the rest.
-        {
-            "input_kind": "fused_rhs", "rhs_layout": "k_major", "required_input_dtype": "bfloat16",
-            "required_weight_dtype": "bfloat16", "required_input_lanes": (), "required_weight_rank": 3,
-            "required_local_rows": 1, "requires_matching_output_lanes": True, "requires_none_optional_inputs": True
-        }, ("async_copy", "warp_specialize"), {"transfer_pipeline": True}, (TIRSharedWorkspaceDescriptor(
-            "rhs_stage", tensor_type("bfloat16",
-                                     (qkv_pipeline_stages, 4, qkv_block_n * 16)), 128, matrix_compatible=False), ),
-        TIRTransferPipelineContract((TIRTransferPipelineChannel("weight", (1, ), (0, ), 16), ),
-                                    capacity=qkv_pipeline_stages))
+        {"input_kind": "fused_rhs", "rhs_layout": "k_major",
+         "required_input_dtype": "bfloat16", "required_weight_dtype": "bfloat16",
+         "required_input_lanes": (),
+         "required_weight_rank": 3,
+         "required_local_rows": 1,
+         "requires_matching_output_lanes": True,
+         "requires_none_optional_inputs": True},
+        ("async_copy", "warp_specialize"), {"transfer_pipeline": True},
+        (TIRSharedWorkspaceDescriptor(
+            "rhs_stage", tensor_type("bfloat16", (qkv_pipeline_stages, 4, qkv_block_n * 16)),
+                                      128, matrix_compatible=False),),
+        TIRTransferPipelineContract((TIRTransferPipelineChannel("weight", (1,), (0,), 16),),
+                                     capacity=qkv_pipeline_stages))
     implementations = []
     capability = IluvatarBiV150Capability()
     for implementation in model.implementations:
@@ -93,9 +97,7 @@ def corex_triton_implementation_model():
             pass
     supported = {value.id for value in implementations}
     preferences = {
-        family: tuple(candidate
-                      for candidate in candidates
-                      if candidate in supported)
+        family: tuple(candidate for candidate in candidates if candidate in supported)
         for family, candidates in model.preferences.items()
     }
     # Keep the async pointer pipeline available for explicit experiments, but
@@ -107,8 +109,8 @@ def corex_triton_implementation_model():
     # preference order for producer/consumer experiments (Trial 80).
     if os.environ.get("FLAGMEGA_QKV_PIPELINE") == "1" and pointer_pipeline_id in supported:
         qkv_pref = preferences.get("qkv_parallel_linear", ())
-        preferences["qkv_parallel_linear"] = ((pointer_pipeline_id, ) +
-                                              tuple(c for c in qkv_pref if c != pointer_pipeline_id))
+        preferences["qkv_parallel_linear"] = (
+            (pointer_pipeline_id,) + tuple(c for c in qkv_pref if c != pointer_pipeline_id))
     preferences = {family: candidates for family, candidates in preferences.items() if candidates}
     return replace(model, implementations=tuple(implementations), preferences=preferences, name="iluvatar-bi-v150/v1")
 
@@ -137,15 +139,16 @@ class IluvatarBiV150Capability:
         object.__setattr__(self, "compute_capability", tuple(self.compute_capability))
         if self.compute_capability != (7, 1):
             raise IRSchemaError("IluvatarBiV150Capability requires compute capability (7, 1).")
-        for name in ("warp_size", "max_threads_per_block", "max_threads_per_sm", "max_registers_per_sm",
-                     "max_shared_memory_bytes"):
+        for name in ("warp_size", "max_threads_per_block", "max_threads_per_sm",
+                     "max_registers_per_sm", "max_shared_memory_bytes"):
             value = getattr(self, name)
             if type(value) is not int or value <= 0:
                 raise IRSchemaError(f"IluvatarBiV150Capability {name} must be positive.")
         if self.max_threads_per_block > self.max_threads_per_sm:
             raise IRSchemaError("BI-V150 max_threads_per_block cannot exceed max_threads_per_sm.")
-        for name in ("supports_fp8_mma", "supports_fp8", "supports_async_copy", "supports_cooperative_grid",
-                     "supports_tma", "supports_warp_specialize", "supports_grid_sync", "supports_mma_v3"):
+        for name in ("supports_fp8_mma", "supports_fp8", "supports_async_copy",
+                     "supports_cooperative_grid", "supports_tma", "supports_warp_specialize",
+                     "supports_grid_sync", "supports_mma_v3"):
             if type(getattr(self, name)) is not bool:
                 raise IRSchemaError(f"IluvatarBiV150Capability {name} must be bool.")
 
@@ -230,11 +233,15 @@ class IluvatarBiV150Machine(NvidiaSm90Machine):
     def triton_implementation_model(self, supplied=None):
         # A caller-supplied model takes precedence over the machine's own, then
         # the Corex default; no extra invariants here, so it is returned as-is.
-        return (supplied or self._implementation_model or corex_triton_implementation_model())
+        return (
+            supplied
+            or self._implementation_model
+            or corex_triton_implementation_model()
+        )
 
     def default_ntt_options(self) -> NttTargetOptions:
         return NttTargetOptions(
-            placements=(Placement((4, 4), "yx", "bb"), ),
+            placements=(Placement((4, 4), "yx", "bb"),),
             vector_lane_bytes=16,
             vector_max_axes=1,
             packing_vector_bytes=16,
@@ -264,14 +271,12 @@ class IluvatarBiV150Target(PyNttTarget):
     name = "iluvatar-bi-v150"
     policy_version = "pyntt-iluvatar-bi-v150/v1"
 
-    def __init__(self, capability: IluvatarBiV150Capability | None = None, *, options: NttTargetOptions | None = None,
-                 triton_implementation_model=None, **kwargs):
+    def __init__(self, capability: IluvatarBiV150Capability | None = None, *,
+                 options: NttTargetOptions | None = None, triton_implementation_model=None, **kwargs):
         machine = IluvatarBiV150Machine(capability, implementation_model=triton_implementation_model)
-        super().__init__(machine, target_name=self.name, policy_version=self.policy_version, options=options
-                         or machine.default_ntt_options(), triton_implementation_model=triton_implementation_model,
-                         **kwargs)
+        super().__init__(machine, target_name=self.name, policy_version=self.policy_version,
+                         options=options or machine.default_ntt_options(),
+                         triton_implementation_model=triton_implementation_model, **kwargs)
 
 
-__all__ = [
-    "IluvatarBiV150Capability", "IluvatarBiV150Machine", "IluvatarBiV150Target", "corex_triton_implementation_model"
-]
+__all__ = ["IluvatarBiV150Capability", "IluvatarBiV150Machine", "IluvatarBiV150Target", "corex_triton_implementation_model"]

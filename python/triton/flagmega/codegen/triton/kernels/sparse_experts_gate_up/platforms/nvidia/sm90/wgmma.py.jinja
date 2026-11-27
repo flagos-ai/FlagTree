@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: sparse_experts_gate_up/wgmma platform=nvidia architecture=sm90
+# flagmega-kernel: sparse_experts_gate_up/wgmma platform=nvidia architecture=sm90
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% include "kernels/_ue8m0_quantization.py.jinja" %}
 {% for call in render_calls | default(()) %}

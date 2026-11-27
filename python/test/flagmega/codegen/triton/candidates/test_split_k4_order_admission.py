@@ -14,6 +14,7 @@ from triton.flagmega.ir import kernel_dispatch_of
 from python.test.flagmega.codegen.triton.microkernels.test_packed_qkv_provider import _context
 from python.test.flagmega.codegen.triton.microkernels.helpers import semantic_packed_qkv_module
 
+
 ORDER = "split_k4_k32_mma_k16_pairtree"
 
 
@@ -36,7 +37,8 @@ def implementation(kind):
 @pytest.mark.parametrize("order", [None, "relaxed", "mma_k16", ORDER, "unknown"])
 def test_order_and_implementation_match_both_directions(kind, order):
     attrs = {} if order is None else {"reduction_order": order}
-    expected = (kind in {"simt", "old"} and order in {None, "relaxed"} or kind == "old" and order == "mma_k16"
+    expected = (kind in {"simt", "old"} and order in {None, "relaxed"}
+                or kind == "old" and order == "mma_k16"
                 or kind == "new" and order == ORDER)
     assert _supports_reduction_order(implementation(kind), attrs) is expected
 
@@ -52,6 +54,6 @@ def test_direct_tir_packed_qkv_rejects_new_order_before_implementation_selection
     function = module.prim_functions[0]
     dispatch = kernel_dispatch_of(function)
     changed = replace(dispatch, semantic_attrs={**dispatch.semantic_attrs, "reduction_order": ORDER})
-    module = replace(module, prim_functions=(replace(function, body=replace(function.body, fields=(changed, ))), ))
+    module = replace(module, prim_functions=(replace(function, body=replace(function.body, fields=(changed,))),))
     with pytest.raises(CodegenError, match="reduction_order"):
         PackedQKVMicroKernelProvider().propose(_context(module))

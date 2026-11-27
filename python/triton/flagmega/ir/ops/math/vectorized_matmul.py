@@ -41,8 +41,7 @@ class VectorizedMatMul(OpDefinition):
         attrs = super().normalize_attrs(attributes)
         for name in ("lhs_axes", "rhs_axes", "output_axes", "output_lanes"):
             value = attrs[name]
-            if not isinstance(value, (tuple, list)) or any(
-                    isinstance(item, bool) or not isinstance(item, int) for item in value):
+            if not isinstance(value, (tuple, list)) or any(isinstance(item, bool) or not isinstance(item, int) for item in value):
                 raise IRSchemaError(f"F.math.vectorized_matmul {name} must be an integer sequence.")
             attrs[name] = tuple(value)
         if len(attrs["output_axes"]) != len(attrs["output_lanes"]):
@@ -61,8 +60,7 @@ class VectorizedMatMul(OpDefinition):
         rk, rn = (rhs_logical.shape[1], rhs_logical.shape[0]) if attrs["transpose_b"] else rhs_logical.shape
         if lk != rk or lhs_logical.dtype != rhs_logical.dtype:
             raise IRSchemaError("VectorizedMatMul logical input types are incompatible.")
-        scalar_result = tensor_type(DType(attrs.get("output_data_type") or lhs_logical.dtype), (lm, rn),
-                                    layout=lhs.layout)
+        scalar_result = tensor_type(DType(attrs.get("output_data_type") or lhs_logical.dtype), (lm, rn), layout=lhs.layout)
         axes = tuple(int(value) for value in attrs["output_axes"])
         lanes = tuple(int(value) for value in attrs["output_lanes"])
         if not lanes:
@@ -94,8 +92,7 @@ class VectorizedMatMul(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         assert isinstance(node.type, TensorType)
-        return OpCost(flops=None, bytes_read=None, bytes_written=tensor_nbytes(node.type),
-                      notes=("vectorized-matmul", ))
+        return OpCost(flops=None, bytes_read=None, bytes_written=tensor_nbytes(node.type), notes=("vectorized-matmul",))
 
 
 def _logical_type(value: TensorType, axes: tuple[int, ...]) -> TensorType:

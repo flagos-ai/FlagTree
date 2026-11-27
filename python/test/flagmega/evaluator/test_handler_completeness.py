@@ -56,7 +56,7 @@ def test_completeness_distinguishes_op_handler_from_visitor_call_dispatch():
     module = _call_module()
     support = inspect_evaluation_support(module)
     assert support.is_complete
-    assert support.visitor_handled_ops == ("builtin.call", )
+    assert support.visitor_handled_ops == ("builtin.call",)
     assert {"builtin.var", "math.silu"}.issubset(support.supported_ops)
 
     value = torch.tensor([1.0, -1.0])

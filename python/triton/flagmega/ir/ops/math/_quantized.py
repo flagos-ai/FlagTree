@@ -6,7 +6,7 @@ from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.types import DType
 from triton.flagmega.ir.model import tensor_type
 
-BLOCK_BYTES = {"IQ4_XS": 136, "Q4_K": 144}
+BLOCK_BYTES = {"IQ4_XS": 136, "Q4_K": 144, "Q6_K": 210}
 
 
 def matrix_width(weight, encoding):
@@ -21,6 +21,8 @@ def matrix_width(weight, encoding):
     return tensor_type(DType.UINT8, (width.fixed_value // block * 256, )).shape[0]
 
 
+
+
 def verify_native_scale_type(value, weight, scale, *, encoding, block_n, block_k, opname):
     """Native scale operands retain the logical FP8 schema, not its arithmetic."""
     if encoding is None:
@@ -28,8 +30,8 @@ def verify_native_scale_type(value, weight, scale, *, encoding, block_n, block_k
     k = matrix_width(weight, encoding)
     if not k.is_fixed or not weight.shape[0].is_fixed:
         raise IRSchemaError(f"{opname} native dimensions must be fixed.")
-    expected = tensor_type(DType.FLOAT32, ((weight.shape[0].fixed_value + block_n - 1) // block_n,
-                                           (k.fixed_value + block_k - 1) // block_k))
+    expected = tensor_type(DType.FLOAT32, ((weight.shape[0].fixed_value + block_n - 1)//block_n,
+                                         (k.fixed_value + block_k - 1)//block_k))
     if scale != expected or value.shape[-1] != k:
         raise IRSchemaError(f"{opname} native placeholder scales require logical-N/K FP32 shape {expected.shape}.")
 
@@ -44,12 +46,22 @@ def decode_native_rows(weight, encoding, *, logical_k=None):
     from triton.flagmega.ir.ops.math._block_scaled import _torch
     torch = _torch()
     block_bytes = BLOCK_BYTES.get(encoding)
-    if (block_bytes is None or weight.dtype != torch.uint8 or weight.ndim != 2 or weight.shape[1] % block_bytes):
+    if (block_bytes is None or weight.dtype != torch.uint8 or weight.ndim != 2
+            or weight.shape[1] % block_bytes):
         raise EvaluationError("Native GGUF decoding requires supported encoding and complete UINT8 rows.")
     k = weight.shape[1] // block_bytes * 256
     if logical_k is not None and k != logical_k:
         raise EvaluationError(f"Native GGUF logical K mismatch: activation {logical_k}, weight {k}.")
     blocks = weight.contiguous().reshape(weight.shape[0], -1, block_bytes)
+    if encoding == "Q6_K":
+        position = torch.arange(256, device=weight.device)
+        half, part, lane = position // 128, position % 128 // 32, position % 32
+        low = blocks[..., half * 64 + (part % 2) * 32 + lane].long()
+        high = blocks[..., 128 + half * 32 + lane].long()
+        codes = ((low >> (4 * (part // 2))) & 15) | (((high >> (2 * part)) & 3) << 4)
+        scales = blocks[..., 192 + position // 16].view(torch.int8).float()
+        d = blocks[..., 208:210].contiguous().view(torch.float16).float()
+        return ((d * scales) * (codes - 32).float()).reshape(weight.shape[0], k)
     d = blocks[..., :2].contiguous().view(torch.float16).float()
     group = torch.arange(8, device=weight.device)
     if encoding == "IQ4_XS":
@@ -59,8 +71,8 @@ def decode_native_rows(weight, encoding, *, logical_k=None):
         scales = (low | (high << 4)) - 32
         packed = blocks[..., 8:].long().reshape(*blocks.shape[:2], 8, 16)
         codes = torch.cat((packed & 15, packed >> 4), dim=-1)
-        values = torch.tensor([-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113],
-                              device=weight.device, dtype=torch.float32)
+        values = torch.tensor([-127, -104, -83, -65, -49, -35, -22, -10,
+                               1, 13, 25, 38, 53, 69, 89, 113], device=weight.device, dtype=torch.float32)
         decoded = (d * scales.float())[..., None] * values[codes]
     else:
         scales = blocks[..., 4:16].long()

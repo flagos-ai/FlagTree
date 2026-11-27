@@ -3,7 +3,7 @@
 """Top-level FlagMega pipeline containing implemented passes only.
 
 The pipeline is deliberately an inventory of executable transformations, not
-an aspirational copy of reference pass names. A pass is added here only when its
+an aspirational copy of nncase pass names. A pass is added here only when its
 body performs the transformation named by the pass. Verification remains an
 invariant of :class:`Stage` and :class:`PassManager`; it is not repeated under
 placeholder optimization names.
@@ -16,9 +16,7 @@ from typing import Protocol
 
 
 class _TargetPassRegistrar(Protocol):
-
-    def __call__(self, registry: "PipelinePassRegistry") -> None:
-        ...
+    def __call__(self, registry: "PipelinePassRegistry") -> None: ...
 
 
 @dataclass(frozen=True)
@@ -36,7 +34,7 @@ class TargetPipelineExtension:
 
 
 class PipelinePassRegistry:
-    """Ordered registry populated by target backends, like reference IRulesAddable."""
+    """Ordered registry populated by target backends, like nncase IRulesAddable."""
 
     def __init__(self) -> None:
         self._passes: list[PipelinePass] = []
@@ -87,11 +85,18 @@ PIPELINE_GROUPS = (
             "egraph_candidates",
             "extracted",
             "normalization_decomposed",
+            "shape_buckets_bound",
             "decomposed",
+            "iq4_q8_prepared",
         }),
         "call_invariants_hoisted",
         (
+            # Bucket specializations are selected before any pass that
+            # requires statically bounded dimensions (Vectorize, Packing,
+            # AutoDistributed). Static imports pass through unchanged.
+            PipelinePass("BindShapeBuckets", "bind-shape-buckets"),
             PipelinePass("DecomposeComplexOps", "decompose-gdn"),
+            TargetPipelineExtension("IQ4Q8Preparation", "register_iq4_q8_preparation_passes"),
             PipelinePass("HoistCallInvariantExpressions", "hoist-call-invariants"),
         ),
     ),
@@ -273,6 +278,7 @@ PIPELINE_GROUPS = (
             PipelinePass("ProposeTIRMicroKernels", "propose-microkernels"),
             PipelinePass("SelectTIRMicroKernels", "select-microkernels"),
             PipelinePass("FinalizeTIRPackage", "finalize-tir-package"),
+            TargetPipelineExtension("PreBufferizationPasses", "register_pre_bufferization_passes"),
             PipelinePass("PlanFunctionMemory", "plan-function-memory"),
             PipelinePass("Bufferize", "bufferize"),
             PipelinePass(
@@ -280,6 +286,7 @@ PIPELINE_GROUPS = (
                 "materialize-execution-functions",
             ),
             PipelinePass("PlanMemorySynchronization", "plan-memory-synchronization"),
+            TargetPipelineExtension("PostSynchronizationPasses", "register_post_synchronization_passes"),
             PipelinePass(
                 "LowerTransferPipelineRegions",
                 "lower-transfer-pipeline-regions",
@@ -287,6 +294,7 @@ PIPELINE_GROUPS = (
         ),
     ),
 )
+
 
 __all__ = [
     "PIPELINE_GROUPS",

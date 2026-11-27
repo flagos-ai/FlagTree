@@ -12,15 +12,14 @@ def graph(*, extra=None, norm_attrs=None, vector=True):
     p, b = fm.Placement((8, 16), 'yx', 'bb'), fm.SBP.broadcast()
     lane = 4 if vector else 1
     split = fm.SBP.split_contiguous((0, 1), granularity=16 // lane)
-    dtype = fm.vector_type('float32', (4, )) if vector else fm.DType.FLOAT32
-    affine_dtype = fm.vector_type('bfloat16', (4, )) if vector else fm.DType.BFLOAT16
+    dtype = fm.vector_type('float32', (4,)) if vector else fm.DType.FLOAT32
+    affine_dtype = fm.vector_type('bfloat16', (4,)) if vector else fm.DType.BFLOAT16
     raw_type = fm.DistributedType(fm.tensor_type(dtype, (1, 2048 // lane)), (b, split), p)
-    param_type = fm.DistributedType(fm.tensor_type(affine_dtype, (2048 // lane, )), (split, ), p)
+    param_type = fm.DistributedType(fm.tensor_type(affine_dtype, (2048 // lane,)), (split,), p)
     wt = fm.DistributedType(fm.tensor_type('bfloat16', (128, 768, 2, 64)),
                             (b, fm.SBP.split_contiguous((0, 1), granularity=6), b, b), p)
 
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect='high_level', stage='vector_contracts_lowered', entry='main')
 
@@ -31,8 +30,8 @@ def graph(*, extra=None, norm_attrs=None, vector=True):
             gate = self.input('gate', wt, id='gate')
             up = self.input('up', wt, id='up')
             bias = fm.F.builtin.splat_const(param_type, 0.0, name='bias')
-            raw = (fm.F.math.vectorized_binary(x, y, binary_op='add', name='raw') if vector else fm.F.math.add(
-                x, y, name='raw'))
+            raw = (fm.F.math.vectorized_binary(x, y, binary_op='add', name='raw') if vector
+                   else fm.F.math.add(x, y, name='raw'))
             stats = fm.F.nn.norm_stats(raw, axis=-1, use_mean=False, name='stats')
             materialized = fm.F.distributed.boxing(stats, replace(stats.type, partial=None), name='materialized')
             attrs = {'axis': -1, 'epsilon': 1e-6, 'use_mean': False, 'output_dtype': 'bfloat16', **(norm_attrs or {})}
@@ -42,8 +41,8 @@ def graph(*, extra=None, norm_attrs=None, vector=True):
             glu = fm.F.nn.packed_dense_matmul_glu(scalar, gate, up, round_activation=False, name='glu')
             outputs = [glu]
             if extra is not None:
-                outputs.append(
-                    {'stats': stats, 'materialized': materialized, 'norm': norm, 'scalar': scalar, 'raw': raw}[extra])
+                outputs.append({'stats': stats, 'materialized': materialized, 'norm': norm,
+                                'scalar': scalar, 'raw': raw}[extra])
             self.function('main', (x, y, scale, gate, up), outputs)
 
     module = Graph().build()
@@ -62,7 +61,7 @@ def test_local_stats_retained_with_explicit_partial_and_raw_late_reader(vector, 
     assert len(fused.inputs) == 6 and fused.inputs[-1] == 'stats'
     assert {'materialized', 'norm', 'broad', 'scalar'}.isdisjoint(after.node_map)
     assert after.node_map['stats'].type.partial.axes == (0, 1)
-    assert fm.load_module(fm.emit_module(after, tmp_path / 'partial.py')).semantic_hash == after.semantic_hash
+    assert fm.load_module(fm.emit_module(after, tmp_path/'partial.py')).semantic_hash == after.semantic_hash
 
 
 @pytest.mark.parametrize('extra', ('stats', 'materialized', 'norm', 'scalar'))
@@ -73,10 +72,8 @@ def test_shared_intermediate_is_not_silently_absorbed(extra):
 
 def test_late_placement_rejected():
     before = graph()
-    late = replace(
-        before, nodes=tuple(
-            replace(n, metadata={'bufferization.memory_space': 'block_local_data'}) if n.id == 'raw' else n
-            for n in before.nodes))
+    late = replace(before, nodes=tuple(replace(n, metadata={'bufferization.memory_space': 'block_local_data'})
+                                     if n.id == 'raw' else n for n in before.nodes))
     with pytest.raises(IRVerificationError, match='late memory placement'):
         fuse_partial_rms_packed_dense_matmul_glu(late, partial_group_size=32)
 
@@ -86,17 +83,17 @@ def explicit_target():
     model = NvidiaSm90Target().triton_implementation_model
     base = model.implementation('tir.dense_matmul_glu.packed_tensor_descriptor_table_paired_smem_pipeline_inline_gemv')
     donor = model.implementation('tir.dense_matmul_glu.packed_tensor_descriptor_paired_smem_pipeline_full_lhs_gemv')
-    variant = replace(
-        base, id='tir.dense_matmul_glu.test_explicit_partial_rms',
-        parameters={**base.parameters, 'lhs_stage_extent':
-                    2048}, contract={**base.contract, 'fusion': 'explicit_partial_rms', 'norm_math_modes': ('fast', )},
-        shared_workspaces=(*base.shared_workspaces, donor.shared_workspaces[2]), transfer_pipeline=replace(
-            base.transfer_pipeline, consumer_shared_workspace_indices=(2, ),
-            channels=(replace(base.transfer_pipeline.channels[0], source_argument_indices=(3, 4)), )))
-    return NvidiaSm90Target(triton_implementation_model=replace(
-        model, implementations=(*model.implementations, variant), preferences={
-            **model.preferences, 'dense_matmul_glu': (variant.id, *model.preferences.get('dense_matmul_glu', ()))
-        }, name='explicit-partial-rms-test'))
+    variant = replace(base, id='tir.dense_matmul_glu.test_explicit_partial_rms',
+        parameters={**base.parameters, 'lhs_stage_extent': 2048},
+        contract={**base.contract, 'fusion': 'explicit_partial_rms', 'norm_math_modes': ('fast',)},
+        shared_workspaces=(*base.shared_workspaces, donor.shared_workspaces[2]),
+        transfer_pipeline=replace(base.transfer_pipeline, consumer_shared_workspace_indices=(2,),
+            channels=(replace(base.transfer_pipeline.channels[0], source_argument_indices=(3, 4)),)))
+    return NvidiaSm90Target(triton_implementation_model=replace(model,
+        implementations=(*model.implementations, variant),
+        preferences={**model.preferences, 'dense_matmul_glu':
+                     (variant.id, *model.preferences.get('dense_matmul_glu', ()))},
+        name='explicit-partial-rms-test'))
 
 
 @pytest.fixture(scope='module')
@@ -129,8 +126,8 @@ def test_normal_planner_has_real_raw_and_partial_chip_backing(compiled_partial):
 
 
 @pytest.mark.parametrize('field,value', [('memory_sharing_scope', 'block'), ('owner_count', 1),
-                                         ('component_stride_scalar_elements', 0), ('storage_kind', 'canonical_global'),
-                                         ('scalar_dtype', 'bfloat16'), ('pool_scope_local', True)])
+    ('component_stride_scalar_elements', 0), ('storage_kind', 'canonical_global'),
+    ('scalar_dtype', 'bfloat16'), ('pool_scope_local', True)])
 def test_encoder_rejects_invalid_partial_backing(compiled_partial, field, value):
     from copy import deepcopy
     from triton.flagmega.codegen.triton.runtime_binding import describe_function_runtime_binding

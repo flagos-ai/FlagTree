@@ -6,9 +6,11 @@ import torch
 from triton.flagmega import ir as fm
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.passes.auto_distributed import (
-    PyNttDistributedReshardRealizationPolicy, )
+    PyNttDistributedReshardRealizationPolicy,
+)
 from triton.flagmega.passes.functions import (
-    propagate_post_auto_distributed_function_boundary_layouts, )
+    propagate_post_auto_distributed_function_boundary_layouts,
+)
 
 
 def _types():
@@ -34,7 +36,6 @@ def _constant_weight_module():
     tensor, broadcast, split = _types()
 
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="ntt", stage="distributed", entry="main")
 
@@ -63,11 +64,11 @@ def _constant_weight_module():
                 callee="layer",
                 name="call",
             )
-            self.function("main", (), (call, ))
+            self.function("main", (), (call,))
             self.function(
                 "layer",
-                (parameter, ),
-                (local_weight, ),
+                (parameter,),
+                (local_weight,),
                 attrs={"reusable": True, "noinline": True},
             )
 
@@ -86,7 +87,7 @@ def test_constant_boundary_boxing_becomes_caller_sharded_view():
     assert parameter.type == _types()[2]
     adapter = rewritten.node_map[rewritten.node_map["call"].inputs[0]]
     assert adapter.op == "distributed.sharded_view"
-    assert adapter.inputs == ("weight.broadcast", )
+    assert adapter.inputs == ("weight.broadcast",)
     assert adapter.type == parameter.type
     assert not any(node.op == "distributed.boxing" for node in rewritten.nodes)
 
@@ -101,7 +102,6 @@ def test_mixed_parameter_uses_get_an_explicit_logical_restore():
     _, broadcast, split = _types()
 
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="ntt", stage="distributed", entry="main")
 
@@ -116,8 +116,8 @@ def test_mixed_parameter_uses_get_an_explicit_logical_restore():
                 callee="layer",
                 name="call",
             )
-            self.function("main", (value, ), (call, ))
-            self.function("layer", (parameter, ), (local, direct))
+            self.function("main", (value,), (call,))
+            self.function("layer", (parameter,), (local, direct))
 
     module = Graph().build()
     rewritten = propagate_post_auto_distributed_function_boundary_layouts(
@@ -130,6 +130,7 @@ def test_mixed_parameter_uses_get_an_explicit_logical_restore():
     assert "local" not in rewritten.node_map
     direct = rewritten.node_map["direct"]
     restore = rewritten.node_map[direct.inputs[0]]
-    assert restore.op in {"distributed.boxing", "distributed.sharded_view"}
+    assert restore.op in {
+        "distributed.boxing", "distributed.sharded_view"}
     assert restore.type == broadcast
-    assert restore.inputs == ("layer_value", )
+    assert restore.inputs == ("layer_value",)

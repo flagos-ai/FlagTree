@@ -5,7 +5,8 @@ from copy import deepcopy
 from dataclasses import replace
 
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
-    _bind_transfer_pipeline_parameters, )
+    _bind_transfer_pipeline_parameters,
+)
 from triton.flagmega.codegen.triton.pipeline_source import (
     _Context,
     _PipelineSourceBuilder,
@@ -56,7 +57,9 @@ def _replace_pipeline_event_arguments(events, role, endpoints):
         event["role"] = role
 
 
-def test_multiple_channels_bundled_fields_and_consumer_workspace_render(compile_pipeline_module, ):
+def test_multiple_channels_bundled_fields_and_consumer_workspace_render(
+    compile_pipeline_module,
+):
     module = compile_pipeline_module(reusable=False)
     package = describe_tir_package(module)
     call = _pipeline_call(module)
@@ -66,12 +69,15 @@ def test_multiple_channels_bundled_fields_and_consumer_workspace_render(compile_
         ("key_stage", "projection_left", "projection_right", "scratch"),
     )
 
-    encoded = deepcopy(next(value for value in package["render_calls"] if value["call"] == call.call_id))
+    encoded = deepcopy(next(
+        value for value in package["render_calls"]
+        if value["call"] == call.call_id
+    ))
     workspace_abi = []
     for original, actual in zip(
-        (encoded["shared_workspaces"][0], ) * len(workspaces),
-            workspaces,
-            strict=True,
+        (encoded["shared_workspaces"][0],) * len(workspaces),
+        workspaces,
+        strict=True,
     ):
         value = dict(original)
         value.update({
@@ -97,11 +103,10 @@ def test_multiple_channels_bundled_fields_and_consumer_workspace_render(compile_
             },
         ],
         "consumer_shared_workspace_indices": [3],
-        "auxiliary_consumer":
-        None,
+        "auxiliary_consumer": None,
     }
     encoded["pipeline_channel_field_names"] = {
-        "key": ("weight", ),
+        "key": ("weight",),
         "projection": ("left", "right"),
     }
     _bind_transfer_pipeline_parameters(encoded, encoded)
@@ -122,18 +127,17 @@ def test_multiple_channels_bundled_fields_and_consumer_workspace_render(compile_
     )
 
     assert [value["name"] for value in plan["channels"]] == [
-        "key",
-        "projection",
+        "key", "projection",
     ]
-    assert [field["name"] for field in plan["channels"][1]["fields"]] == ["left", "right"]
+    assert [
+        field["name"]
+        for field in plan["channels"][1]["fields"]
+    ] == ["left", "right"]
     assert [value["name"] for value in plan["consumer_workspaces"]] == [
         "scratch",
     ]
     assert [value["offset_bytes"] for value in plan["workspaces"]] == [
-        0,
-        8192,
-        16384,
-        24576,
+        0, 8192, 16384, 24576,
     ]
 
     rendered = deepcopy(package)
@@ -143,7 +147,9 @@ def test_multiple_channels_bundled_fields_and_consumer_workspace_render(compile_
         *(channel["reader_name"] for channel in plan["channels"]),
         *(value["variable"] for value in plan["consumer_workspaces"]),
     ]
-    producer_endpoints = [channel["writer_name"] for channel in plan["channels"]]
+    producer_endpoints = [
+        channel["writer_name"] for channel in plan["channels"]
+    ]
     schedule["consumer_endpoints"] = [
         *consumer_endpoints,
         *(value["writer_name"] for value in schedule["handoffs"]),
@@ -153,21 +159,37 @@ def test_multiple_channels_bundled_fields_and_consumer_workspace_render(compile_
         *(value["reader_name"] for value in schedule["handoffs"]),
     ]
     schedule["shared_arena_nbytes"] = 32768
-    _replace_pipeline_event_arguments(schedule["consumer_events"], "consumer", consumer_endpoints)
-    _replace_pipeline_event_arguments(schedule["producer_events"], "producer", producer_endpoints)
-    wrapper = next(value for value in rendered["render_calls"] if value["call"] == call.call_id)
+    _replace_pipeline_event_arguments(
+        schedule["consumer_events"], "consumer", consumer_endpoints
+    )
+    _replace_pipeline_event_arguments(
+        schedule["producer_events"], "producer", producer_endpoints
+    )
+    wrapper = next(
+        value for value in rendered["render_calls"]
+        if value["call"] == call.call_id
+    )
     for key in (
-            "pipeline_channels",
-            "pipeline_consumer_workspaces",
-            "pipeline_consumer_parameters",
-            "pipeline_producer_parameters",
+        "pipeline_channels",
+        "pipeline_consumer_workspaces",
+        "pipeline_consumer_parameters",
+        "pipeline_producer_parameters",
     ):
         wrapper[key] = encoded[key]
 
     source = render_tir_package(rendered, "unit")
     compile(source, "pipeline.py", "exec")
     assert source.count("capacity=2,\n        scope=\"cta\"") == 2
-    assert (f"weight={plan['channels'][0]['fields'][0]['workspace']['variable']}" in source)
-    assert (f"left={plan['channels'][1]['fields'][0]['workspace']['variable']}" in source)
-    assert (f"right={plan['channels'][1]['fields'][1]['workspace']['variable']}" in source)
+    assert (
+        f"weight={plan['channels'][0]['fields'][0]['workspace']['variable']}"
+        in source
+    )
+    assert (
+        f"left={plan['channels'][1]['fields'][0]['workspace']['variable']}"
+        in source
+    )
+    assert (
+        f"right={plan['channels'][1]['fields'][1]['workspace']['variable']}"
+        in source
+    )
     assert plan["consumer_workspaces"][0]["variable"] in source

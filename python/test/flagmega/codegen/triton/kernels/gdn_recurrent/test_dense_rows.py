@@ -15,9 +15,9 @@ def test_dense_projection_has_exact_dyadic_results(tmp_path, value_tile, k, tile
         pytest.skip("CUDA required")
     kernel, _ = build_projection_kernel(tmp_path, value_tile)
     generator = torch.Generator().manual_seed(2217)
-    source = (torch.randint(-8, 9, (k, ), generator=generator) / 16).bfloat16().cuda()
+    source = (torch.randint(-8, 9, (k,), generator=generator) / 16).bfloat16().cuda()
     weight = (torch.randint(-8, 9, (4, k), generator=generator) / 64).bfloat16().cuda()
-    rows = torch.full((value_tile, ), 2, dtype=torch.int64, device="cuda")
+    rows = torch.full((value_tile,), 2, dtype=torch.int64, device="cuda")
     active = torch.ones(value_tile, dtype=torch.bool, device="cuda")
     if case == "inactive_first":
         rows[0] = 0x7000000000000000  # Never dereference an inactive row.
@@ -30,7 +30,7 @@ def test_dense_projection_has_exact_dyadic_results(tmp_path, value_tile, k, tile
     output = torch.empty(value_tile, dtype=torch.float32, device="cuda")
     projections = (weight.float() @ source.float()).bfloat16().float()
     expected = torch.where(active, projections[rows.clamp(0, 3)], 0.0)
-    for uniform in (False, True) if case != "mixed" else (False, ):
+    for uniform in (False, True) if case != "mixed" else (False,):
         output.fill_(float("nan"))
-        kernel[(1, )](source, weight, rows, active, output, k, tile_k, value_tile, uniform, num_warps=8)
+        kernel[(1,)](source, weight, rows, active, output, k, tile_k, value_tile, uniform, num_warps=8)
         torch.testing.assert_close(output, expected, rtol=0, atol=0)

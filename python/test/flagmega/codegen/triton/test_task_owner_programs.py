@@ -14,8 +14,7 @@ from triton.flagmega.codegen.triton.tir_package import describe_tir_package
 from triton.flagmega.errors import ArtifactError, CodegenError
 from triton.flagmega.runtime import load
 
-_spec = importlib.util.spec_from_file_location(
-    "_task_owner_down_graph",
+_spec = importlib.util.spec_from_file_location("_task_owner_down_graph",
     Path(__file__).with_name("kernels") / "sparse_experts/test_down_output_cooperation.py")
 _graphs = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_graphs)
@@ -23,20 +22,15 @@ compile_graph, graph = _graphs.compile_graph, _graphs.graph
 
 
 def partition(module, tasks=4, *, grid=512, tile=64):
-    definitions = tuple(
-        replace(
-            d, dispatch=replace(
-                d.dispatch, microkernel=replace(
-                    d.dispatch.microkernel,
-                    parameters={**d.dispatch.microkernel.parameters, "tasks_per_owner": tasks, "output_tile_n": tile})))
-        for d in module.kernel_definitions)
+    definitions = tuple(replace(d, dispatch=replace(d.dispatch, microkernel=replace(
+        d.dispatch.microkernel, parameters={**d.dispatch.microkernel.parameters,
+                                           "tasks_per_owner": tasks, "output_tile_n": tile})))
+                        for d in module.kernel_definitions)
     calls = tuple(n.id for n in module.nodes if n.op == "tir.call")
     programs = [dict(symbol="down", calls=calls, num_warps=8, grid=[grid, 1, 1], tasks_per_owner=tasks)]
-    return replace(
-        module, kernel_definitions=definitions, metadata={
-            **module.metadata, "kernel_program_partition": programs, "codegen_package_plan":
-            {**module.metadata["codegen_package_plan"], "programs": programs}
-        })
+    return replace(module, kernel_definitions=definitions, metadata={**module.metadata,
+        "kernel_program_partition": programs,
+        "codegen_package_plan": {**module.metadata["codegen_package_plan"], "programs": programs}})
 
 
 @pytest.fixture(scope="module")
@@ -50,15 +44,15 @@ def test_tasks_roundtrip_with_complete_nonoverlapping_writes(tmp_path, compiled)
     reloaded = fm.load_module(fm.emit_module(module, tmp_path / "final.py"))
     package = render_triton_package(reloaded, tmp_path / "source")
     assert package["kernels"][0]["task_owner_partition"] == {
-        "tasks_per_owner": 4, "owner_count": 128, "order": "owner-then-task"
-    }
+        "tasks_per_owner": 4, "owner_count": 128, "order": "owner-then-task"}
     assert package["kernels"][0]["grid"] == [512, 1, 1]
     text = (tmp_path / "source/generated_kernels.py").read_text()
     ast.parse(text)
     assert "('block_task', 4)" in text
     assert "block_index = block_index * 4 + _flagmega_task_index" in text
     assert "tl.range(_flagmega_task_index * 64, (_flagmega_task_index + 1) * 64, 64)" in text
-    writes = [(physical // 4, (physical % 4) * 64 + column) for physical in range(512) for column in range(64)]
+    writes = [(physical // 4, (physical % 4) * 64 + column)
+              for physical in range(512) for column in range(64)]
     assert len(writes) == len(set(writes)) == 128 * 256
     assert set(writes) == {(owner, column) for owner in range(128) for column in range(256)}
     old_binding = describe_tir_package(compiled)["runtime_binding"]
@@ -85,11 +79,8 @@ def test_runtime_reconstructs_owner_partition(tmp_path, compiled):
 def test_rejects_callee_task_count_without_physical_tasks(compiled):
     module = partition(compiled)
     programs = [dict(p, tasks_per_owner=1, grid=[128, 1, 1]) for p in module.metadata["kernel_program_partition"]]
-    module = replace(
-        module, metadata={
-            **module.metadata, "kernel_program_partition": programs, "codegen_package_plan":
-            {**module.metadata["codegen_package_plan"], "programs": programs}
-        })
+    module = replace(module, metadata={**module.metadata, "kernel_program_partition": programs,
+        "codegen_package_plan": {**module.metadata["codegen_package_plan"], "programs": programs}})
     with pytest.raises(CodegenError, match="task count"):
         describe_tir_package(module)
 
@@ -124,7 +115,7 @@ def test_device_tasks_preserve_packed_output_and_guards(tmp_path, compiled):
                 shape = tuple(d.fixed_value for d in kind.shape) + tuple(getattr(kind.dtype, "lanes", ()))
                 dtype = getattr(torch, getattr(kind.dtype, "elem_type", kind.dtype).value)
                 if spec["role"] == "result":
-                    storage = torch.full((prod(shape) + 32, ), 128, dtype=dtype, device="cuda")
+                    storage = torch.full((prod(shape) + 32,), 128, dtype=dtype, device="cuda")
                     guards.append(storage)
                     outputs.append(storage[16:-16].reshape(shape))
                 elif name not in values:
@@ -137,7 +128,7 @@ def test_device_tasks_preserve_packed_output_and_guards(tmp_path, compiled):
                 elif name == "down_weight":
                     value.copy_((torch.randn(value.shape, generator=generator, device="cuda") * .125).to(value.dtype))
                 elif "scale" in name:
-                    value.copy_(2.**torch.randint(-3, 3, value.shape, generator=generator, device="cuda").float())
+                    value.copy_(2. ** torch.randint(-3, 3, value.shape, generator=generator, device="cuda").float())
                 else:
                     value.copy_(torch.randn(value.shape, generator=generator, device="cuda").to(value.dtype))
             if mutation == 4:

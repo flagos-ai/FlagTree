@@ -13,13 +13,17 @@ from triton.flagmega.codegen.triton.microkernels import (
 )
 
 
-def semantic_packed_qkv_module(*, op: str = "ntt.packed_qkv_parallel_linear_fused_rhs") -> fm.IRModule:
+def semantic_packed_qkv_module(
+    *, op: str = "ntt.packed_qkv_parallel_linear_fused_rhs"
+) -> fm.IRModule:
     input_type = fm.tensor_type("bfloat16", (1, 2048))
-    weight_type = fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8, 2, 8)), (128, 32))
+    weight_type = fm.tensor_type(
+        fm.VectorType(fm.DType.BFLOAT16, (8, 2, 8)), (128, 32)
+    )
     output_types = (
-        fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8, )), (1, 256)),
-        fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8, )), (1, 128)),
-        fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8, )), (1, 128)),
+        fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8,)), (1, 256)),
+        fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8,)), (1, 128)),
+        fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8,)), (1, 128)),
     )
     outputs = ("q_output", "k_output", "v_output")
     dispatch = fm.T.kernel_dispatch(
@@ -36,7 +40,9 @@ def semantic_packed_qkv_module(*, op: str = "ntt.packed_qkv_parallel_linear_fuse
     )
     parameters = (
         fm.T.prim_parameter("input", input_type, fm.T.PrimParameterRole.INPUT),
-        fm.T.prim_parameter("fused_weight", weight_type, fm.T.PrimParameterRole.INPUT),
+        fm.T.prim_parameter(
+            "fused_weight", weight_type, fm.T.PrimParameterRole.INPUT
+        ),
         *(fm.T.prim_parameter(name, value_type, fm.T.PrimParameterRole.OUTPUT)
           for name, value_type in zip(outputs, output_types)),
     )
@@ -44,11 +50,11 @@ def semantic_packed_qkv_module(*, op: str = "ntt.packed_qkv_parallel_linear_fuse
         "packed_qkv",
         "triton",
         parameters,
-        fm.T.sequential((dispatch, )),
-        fm.T.return_(
-            tuple(
-                fm.T.return_binding(fm.T.value_ref(name, value_type), name)
-                for name, value_type in zip(outputs, output_types))),
+        fm.T.sequential((dispatch,)),
+        fm.T.return_(tuple(
+            fm.T.return_binding(fm.T.value_ref(name, value_type), name)
+            for name, value_type in zip(outputs, output_types)
+        )),
     )
     builder = fm.IRBuilder(dialect="semantic_tir", stage="tir_canonicalized")
     source = builder.var("source", input_type, id="source")
@@ -67,7 +73,7 @@ def semantic_packed_qkv_module(*, op: str = "ntt.packed_qkv_parallel_linear_fuse
         id="result",
         attrs={"callee": function.name},
     )
-    builder.function("main", (source, ), (result, ))
+    builder.function("main", (source,), (result,))
     return fm.verify_module(builder.build(entry="main"))
 
 
@@ -87,7 +93,7 @@ def implementation_model() -> TritonImplementationModel:
             "pipeline",
             {"block_n": 64, "block_k": 128, "stages": 2},
             {"input_kind": "fused_rhs", "rhs_layout": "k_major"},
-            requires=("async_matrix", ),
+            requires=("async_matrix",),
         ),
     )
     return TritonImplementationModel(
@@ -98,8 +104,7 @@ def implementation_model() -> TritonImplementationModel:
 
 
 class StubCapability:
-
-    def __init__(self, supported=("async_matrix", )) -> None:
+    def __init__(self, supported=("async_matrix",)) -> None:
         self.supported = frozenset(supported)
 
     def supports(self, requirements) -> bool:
@@ -109,13 +114,17 @@ class StubCapability:
 class StubTarget:
     policy_version = "test-target/v1"
 
-    def __init__(self, *, supported=("async_matrix", )) -> None:
+    def __init__(self, *, supported=("async_matrix",)) -> None:
         self.capability = StubCapability(supported)
         self.triton_implementation_model = implementation_model()
         self.selection_policy = CapabilitySelectionPolicy()
-        self.microkernel_selection_policy = TritonMicroKernelSelectionPolicy(default_triton_microkernel_registry())
+        self.microkernel_selection_policy = TritonMicroKernelSelectionPolicy(
+            default_triton_microkernel_registry()
+        )
 
-    def add_default_selections(self, module, points, rationale, *, policy_version=None):
+    def add_default_selections(
+        self, module, points, rationale, *, policy_version=None
+    ):
         return self.selection_policy.add_defaults(
             module,
             points,
@@ -130,8 +139,8 @@ class StubTarget:
 
     def plan_storage_alignments(self, module):
         from triton.flagmega.passes.tir.plan_storage_alignments import plan_storage_alignments
-        return plan_storage_alignments(module, self.microkernel_selection_policy.registry,
-                                       self.triton_implementation_model, capability=self.capability)
+        return plan_storage_alignments(module, self.microkernel_selection_policy.registry, self.triton_implementation_model,
+                                       capability=self.capability)
 
     def select_microkernels(self, module):
         return self.microkernel_selection_policy.apply(module, self)

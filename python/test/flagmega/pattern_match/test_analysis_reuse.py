@@ -15,9 +15,9 @@ def _module():
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
     tensor = fm.tensor_type("float32", (1, 8))
     value = builder.var("value", tensor, id="value")
-    activated = builder.call("math.silu", (value, ), tensor, id="activated")
+    activated = builder.call("math.silu", (value,), tensor, id="activated")
     output = builder.call("math.add", (activated, activated), tensor, id="output")
-    builder.function("main", (value, ), (output, ))
+    builder.function("main", (value,), (output,))
     return builder.build(entry="main")
 
 
@@ -64,7 +64,7 @@ def test_changed_outputs_and_equal_reloaded_modules_get_fresh_users(monkeypatch)
     node = module.node_map["activated"]
     assert pm.try_match_root(node, pattern, module)
     # Function output edges count separately; repeated SSA inputs count once.
-    edited = replace(module, functions=(replace(module.functions[0], outputs=("output", "activated")), ))
+    edited = replace(module, functions=(replace(module.functions[0], outputs=("output", "activated")),))
     assert pm.try_match_root(node, pattern, edited) is None
     loaded = fm.IRModule.from_data(module.semantic_data())
     assert pm.try_match_root(loaded.node_map[node.id], pattern, loaded)

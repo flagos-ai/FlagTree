@@ -32,13 +32,19 @@ def test_cli_inspect_serializes_frozen_distributed_metadata(tmp_path, capsys):
 
 def test_cli_can_edit_proposal_then_apply_distribution(tmp_path, capsys):
     compiler = Compiler()
-    current = replace(packed_matmul_module(), stage="unused_functions_removed")
+    current = replace(
+        packed_matmul_module(), stage="unused_functions_removed"
+    )
     proposed = compiler.run_stage(
         current,
         "propose-distribution",
         output=tmp_path / "distribution_candidates.py",
     ).module
-    point = next(point for point in proposed.selection_points if point.id == "distribution.output")
+    point = next(
+        point
+        for point in proposed.selection_points
+        if point.id == "distribution.output"
+    )
     plan = tmp_path / "selection.py"
 
     assert main([
@@ -71,4 +77,6 @@ def test_cli_can_edit_proposal_then_apply_distribution(tmp_path, capsys):
 
     assert result["module"]["stage"] == "distributed"
     assert distributed.selection_map[point.id].origin == "agent"
-    assert any(node.op.startswith("distributed.") for node in distributed.nodes)
+    assert any(
+        node.op.startswith("distributed.") for node in distributed.nodes
+    )

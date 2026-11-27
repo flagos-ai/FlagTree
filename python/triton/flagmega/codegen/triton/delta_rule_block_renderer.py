@@ -113,14 +113,11 @@ def delta_rule_block_update_call(raw):
     if chunk_size is not None:
         fixed = _buffer(raw, "inputs", "fixed_state")
         rendered.update({
-            "fixed_state":
-            _pointer(fixed),
-            "chunk_blocks":
-            chunk_size // cshape[2],
+            "fixed_state": _pointer(fixed), "chunk_blocks": chunk_size // cshape[2],
             "chunks": (cshape[0] + chunk_size // cshape[2] - 1) // (chunk_size // cshape[2]),
-            "fixed_state_offset":
-            emit_local_scalar_offset(fixed["abi"],
-                                     ("_fm_chunk - 1", "_fm_head", "_fm_value_row[:, None]", "_fm_key_col[None, :]")),
+            "fixed_state_offset": emit_local_scalar_offset(fixed["abi"], (
+                "_fm_chunk - 1", "_fm_head",
+                "_fm_value_row[:, None]", "_fm_key_col[None, :]")),
         })
     return rendered
 
@@ -140,22 +137,15 @@ def state_matrix_access(raw, attrs, heads_type, *, head, row, column):
     spec = state_field_layout(_tensor_type(state["abi"]), attrs, tensor, tensor)
     coordinate = {"layer": "0", "head": head, "value": row, "key": column}
     values = [coordinate[axis] for axis in spec.axes]
-    remaining = [
-        prod(lane
-             for position, lane in zip(spec.vector_axes, spec.lanes)
-             if position == axis)
-        for axis in range(len(spec.axes))
-    ]
+    remaining = [prod(lane for position, lane in zip(spec.vector_axes, spec.lanes) if position == axis)
+                 for axis in range(len(spec.axes))]
     lanes = []
     for i, (axis, lane) in enumerate(zip(spec.vector_axes, spec.lanes)):
         remaining[axis] //= lane
         lanes.append(f"((({values[axis]}) // {remaining[axis]}) % {lane}) * {prod(spec.lanes[i + 1:])}")
-    packed = [
-        f"({value}) // {prod(lane for position, lane in zip(spec.vector_axes, spec.lanes) if position == axis)}"
-        for axis, value in enumerate(values)
-    ]
-    return _pointer(state), emit_local_scalar_offset(state["abi"], packed,
-                                                     lane_coordinate=" + ".join(lanes) if lanes else None)
+    packed = [f"({value}) // {prod(lane for position, lane in zip(spec.vector_axes, spec.lanes) if position == axis)}"
+              for axis, value in enumerate(values)]
+    return _pointer(state), emit_local_scalar_offset(state["abi"], packed, lane_coordinate=" + ".join(lanes) if lanes else None)
 
 
 def _replicated_result_pointers(binding):

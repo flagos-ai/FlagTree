@@ -68,28 +68,32 @@ class MatMulNormStats(OpDefinition):
             })
         elif rhs_layout == "k_major":
             if bool(attrs["transpose_a"]) or bool(attrs["transpose_b"]):
-                raise IRSchemaError("Packed MatMulNormStats has fixed lhs @ unpack(rhs) semantics; "
-                                    "transpose flags must be false.")
+                raise IRSchemaError(
+                    "Packed MatMulNormStats has fixed lhs @ unpack(rhs) semantics; "
+                    "transpose flags must be false."
+                )
             matmul_attrs = {"transpose_a": False, "transpose_b": False}
         else:
-            raise IRSchemaError("MatMulNormStats rhs_layout must be None or 'k_major'.")
+            raise IRSchemaError(
+                "MatMulNormStats rhs_layout must be None or 'k_major'."
+            )
         axis = attrs["axis"]
         if isinstance(axis, bool) or not isinstance(axis, int):
             raise IRSchemaError("MatMulNormStats axis must be an integer.")
         casts = attrs["addend_cast_dtypes"]
-        if not isinstance(casts, (tuple, list)) or any(value not in ("bfloat16", "float32") for value in casts):
+        if not isinstance(casts, (tuple, list)) or any(
+            value not in ("bfloat16", "float32") for value in casts
+        ):
             raise IRSchemaError("MatMulNormStats addend_cast_dtypes must be a BF16/FP32 conversion sequence.")
-        return normalize_output_data_type(
-            normalize_reduction_order(
-                {
-                    **({"addend_cast_dtypes": tuple(DType(value).value for value in casts)} if casts else {}),
-                    **matmul_attrs,
-                    "rhs_layout": rhs_layout,
-                    "axis": axis,
-                    "use_mean": bool(attrs["use_mean"]),
-                    "output_data_type": attrs.get("output_data_type"),
-                    "reduction_order": attrs["reduction_order"],
-                }, allow_split_k4=True))
+        return normalize_output_data_type(normalize_reduction_order({
+            **({"addend_cast_dtypes": tuple(DType(value).value for value in casts)} if casts else {}),
+            **matmul_attrs,
+            "rhs_layout": rhs_layout,
+            "axis": axis,
+            "use_mean": bool(attrs["use_mean"]),
+            "output_data_type": attrs.get("output_data_type"),
+            "reduction_order": attrs["reduction_order"],
+        }, allow_split_k4=True))
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -113,14 +117,17 @@ class MatMulNormStats(OpDefinition):
                 "rhs_layout": rhs_layout,
                 "reduction_order": attrs.get("reduction_order", "relaxed"),
             }
-            matmul_type = PackedMatMul.infer_type((lhs, rhs, none, none), partial_attrs)
+            matmul_type = PackedMatMul.infer_type(
+                (lhs, rhs, none, none), partial_attrs
+            )
             if promoted_projection_type(matmul_type, addend.type) != addend.type:
-                raise IRSchemaError("Packed MatMulNormStats requires matching projection and "
-                                    "addend local shards; keep layout publication explicit.")
+                raise IRSchemaError(
+                    "Packed MatMulNormStats requires matching projection and "
+                    "addend local shards; keep layout publication explicit."
+                )
         promoted_type = promoted_projection_type(matmul_type, addend.type)
         if promoted_type is None:
-            raise IRSchemaError(
-                "MatMulNormStats requires matching projection/addend or a lossless BF16-to-FP32 promotion.")
+            raise IRSchemaError("MatMulNormStats requires matching projection/addend or a lossless BF16-to-FP32 promotion.")
         partial = Node(
             "<matmul_partial>",
             "builtin.var",
@@ -147,11 +154,15 @@ class MatMulNormStats(OpDefinition):
         else:
             rhs_type = tensor_of(context.types[cls.rhs.read(node.inputs)])
             if not isinstance(rhs_type.dtype, VectorType):
-                raise IRSchemaError("Packed MatMulNormStats evaluation requires a typed-vector RHS.")
+                raise IRSchemaError(
+                    "Packed MatMulNormStats evaluation requires a typed-vector RHS."
+                )
             n_vector, k_pack, k_vector = rhs_type.dtype.lanes
             k_groups, n_groups = rhs_type.shape
             if not k_groups.is_fixed or not n_groups.is_fixed:
-                raise IRSchemaError("Packed MatMulNormStats evaluation requires fixed RHS dimensions.")
+                raise IRSchemaError(
+                    "Packed MatMulNormStats evaluation requires fixed RHS dimensions."
+                )
             logical_rhs = rhs.reshape(
                 k_groups.fixed_value,
                 n_groups.fixed_value,
@@ -190,7 +201,7 @@ class MatMulNormStats(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         if not isinstance(node.type, TupleType):
-            return OpCost(notes=("invalid-matmul-norm-stats-type", ))
+            return OpCost(notes=("invalid-matmul-norm-stats-type",))
         value = tensor_of(node.type.fields[0])
         stats = tensor_of(node.type.fields[1])
         return OpCost(
@@ -200,7 +211,7 @@ class MatMulNormStats(OpDefinition):
             communication_bytes=None,
             synchronizations=None,
             model="flagmega.matmul-norm-stats/v1",
-            notes=("matmul-materialize-residual-add-norm-stats", ),
+            notes=("matmul-materialize-residual-add-norm-stats",),
         )
 
     @classmethod

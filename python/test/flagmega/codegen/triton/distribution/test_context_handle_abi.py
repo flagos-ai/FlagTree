@@ -27,8 +27,8 @@ def _compile_context(package_path, memory, communication, mode_token=None):
     spec.loader.exec_module(generated)
     values = {}
     for arg in package['runtime_binding']['arguments']:
-        values[arg['name']] = torch.empty(256, dtype=_torch_dtype(torch, package['test_argument_dtypes'][arg['name']]),
-                                          device='cuda')
+        values[arg['name']] = torch.empty(256, dtype=_torch_dtype(
+            torch, package['test_argument_dtypes'][arg['name']]), device='cuda')
     for pool in package['runtime_binding']['pools']:
         values[pool['name']] = torch.empty(256, dtype=torch.uint8, device='cuda')
     DistributedRtContext._reset()
@@ -39,15 +39,13 @@ def _compile_context(package_path, memory, communication, mode_token=None):
                                      if mode_token is None else bool(int(mode_token)))
     arguments = tuple(values[name] for name in package['signature_arguments'])
     contract = ResourceContract(compute_num_warps=package['num_warps'], resident_blocks_per_sm=1)
-    kernel = getattr(generated, package['symbol']).run(*arguments, grid=tuple(package['grid']), warmup=True,
-                                                       **compilation_options(contract))
+    kernel = getattr(generated, package['symbol']).run(
+        *arguments, grid=tuple(package['grid']), warmup=True, **compilation_options(contract))
     address_literals = any(str(value) in kernel.asm['ptx'] for value in (int(memory), int(communication)))
     # The fake handles are compilation inputs only: never launch this kernel.
-    print(
-        json.dumps({
-            'kernel_hash': kernel.hash, 'constants': [int(memory), int(communication)], 'address_literals':
-            address_literals, 'lite_mode': DistributedRtContext().is_lite_mode
-        }), flush=True)
+    print(json.dumps({'kernel_hash': kernel.hash, 'constants': [int(memory), int(communication)],
+                      'address_literals': address_literals,
+                      'lite_mode': DistributedRtContext().is_lite_mode}), flush=True)
 
 
 def _package(tmp_path):
@@ -55,15 +53,14 @@ def _package(tmp_path):
     from triton.flagmega.ir import verify_buffer_plan
 
     from python.test.flagmega.codegen.triton.kernels.norm_apply.test_cross_chip_stats_runtime import (
-        cross_chip_norm_module, )
+        cross_chip_norm_module,
+    )
 
     module = cross_chip_norm_module()
     package = render_triton_package(module, tmp_path)
     plan = verify_buffer_plan(module)
-    package['test_argument_dtypes'] = {
-        arg['name']: plan.buffer_map[arg['buffer']].dtype.value
-        for arg in package['runtime_binding']['arguments']
-    }
+    package['test_argument_dtypes'] = {arg['name']: plan.buffer_map[arg['buffer']].dtype.value
+                                      for arg in package['runtime_binding']['arguments']}
     (tmp_path / 'codegen.json').write_text(json.dumps(package) + '\n')
     return package
 
@@ -86,13 +83,10 @@ def test_context_addresses_do_not_recompile_the_same_generated_kernel(tmp_path):
     _package(tmp_path)
     hashes = []
     for base in (0x7F1000000000, 0x7F2000000000):
-        result = subprocess.run(
-            [sys.executable,
-             str(Path(__file__).resolve()),
-             str(tmp_path),
-             str(base + 0x1000),
-             str(base + 0xE00)], capture_output=True, text=True, timeout=120, check=False,
-            env=dict(os.environ, FLAGTREE_LITE_DIST='0'))
+        result = subprocess.run([sys.executable, str(Path(__file__).resolve()), str(tmp_path),
+                                 str(base + 0x1000), str(base + 0xE00)],
+                                capture_output=True, text=True, timeout=120, check=False,
+                                env=dict(os.environ, FLAGTREE_LITE_DIST='0'))
         assert result.returncode == 0, result.stdout + result.stderr
         report = json.loads(result.stdout.splitlines()[-1])
         assert not report['address_literals'], 'Process addresses leaked into PTX constants'
@@ -110,13 +104,9 @@ def test_injected_context_mode_has_a_distinct_compilation_identity(tmp_path):
         # A compile-only control for the ABI discriminator. Keep the backend
         # fixed so unrelated injected-parameter passes cannot hide a missing
         # discriminator in the generated signature. Never execute fake handles.
-        result = subprocess.run([
-            sys.executable,
-            str(Path(__file__).resolve()),
-            str(tmp_path),
-            str(0x7F1000001000),
-            str(0x7F1000000E00), mode
-        ], capture_output=True, text=True, timeout=120, check=False,
+        result = subprocess.run([sys.executable, str(Path(__file__).resolve()), str(tmp_path),
+                                 str(0x7F1000001000), str(0x7F1000000E00), mode],
+                                capture_output=True, text=True, timeout=120, check=False,
                                 env=dict(os.environ, FLAGTREE_LITE_DIST='0',
                                          TRITON_CACHE_DIR=str(tmp_path / f'cache-{mode}')))
         assert result.returncode == 0, result.stdout + result.stderr
@@ -124,7 +114,8 @@ def test_injected_context_mode_has_a_distinct_compilation_identity(tmp_path):
     assert reports[0]['kernel_hash'] != reports[1]['kernel_hash'], reports
 
 
-@pytest.mark.parametrize('names', [('device_mem_ptr', 'device_comm_ptr'), ('device_context_mode', 'device_dptr')])
+@pytest.mark.parametrize('names', [('device_mem_ptr', 'device_comm_ptr'),
+                                  ('device_context_mode', 'device_dptr')])
 def test_user_tensor_names_cannot_shadow_runtime_handles(tmp_path, names):
     from triton.flagmega import ir as fm
     from triton.flagmega.codegen.triton import render_triton_package
@@ -132,20 +123,18 @@ def test_user_tensor_names_cannot_shadow_runtime_handles(tmp_path, names):
 
     tensor = fm.tensor_type('bfloat16', (1, 512))
     mesh = fm.Placement((4, 1), 'cx', 'cb')
-    shard = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 128)), mesh)
+    shard = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 128)), mesh)
 
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input(names[0], tensor, id=names[0])
             y = self.input(names[1], tensor, id=names[1])
             a, b = (fm.F.distributed.boxing(value, shard) for value in (x, y))
             result = fm.F.distributed.boxing(fm.F.math.add(a, b), tensor)
-            self.function('main', (x, y), (result, ))
+            self.function('main', (x, y), (result,))
 
-    module = Compiler().compile(
-        Graph(dialect='distributed', stage='frozen_constants', entry='main',
-              metadata={'auto_distribution': {'placement': mesh.to_data()}}).build()).module
+    module = Compiler().compile(Graph(dialect='distributed', stage='frozen_constants', entry='main',
+                               metadata={'auto_distribution': {'placement': mesh.to_data()}}).build()).module
     package = render_triton_package(module, tmp_path)
     signature = package['signature_arguments']
     assert len(signature) == len(set(signature))
@@ -162,7 +151,8 @@ def test_host_descriptor_cannot_shadow_a_runtime_handle(tmp_path):
     from triton.flagmega.errors import CodegenError
 
     from python.test.flagmega.codegen.triton.kernels.norm_apply.test_cross_chip_stats_runtime import (
-        cross_chip_norm_module, )
+        cross_chip_norm_module,
+    )
     from python.test.flagmega.runtime.descriptors.helpers import single_spec
 
     module = cross_chip_norm_module()

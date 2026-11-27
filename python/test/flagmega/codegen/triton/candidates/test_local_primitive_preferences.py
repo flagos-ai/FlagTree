@@ -35,13 +35,13 @@ def test_concat_wide_tile_is_selected_only_for_an_extent_that_covers_it():
                                     {"indexing": "local"})
     local2048 = TritonImplementation("tir.concat.local2048", "concat", "local", {"elements_per_program": 2048},
                                      {"indexing": "local"})
-    model = TritonImplementationModel((local128, local2048), {"concat": (local2048.id, local128.id)},
-                                      name="concat-tiles")
+    model = TritonImplementationModel(
+        (local128, local2048), {"concat": (local2048.id, local128.id)}, name="concat-tiles")
 
     def proposal(shape):
         module = concat_module(((1, shape), (1, shape)))
         context = TritonCandidateContext(module, None, {}, {}, {}, frozenset(), False, model)
         return TensorTransformCandidateProvider().propose(module.node_map["output"], context)
 
-    assert tuple(candidate.id for candidate in proposal(32).candidates) == (local128.id, )
+    assert tuple(candidate.id for candidate in proposal(32).candidates) == (local128.id,)
     assert tuple(candidate.id for candidate in proposal(1024).candidates) == (local128.id, local2048.id)

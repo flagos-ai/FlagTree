@@ -18,25 +18,18 @@ from triton.flagmega.artifacts.manifest import resolve_artifact_path
 from triton.flagmega.artifacts.program_sources import program_source_records
 from triton.flagmega.errors import ArtifactError, RuntimeContractError
 
+
 _SEAL = object()
 _SCHEMA = "flagmega.diagnostic-resource-contract/v1"
 _RESOURCE_FIELDS = {
-    "registers_per_thread",
-    "physical_num_warps",
-    "block_threads",
-    "dynamic_shared_memory_bytes",
-    "grid",
-    "stack_frame_bytes",
-    "local_memory_bytes",
-    "spill_store_bytes",
-    "spill_load_bytes",
-    "spill_bytes",
-    "global_scratch_bytes_per_CTA",
-    "global_scratch_alignment",
-    "profile_scratch_bytes_per_CTA",
-    "profile_scratch_alignment",
+    "registers_per_thread", "physical_num_warps", "block_threads",
+    "dynamic_shared_memory_bytes", "grid", "stack_frame_bytes", "local_memory_bytes",
+    "spill_store_bytes", "spill_load_bytes", "spill_bytes",
+    "global_scratch_bytes_per_CTA", "global_scratch_alignment",
+    "profile_scratch_bytes_per_CTA", "profile_scratch_alignment",
 }
-_TRACE_FIELDS = {"schema", "config_sha256", "dictionary_sha256", "config_file_sha256", "dictionary_file_sha256"}
+_TRACE_FIELDS = {"schema", "config_sha256", "dictionary_sha256",
+                 "config_file_sha256", "dictionary_file_sha256"}
 
 
 def _error(message):
@@ -91,11 +84,9 @@ def _json(value):
 
 
 def _validate(data):
-    _object(
-        data, {
-            "schema", "execution_purpose", "accepted_timing_eligible", "artifact_identity", "base_semantic_hash",
-            "target", "codegen_backend", "trace_identity", "entries", "evidence_refs", "approval_provenance"
-        }, "top-level")
+    _object(data, {"schema", "execution_purpose", "accepted_timing_eligible", "artifact_identity",
+                   "base_semantic_hash", "target", "codegen_backend", "trace_identity", "entries",
+                   "evidence_refs", "approval_provenance"}, "top-level")
     if (data["schema"] != _SCHEMA or data["execution_purpose"] != "diagnostic_only"
             or data["accepted_timing_eligible"] is not False):
         _error("unsupported schema or execution purpose; diagnostics are timing-ineligible.")
@@ -113,11 +104,8 @@ def _validate(data):
         _error("requires complete entries.")
     names = set()
     for entry in entries:
-        _object(
-            entry, {
-                "symbol", "source_identity", "native_key", "native_cubin_identity", "native_metadata_identity",
-                "exact_resources"
-            }, "entry")
+        _object(entry, {"symbol", "source_identity", "native_key", "native_cubin_identity",
+                        "native_metadata_identity", "exact_resources"}, "entry")
         if not isinstance(entry["symbol"], str) or not entry["symbol"].isidentifier() or entry["symbol"] in names:
             _error("invalid or duplicated entry.")
         names.add(entry["symbol"])
@@ -129,8 +117,8 @@ def _validate(data):
         for field in _RESOURCE_FIELDS - {"grid"}:
             if type(resources[field]) is not int or resources[field] < 0:
                 _error("resource components must be nonnegative integers.")
-        for field in ("registers_per_thread", "physical_num_warps", "block_threads", "global_scratch_alignment",
-                      "profile_scratch_alignment"):
+        for field in ("registers_per_thread", "physical_num_warps", "block_threads",
+                      "global_scratch_alignment", "profile_scratch_alignment"):
             if resources[field] == 0:
                 _error("resource counts/alignments must be positive.")
         for field in ("global_scratch_alignment", "profile_scratch_alignment"):
@@ -146,9 +134,8 @@ def _validate(data):
     for value in data["evidence_refs"]:
         _pin(value)
     provenance = data["approval_provenance"]
-    _object(provenance,
-            {"resource_input_identity", "resource_input_key", "root_flow_identity", "plan_identity", "approval_refs"},
-            "approval provenance")
+    _object(provenance, {"resource_input_identity", "resource_input_key", "root_flow_identity",
+                         "plan_identity", "approval_refs"}, "approval provenance")
     for field in ("resource_input_identity", "root_flow_identity", "plan_identity"):
         _pin(provenance[field])
     if not isinstance(provenance["resource_input_key"], str) or not provenance["resource_input_key"]:
@@ -213,7 +200,8 @@ class DiagnosticResourceContract:
             _error("selected artifact differs from reviewed artifact.")
         if _json(data["artifact_identity"]) != manifest:
             _error("selected manifest differs from its exact bytes.")
-        if (manifest.get("semantic_hash") != data["base_semantic_hash"] or manifest.get("target") != data["target"]
+        if (manifest.get("semantic_hash") != data["base_semantic_hash"]
+                or manifest.get("target") != data["target"]
                 or manifest.get("codegen_backend", "triton") != data["codegen_backend"]):
             _error("artifact semantic/backend identity differs.")
         codegen = manifest.get("codegen", {})
@@ -221,7 +209,8 @@ class DiagnosticResourceContract:
             _error("unsupported diagnostic adapter or aliased entry.")
         trace = codegen.get("triton_trace", {})
         if (not isinstance(trace, dict) or not isinstance(trace.get("config"), dict)
-                or not isinstance(trace.get("dictionary"), dict) or trace.get("accepted_timing_eligible") is not False):
+                or not isinstance(trace.get("dictionary"), dict)
+                or trace.get("accepted_timing_eligible") is not False):
             _error("requires existing timing-ineligible typed diagnostics.")
         if {key: trace.get(key) for key in _TRACE_FIELDS} != data["trace_identity"]:
             _error("trace configuration/dictionary identity differs.")
@@ -276,13 +265,11 @@ class DiagnosticResourceContract:
         for entry, launch_spec in zip(data["entries"], launch_specs, strict=True):
             paths = [r["source"] for r in records if entry["symbol"] in r["symbols"]]
             if records and any(r["source_sha256"] != entry["source_identity"]["sha256"]
-                               for r in records
-                               if entry["symbol"] in r["symbols"]):
+                               for r in records if entry["symbol"] in r["symbols"]):
                 _error("entry source digest differs from declared program source.")
             if not records:
                 paths = [codegen.get("source", "")]
-            if len(paths) != 1 or resolve_artifact_path(root, paths[0]) != Path(
-                    entry["source_identity"]["path"]).resolve():
+            if len(paths) != 1 or resolve_artifact_path(root, paths[0]) != Path(entry["source_identity"]["path"]).resolve():
                 _error("entry source differs from selected package.")
             _read(entry["source_identity"])
             _read(entry["native_cubin_identity"])
@@ -292,16 +279,13 @@ class DiagnosticResourceContract:
             resources = entry["exact_resources"]
             if launch_spec.get("grid") != resources["grid"] or "launch_recipe" in launch_spec:
                 _error("diagnostic resource grid differs from the declared fixed launch.")
-            fields = {
-                "physical_num_warps": "num_warps", "dynamic_shared_memory_bytes": "shared", "stack_frame_bytes":
-                "ptxas_stack_frame_bytes", "spill_store_bytes": "ptxas_spill_store_bytes", "spill_load_bytes":
-                "ptxas_spill_load_bytes", "global_scratch_bytes_per_CTA": "global_scratch_size",
-                "global_scratch_alignment": "global_scratch_align", "profile_scratch_bytes_per_CTA":
-                "profile_scratch_size", "profile_scratch_alignment": "profile_scratch_align"
-            }
-            if any(
-                    type(native.get(field)) is not int or native[field] != resources[key]
-                    for key, field in fields.items()):
+            fields = {"physical_num_warps": "num_warps", "dynamic_shared_memory_bytes": "shared",
+                      "stack_frame_bytes": "ptxas_stack_frame_bytes", "spill_store_bytes": "ptxas_spill_store_bytes",
+                      "spill_load_bytes": "ptxas_spill_load_bytes", "global_scratch_bytes_per_CTA": "global_scratch_size",
+                      "global_scratch_alignment": "global_scratch_align", "profile_scratch_bytes_per_CTA": "profile_scratch_size",
+                      "profile_scratch_alignment": "profile_scratch_align"}
+            if any(type(native.get(field)) is not int or native[field] != resources[key]
+                   for key, field in fields.items()):
                 _error("reviewed native metadata/resource components disagree.")
             target = native.get("target", {})
             if (target != {"backend": "cuda", "arch": 90, "warp_size": 32}
@@ -313,8 +297,7 @@ class DiagnosticResourceContract:
             coverage = trace["config"]["ctas"] if census else trace["config"]["typed_ctas"]
             if coverage != (ctas if census else list(range(ctas))):
                 _error("recorder must cover the complete physical CTA domain.")
-            pins.extend(entry[field]
-                        for field in ("source_identity", "native_cubin_identity", "native_metadata_identity"))
+            pins.extend(entry[field] for field in ("source_identity", "native_cubin_identity", "native_metadata_identity"))
         _verify_provenance(data)
         provenance = data["approval_provenance"]
         pins.extend(data["evidence_refs"])
@@ -371,12 +354,12 @@ def _same_typed_value(actual, expected, *, types_only=False):
             return False
         if not types_only and actual.keys() != expected.keys():
             return False
-        return all(
-            _same_typed_value(actual[key], expected[key], types_only=types_only)
-            for key in actual.keys() & expected.keys())
+        return all(_same_typed_value(actual[key], expected[key], types_only=types_only)
+                   for key in actual.keys() & expected.keys())
     if isinstance(expected, list):
-        return ((types_only or len(actual) == len(expected)) and all(
-            _same_typed_value(value, reference, types_only=types_only) for value, reference in zip(actual, expected)))
+        return ((types_only or len(actual) == len(expected))
+                and all(_same_typed_value(value, reference, types_only=types_only)
+                        for value, reference in zip(actual, expected)))
     return types_only or actual == expected
 
 
@@ -412,8 +395,7 @@ class BoundDiagnosticEntry:
         if compiled.name != entry["symbol"] or getattr(compiled, "hash", None) != entry["native_key"]:
             raise RuntimeContractError("Diagnostic native entry/key identity differs.")
         cubin = getattr(compiled, "asm", {}).get("cubin")
-        if not isinstance(cubin,
-                          bytes) or hashlib.sha256(cubin).hexdigest() != entry["native_cubin_identity"]["sha256"]:
+        if not isinstance(cubin, bytes) or hashlib.sha256(cubin).hexdigest() != entry["native_cubin_identity"]["sha256"]:
             raise RuntimeContractError("Diagnostic actual cubin identity differs.")
         group = getattr(compiled, "metadata_group", {})
         metadata_path = group.get(entry["symbol"] + ".json")
@@ -441,7 +423,8 @@ class BoundDiagnosticEntry:
         target = expected.get("target", {})
         if target.get("backend") != "cuda" or target.get("arch") != 90 or target.get("warp_size") != 32:
             raise RuntimeContractError("Diagnostic native target differs.")
-        actual_resources = dict(resources, registers_per_thread=compiled.n_regs, physical_num_warps=metadata.num_warps,
+        actual_resources = dict(resources, registers_per_thread=compiled.n_regs,
+                                physical_num_warps=metadata.num_warps,
                                 block_threads=metadata.num_warps * target["warp_size"],
                                 dynamic_shared_memory_bytes=metadata.shared, grid=list(grid),
                                 global_scratch_bytes_per_CTA=getattr(metadata, "global_scratch_size", 0),

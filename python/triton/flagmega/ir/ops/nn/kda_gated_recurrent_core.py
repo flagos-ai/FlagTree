@@ -52,7 +52,8 @@ from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import DType
 
 
-@op_definition("nn.kda_gated_recurrent_core", namespace="nn", functional_name="kda_gated_recurrent_core",
+@op_definition("nn.kda_gated_recurrent_core", namespace="nn",
+               functional_name="kda_gated_recurrent_core",
                display_name="NN.KdaGatedRecurrentCore")
 class KdaGatedRecurrentCore(OpDefinition):
     """KDA with an in-kernel forget gate, beta and explicit query readout scale.
@@ -104,26 +105,22 @@ class KdaGatedRecurrentCore(OpDefinition):
             raise IRSchemaError("KdaGatedRecurrentCore epsilon must be positive.")
         bound = attrs["lower_bound"]
         if isinstance(bound, bool) or not isinstance(bound, (int, float)) or not bound < 0:
-            raise IRSchemaError("KdaGatedRecurrentCore lower_bound must be a negative number; the "
-                                "softplus gate variant is a different contract.")
-        return {
-            **attrs, "lower_bound": float(bound), "epsilon": float(epsilon), "query_scale":
-            _normalize_query_scale(attrs["query_scale"], "KdaGatedRecurrentCore"), "output_lanes":
-            _normalize_output_lanes(attrs["output_lanes"], "KdaGatedRecurrentCore")
-        }
+            raise IRSchemaError(
+                "KdaGatedRecurrentCore lower_bound must be a negative number; the "
+                "softplus gate variant is a different contract.")
+        return {**attrs, "lower_bound": float(bound), "epsilon": float(epsilon),
+                "query_scale": _normalize_query_scale(attrs["query_scale"], "KdaGatedRecurrentCore"),
+                "output_lanes": _normalize_output_lanes(attrs["output_lanes"], "KdaGatedRecurrentCore")}
 
     @classmethod
     def ir_attrs(cls, attrs):
-        return {
-            key: value
-            for key, value in attrs.items()
-            if (key != "output_lanes" or value) and (key != "query_scale" or value != 1.0) and (
-                key != "arithmetic" or value != "recurrent") and (key != "decay_input" or value != "rate")
-        }
+        return {key: value for key, value in attrs.items()
+                if (key != "output_lanes" or value) and (key != "query_scale" or value != 1.0)
+                and (key != "arithmetic" or value != "recurrent")
+                and (key != "decay_input" or value != "rate")}
 
     @classmethod
     def infer_type(cls, inputs, attrs):
-
         def extents(value_type):
             return tuple(dim.fixed_value if dim.is_fixed else None for dim in value_type.shape)
 
@@ -148,7 +145,8 @@ class KdaGatedRecurrentCore(OpDefinition):
         if beta.dtype not in {DType.BFLOAT16, DType.FLOAT32}:
             raise IRSchemaError("KdaGatedRecurrentCore raw beta must be BF16 or FP32.")
         if decay_rate.dtype != DType.FLOAT32 or gate_bias.dtype != DType.FLOAT32:
-            raise IRSchemaError("KdaGatedRecurrentCore requires FP32 decay_rate/gate_bias weight maps.")
+            raise IRSchemaError(
+                "KdaGatedRecurrentCore requires FP32 decay_rate/gate_bias weight maps.")
         if state.dtype != DType.FLOAT32:
             raise IRSchemaError("KdaGatedRecurrentCore requires an FP32 state.")
         if q.rank != 3 or extents(k) != extents(q) or extents(v) != extents(q):
@@ -156,19 +154,22 @@ class KdaGatedRecurrentCore(OpDefinition):
         if extents(gate) != extents(q):
             raise IRSchemaError("KdaGatedRecurrentCore raw gate must be [1, heads, head_k].")
         if extents(decay_rate) != extents(q) or extents(gate_bias) != extents(q):
-            raise IRSchemaError("KdaGatedRecurrentCore decay_rate/gate_bias maps must be [1, heads, head_k]; "
-                                "broadcast the selected decay parameter and dt_bias in the constant island.")
+            raise IRSchemaError(
+                "KdaGatedRecurrentCore decay_rate/gate_bias maps must be [1, heads, head_k]; "
+                "broadcast the selected decay parameter and dt_bias in the constant island.")
         if q.shape[0].is_fixed and q.shape[0].fixed_value != 1:
             raise IRSchemaError("KdaGatedRecurrentCore decode requires exactly one token.")
         if beta.rank != 2 or extents(beta) != extents(q)[:2]:
             raise IRSchemaError("KdaGatedRecurrentCore raw beta must be [1, heads].")
         if state.rank != 4 or not state.shape[3].is_fixed or extents(state)[:3] != (1, *extents(q)[1:]):
-            raise IRSchemaError("KdaGatedRecurrentCore state must be [1, heads, head_k, head_v] FP32.")
+            raise IRSchemaError(
+                "KdaGatedRecurrentCore state must be [1, heads, head_k, head_v] FP32.")
         head_v = state.shape[3].fixed_value
         if attrs.get("arithmetic", "recurrent") == "chunk_bf16" and (q.shape[2].fixed_value != 128 or head_v != 128):
             raise IRSchemaError("KdaGatedRecurrentCore chunk_bf16 requires head_k = head_v = 128.")
         out = _recurrent_output_type(q, head_v, attrs, "KdaGatedRecurrentCore")
-        new_state = tensor_type(DType.FLOAT32, (1, q.shape[1].fixed_value, q.shape[2].fixed_value, head_v))
+        new_state = tensor_type(DType.FLOAT32,
+                                (1, q.shape[1].fixed_value, q.shape[2].fixed_value, head_v))
         contract = _head_placement(
             tuple(parameter.type_of(inputs) for parameter in cls.input_parameters),
             "KdaGatedRecurrentCore",
@@ -211,7 +212,8 @@ class KdaGatedRecurrentCore(OpDefinition):
         # naive_kda_lowerbound_gate: the raw projection widens first, then the
         # bias add, the exp(A_log) product and the sigmoid all stay FP32.
         gate = cls.gate.read(arguments).float() + cls.gate_bias.read(arguments).float()
-        decay = float(node.attrs["lower_bound"]) * context.torch.sigmoid(cls._decay_rate_value(node, arguments) * gate)
+        decay = float(node.attrs["lower_bound"]) * context.torch.sigmoid(
+            cls._decay_rate_value(node, arguments) * gate)
         beta = context.torch.sigmoid(cls.beta_logits.read(arguments).float())
         if node.attrs["l2norm_in_kernel"]:
             q = q / context.torch.sqrt(q.pow(2).sum(-1, keepdim=True) + epsilon)
@@ -247,8 +249,8 @@ class KdaGatedRecurrentCore(OpDefinition):
             q = q * torch.rsqrt(q.square().sum(-1, keepdim=True) + node.attrs["epsilon"])
             k = k * torch.rsqrt(k.square().sum(-1, keepdim=True) + node.attrs["epsilon"])
         q, k = bf16(q), bf16(k)
-        gate = cls._decay_rate_value(
-            node, arguments) * (cls.gate.read(arguments).float() + cls.gate_bias.read(arguments).float())
+        gate = cls._decay_rate_value(node, arguments) * (
+            cls.gate.read(arguments).float() + cls.gate_bias.read(arguments).float())
         # Source CUDA uses tanh.approx for sigmoid and ex2.approx for the
         # base-two decay. CPU transcendental functions are a diagnostic
         # reference, with the same intermediate BF16 boundaries.
@@ -268,14 +270,16 @@ class KdaGatedRecurrentCore(OpDefinition):
         outer = kr.unsqueeze(-1) * delta.unsqueeze(-2)
         # A BF16 outer product is exact in FP32. Compute one FP32 FMA's
         # rounding without first rounding the decayed-state product on CPU.
-        state = bf16(ftz((ftz(state).double() * ftz(decay).unsqueeze(-1).double() + ftz(outer).double()).float()))
+        state = bf16(ftz((ftz(state).double() * ftz(decay).unsqueeze(-1).double()
+                          + ftz(outer).double()).float()))
         lanes = tuple(node.attrs.get("output_lanes", ()))
         return out.reshape(1, out.shape[1], out.shape[2] // prod(lanes), *lanes), state
 
     @classmethod
     def cost(cls, node):
         sizes = [tensor_nbytes(field) for field in node.type.fields]
-        return OpCost(bytes_written=None if None in sizes else sum(sizes), notes=("kda-recurrent", "kda-fused-gate"))
+        return OpCost(bytes_written=None if None in sizes else sum(sizes),
+                      notes=("kda-recurrent", "kda-fused-gate"))
 
 
 __all__ = ["KdaGatedRecurrentCore"]

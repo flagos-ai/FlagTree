@@ -63,10 +63,11 @@ def build_full_attention(value, state, layer_id, advance, cosine, sine, weights,
         projected = linear(value, w("qkvg.weight"), name=f"{prefix}_qkvg")
         query = F.tensors.slice(projected, starts=(0, ), ends=(heads * dim, ), axes=(-1, ),
                                 name=f"{prefix}_query_slice")
-        gate = F.tensors.slice(projected, starts=(heads * dim + 2 * c.num_key_value_heads * dim, ), ends=(None, ),
-                               axes=(-1, ), name=f"{prefix}_gate_slice")
-        key = F.tensors.slice(projected, starts=(heads * dim, ), ends=(heads * dim + c.num_key_value_heads * dim, ),
-                              axes=(-1, ), name=f"{prefix}_key_slice")
+        gate = F.tensors.slice(projected, starts=(heads * dim + 2 * c.num_key_value_heads * dim, ),
+                               ends=(None, ), axes=(-1, ), name=f"{prefix}_gate_slice")
+        key = F.tensors.slice(projected, starts=(heads * dim, ),
+                              ends=(heads * dim + c.num_key_value_heads * dim, ), axes=(-1, ),
+                              name=f"{prefix}_key_slice")
         val = F.tensors.slice(projected, starts=(heads * dim + c.num_key_value_heads * dim, ),
                               ends=(heads * dim + 2 * c.num_key_value_heads * dim, ), axes=(-1, ),
                               name=f"{prefix}_value_slice")
@@ -77,14 +78,15 @@ def build_full_attention(value, state, layer_id, advance, cosine, sine, weights,
     else:
         weights_kn = tuple(F.tensors.permute(w(f"{part}_proj.weight"), (1, 0)) for part in ("q", "k", "v"))
         none = F.builtin.none()
-        projected = F.nn.qkv_parallel_linear(value, *weights_kn,
-                                             *(none, ) * 9, num_heads=heads, num_kv_heads=c.num_key_value_heads,
-                                             output_data_type="bfloat16", name=f"{prefix}_qkv")
+        projected = F.nn.qkv_parallel_linear(
+            value, *weights_kn, *(none,) * 9, num_heads=heads, num_kv_heads=c.num_key_value_heads,
+            output_data_type="bfloat16", name=f"{prefix}_qkv")
         query, key, val = F.tensors.get_items(projected, 0, 1, 2, name_prefix=f"{prefix}_qkv")
         query = F.tensors.reshape(query, (tokens, heads, dim))
         key = F.tensors.reshape(key, (tokens, c.num_key_value_heads, dim))
         val = F.tensors.reshape(val, (tokens, c.num_key_value_heads, dim))
-        gate = F.tensors.reshape(linear(value, w("gate_proj.weight"), name=f"{prefix}_gate"), (tokens, heads, dim))
+        gate = F.tensors.reshape(linear(value, w("gate_proj.weight"), name=f"{prefix}_gate"),
+                                 (tokens, heads, dim))
     query = rms_norm(query, w("q_norm.weight"), c.epsilon, name=f"{prefix}_q_norm")
     key = rms_norm(key, w("k_norm.weight"), c.epsilon, name=f"{prefix}_k_norm")
     query = partial_rope(query, cosine, sine, c, name=f"{prefix}_q_rope")
@@ -121,18 +123,15 @@ def build_moe(value, weights, config, *, prefix):
     shared_ids = F.builtin.splat_const(tensor_type("int32", (tokens, 1)), 0)
     shared_scales = F.builtin.splat_const(tensor_type("float32", (1, 1)), 1.0)
     shared_weights = {
-        stage:
-        F.tensors.reshape(
-            weights[f"mlp.shared_expert.{stage}_proj.weight"],
-            shape=(1, *(d.fixed_value
-                        for d in weights[f"mlp.shared_expert.{stage}_proj.weight"].type.shape)))
+        stage: F.tensors.reshape(weights[f"mlp.shared_expert.{stage}_proj.weight"],
+                                 shape=(1, *(d.fixed_value for d in weights[f"mlp.shared_expert.{stage}_proj.weight"].type.shape)))
         for stage in ("gate", "up", "down")
     }
     # Always active and independently gated, never part of TopK normalization.
     # Keep the dense branch's declared rounding boundaries when changing IR.
     shared = F.nn.sparse_experts(value, shared_ids, shared_gate, shared_scales, shared_weights["gate"], shared_scales,
-                                 shared_scales, shared_weights["down"], shared_scales, shared_scales,
-                                 shared_weights["up"], shared_scales, round_projections=True, round_activation=True,
-                                 round_down_projection=True, round_weighted_output=True,
-                                 name=f"{prefix}_shared_experts")
+                                shared_scales, shared_weights["down"], shared_scales,
+                                shared_scales, shared_weights["up"], shared_scales,
+                                round_projections=True, round_activation=True, round_down_projection=True,
+                                round_weighted_output=True, name=f"{prefix}_shared_experts")
     return F.math.add(routed, shared, name=f"{prefix}_moe_output")

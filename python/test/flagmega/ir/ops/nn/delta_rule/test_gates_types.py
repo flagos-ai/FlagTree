@@ -13,22 +13,19 @@ from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
 
 def gate_types(tokens=3, heads=8):
     return (fm.tensor_type("bfloat16", (tokens, heads)), fm.tensor_type("bfloat16", (tokens, heads)),
-            fm.tensor_type("float32", (heads, )), fm.tensor_type("bfloat16", (heads, )))
+            fm.tensor_type("float32", (heads,)), fm.tensor_type("bfloat16", (heads,)))
 
 
-@pytest.mark.parametrize("attrs",
-                         ({"softplus_threshold": 0}, {"softplus_threshold": True}, {"softplus_threshold": float("nan")
-                                                                                    }, {"alpha_exp_mode": "auto"}))
+@pytest.mark.parametrize("attrs", ({"softplus_threshold": 0}, {"softplus_threshold": True},
+    {"softplus_threshold": float("nan")}, {"alpha_exp_mode": "auto"}))
 def test_gate_invalid_attributes(attrs):
     with pytest.raises(IRSchemaError):
         primitive_module(DeltaRuleGates, gate_types(), **attrs)
 
 
 @pytest.mark.parametrize("index,value", (
-    (0, fm.tensor_type("int32", (3, 8))),
-    (1, fm.tensor_type("bfloat16", (2, 8))),
-    (2, fm.tensor_type("float32", (4, ))),
-    (3, fm.tensor_type("bfloat16", (1, 8))),
+    (0, fm.tensor_type("int32", (3, 8))), (1, fm.tensor_type("bfloat16", (2, 8))),
+    (2, fm.tensor_type("float32", (4,))), (3, fm.tensor_type("bfloat16", (1, 8))),
 ))
 def test_gate_operand_types_and_extents(index, value):
     types = list(gate_types())
@@ -47,10 +44,10 @@ def test_gate_dynamic_rows_and_fp32_results():
 def test_gate_relation_join_matches_small_cartesian_product_including_plain_types():
     tensor_types = gate_types()
     placement = fm.Placement((2, 2), "xy", "bb")
-    b, h, t = fm.SBP.broadcast(), fm.SBP.split_contiguous((0, )), fm.SBP.split_block_cyclic((1, ), 1)
-    choices = tuple((tensor, *(fm.DistributedType(tensor, policies, placement)
-                               for policies in (((b, b), (b, h), (t, h)) if tensor.rank == 2 else ((b, ), (h, )))))
-                    for tensor in tensor_types)
+    b, h, t = fm.SBP.broadcast(), fm.SBP.split_contiguous((0,)), fm.SBP.split_block_cyclic((1,), 1)
+    choices = tuple((tensor, *(fm.DistributedType(tensor, policies, placement) for policies in (
+        ((b, b), (b, h), (t, h)) if tensor.rank == 2 else ((b,), (h,))
+    ))) for tensor in tensor_types)
     attrs = DeltaRuleGates.normalize_attrs({})
 
     def accepted(combinations):

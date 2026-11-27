@@ -8,35 +8,24 @@ from triton.flagmega.ir.ops.nn.delta_rule_gates import DeltaRuleGates
 from triton.flagmega.runtime import load
 
 
-def execute_gates(tmp_path, torch, values, *, token_policy=None, head_policy=None, local_inputs=(),
-                  local_results=(False, False), **attrs):
+def execute_gates(tmp_path, torch, values, *, token_policy=None, head_policy=None,
+                  local_inputs=(), local_results=(False, False), **attrs):
     placement = fm.Placement((2, 2), "xy", "bb")
     broadcast = fm.SBP.broadcast()
     token = broadcast if token_policy is None else token_policy
     head = broadcast if head_policy is None else head_policy
-    tensors = {
-        name: fm.tensor_type(str(value.dtype).removeprefix("torch."), value.shape)
-        for name, value in values.items()
-    }
-    distributed = {
-        name: fm.DistributedType(value, (token, head) if value.rank == 2 else (head, ), placement)
-        for name, value in tensors.items()
-    }
+    tensors = {name: fm.tensor_type(str(value.dtype).removeprefix("torch."), value.shape)
+               for name, value in values.items()}
+    distributed = {name: fm.DistributedType(value, (token, head) if value.rank == 2 else (head,), placement)
+                   for name, value in tensors.items()}
 
     class Graph(fm.Module):
-
         def forward(self):
-            parameters = {
-                parameter.name:
-                self.input(parameter.name,
-                           tensors[parameter.name] if parameter.name in local_inputs else distributed[parameter.name],
-                           id=parameter.name)
-                for parameter in DeltaRuleGates.input_parameters
-            }
-            inputs = {
-                name: fm.F.distributed.force_boxing(value, distributed[name]) if name in local_inputs else value
-                for name, value in parameters.items()
-            }
+            parameters = {parameter.name: self.input(parameter.name,
+                tensors[parameter.name] if parameter.name in local_inputs else distributed[parameter.name],
+                id=parameter.name) for parameter in DeltaRuleGates.input_parameters}
+            inputs = {name: fm.F.distributed.force_boxing(value, distributed[name]) if name in local_inputs else value
+                      for name, value in parameters.items()}
             gates = fm.F.nn.delta_rule_gates(**inputs, **attrs)
             outputs = list(fm.F.tensors.get_items(gates, 0, 1))
             for index, local in enumerate(local_results):

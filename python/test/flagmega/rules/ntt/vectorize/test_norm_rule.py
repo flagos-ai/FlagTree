@@ -14,7 +14,7 @@ from triton.flagmega.rules.ntt.vectorize import VectorizeRMSNorm
 def _norm_module(make_op_module, shape, *, dtype="bfloat16", epsilon=1e-6, weight_bias=1.0):
     return make_op_module(
         "nn.rms_norm",
-        (fm.tensor_type(dtype, shape), fm.tensor_type(dtype, (shape[-1], ))),
+        (fm.tensor_type(dtype, shape), fm.tensor_type(dtype, (shape[-1],))),
         attrs={"epsilon": epsilon, "weight_bias": weight_bias},
     )
 
@@ -37,16 +37,11 @@ def test_norm_rule_emits_reduction_axis_candidate(make_op_module, dtype, lane):
 @pytest.mark.parametrize("shape", [(3, 16), (3, 10)])
 @pytest.mark.parametrize("weight_bias", [0.0, 1.0])
 def test_norm_rule_rewrite_preserves_reduction_semantics_and_padding(
-    make_op_module,
-    rewrite_candidate,
-    shape,
-    weight_bias,
+    make_op_module, rewrite_candidate, shape, weight_bias,
 ):
     module = _norm_module(make_op_module, shape, weight_bias=weight_bias)
     candidate, result, rewritten = rewrite_candidate(
-        module,
-        VectorizeRMSNorm(),
-        "vectorization.norm.reduction_axis",
+        module, VectorizeRMSNorm(), "vectorization.norm.reduction_axis",
     )
     compute = next(node for node in result.prefix_nodes if node.op == "nn.vectorized_rms_norm")
     assert compute.attrs["logical_extent"] == shape[-1]
@@ -71,6 +66,5 @@ def test_norm_rule_rejects_dynamic_extent_small_lane_and_effect(make_op_module):
     assert VectorizeRMSNorm(lane_bytes=2).candidates(module.node_map["root"], module) == ()
     effectful = replace(module.node_map["root"], effect=fm.effect("write", "state"))
     assert VectorizeRMSNorm().candidates(
-        effectful,
-        replace(module, nodes=(*module.nodes[:-1], effectful)),
+        effectful, replace(module, nodes=(*module.nodes[:-1], effectful)),
     ) == ()

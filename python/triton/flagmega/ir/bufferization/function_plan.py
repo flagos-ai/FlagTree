@@ -15,6 +15,7 @@ from triton.flagmega.ir.bufferization.memory_pool import (
     FunctionMemoryPool,
 )
 
+
 BufferBinding = tuple[tuple[str, tuple[str, ...]], ...]
 
 
@@ -23,7 +24,10 @@ def _bindings_to_data(values: BufferBinding) -> list[dict[str, object]]:
 
 
 def _bindings_from_data(values) -> BufferBinding:
-    return tuple((str(value["node"]), tuple(str(item) for item in value.get("buffers", ()))) for value in values)
+    return tuple(
+        (str(value["node"]), tuple(str(item) for item in value.get("buffers", ())))
+        for value in values
+    )
 
 
 @dataclass(frozen=True, init=False)
@@ -37,30 +41,44 @@ class CallBufferBinding:
     loop_carries: tuple[LoopCarryBinding, ...]
 
     def __init__(
-            self,
-            call: str,
-            caller: str,
-            callee: str,
-            arguments: tuple[tuple[str, str], ...],
-            results: tuple[tuple[str, str], ...],
-            workspace_allocation: str | None = None,
-            workspace_offset: int = 0,
-            workspace_bytes: int = 0,
-            *,
-            memory_pools: tuple[CallMemoryPoolBinding, ...] | None = None,
-            loop_carries: tuple[LoopCarryBinding, ...] = (),
+        self,
+        call: str,
+        caller: str,
+        callee: str,
+        arguments: tuple[tuple[str, str], ...],
+        results: tuple[tuple[str, str], ...],
+        workspace_allocation: str | None = None,
+        workspace_offset: int = 0,
+        workspace_bytes: int = 0,
+        *,
+        memory_pools: tuple[CallMemoryPoolBinding, ...] | None = None,
+        loop_carries: tuple[LoopCarryBinding, ...] = (),
     ) -> None:
-        if memory_pools is not None and (workspace_allocation is not None or workspace_offset or workspace_bytes):
-            raise IRSchemaError("Call memory_pools cannot be combined with legacy workspace fields.")
-        pools = (tuple(memory_pools) if memory_pools is not None else (CallMemoryPoolBinding(
-            "workspace",
-            workspace_allocation,
-            workspace_offset,
-            workspace_bytes,
-        ), ) if workspace_allocation is not None or workspace_offset or workspace_bytes else ())
+        if memory_pools is not None and (
+            workspace_allocation is not None or workspace_offset or workspace_bytes
+        ):
+            raise IRSchemaError(
+                "Call memory_pools cannot be combined with legacy workspace fields."
+            )
+        pools = (
+            tuple(memory_pools)
+            if memory_pools is not None
+            else (
+                CallMemoryPoolBinding(
+                    "workspace",
+                    workspace_allocation,
+                    workspace_offset,
+                    workspace_bytes,
+                ),
+            )
+            if workspace_allocation is not None or workspace_offset or workspace_bytes
+            else ()
+        )
         if len({value.memory_space for value in pools}) != len(pools):
             raise IRSchemaError("Call memory-pool identities must be unique.")
-        for name, value in (("call", call), ("caller", caller), ("callee", callee)):
+        for name, value in (
+            ("call", call), ("caller", caller), ("callee", callee)
+        ):
             if not value:
                 raise IRSchemaError(f"Call buffer binding requires non-empty {name}.")
         object.__setattr__(self, "call", call)
@@ -77,7 +95,9 @@ class CallBufferBinding:
 
     @property
     def workspace_pool(self) -> CallMemoryPoolBinding | None:
-        return self.memory_pool_map.get("workspace") or (self.memory_pools[0] if len(self.memory_pools) == 1 else None)
+        return self.memory_pool_map.get("workspace") or (
+            self.memory_pools[0] if len(self.memory_pools) == 1 else None
+        )
 
     @property
     def workspace_allocation(self) -> str | None:
@@ -99,8 +119,12 @@ class CallBufferBinding:
             "call": self.call,
             "caller": self.caller,
             "callee": self.callee,
-            "arguments": [{"formal": formal, "actual": actual} for formal, actual in self.arguments],
-            "results": [{"formal": formal, "actual": actual} for formal, actual in self.results],
+            "arguments": [
+                {"formal": formal, "actual": actual} for formal, actual in self.arguments
+            ],
+            "results": [
+                {"formal": formal, "actual": actual} for formal, actual in self.results
+            ],
             "memory_pools": [value.to_data() for value in self.memory_pools],
             **({"loop_carries": [value.to_data() for value in self.loop_carries]} if self.loop_carries else {}),
         }
@@ -117,23 +141,43 @@ class CallBufferBinding:
             caller=str(data["caller"]),
             callee=str(data["callee"]),
             loop_carries=tuple(LoopCarryBinding.from_data(value) for value in data.get("loop_carries", ())),
-            arguments=tuple((str(value["formal"]), str(value["actual"])) for value in data.get("arguments", ())),
-            results=tuple((str(value["formal"]), str(value["actual"])) for value in data.get("results", ())),
+            arguments=tuple(
+                (str(value["formal"]), str(value["actual"]))
+                for value in data.get("arguments", ())
+            ),
+            results=tuple(
+                (str(value["formal"]), str(value["actual"]))
+                for value in data.get("results", ())
+            ),
         )
         if "memory_pools" in data:
             return cls(
                 **common,
-                memory_pools=tuple(CallMemoryPoolBinding.from_data(value) for value in data.get("memory_pools", ())),
+                memory_pools=tuple(
+                    CallMemoryPoolBinding.from_data(value)
+                    for value in data.get("memory_pools", ())
+                ),
             )
         return cls(
             **common,
-            memory_pools=(CallMemoryPoolBinding(
-                legacy_memory_space,
-                (None if data.get("workspace_allocation") is None else str(data["workspace_allocation"])),
-                int(data.get("workspace_offset", 0)),
-                int(data.get("workspace_bytes", 0)),
-            ), ) if (data.get("workspace_allocation") is not None or int(data.get("workspace_offset", 0))
-                     or int(data.get("workspace_bytes", 0))) else (),
+            memory_pools=(
+                CallMemoryPoolBinding(
+                    legacy_memory_space,
+                    (
+                        None
+                        if data.get("workspace_allocation") is None
+                        else str(data["workspace_allocation"])
+                    ),
+                    int(data.get("workspace_offset", 0)),
+                    int(data.get("workspace_bytes", 0)),
+                ),
+            )
+            if (
+                data.get("workspace_allocation") is not None
+                or int(data.get("workspace_offset", 0))
+                or int(data.get("workspace_bytes", 0))
+            )
+            else (),
         )
 
 
@@ -151,7 +195,10 @@ class KernelCallBufferBinding:
             "call": self.call,
             "caller": self.caller,
             "callee": self.callee,
-            "workspaces": [{"formal": formal, "actual": actual} for formal, actual in self.workspaces],
+            "workspaces": [
+                {"formal": formal, "actual": actual}
+                for formal, actual in self.workspaces
+            ],
         }
 
     @classmethod
@@ -160,7 +207,10 @@ class KernelCallBufferBinding:
             call=str(data["call"]),
             caller=str(data["caller"]),
             callee=str(data["callee"]),
-            workspaces=tuple((str(value["formal"]), str(value["actual"])) for value in data.get("workspaces", ())),
+            workspaces=tuple(
+                (str(value["formal"]), str(value["actual"]))
+                for value in data.get("workspaces", ())
+            ),
         )
 
 
@@ -176,24 +226,35 @@ class FunctionBufferPlan:
     values: BufferBinding = ()
 
     def __init__(
-            self,
-            name: str,
-            parameters: BufferBinding,
-            outputs: BufferBinding,
-            workspace_bytes: int = 0,
-            workspace_alignment: int = 1,
-            allocations: tuple[str, ...] = (),
-            calls: tuple[CallBufferBinding, ...] = (),
-            kernel_calls: tuple[KernelCallBufferBinding, ...] = (),
-            result_aliases: tuple[tuple[str, str], ...] = (),
-            values: BufferBinding = (),
-            *,
-            memory_pools: tuple[FunctionMemoryPool, ...] | None = None,
+        self,
+        name: str,
+        parameters: BufferBinding,
+        outputs: BufferBinding,
+        workspace_bytes: int = 0,
+        workspace_alignment: int = 1,
+        allocations: tuple[str, ...] = (),
+        calls: tuple[CallBufferBinding, ...] = (),
+        kernel_calls: tuple[KernelCallBufferBinding, ...] = (),
+        result_aliases: tuple[tuple[str, str], ...] = (),
+        values: BufferBinding = (),
+        *,
+        memory_pools: tuple[FunctionMemoryPool, ...] | None = None,
     ) -> None:
-        if memory_pools is not None and (workspace_bytes or workspace_alignment != 1 or allocations):
-            raise IRSchemaError("Function memory_pools cannot be combined with legacy workspace fields.")
-        pools = (tuple(memory_pools) if memory_pools is not None else
-                 (FunctionMemoryPool("workspace", workspace_bytes, workspace_alignment, tuple(allocations)), ))
+        if memory_pools is not None and (
+            workspace_bytes or workspace_alignment != 1 or allocations
+        ):
+            raise IRSchemaError(
+                "Function memory_pools cannot be combined with legacy workspace fields."
+            )
+        pools = (
+            tuple(memory_pools)
+            if memory_pools is not None
+            else (
+                FunctionMemoryPool(
+                    "workspace", workspace_bytes, workspace_alignment, tuple(allocations)
+                ),
+            )
+        )
         if len({value.memory_space for value in pools}) != len(pools):
             raise IRSchemaError("Function memory-pool identities must be unique.")
         if not name:
@@ -217,7 +278,9 @@ class FunctionBufferPlan:
         if pool is not None:
             return pool
         if len(self.memory_pools) != 1:
-            raise IRSchemaError(f"@{self.name} has multiple pools and no legacy 'workspace' pool.")
+            raise IRSchemaError(
+                f"@{self.name} has multiple pools and no legacy 'workspace' pool."
+            )
         return self.memory_pools[0]
 
     @property
@@ -230,7 +293,11 @@ class FunctionBufferPlan:
 
     @property
     def allocations(self) -> tuple[str, ...]:
-        return tuple(allocation for pool in self.memory_pools for allocation in pool.allocations)
+        return tuple(
+            allocation
+            for pool in self.memory_pools
+            for allocation in pool.allocations
+        )
 
     def to_data(self) -> dict[str, object]:
         return {
@@ -240,7 +307,10 @@ class FunctionBufferPlan:
             "memory_pools": [value.to_data() for value in self.memory_pools],
             "calls": [value.to_data() for value in self.calls],
             "kernel_calls": [value.to_data() for value in self.kernel_calls],
-            "result_aliases": [{"result": result, "parameter": parameter} for result, parameter in self.result_aliases],
+            "result_aliases": [
+                {"result": result, "parameter": parameter}
+                for result, parameter in self.result_aliases
+            ],
             "values": _bindings_to_data(self.values),
         }
 
@@ -256,26 +326,39 @@ class FunctionBufferPlan:
             parameters=_bindings_from_data(data.get("parameters", ())),
             outputs=_bindings_from_data(data.get("outputs", ())),
             calls=tuple(
-                CallBufferBinding.from_data(value, legacy_memory_space=legacy_memory_space)
-                for value in data.get("calls", ())),
-            kernel_calls=tuple(KernelCallBufferBinding.from_data(value) for value in data.get("kernel_calls", ())),
+                CallBufferBinding.from_data(
+                    value, legacy_memory_space=legacy_memory_space
+                )
+                for value in data.get("calls", ())
+            ),
+            kernel_calls=tuple(
+                KernelCallBufferBinding.from_data(value)
+                for value in data.get("kernel_calls", ())
+            ),
             result_aliases=tuple(
-                (str(value["result"]), str(value["parameter"])) for value in data.get("result_aliases", ())),
+                (str(value["result"]), str(value["parameter"]))
+                for value in data.get("result_aliases", ())
+            ),
             values=_bindings_from_data(data.get("values", ())),
         )
         if "memory_pools" in data:
             return cls(
                 **common,
-                memory_pools=tuple(FunctionMemoryPool.from_data(value) for value in data.get("memory_pools", ())),
+                memory_pools=tuple(
+                    FunctionMemoryPool.from_data(value)
+                    for value in data.get("memory_pools", ())
+                ),
             )
         return cls(
             **common,
-            memory_pools=(FunctionMemoryPool(
-                legacy_memory_space,
-                int(data.get("workspace_bytes", 0)),
-                int(data.get("workspace_alignment", 1)),
-                tuple(str(value) for value in data.get("allocations", ())),
-            ), ),
+            memory_pools=(
+                FunctionMemoryPool(
+                    legacy_memory_space,
+                    int(data.get("workspace_bytes", 0)),
+                    int(data.get("workspace_alignment", 1)),
+                    tuple(str(value) for value in data.get("allocations", ())),
+                ),
+            ),
         )
 
 

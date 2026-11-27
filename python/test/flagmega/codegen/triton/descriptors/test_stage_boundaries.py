@@ -19,11 +19,15 @@ from triton.flagmega.codegen.triton.tir_package import describe_tir_package, ren
 def test_tile_helper_inline_and_op_roles_noinline(request, fixture):
     package = describe_tir_package(request.getfixturevalue(fixture))
     tree = ast.parse(render_tir_package(package, "unit"))
-    definitions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    definitions = {
+        node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
+    }
     helpers = [name for name in definitions if name.endswith("__consumer_stage")]
     assert helpers
     for name in helpers:
         assert ast.unparse(definitions[name].decorator_list[0]) == "triton.jit"
         op = name.removesuffix("__consumer_stage")
         for role in ("producer", "consumer"):
-            assert ast.unparse(definitions[f"{op}__{role}"].decorator_list[0]) == "triton.jit(noinline=True)"
+            assert ast.unparse(
+                definitions[f"{op}__{role}"].decorator_list[0]
+            ) == "triton.jit(noinline=True)"

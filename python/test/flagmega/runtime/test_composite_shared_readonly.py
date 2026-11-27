@@ -28,13 +28,12 @@ def test_public_composite_loading_preserves_shared_pool(monkeypatch, tmp_path, s
 
     monkeypatch.setattr(GeneratedTirCallGraphModule, "load", allocate)
     manifest = {
-        "status": "executable",
-        "target": "nvidia-sm90",
-        "codegen_backend": "cpp",
+        "status": "executable", "target": "nvidia-sm90", "codegen_backend": "cpp",
         "codegen": {"kind": "composite-adapter-test"},
     }
     monkeypatch.setattr(loader, "load_artifact", lambda *a, **k: (manifest, None))
-    monkeypatch.setattr(loader.package_registry, "resolve", lambda *a: SimpleNamespace(factory=lambda *a: runtime))
+    monkeypatch.setattr(loader.package_registry, "resolve",
+                        lambda *a: SimpleNamespace(factory=lambda *a: runtime))
     pool = SharedReadonlyPool(16, device="cpu") if share else None
     result = loader.load(tmp_path, device="cpu", shared_rdata=pool)
     assert result is runtime

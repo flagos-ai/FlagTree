@@ -14,13 +14,11 @@ from triton.flagmega.runtime.module import _validate_artifact_device
 
 
 class _Props:
-
     def __init__(self, arch):
         self.gcnArchName = arch
 
 
 class _FakeCuda:
-
     def __init__(self, arch):
         self._arch = arch
 
@@ -32,13 +30,11 @@ class _FakeCuda:
 
 
 class _FakeVersion:
-
     def __init__(self, hip):
         self.hip = hip
 
 
 class _FakeTorch:
-
     def __init__(self, arch, hip="7.2"):
         self.cuda = _FakeCuda(arch)
         self.version = _FakeVersion(hip)

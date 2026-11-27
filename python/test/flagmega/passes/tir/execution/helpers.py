@@ -28,48 +28,48 @@ def nested_allocated_module():
     worker_input = builder.var("worker_input", value_type, id="worker_input")
     worker_result = builder.call(
         "tir.kernel",
-        (worker_input, ),
+        (worker_input,),
         value_type,
         id="worker_result",
         attrs=kernel_attrs("tir.silu.worker"),
     )
     builder.function(
         "worker",
-        (worker_input, ),
-        (worker_result, ),
+        (worker_input,),
+        (worker_result,),
         attrs={"calling_convention": "device", "reusable": True},
     )
 
     source = builder.var("source", value_type, id="source")
     prepared = builder.call(
         "tir.kernel",
-        (source, ),
+        (source,),
         value_type,
         id="prepared",
         attrs=kernel_attrs("tir.silu.prepared"),
     )
     prepared_view = builder.call(
         "tir.buffer_view",
-        (prepared, ),
+        (prepared,),
         value_type,
         id="prepared_view",
         attrs={"alias_kind": "reshape"},
     )
     nested = builder.call(
         "tir.call",
-        (prepared_view, ),
+        (prepared_view,),
         value_type,
         id="nested",
         attrs={"callee": "worker"},
     )
     output = builder.call(
         "tir.kernel",
-        (nested, ),
+        (nested,),
         value_type,
         id="output",
         attrs=kernel_attrs("tir.silu.output"),
     )
-    builder.function("main", (source, ), (output, ))
+    builder.function("main", (source,), (output,))
 
     selected = materialize_kernel_prim_functions(builder.build(entry="main"))
     plan = fm.make_buffer_plan(selected)

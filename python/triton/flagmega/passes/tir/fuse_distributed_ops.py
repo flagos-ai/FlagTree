@@ -20,8 +20,9 @@ def fuse_distributed_ops(module, *, fusion_rules=()):
     module = promote_partial_matmul(module)
     rewritten = DataflowPass(
         "FuseDistributedOps",
-        (fuse_gather_reduce_qkv_rope_with_cache_rule(), fuse_gather_reduce_add_norm_apply_rule(),
-         fuse_gather_reduce_norm_apply_rule(), *fusion_rules),
+        (fuse_gather_reduce_qkv_rope_with_cache_rule(),
+         fuse_gather_reduce_add_norm_apply_rule(), fuse_gather_reduce_norm_apply_rule(),
+         *fusion_rules),
         rewrite_constants=False,
     ).run(module)
     # Promotion may introduce a typed narrowing combine. Private statistics
@@ -29,9 +30,10 @@ def fuse_distributed_ops(module, *, fusion_rules=()):
     # per-field rounding before target pre/post-op fusion.
     from triton.flagmega.rules.ntt.packed_qkv_parallel_linear_combine import lower_packed_qkv_parallel_linear_combine_rule
     lowered = DataflowPass("LowerQKVMaterializationRounding",
-                           (lower_packed_qkv_parallel_linear_combine_rule(materialize_rounding=True), ),
+                           (lower_packed_qkv_parallel_linear_combine_rule(materialize_rounding=True),),
                            rewrite_constants=False).run(rewritten)
     if lowered is not rewritten and fusion_rules:
-        lowered = DataflowPass("FuseQKVMaterializationRounding", fusion_rules, rewrite_constants=False).run(lowered)
+        lowered = DataflowPass("FuseQKVMaterializationRounding", fusion_rules,
+                               rewrite_constants=False).run(lowered)
     rewritten = lowered
     return lower_sparse_experts(fuse_attention_gate(rewritten))

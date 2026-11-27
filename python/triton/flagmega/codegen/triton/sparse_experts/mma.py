@@ -16,13 +16,14 @@ def supports_block_fp8_wgmma(op, types, attrs):
     dtype = activation.dtype.elem_type if isinstance(activation.dtype, VectorType) else activation.dtype
     if dtype != DType.BFLOAT16:
         return False
-    fields = ("gate", "up") if op == "nn.sparse_experts_gate_up" else ("down", )
+    fields = ("gate", "up") if op == "nn.sparse_experts_gate_up" else ("down",)
     for field in fields:
         value = types[field + "_weight"]
         weight = logical_type(value)
         scale = logical_type(types[field + "_proj_scale"])
-        if (weight.dtype != DType.FLOAT8_E4M3FN or scale.dtype != DType.FLOAT32 or scale.rank != weight.rank
-                or not weight.shape[-1].is_fixed or weight.shape[-1].fixed_value % 128):
+        if (weight.dtype != DType.FLOAT8_E4M3FN or scale.dtype != DType.FLOAT32
+                or scale.rank != weight.rank or not weight.shape[-1].is_fixed
+                or weight.shape[-1].fixed_value % 128):
             return False
         if isinstance(value, DistributedType) and value.axis_policies[-1] != SBP.broadcast():
             return False

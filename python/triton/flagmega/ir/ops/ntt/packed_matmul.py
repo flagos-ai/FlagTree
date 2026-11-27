@@ -33,6 +33,7 @@ from triton.flagmega.ir.types import VectorType
 from triton.flagmega.ir.ops.math.matmul import matmul_value, normalize_reduction_order, validate_reduction_order
 from triton.flagmega.ir.vector_layout import split_vector_lanes
 
+
 _OPTIONAL_TENSOR = is_tensor() | is_none()
 
 
@@ -43,7 +44,7 @@ _OPTIONAL_TENSOR = is_tensor() | is_none()
     display_name="NTT.PackedMatMul",
 )
 class PackedMatMul(OpDefinition):
-    """``lhs @ rhs`` with an typed-vector RHS.
+    """``lhs @ rhs`` with an nncase-compatible typed-vector RHS.
 
     The K-major physical form is ``[KGroup, NGroup]`` with vector lanes
     ``(NVector, KPack, KVector)``.  Its scalar interpretation is the ordinary
@@ -66,13 +67,12 @@ class PackedMatMul(OpDefinition):
         attrs = super().normalize_attrs(attributes)
         if attrs["rhs_layout"] != "k_major":
             raise IRSchemaError("PackedMatMul currently requires a K-major RHS.")
-        return normalize_reduction_order(
-            {
-                "fused_reduce": bool(attrs["fused_reduce"]),
-                "output_data_type": DType(attrs["output_data_type"]),
-                "rhs_layout": "k_major",
-                "reduction_order": attrs["reduction_order"],
-            }, allow_split_k4=True)
+        return normalize_reduction_order({
+            "fused_reduce": bool(attrs["fused_reduce"]),
+            "output_data_type": DType(attrs["output_data_type"]),
+            "rhs_layout": "k_major",
+            "reduction_order": attrs["reduction_order"],
+        }, allow_split_k4=True)
 
     @classmethod
     def ir_attrs(cls, attrs: Mapping[str, object]) -> Mapping[str, object]:
@@ -95,14 +95,16 @@ class PackedMatMul(OpDefinition):
         if isinstance(lhs.dtype, VectorType):
             raise IRSchemaError("PackedMatMul K-major lhs must have a scalar dtype.")
         if not isinstance(rhs.dtype, VectorType) or len(rhs.dtype.lanes) != 3:
-            raise IRSchemaError("PackedMatMul K-major RHS requires VectorType(NVector,KPack,KVector).")
+            raise IRSchemaError(
+                "PackedMatMul K-major RHS requires VectorType(NVector,KPack,KVector)."
+            )
         if lhs.dtype != rhs.dtype.elem_type:
             raise IRSchemaError("PackedMatMul lhs and RHS scalar dtypes must match.")
         n_vector, k_pack, k_vector = rhs.dtype.lanes
         if lhs.shape[-1] != rhs.shape[0] * (k_pack * k_vector):
             raise IRSchemaError("PackedMatMul lhs K does not match its packed RHS K.")
         output_dtype = DType(attrs["output_data_type"])
-        output_lanes, _ = split_vector_lanes((n_vector, ), (1, ), element_bytes=output_dtype.itemsize,
+        output_lanes, _ = split_vector_lanes((n_vector,), (1,), element_bytes=output_dtype.itemsize,
                                              vector_bytes=k_vector * rhs.dtype.elem_type.itemsize)
         output = tensor_type(
             VectorType(output_dtype, output_lanes),
@@ -113,8 +115,12 @@ class PackedMatMul(OpDefinition):
         if placement is None:
             result: IRType = output
         else:
-            if not isinstance(lhs_type, DistributedType) or not isinstance(rhs_type, DistributedType):
-                raise IRSchemaError("Distributed PackedMatMul requires both matrix operands distributed.")
+            if not isinstance(lhs_type, DistributedType) or not isinstance(
+                rhs_type, DistributedType
+            ):
+                raise IRSchemaError(
+                    "Distributed PackedMatMul requires both matrix operands distributed."
+                )
             if lhs_type.partial is not None or rhs_type.partial is not None:
                 raise IRSchemaError("PackedMatMul operands cannot be partial values.")
             exclusive = lhs_type.exclusive or rhs_type.exclusive
@@ -122,20 +128,31 @@ class PackedMatMul(OpDefinition):
                 if (lhs_type.exclusive is not None and rhs_type.exclusive is not None
                         and lhs_type.exclusive != rhs_type.exclusive):
                     raise IRSchemaError("PackedMatMul exclusive operands must share the same owner policy.")
-                if any(policy != SBP.broadcast()
-                       for operand in (lhs_type, rhs_type)
+                if any(policy != SBP.broadcast() for operand in (lhs_type, rhs_type)
                        for policy in operand.axis_policies):
                     raise IRSchemaError("PackedMatMul exclusive arithmetic requires complete broadcast operands.")
             lhs_m, lhs_k = lhs_type.axis_policies
             rhs_k, rhs_n = rhs_type.axis_policies
-            logical_rhs_k = (scale_split_units(rhs_k, k_pack * k_vector, 1) if isinstance(rhs_k, SBPSplit) else rhs_k)
+            logical_rhs_k = (
+                scale_split_units(rhs_k, k_pack * k_vector, 1)
+                if isinstance(rhs_k, SBPSplit)
+                else rhs_k
+            )
             if lhs_k != logical_rhs_k:
-                raise IRSchemaError("PackedMatMul lhs and RHS reduction policies must match.")
-            reduction_axes = (tuple(lhs_k.hierarchy_axes) if isinstance(lhs_k, SBPSplit) else ())
+                raise IRSchemaError(
+                    "PackedMatMul lhs and RHS reduction policies must match."
+                )
+            reduction_axes = (
+                tuple(lhs_k.hierarchy_axes) if isinstance(lhs_k, SBPSplit) else ()
+            )
             output_axes = set(lhs_m.hierarchy_axes) if isinstance(lhs_m, SBPSplit) else set()
-            output_axes.update(rhs_n.hierarchy_axes if isinstance(rhs_n, SBPSplit) else ())
+            output_axes.update(
+                rhs_n.hierarchy_axes if isinstance(rhs_n, SBPSplit) else ()
+            )
             if output_axes.intersection(reduction_axes):
-                raise IRSchemaError("PackedMatMul output and reduction splits must use disjoint mesh axes.")
+                raise IRSchemaError(
+                    "PackedMatMul output and reduction splits must use disjoint mesh axes."
+                )
             partial = None
             if reduction_axes and not bool(attrs["fused_reduce"]):
                 partial = SBPPartial(reduction_axes)
@@ -154,7 +171,9 @@ class PackedMatMul(OpDefinition):
         addend_type = cls.addend.type_of(inputs)
         if not isinstance(addend_type, NoneType):
             if addend_type != result:
-                raise IRSchemaError("PackedMatMul addend must have exactly the packed output type.")
+                raise IRSchemaError(
+                    "PackedMatMul addend must have exactly the packed output type."
+                )
             if isinstance(result, DistributedType) and result.partial is not None:
                 raise IRSchemaError("PackedMatMul cannot add to an unmaterialized partial.")
         return result
@@ -180,11 +199,13 @@ class PackedMatMul(OpDefinition):
             n_groups.fixed_value * n_vector,
         )
         value = matmul_value(lhs, logical_rhs.to(dtype=lhs.dtype), node.attrs["output_data_type"], context,
-                             reduction_order=node.attrs.get("reduction_order"))
+                              reduction_order=node.attrs.get("reduction_order"))
         scale = cls.scale.read(arguments)
         if scale is not None:
             value = value * scale
-        value = value.to(dtype=context.torch_dtype(DType(node.attrs["output_data_type"])))
+        value = value.to(
+            dtype=context.torch_dtype(DType(node.attrs["output_data_type"]))
+        )
         output_lanes = tensor_of(node.type).dtype.lanes
         value = value.reshape(value.shape[0], value.shape[1] // n_vector, *output_lanes)
         addend = cls.addend.read(arguments)
@@ -194,7 +215,7 @@ class PackedMatMul(OpDefinition):
     def cost(cls, node: Node) -> OpCost:
         return OpCost(
             bytes_written=tensor_nbytes(node.type),
-            notes=("typed-vector-k-major-packed-matmul", ),
+            notes=("typed-vector-k-major-packed-matmul",),
         )
 
     @classmethod
@@ -206,7 +227,7 @@ class PackedMatMul(OpDefinition):
     ) -> OpCostFactors | None:
         """Describe the K-major SIMT GEMV candidate in target-scalable units.
 
-        This follows reference ``PackedMatMulEvaluator.TryGetTargetCost``.  The
+        This follows nncase ``PackedMatMulEvaluator.TryGetTargetCost``.  The
         packed RHS and result are interpreted as their scalar logical matrix
         shapes for arithmetic, while memory traffic retains the physical
         typed-vector representation.  The SIMT padding is the regular Triton
@@ -220,9 +241,19 @@ class PackedMatMul(OpDefinition):
         lhs = _local_cost_tensor(lhs_type)
         rhs = _local_cost_tensor(rhs_type)
         output = _local_cost_tensor(return_type)
-        if (lhs.rank != 2 or rhs.rank != 2 or output.rank != 2 or not isinstance(rhs.dtype, VectorType)
-                or len(rhs.dtype.lanes) != 3 or not isinstance(output.dtype, VectorType)
-                or any(not dimension.is_fixed for tensor in (lhs, rhs, output) for dimension in tensor.shape)):
+        if (
+            lhs.rank != 2
+            or rhs.rank != 2
+            or output.rank != 2
+            or not isinstance(rhs.dtype, VectorType)
+            or len(rhs.dtype.lanes) != 3
+            or not isinstance(output.dtype, VectorType)
+            or any(
+                not dimension.is_fixed
+                for tensor in (lhs, rhs, output)
+                for dimension in tensor.shape
+            )
+        ):
             return None
         n_vector, k_pack, k_vector = rhs.dtype.lanes
         output_vector = prod(output.dtype.lanes)
@@ -252,25 +283,36 @@ class PackedMatMul(OpDefinition):
             if any(not dimension.is_fixed for dimension in addend.shape):
                 return None
             addend_bytes = _fixed_tensor_nbytes(addend)
-            # reference CPU-cycle factors count the typed-vector outer shape;
+            # nncase CPU-cycle factors count the typed-vector outer shape;
             # lanes are represented by memory traffic and SIMT work.
-            addend_cycles = prod(dimension.fixed_value for dimension in output.shape)
+            addend_cycles = prod(
+                dimension.fixed_value for dimension in output.shape
+            )
 
         chip_load = 0
         chip_store = 0
         all_reduce_cycles = 0
         grid_synchronizations = 0
-        if (bool(attrs["fused_reduce"]) and isinstance(lhs_type, DistributedType)
-                and isinstance(lhs_type.axis_policies[-1], SBPSplit)):
+        if (
+            bool(attrs["fused_reduce"])
+            and isinstance(lhs_type, DistributedType)
+            and isinstance(lhs_type.axis_policies[-1], SBPSplit)
+        ):
             chip_load = output_bytes * 2
             chip_store = output_bytes
-            all_reduce_cycles = prod(dimension.fixed_value for dimension in output.shape)
+            all_reduce_cycles = prod(
+                dimension.fixed_value for dimension in output.shape
+            )
             grid_synchronizations = 3
 
         return OpCostFactors(
             cpu_cycles=addend_cycles + all_reduce_cycles,
             simt_fma_operations=padded_m * padded_n * padded_k,
-            block_local_memory_load_bytes=(_fixed_tensor_nbytes(lhs) + _fixed_tensor_nbytes(rhs) + addend_bytes),
+            block_local_memory_load_bytes=(
+                _fixed_tensor_nbytes(lhs)
+                + _fixed_tensor_nbytes(rhs)
+                + addend_bytes
+            ),
             block_local_memory_store_bytes=output_bytes,
             chip_global_memory_load_bytes=chip_load,
             chip_global_memory_store_bytes=chip_store,

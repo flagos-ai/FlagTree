@@ -17,21 +17,18 @@ from .test_composite_request_phase import graph
 
 
 def _with_dsa(module):
-    config = DsaIndexerStateConfig((0, ), 8, 4, 2)
+    config = DsaIndexerStateConfig((0,), 8, 4, 2)
     dsa = fm.Node("dsa", "builtin.var", (), config.ref_type, attrs={"name": "dsa"})
     function, = module.functions
-    return fm.verify_module(
-        replace(
-            module, nodes=(*module.nodes, dsa), functions=(replace(function, parameters=(*function.parameters, dsa.id),
-                                                                   outputs=(*function.outputs, dsa.id)), ),
-            metadata={
-                **module.metadata, "dsa_full_indexer_layers": (0, ), "dsa_index_output_width": 2, "composite_abi":
-                {**module.metadata["composite_abi"], "dsa_state": {"input": dsa.id, "output": dsa.id}}
-            }))
+    return fm.verify_module(replace(module, nodes=(*module.nodes, dsa), functions=(replace(function,
+        parameters=(*function.parameters, dsa.id), outputs=(*function.outputs, dsa.id)),),
+        metadata={**module.metadata, "dsa_full_indexer_layers": (0,), "dsa_index_output_width": 2,
+            "composite_abi": {**module.metadata["composite_abi"],
+                              "dsa_state": {"input": dsa.id, "output": dsa.id}}}))
 
 
 def test_dsa_static_validation_does_not_inspect_mutable_values(monkeypatch):
-    state = create_dsa_indexer_state(DsaIndexerStateConfig((0, ), 8, 4, 2))
+    state = create_dsa_indexer_state(DsaIndexerStateConfig((0,), 8, 4, 2))
     original = torch.Tensor.item
 
     def no_host_read(value, *args):
@@ -47,7 +44,7 @@ def test_dsa_static_validation_does_not_inspect_mutable_values(monkeypatch):
 
 
 def test_dsa_default_validation_still_rejects_invalid_capacity():
-    state = create_dsa_indexer_state(DsaIndexerStateConfig((0, ), 8, 4, 2))
+    state = create_dsa_indexer_state(DsaIndexerStateConfig((0,), 8, 4, 2))
     state.seq_lens.fill_(9)
     with pytest.raises(EvaluationError, match="capacity"):
         state.validate()
@@ -76,8 +73,7 @@ def test_prepared_composite_captures_and_replays_both_phases(tmp_path, with_dsa)
                 with torch.cuda.graph(captured, stream=stream):
                     runtime.run_into(logits, token, ids, state, prefill=phase)
                 graphs[phase] = captured
-            state.kda.convolution.zero_()
-            state.kda.recurrent.zero_()
+            state.kda.convolution.zero_(); state.kda.recurrent.zero_()
             expected = 0
             for phase in (True, False, True):
                 graphs[phase].replay()
@@ -86,8 +82,8 @@ def test_prepared_composite_captures_and_replays_both_phases(tmp_path, with_dsa)
                 torch.testing.assert_close(logits, torch.full_like(logits, 11 + int(phase)), rtol=0, atol=0)
                 torch.testing.assert_close(state.kda.convolution, torch.full_like(state.kda.convolution, expected),
                                            rtol=0, atol=0)
-                torch.testing.assert_close(state.kda.recurrent, torch.full_like(state.kda.recurrent, expected), rtol=0,
-                                           atol=0)
+                torch.testing.assert_close(state.kda.recurrent, torch.full_like(state.kda.recurrent, expected),
+                                           rtol=0, atol=0)
         # Reprepare remains a content-validation boundary after external edits.
         state.paged.seq_lens.fill_(state.paged.config.max_sequence_length + 1)
         with pytest.raises(EvaluationError, match="capacity"):

@@ -26,6 +26,7 @@ from triton.flagmega.ir.type_pattern import is_tuple
 )
 class GetItem(OpDefinition):
     const_evaluable = True
+    numpy_materializable = True
     # Tuple projection must return the selected field's type verbatim. The
     # broadcast-lifting fallback re-infers from logical inputs and would lift a
     # scalar field of an otherwise distributed tuple into a broadcast
@@ -56,8 +57,12 @@ class GetItem(OpDefinition):
         return cls.value.read(arguments)[int(cls.index.read(arguments, node.attrs))]
 
     @classmethod
+    def materialize_numpy(cls, node, arguments, context):
+        return cls.value.read(arguments)[int(cls.index.read(arguments, node.attrs))]
+
+    @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(notes=("tuple-projection", ))
+        return OpCost(notes=("tuple-projection",))
 
     @classmethod
     def python_call(cls, node: Node) -> PythonCall:

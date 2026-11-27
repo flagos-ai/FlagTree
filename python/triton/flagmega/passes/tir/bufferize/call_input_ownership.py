@@ -20,9 +20,8 @@ def non_consumable_parameters(module) -> dict[str, frozenset[str]]:
     uses = {}
     programs = module.metadata.get("kernel_program_partition")
     ancestors = program_ancestors(programs)
-    program_by_call = ({call: program["symbol"]
-                        for program in programs
-                        for call in program["calls"]} if ancestors is not None else {})
+    program_by_call = ({call: program["symbol"] for program in programs for call in program["calls"]}
+                       if ancestors is not None else {})
     protected = {function.name: set() for function in module.functions}
     for function in callee_first_functions(module):
         nodes = function_nodes(module, function)
@@ -41,8 +40,7 @@ def non_consumable_parameters(module) -> dict[str, frozenset[str]]:
             elif node.op in {"builtin.call", "tir.call"} and str(node.attrs.get("callee", "")) in summaries:
                 callee = module.function_map[str(node.attrs["callee"])]
                 parameters, returned = summaries[callee.name]
-                if len(returned) == 1 and logical_type(node.type) == logical_type(
-                        module.node_map[callee.outputs[0]].type):
+                if len(returned) == 1 and logical_type(node.type) == logical_type(module.node_map[callee.outputs[0]].type):
                     returned = returned[0]
                 substitutions = {}
                 for formal, actual in zip(callee.parameters, node.inputs, strict=True):
@@ -56,15 +54,12 @@ def non_consumable_parameters(module) -> dict[str, frozenset[str]]:
                 readonly.update(_roots(origin))
             # A tuple projection reads only its chosen field. Reading the
             # container here would conflate independent tensor lifetimes.
-            read_origins = (origin, ) if node.op == "builtin.get_item" else tuple(origins[value]
-                                                                                  for value in node.inputs)
+            read_origins = (origin,) if node.op == "builtin.get_item" else tuple(origins[value] for value in node.inputs)
             for read_origin in read_origins:
                 for root in _roots(read_origin):
                     last_use[root] = index
-                    if node.op not in {
-                            "builtin.tuple", "builtin.get_item", "tir.buffer_view", "tir.buffer_subspan",
-                            "distributed.sharded_view"
-                    }:
+                    if node.op not in {"builtin.tuple", "builtin.get_item", "tir.buffer_view",
+                                       "tir.buffer_subspan", "distributed.sharded_view"}:
                         readers.setdefault(root, []).append((index, node.id))
         for value in function.outputs:
             for root in _roots(origins[value]):
@@ -74,8 +69,10 @@ def non_consumable_parameters(module) -> dict[str, frozenset[str]]:
         summaries[function.name] = (parameters, returned)
         uses[function.name] = (origins, calls, readonly, last_use, parameters, readers, len(nodes))
         if function.name == module.entry:
-            protected[function.name].update(value for value in function.parameters
-                                            if not isinstance(logical_type(module.node_map[value].type), RefType))
+            protected[function.name].update(
+                value for value in function.parameters
+                if not isinstance(logical_type(module.node_map[value].type), RefType)
+            )
 
     # A wrapper parameter can be borrowed by its caller, and must then remain
     # borrowed when forwarded to another reusable function. Iterate the finite
@@ -97,14 +94,12 @@ def non_consumable_parameters(module) -> dict[str, frozenset[str]]:
                         # execution proof. Unordered readers may still run
                         # after the syntactically last consumer has started.
                         current = program_by_call.get(call_id)
-                        borrowed = any(
-                            last_use.get(root) == end or any(
-                                program_by_call.get(reader) is None or
-                                (program_by_call[reader] == current and position > index) or
-                                (program_by_call[reader] != current
-                                 and program_by_call[reader] not in ancestors.get(current, ()))
-                                for position, reader in readers.get(root, ()))
-                            for root in roots)
+                        borrowed = any(last_use.get(root) == end or any(
+                            program_by_call.get(reader) is None
+                            or (program_by_call[reader] == current and position > index)
+                            or (program_by_call[reader] != current
+                                and program_by_call[reader] not in ancestors.get(current, ()))
+                            for position, reader in readers.get(root, ())) for root in roots)
                     else:
                         borrowed = any(last_use.get(root, index) > index for root in roots)
                     if (roots & unavailable or borrowed) and formal not in protected[callee.name]:
@@ -117,7 +112,7 @@ def _new_origins(prefix, value_type):
     value_type = logical_type(value_type)
     if isinstance(value_type, TupleType):
         return tuple(_new_origins(f"{prefix}.{index}", field) for index, field in enumerate(value_type.fields))
-    return frozenset((prefix, ))
+    return frozenset((prefix,))
 
 
 def _roots(origin):
@@ -137,7 +132,9 @@ def _bind_origins(formal, actual, substitutions):
 
 def _substitute(origin, substitutions, prefix):
     if isinstance(origin, frozenset):
-        return frozenset().union(*(substitutions.get(root, frozenset((f"{prefix}:{root}", ))) for root in origin))
+        return frozenset().union(*(
+            substitutions.get(root, frozenset((f"{prefix}:{root}",))) for root in origin
+        ))
     return tuple(_substitute(value, substitutions, prefix) for value in origin)
 
 

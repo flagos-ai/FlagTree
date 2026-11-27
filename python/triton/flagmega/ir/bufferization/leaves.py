@@ -37,7 +37,7 @@ def buffer_leaves(prefix: str, value_type: IRType):
     if isinstance(value_type, NoneType):
         return ()
     if isinstance(value_type, (TensorType, DistributedType)):
-        return ((prefix, value_type, None), )
+        return ((prefix, value_type, None),)
     if isinstance(value_type, RefType):
         result = []
         for name, field_type in value_type.fields:

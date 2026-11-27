@@ -70,7 +70,7 @@ def test_rounding_flags_reject_non_boolean_values(name, value):
         _module(**{name: value})
 
 
-def test_old_constructor_retains_reference_rounding_and_python_resume():
+def test_old_constructor_retains_nncase_rounding_and_python_resume():
     module, _ = _module()
     node = module.node_map["output"]
     assert node.attrs["round_products"] is True
@@ -127,7 +127,7 @@ def test_cuda_eager_convolution_preserves_native_fast_silu_rounding(fixture_name
     inputs = torch.tensor([case["input"] for case in cases], dtype=torch.bfloat16).T.repeat(1, repeats).cuda()
     weight = torch.tensor([case["weight"] for case in cases], dtype=torch.bfloat16).repeat(repeats, 1).cuda()
     expected = torch.tensor([case["expected"] for case in cases], dtype=torch.bfloat16).repeat(repeats).cuda()
-    actual, _ = gated_delta_net_convolution(qkv=inputs, state=create_gdn_state(config, device="cuda"),
-                                            conv_weight=weight, conv_kernel_size=4, round_products=True,
-                                            round_before_activation=False, accumulation_order="chronological")
+    actual, _ = gated_delta_net_convolution(
+        qkv=inputs, state=create_gdn_state(config, device="cuda"), conv_weight=weight, conv_kernel_size=4,
+        round_products=True, round_before_activation=False, accumulation_order="chronological")
     torch.testing.assert_close(actual[-1], expected, rtol=0, atol=0)

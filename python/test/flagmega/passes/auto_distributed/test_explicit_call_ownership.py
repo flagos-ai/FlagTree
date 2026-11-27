@@ -14,12 +14,11 @@ from triton.flagmega.targets import NvidiaSm90Target
 
 def owned_call_graph(*, explicit=True, tuple_output=False):
     mesh = fm.Placement((4, 2, 2), "cyx", "cbb")
-    tensor = fm.tensor_type("float32", (16, ))
-    state_type = fm.DistributedType(tensor, (fm.SBP.split_contiguous((0, )), ), mesh) if explicit else tensor
-    auxiliary = fm.tensor_type("float32", (8, ))
+    tensor = fm.tensor_type("float32", (16,))
+    state_type = fm.DistributedType(tensor, (fm.SBP.split_contiguous((0,)),), mesh) if explicit else tensor
+    auxiliary = fm.tensor_type("float32", (8,))
 
     class Graph(fm.Module):
-
         def forward(self):
             state = self.input("state", state_type, id="state")
             next_state = fm.F.math.add(state, state, name="next_state")
@@ -31,14 +30,14 @@ def owned_call_graph(*, explicit=True, tuple_output=False):
                 result_type = fm.TupleType(tuple(value.type for value in outputs))
                 call = fm.F.builtin.call(first, second, result_type=result_type, callee="step", name="call")
                 self.function("step", (state, extra), outputs)
-                self.function("main", (first, second), (call, ))
+                self.function("main", (first, second), (call,))
             else:
                 call = fm.F.builtin.call(first, result_type=next_state.type, callee="step", name="call")
-                self.function("step", (state, ), (next_state, ))
-                self.function("main", (first, ), (call, ))
+                self.function("step", (state,), (next_state,))
+                self.function("main", (first,), (call,))
 
     module = Graph(dialect="ntt", stage="packed", entry="main").build()
-    target = NvidiaSm90Target(options=replace(NvidiaSm90Target().options, placements=(mesh, )))
+    target = NvidiaSm90Target(options=replace(NvidiaSm90Target().options, placements=(mesh,)))
     return module, target, state_type
 
 
@@ -73,18 +72,19 @@ def test_unannotated_call_interface_keeps_the_existing_broadcast_default():
 @pytest.mark.parametrize("trips", (0, 3))
 def test_owned_state_call_remains_sharded_through_for_iter_args(tmp_path, trips):
     mesh = fm.Placement((4, 2, 2), "cyx", "cbb")
-    state_type = fm.DistributedType(fm.tensor_type("float32", (16, )), (fm.SBP.split_contiguous((0, )), ), mesh)
+    state_type = fm.DistributedType(fm.tensor_type("float32", (16,)),
+                                    (fm.SBP.split_contiguous((0,)),), mesh)
     index_type = fm.tensor_type("int64", ())
     builder = fm.IRBuilder(dialect="ntt", stage="packed")
     state = builder.var("state", state_type, id="state")
     with construction_scope(builder):
         updated = fm.F.math.add(state, state, name="updated")
-    builder.function("step", (state, ), (updated, ))
+    builder.function("step", (state,), (updated,))
     iv = builder.var("iv", index_type, id="iv")
     carried = builder.var("carried", state_type, id="carried")
     with construction_scope(builder):
         call = fm.F.builtin.call(carried, result_type=state_type, callee="step", name="call")
-    body = builder.region("body", (iv, carried), (call, ), iter_count=1)
+    body = builder.region("body", (iv, carried), (call,), iter_count=1)
     source = builder.var("input", state_type, id="input")
     with construction_scope(builder):
         lower = fm.F.builtin.scalar_const(index_type, 0)
@@ -92,25 +92,23 @@ def test_owned_state_call_remains_sharded_through_for_iter_args(tmp_path, trips)
         stride = fm.F.builtin.scalar_const(index_type, 1)
         loop = fm.F.control.for_loop(lower, upper, stride, source, body=body, name="loop")
         output = fm.F.tensors.get_item(loop, 0)
-    builder.function("main", (source, ), (output, ))
+    builder.function("main", (source,), (output,))
     module = fm.verify_module(builder.build(entry="main"))
-    target = NvidiaSm90Target(options=replace(NvidiaSm90Target().options, placements=(mesh, )))
+    target = NvidiaSm90Target(options=replace(NvidiaSm90Target().options, placements=(mesh,)))
     distributed = AutoDistributedPass.run(module, target)
     assert distributed.node_map["loop"].type.fields[0] == state_type
     assert distributed.node_map["carried"].type == state_type
     assert distributed.node_map["call"].type == state_type
-    assert fm.load_module(fm.emit_module(distributed,
-                                         tmp_path / "owned-loop.py")).semantic_hash == distributed.semantic_hash
+    assert fm.load_module(fm.emit_module(distributed, tmp_path / "owned-loop.py")).semantic_hash == distributed.semantic_hash
 
 
 def test_parameter_bank_element_keeps_mixed_owned_and_logical_fields(tmp_path):
     mesh = fm.Placement((4, 2, 2), "cyx", "cbb")
-    owned = fm.DistributedType(fm.tensor_type("float32", (16, )), (fm.SBP.split_contiguous((0, )), ), mesh)
-    logical = fm.tensor_type("float32", (8, ))
-    bank_type = fm.RefType("parameter_bank", (("element", fm.TupleType((owned, logical))), ))
+    owned = fm.DistributedType(fm.tensor_type("float32", (16,)), (fm.SBP.split_contiguous((0,)),), mesh)
+    logical = fm.tensor_type("float32", (8,))
+    bank_type = fm.RefType("parameter_bank", (("element", fm.TupleType((owned, logical))),))
 
     class Graph(fm.Module):
-
         def forward(self):
             state = self.input("state", owned, id="state")
             extra = self.input("extra", logical, id="extra")
@@ -120,11 +118,11 @@ def test_parameter_bank_element_keeps_mixed_owned_and_logical_fields(tmp_path):
             index = fm.F.builtin.scalar_const(fm.tensor_type("int64", ()), 0)
             row = fm.F.control.bank_get(bank, index, name="row")
             first, second = (fm.F.tensors.get_item(row, slot) for slot in (0, 1))
-            call = fm.F.builtin.call(first, second, callee="step", result_type=fm.TupleType((owned, logical)),
-                                     name="call")
-            self.function("main", (bank, ), (call, ))
+            call = fm.F.builtin.call(first, second, callee="step",
+                                     result_type=fm.TupleType((owned, logical)), name="call")
+            self.function("main", (bank,), (call,))
 
-    target = NvidiaSm90Target(options=replace(NvidiaSm90Target().options, placements=(mesh, )))
+    target = NvidiaSm90Target(options=replace(NvidiaSm90Target().options, placements=(mesh,)))
     module = AutoDistributedPass.run(Graph(dialect="ntt", stage="packed", entry="main").build(), target)
     row_type = module.node_map["row"].type
     assert row_type.fields[0] == owned
@@ -136,7 +134,7 @@ def test_parameter_bank_element_keeps_mixed_owned_and_logical_fields(tmp_path):
 
 def test_explicit_interface_cannot_be_reinterpreted_on_another_mesh():
     module, _, _ = owned_call_graph()
-    target = NvidiaSm90Target(
-        options=replace(NvidiaSm90Target().options, placements=(fm.Placement((4, 4), "yx", "bb"), )))
+    target = NvidiaSm90Target(options=replace(NvidiaSm90Target().options,
+                                             placements=(fm.Placement((4, 4), "yx", "bb"),)))
     with pytest.raises(IRVerificationError, match="active placement"):
         AutoDistributedPass.run(module, target)

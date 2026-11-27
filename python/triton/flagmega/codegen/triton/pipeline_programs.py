@@ -11,15 +11,14 @@ def _project_function_handoffs(schedule, calls):
     for handoff in schedule["handoffs"]:
         # Loop-carried and root-level edges need explicit program-boundary
         # semantics. This projection handles a complete reusable call only.
-        if (not handoff["semantic"] or handoff.get("repeated") or handoff.get("wrap_around")):
+        if (not handoff["semantic"] or handoff.get("repeated")
+                or handoff.get("wrap_around")):
             raise CodegenError("Pipeline program cuts cannot cross a reusable handoff.")
 
         def owners(role, endpoint):
-            return {
-                e["call"]
-                for e in schedule[role + "_events"]
-                if e["kind"] == "function_call" and endpoint in e.get("endpoint_bindings", {}).values()
-            }
+            return {e["call"] for e in schedule[role + "_events"]
+                    if e["kind"] == "function_call"
+                    and endpoint in e.get("endpoint_bindings", {}).values()}
 
         consumer = owners("consumer", handoff["writer_name"])
         producer = owners("producer", handoff["reader_name"])
@@ -58,9 +57,8 @@ def project_pipeline_schedule(module, schedule, segment, *, complete_entry=False
     # A reusable function keeps its leaf call IDs. Its instantiated endpoint
     # bindings identify the caller-owned stages without cloning its body.
     bound = {name for e in segment for name in e.get("endpoint_bindings", {}).values()}
-    stages = [
-        s for s in schedule["stages"] if s["call"] in calls or any(c["reader_name"] in bound for c in s["channels"])
-    ]
+    stages = [s for s in schedule["stages"] if s["call"] in calls or any(
+        c["reader_name"] in bound for c in s["channels"])]
     if not stages:
         if any(e["kind"] == "drain" for e in segment):
             raise CodegenError("A pipeline drain must retire its owning program's resources.")
@@ -93,13 +91,14 @@ def project_pipeline_schedule(module, schedule, segment, *, complete_entry=False
     if any(s["auxiliary_consumer"] is not None for s in stages):
         raise CodegenError("Pipeline program cuts require an explicit auxiliary-role projection.")
     required = max(w["offset_bytes"] + w["nbytes"] for s in stages for w in s["workspaces"])
-    alignment = max(max(w["alignment_bytes"], w["allocation_alignment_bytes"]) for s in stages for w in s["workspaces"])
+    alignment = max(max(w["alignment_bytes"], w["allocation_alignment_bytes"])
+                    for s in stages for w in s["workspaces"])
     from triton.flagmega.ir import verify_buffer_plan
     shared = next(s for s in verify_buffer_plan(module).memory_spaces if s.name == "shared")
     allocated = shared.allocation_bytes(required)
-    return {
-        **schedule, "stages": stages, "handoffs": handoffs, "consumer_events": segment, "producer_events":
-        role_events("producer"), "auxiliary_events": [], "consumer_endpoints": consumers, "producer_endpoints":
-        producers, "auxiliary_endpoints": [], "shared_arena_required_nbytes": required, "shared_arena_nbytes":
-        allocated, "shared_arena_alignment_bytes": alignment
-    }
+    return {**schedule, "stages": stages, "handoffs": handoffs,
+            "consumer_events": segment, "producer_events": role_events("producer"),
+            "auxiliary_events": [], "consumer_endpoints": consumers,
+            "producer_endpoints": producers, "auxiliary_endpoints": [],
+            "shared_arena_required_nbytes": required, "shared_arena_nbytes": allocated,
+            "shared_arena_alignment_bytes": alignment}

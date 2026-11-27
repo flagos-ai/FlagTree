@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: MIT
 """Thread normalization statistics through reusable graph functions.
 
-This is the flat-SSA counterpart of the reference ``ThreadNormStatsAcrossFunctionBoundariesPass``.  It changes only internal
+This is the flat-SSA counterpart of nncase's
+``ThreadNormStatsAcrossFunctionBoundariesPass``.  It changes only internal
 function ABIs: the public entry ABI stays stable, while repeated calls can pass
 the producer's additive statistics to the next invocation.
 """
@@ -44,8 +45,7 @@ class _ThreadingPlan:
     @property
     def stats_attrs(self):
         return NormStats.normalize_attrs({
-            "axis": self.axis,
-            "use_mean": self.use_mean,
+            "axis": self.axis, "use_mean": self.use_mean,
             "reduction_group_size": self.reduction_group_size,
             "reduction_order": self.reduction_order,
             "reduction_block_size": self.reduction_block_size,
@@ -83,16 +83,21 @@ def thread_norm_stats_across_function_boundaries(module: IRModule) -> IRModule:
         for call in calls
         if str(call.attrs["callee"]) in plans
     }
-    changed_roots = {node_id for plan in plans.values() for node_id in plan.input_stats_ids}
+    changed_roots = {
+        node_id
+        for plan in plans.values()
+        for node_id in plan.input_stats_ids
+    }
     # A source-level NormStats on a threaded state is also replaced by the
     # callee's appended stats projection.
-    changed_roots.update(node.id
-                         for node in module.nodes
-                         if _threaded_stats_source(node, node_map, plans_by_call) is not None)
+    changed_roots.update(
+        node.id
+        for node in module.nodes
+        if _threaded_stats_source(node, node_map, plans_by_call) is not None
+    )
 
     new_parameters = {
-        plan.stats_parameter_id:
-        Node(
+        plan.stats_parameter_id: Node(
             plan.stats_parameter_id,
             "builtin.var",
             (),
@@ -103,7 +108,10 @@ def thread_norm_stats_across_function_boundaries(module: IRModule) -> IRModule:
         )
         for plan in plans.values()
     }
-    output_owner = {plan.function.outputs[plan.output_field_index]: plan for plan in plans.values()}
+    output_owner = {
+        plan.function.outputs[plan.output_field_index]: plan
+        for plan in plans.values()
+    }
 
     nodes: list[Node] = list(new_parameters.values())
     created_ids = set(occupied)
@@ -112,28 +120,26 @@ def thread_norm_stats_across_function_boundaries(module: IRModule) -> IRModule:
             source = _threaded_stats_source(node, node_map, plans_by_call)
             if source is not None:
                 call, plan = source
-                nodes.append(
-                    Node(
-                        node.id,
-                        "builtin.get_item",
-                        (call.id, ),
-                        plan.stats_type,
-                        PURE,
-                        {"index": plan.stats_output_index},
-                        _threading_metadata(node),
-                    ))
+                nodes.append(Node(
+                    node.id,
+                    "builtin.get_item",
+                    (call.id,),
+                    plan.stats_type,
+                    PURE,
+                    {"index": plan.stats_output_index},
+                    _threading_metadata(node),
+                ))
             else:
                 plan = next(value for value in plans.values() if node.id in value.input_stats_ids)
-                nodes.append(
-                    Node(
-                        node.id,
-                        "nn.bind_norm_stats",
-                        (node.inputs[0], plan.stats_parameter_id),
-                        node.type,
-                        node.effect,
-                        {"axis": plan.axis, "use_mean": plan.use_mean},
-                        _threading_metadata(node),
-                    ))
+                nodes.append(Node(
+                    node.id,
+                    "nn.bind_norm_stats",
+                    (node.inputs[0], plan.stats_parameter_id),
+                    node.type,
+                    node.effect,
+                    {"axis": plan.axis, "use_mean": plan.use_mean},
+                    _threading_metadata(node),
+                ))
         elif node.id in plans_by_call:
             plan = plans_by_call[node.id]
             input_id = node.inputs[plan.input_parameter_index]
@@ -142,11 +148,12 @@ def thread_norm_stats_across_function_boundaries(module: IRModule) -> IRModule:
             created_ids.add(helper_id)
             if source is None:
                 input_node = node_map[input_id]
-                helper_type = NormStats.infer_type((input_node, ), plan.stats_attrs)
+                helper_type = NormStats.infer_type(
+                    (input_node,), plan.stats_attrs)
                 helper = Node(
                     helper_id,
                     "nn.norm_stats",
-                    (input_id, ),
+                    (input_id,),
                     helper_type,
                     PURE,
                     plan.stats_attrs,
@@ -157,7 +164,7 @@ def thread_norm_stats_across_function_boundaries(module: IRModule) -> IRModule:
                 helper = Node(
                     helper_id,
                     "builtin.get_item",
-                    (producer.id, ),
+                    (producer.id,),
                     producer_plan.stats_type,
                     PURE,
                     {"index": producer_plan.stats_output_index},
@@ -170,20 +177,20 @@ def thread_norm_stats_across_function_boundaries(module: IRModule) -> IRModule:
                     stage=module.stage,
                     node_id=node.id,
                 )
-            nodes.extend((helper,
-                          replace(
-                              node,
-                              inputs=(*node.inputs, helper.id),
-                              type=_append_tuple_field(node.type, plan.stats_type),
-                              metadata=_threading_metadata(node),
-                          )))
+            nodes.extend((helper, replace(
+                node,
+                inputs=(*node.inputs, helper.id),
+                type=_append_tuple_field(node.type, plan.stats_type),
+                metadata=_threading_metadata(node),
+            )))
         else:
             nodes.append(node)
 
         plan = output_owner.get(node.id)
         if plan is not None:
             output_node = node_map[node.id]
-            stats_type = NormStats.infer_type((output_node, ), plan.stats_attrs)
+            stats_type = NormStats.infer_type(
+                (output_node,), plan.stats_attrs)
             if stats_type != plan.stats_type:
                 raise IRVerificationError(
                     f"Threaded output statistics of @{plan.function.name} have type {stats_type!r}, "
@@ -191,24 +198,29 @@ def thread_norm_stats_across_function_boundaries(module: IRModule) -> IRModule:
                     stage=module.stage,
                     node_id=node.id,
                 )
-            nodes.append(
-                Node(
-                    plan.stats_output_id,
-                    "nn.norm_stats",
-                    (node.id, ),
-                    stats_type,
-                    PURE,
-                    plan.stats_attrs,
-                    {"introduced_by": "ThreadNormStatsAcrossFunctionBoundaries", "role": "output"},
-                ))
+            nodes.append(Node(
+                plan.stats_output_id,
+                "nn.norm_stats",
+                (node.id,),
+                stats_type,
+                PURE,
+                plan.stats_attrs,
+                {"introduced_by": "ThreadNormStatsAcrossFunctionBoundaries", "role": "output"},
+            ))
 
     functions = tuple(
         replace(
             function,
             parameters=(*function.parameters, plans[function.name].stats_parameter_id),
             outputs=(*function.outputs, plans[function.name].stats_output_id),
-        ) if function.name in plans else function for function in module.functions)
-    points = tuple(point for point in module.selection_points if point.owner not in changed_roots)
+        )
+        if function.name in plans else function
+        for function in module.functions
+    )
+    points = tuple(
+        point for point in module.selection_points
+        if point.owner not in changed_roots
+    )
     point_ids = {point.id for point in points}
     result = replace(
         module,
@@ -228,6 +240,9 @@ def _create_plan(
     occupied: set[str],
 ) -> _ThreadingPlan | None:
     parameter_indices = {node_id: index for index, node_id in enumerate(function.parameters)}
+    if any(node.op == "nn.norm_stats" and node.attrs.get("compute_profile", "default") != "default"
+           for node in function_nodes(module, function)):
+        return None
     groups: dict[tuple[int, int, bool, int, str, int | None], list[Node]] = {}
     for node in function_nodes(module, function):
         if node.op != "nn.norm_stats" or node.inputs[0] not in parameter_indices:
@@ -242,16 +257,12 @@ def _create_plan(
     if len(groups) != 1:
         return None
     (input_index, axis, use_mean, reduction_group_size, reduction_order, reduction_block_size,
-     reduction_block_traversal, reduction_tree_group_size,
-     reduction_group_seed_index), stats_nodes = next(iter(groups.items()))
+     reduction_block_traversal, reduction_tree_group_size, reduction_group_seed_index), stats_nodes = next(iter(groups.items()))
     stats_type = stats_nodes[0].type
     if any(node.type != stats_type for node in stats_nodes):
         return None
     output_index = _state_output_index(
-        module,
-        function,
-        calls,
-        users,
+        module, function, calls, users,
         input_index=input_index,
         axis=axis,
         use_mean=use_mean,
@@ -259,13 +270,12 @@ def _create_plan(
     if output_index is None:
         return None
     output_node = module.node_map[function.outputs[output_index]]
-    stats_attrs = {
-        "axis": axis, "use_mean": use_mean, "reduction_group_size": reduction_group_size, "reduction_order":
-        reduction_order, "reduction_block_size": reduction_block_size, "reduction_block_traversal":
-        reduction_block_traversal, "reduction_tree_group_size": reduction_tree_group_size, "reduction_group_seed_index":
-        reduction_group_seed_index
-    }
-    if NormStats.infer_type((output_node, ), stats_attrs) != stats_type:
+    stats_attrs = {"axis": axis, "use_mean": use_mean, "reduction_group_size": reduction_group_size,
+                   "reduction_order": reduction_order, "reduction_block_size": reduction_block_size,
+                   "reduction_block_traversal": reduction_block_traversal,
+                   "reduction_tree_group_size": reduction_tree_group_size,
+                   "reduction_group_seed_index": reduction_group_seed_index}
+    if NormStats.infer_type((output_node,), stats_attrs) != stats_type:
         return None
     parameter_id = _fresh_id(f"{function.parameters[input_index]}.norm_stats", occupied)
     output_id = _fresh_id(f"{function.name}.output_norm_stats", occupied | {parameter_id})
@@ -304,17 +314,23 @@ def _state_output_index(
     evidence: set[int] = set()
     for call in calls:
         call_users = users.get(call.id, ())
-        if not call_users or any(value.op != "builtin.get_item" or value.inputs !=
-                                 (call.id, ) or not 0 <= int(value.attrs["index"]) < output_count
-                                 for value in call_users):
+        if not call_users or any(
+            value.op != "builtin.get_item"
+            or value.inputs != (call.id,)
+            or not 0 <= int(value.attrs["index"]) < output_count
+            for value in call_users
+        ):
             return None
         for projection in call_users:
             index = int(projection.attrs["index"])
             for consumer in users.get(projection.id, ()):
-                if (consumer.op == "builtin.call" and str(consumer.attrs["callee"]) == function.name
-                        and consumer.inputs[input_index] == projection.id):
+                if (
+                    consumer.op == "builtin.call"
+                    and str(consumer.attrs["callee"]) == function.name
+                    and consumer.inputs[input_index] == projection.id
+                ):
                     evidence.add(index)
-                elif consumer.op == "nn.norm_stats" and consumer.inputs == (projection.id, ):
+                elif consumer.op == "nn.norm_stats" and consumer.inputs == (projection.id,):
                     input_type = tensor_of(projection.type)
                     candidate_axis = normalize_axis(int(consumer.attrs["axis"]), input_type.rank)
                     if candidate_axis == axis and bool(consumer.attrs["use_mean"]) == use_mean:
@@ -322,8 +338,10 @@ def _state_output_index(
     if len(evidence) == 1:
         return next(iter(evidence))
     input_type = module.node_map[function.parameters[input_index]].type
-    type_matches = tuple(index for index, node_id in enumerate(function.outputs)
-                         if module.node_map[node_id].type == input_type)
+    type_matches = tuple(
+        index for index, node_id in enumerate(function.outputs)
+        if module.node_map[node_id].type == input_type
+    )
     return type_matches[0] if not evidence and len(type_matches) == 1 else None
 
 
@@ -350,8 +368,7 @@ def _threaded_value_source(
     value_id: str,
     node_map: dict[str, Node],
     plans_by_call: dict[str, _ThreadingPlan],
-    *,
-    expected_plan: _ThreadingPlan | None = None,
+    *, expected_plan: _ThreadingPlan | None = None,
 ) -> tuple[Node, _ThreadingPlan] | None:
     projection = node_map[value_id]
     if projection.op != "builtin.get_item":

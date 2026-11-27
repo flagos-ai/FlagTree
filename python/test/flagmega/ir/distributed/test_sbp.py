@@ -19,23 +19,23 @@ def test_placement_normalizes_names_levels_and_physical_sizes():
 
 
 def test_split_stages_preserve_contiguous_and_block_cyclic_semantics():
-    contiguous = fm.SBP.split_contiguous((0, ), granularity=16)
-    block_cyclic = fm.SBP.split_block_cyclic((1, ), block_size=8)
+    contiguous = fm.SBP.split_contiguous((0,), granularity=16)
+    block_cyclic = fm.SBP.split_block_cyclic((1,), block_size=8)
 
     assert contiguous.is_contiguous
     assert not block_cyclic.is_contiguous
-    assert contiguous.hierarchy_axes == (0, )
+    assert contiguous.hierarchy_axes == (0,)
     assert str(block_cyclic) == "S(BC(8)@[1])"
 
 
 def test_distributed_type_rejects_reused_hierarchy_axis_and_non_divisible_extent():
-    placement = fm.Placement((8, ), "b", "b")
+    placement = fm.Placement((8,), "b", "b")
     tensor = fm.tensor_type("bfloat16", [4, 16])
 
     with pytest.raises(IRSchemaError, match="not distributable"):
         fm.DistributedType(
             tensor,
-            (fm.SBP.split_contiguous((0, )), fm.SBP.split_contiguous((0, ))),
+            (fm.SBP.split_contiguous((0,)), fm.SBP.split_contiguous((0,))),
             placement,
         )
 
@@ -59,18 +59,21 @@ def test_block_cyclic_split_accepts_a_non_divisible_tail_block():
     with pytest.raises(IRSchemaError, match="not distributable"):
         fm.DistributedType(
             tensor,
-            (fm.SBP.split_contiguous((0, )), fm.SBP.broadcast()),
+            (fm.SBP.split_contiguous((0,)), fm.SBP.broadcast()),
             placement,
         )
 
 
-def test_leaf_candidates_match_reference_cartesian_policy_contract():
+def test_leaf_candidates_match_nncase_cartesian_policy_contract():
     placement = fm.Placement((2, 4), "db", "db")
     tensor = fm.tensor_type("float32", [8, 16])
     candidates = fm.leaf_candidate_policies(tensor, placement)
 
     assert (fm.SBP.broadcast(), fm.SBP.broadcast()) in candidates
     assert any(
-        isinstance(candidate[0], fm.SBPSplit) and candidate[0].hierarchy_axes == (
-            0, 1) and isinstance(candidate[1], fm.SBPBroadCast) for candidate in candidates)
+        isinstance(candidate[0], fm.SBPSplit)
+        and candidate[0].hierarchy_axes == (0, 1)
+        and isinstance(candidate[1], fm.SBPBroadCast)
+        for candidate in candidates
+    )
     assert all(fm.is_distributable(tensor, candidate, placement) for candidate in candidates)

@@ -19,8 +19,7 @@ from triton.flagmega.ir.ops.tensors._k_major import parse_k_major_layout
 
 
 def dense_matmul_distribution_contract(
-    node: Node,
-    module,
+    node: Node, module,
 ) -> dict[str, object]:
     """Describe the exact executable distribution schedule of a dense MatMul."""
 
@@ -28,22 +27,28 @@ def dense_matmul_distribution_contract(
     if not isinstance(output, DistributedType) or output.partial is None:
         return {"kind": "canonical"}
     if node.op not in {
-            "math.matmul",
-            "math.packed_dense_matmul",
-            "ntt.packed_matmul",
+        "math.matmul", "math.packed_dense_matmul", "ntt.packed_matmul",
     } or len(node.inputs) < 2:
-        raise CodegenError(f"Partial dense MatMul contract is unsupported for {node.op!r} on {node.id!r}.")
+        raise CodegenError(
+            f"Partial dense MatMul contract is unsupported for {node.op!r} on {node.id!r}."
+        )
 
     partial = output.partial
     if partial.reduce_op is not ReduceOp.SUM:
-        raise CodegenError(f"Dense MatMul {node.id!r} requires Sum partial output, got "
-                           f"{partial.reduce_op.value}.")
+        raise CodegenError(
+            f"Dense MatMul {node.id!r} requires Sum partial output, got "
+            f"{partial.reduce_op.value}."
+        )
     lhs = module.node_map[node.inputs[0]].type
     rhs = module.node_map[node.inputs[1]].type
     if not isinstance(lhs, DistributedType) or not isinstance(rhs, DistributedType):
-        raise CodegenError(f"Dense MatMul {node.id!r} partial output requires distributed operands.")
+        raise CodegenError(
+            f"Dense MatMul {node.id!r} partial output requires distributed operands."
+        )
     if lhs.placement != output.placement or rhs.placement != output.placement:
-        raise CodegenError(f"Dense MatMul {node.id!r} operands and output require one placement.")
+        raise CodegenError(
+            f"Dense MatMul {node.id!r} operands and output require one placement."
+        )
 
     if node.op == "math.matmul":
         transpose_a = bool(node.attrs.get("transpose_a", False))
@@ -55,8 +60,10 @@ def dense_matmul_distribution_contract(
     elif node.op == "math.packed_dense_matmul":
         packed_layout = node.attrs.get("packed_layout")
         if not isinstance(packed_layout, str):
-            raise CodegenError(f"Partial dense MatMul contract is unsupported for packed node "
-                               f"{node.id!r} without an explicit packed_layout.")
+            raise CodegenError(
+                f"Partial dense MatMul contract is unsupported for packed node "
+                f"{node.id!r} without an explicit packed_layout."
+            )
         _, _, mesh_interleaved = parse_k_major_layout(packed_layout)
         lhs_m_axis = 0
         lhs_k_axis = lhs.tensor.rank - 1
@@ -68,31 +75,43 @@ def dense_matmul_distribution_contract(
         rhs_k_axis = 0
         rhs_n_axis = 1
     else:
-        raise CodegenError(f"Partial dense MatMul contract is unsupported for {node.op!r} on {node.id!r}.")
+        raise CodegenError(
+            f"Partial dense MatMul contract is unsupported for {node.op!r} on {node.id!r}."
+        )
     axes = tuple(partial.axes)
     _require_reduction_split(lhs, lhs_k_axis, axes, node.id, "lhs")
     _require_reduction_split(rhs, rhs_k_axis, axes, node.id, "rhs")
     if lhs.axis_policies[lhs_k_axis].hierarchy_axes != rhs.axis_policies[rhs_k_axis].hierarchy_axes:
-        raise CodegenError(f"Dense MatMul {node.id!r} reduction axis must be mapped in the same "
-                           "placement order on both operands.")
+        raise CodegenError(
+            f"Dense MatMul {node.id!r} reduction axis must be mapped in the same "
+            "placement order on both operands."
+        )
     output_m_axes = _split_axes(output.axis_policies[0])
     lhs_m_axes = _split_axes(lhs.axis_policies[lhs_m_axis])
     if output_m_axes != lhs_m_axes:
-        raise CodegenError(f"Dense MatMul {node.id!r} output-M and lhs-M splits must use the "
-                           "same placement axes.")
+        raise CodegenError(
+            f"Dense MatMul {node.id!r} output-M and lhs-M splits must use the "
+            "same placement axes."
+        )
     output_n_axes = _split_axes(output.axis_policies[-1])
     rhs_output_axes = _split_axes(rhs.axis_policies[rhs_n_axis])
     if output_n_axes != rhs_output_axes:
-        raise CodegenError(f"Dense MatMul {node.id!r} output-N and rhs-N splits must use the "
-                           "same placement axes.")
+        raise CodegenError(
+            f"Dense MatMul {node.id!r} output-N and rhs-N splits must use the "
+            "same placement axes."
+        )
     output_split_axes = tuple(dict.fromkeys((*output_m_axes, *output_n_axes)))
     if set(output_split_axes) & set(axes):
-        raise CodegenError(f"Dense MatMul {node.id!r} output and reduction placement axes must be disjoint.")
+        raise CodegenError(
+            f"Dense MatMul {node.id!r} output and reduction placement axes must be disjoint."
+        )
     owner_count = 1
     for axis in axes:
         owner_count *= output.placement.hierarchy[axis]
     return {
-        "kind": ("output_reduction_split" if output_split_axes else "reduction_split"),
+        "kind": (
+            "output_reduction_split" if output_split_axes else "reduction_split"
+        ),
         "partial_axes": axes,
         "output_axes": output_split_axes,
         "owner_count": owner_count,
@@ -117,11 +136,18 @@ def _require_reduction_split(
     """
 
     if value.partial is not None:
-        raise CodegenError(f"Dense MatMul {node_id!r} {role} cannot itself be partial.")
+        raise CodegenError(
+            f"Dense MatMul {node_id!r} {role} cannot itself be partial."
+        )
     policy = value.axis_policies[reduction_axis]
-    if (not isinstance(policy, SBPSplit) or set(policy.hierarchy_axes) != set(partial_axes)):
-        raise CodegenError(f"Dense MatMul {node_id!r} {role} reduction axis must be split over "
-                           f"placement axes {partial_axes}.")
+    if (
+        not isinstance(policy, SBPSplit)
+        or set(policy.hierarchy_axes) != set(partial_axes)
+    ):
+        raise CodegenError(
+            f"Dense MatMul {node_id!r} {role} reduction axis must be split over "
+            f"placement axes {partial_axes}."
+        )
 
 
 def _split_axes(policy) -> tuple[int, ...]:
@@ -141,7 +167,10 @@ def is_non_replicated_type(value: IRType) -> bool:
     """
 
     if isinstance(value, DistributedType):
-        return value.partial is not None or any(not isinstance(policy, SBPBroadCast) for policy in value.axis_policies)
+        return value.partial is not None or any(
+            not isinstance(policy, SBPBroadCast)
+            for policy in value.axis_policies
+        )
     if isinstance(value, TupleType):
         return any(is_non_replicated_type(field) for field in value.fields)
     return False

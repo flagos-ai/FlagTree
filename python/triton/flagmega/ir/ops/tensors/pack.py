@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Pack logical tensor axes into an ``VectorType``."""
+"""Pack logical tensor axes into an nncase-compatible ``VectorType``."""
 
 from __future__ import annotations
 
@@ -34,7 +34,8 @@ class Pack(OpDefinition):
     numpy_materializable = True
     """Move one or more logical lane factors into the element data type.
 
-    ``lanes[i]`` belongs to ``axes[i]``. Axes may repeat, using axis-lane-product semantics. Packing an existing VectorType prepends the
+    ``lanes[i]`` belongs to ``axes[i]``. Axes may repeat, matching nncase's
+    axis-lane-product semantics. Packing an existing VectorType prepends the
     new lanes, which is needed by vectorization propagation.
     """
 
@@ -80,8 +81,9 @@ class Pack(OpDefinition):
         for axis, lane_product in axis_lane_products(lanes, axes).items():
             packed_extent = try_div_exactly(shape[axis], lane_product)
             if packed_extent is None:
-                raise IRSchemaError(f"F.tensors.pack axis {axis} extent {shape[axis]} is not provably divisible "
-                                    f"by {lane_product}; pad it before packing.")
+                raise IRSchemaError(
+                    f"F.tensors.pack axis {axis} extent {shape[axis]} is not provably divisible "
+                    f"by {lane_product}; pad it before packing.")
             shape[axis] = packed_extent
         if isinstance(value_type.dtype, VectorType):
             dtype = VectorType(value_type.dtype.elem_type, (*lanes, *value_type.dtype.lanes))
@@ -97,12 +99,16 @@ class Pack(OpDefinition):
             if not isinstance(policy, SBPSplit):
                 continue
             if try_div_exactly(local[axis], lane_product) is None:
-                raise IRSchemaError(f"F.tensors.pack axis {axis} split boundary cuts lane group "
-                                    f"{lane_product}.")
+                raise IRSchemaError(
+                    f"F.tensors.pack axis {axis} split boundary cuts lane group "
+                    f"{lane_product}."
+                )
             scaled = scale_split_units(policy, 1, lane_product)
             if scaled is None:
-                raise IRSchemaError(f"F.tensors.pack cannot scale axis {axis} split policy by "
-                                    f"lane group {lane_product}.")
+                raise IRSchemaError(
+                    f"F.tensors.pack cannot scale axis {axis} split policy by "
+                    f"lane group {lane_product}."
+                )
             policies[axis] = scaled
         return DistributedType(
             packed,
@@ -133,7 +139,7 @@ class Pack(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         size = tensor_nbytes(node.type) if isinstance(node.type, TensorType) else None
-        return OpCost(bytes_read=size, bytes_written=size, notes=("vector-pack", ))
+        return OpCost(bytes_read=size, bytes_written=size, notes=("vector-pack",))
 
 
 def pack_physical(value, outer_rank: int, lanes: tuple[int, ...], axes: tuple[int, ...], old_lanes=()):
@@ -189,15 +195,14 @@ def _pack_axes(attrs: Mapping[str, object], lane_count: int, rank: int) -> tuple
     if "axes" in attrs:
         values = tuple(int(value) for value in attrs["axes"])
     else:
-        values = (int(attrs["axis"]), ) * lane_count
+        values = (int(attrs["axis"]),) * lane_count
     return normalize_axes(values, rank)
 
 
 def _ints(value: object, name: str) -> tuple[int, ...]:
     if isinstance(value, int) and not isinstance(value, bool):
-        return (value, )
-    if not isinstance(value,
-                      (tuple, list)) or any(isinstance(item, bool) or not isinstance(item, int) for item in value):
+        return (value,)
+    if not isinstance(value, (tuple, list)) or any(isinstance(item, bool) or not isinstance(item, int) for item in value):
         raise IRSchemaError(f"F.tensors.pack {name} must be an integer sequence.")
     return tuple(value)
 

@@ -8,6 +8,7 @@ from triton.flagmega import ir as fm
 from triton.flagmega.targets import NvidiaSm90Target
 from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
+
 SINGLE = "tir.dense_matmul_glu.packed_tensor_descriptor_paired_smem_pipeline_inline_gemv"
 TABLE = "tir.dense_matmul_glu.packed_tensor_descriptor_table_paired_smem_pipeline_inline_gemv"
 
@@ -23,16 +24,13 @@ def _projection(local_n, k=2048, *, cyclic=False, plain=False):
     lhs = fm.Node("lhs", "builtin.var", (), distributed(fm.tensor_type("bfloat16", (1, k)), (broadcast, broadcast)))
     weight = distributed(fm.tensor_type(fm.vector_type("bfloat16", (8, 2, 8)), (k // 16, local_n)), (broadcast, split))
     gate, up = (fm.Node(name, "builtin.var", (), weight) for name in ("gate", "up"))
-    result = fm.Node(
-        "result", "nn.packed_dense_matmul_glu", ("lhs", "gate", "up"),
-        distributed(fm.tensor_type(fm.vector_type("bfloat16", (8, )), (1, local_n)), (broadcast, split)),
+    result = fm.Node("result", "nn.packed_dense_matmul_glu", ("lhs", "gate", "up"),
+        distributed(fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, local_n)), (broadcast, split)),
         attrs={"activation": "silu", "packed_layout": "k_major_n8_k16"}, metadata={
             "selected_vectorization": "vectorization.dense_matmul_glu.n",
-            "selected_vector_axes": (1, ),
-            "selected_vector_lanes": (8, ),
+            "selected_vector_axes": (1,), "selected_vector_lanes": (8,),
         })
-    return fm.IRModule(dialect="distributed", stage="distributed", nodes=(lhs, gate, up, result), functions=(),
-                       entry="main")
+    return fm.IRModule(dialect="distributed", stage="distributed", nodes=(lhs, gate, up, result), functions=(), entry="main")
 
 
 def _candidates(module, model=None):
@@ -47,10 +45,8 @@ def test_tma_tail_candidates_preserve_local_owner_extent(local_n):
 
 def test_mask_capability_is_required_for_partial_output_tile():
     model = portable_triton_implementation_model()
-    model = replace(
-        model, implementations=tuple(
-            replace(value, contract={**value.contract, "supports_masked_output_tiles": False}) if value.id in
-            {SINGLE, TABLE} else value for value in model.implementations))
+    model = replace(model, implementations=tuple(replace(value, contract={**value.contract, "supports_masked_output_tiles": False})
+        if value.id in {SINGLE, TABLE} else value for value in model.implementations))
     assert not {SINGLE, TABLE} & _candidates(_projection(24), model)
 
 

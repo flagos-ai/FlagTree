@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: embedding/decode
+# flagmega-kernel: embedding/decode
 @triton.jit
 def _flagmega_iq4_xs_embedding(weight, token_id, feature, mask, H: tl.constexpr):
     u8 = weight.to(tl.pointer_type(tl.uint8))

@@ -35,7 +35,9 @@ def test_dynamic_calculation_simplification_and_python_round_trip(tmp_path):
     assert "fm.dim_expr(" in path.read_text(encoding="utf-8")
 
 
-def test_repeated_structural_expression_reuses_bounded_sympy_simplification(monkeypatch, ):
+def test_repeated_structural_expression_reuses_bounded_sympy_simplification(
+    monkeypatch,
+):
     dim_expr_module = import_module("triton.flagmega.ir.dim_expr")
     original_to_sympy = dim_expr_module._to_sympy
     conversions = []
@@ -82,7 +84,9 @@ def test_dim_expr_caches_validation_and_structural_simplification():
     try:
         first = fm.dim_expr("add", fm.dim("a", 0, 7), fm.dim(3))
         before = dim_expr_module._dim_expr_cached.cache_info()
-        repeats = tuple(fm.dim_expr("add", fm.dim("a", 0, 7), fm.dim(3)) for _ in range(16))
+        repeats = tuple(
+            fm.dim_expr("add", fm.dim("a", 0, 7), fm.dim(3)) for _ in range(16)
+        )
         after = dim_expr_module._dim_expr_cached.cache_info()
 
         assert all(value == first for value in repeats)
@@ -132,14 +136,22 @@ def test_subview_rejects_a_larger_target_capacity_without_the_interval_proof():
     broadcast = fm.SBP.broadcast()
     # A split over both axes gives each owner 1/32 of the rows; a split over
     # one axis gives 1/4. The coarser target cannot fit inside the finer source.
-    fine = fm.DistributedType(tensor, (fm.SBP.split_contiguous((0, 1)), broadcast), placement)
-    coarse = fm.DistributedType(tensor, (fm.SBP.split_contiguous((0, )), broadcast), placement)
+    fine = fm.DistributedType(
+        tensor, (fm.SBP.split_contiguous((0, 1)), broadcast), placement
+    )
+    coarse = fm.DistributedType(
+        tensor, (fm.SBP.split_contiguous((0, )), broadcast), placement
+    )
 
-    coords = tuple(fm.dim(f"_owner_coord_{axis}", 0, extent - 1) for axis, extent in enumerate(placement.hierarchy))
+    coords = tuple(
+        fm.dim(f"_owner_coord_{axis}", 0, extent - 1)
+        for axis, extent in enumerate(placement.hierarchy)
+    )
     fine_capacity = local_shard_descriptor(fine, coords).local_capacity_shape
     coarse_capacity = local_shard_descriptor(coarse, coords).local_capacity_shape
     assert coarse_capacity[0].fixed_value > fine_capacity[0].fixed_value, (
-        "the fixture must present a strictly larger target capacity")
+        "the fixture must present a strictly larger target capacity"
+    )
 
     assert is_local_shard_subview(fine, coarse) is False
     # The reverse direction is a genuine containment and must still be proved.

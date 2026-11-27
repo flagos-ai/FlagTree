@@ -38,7 +38,7 @@ def maximum_antichain_weight(ancestors, weights):
     while True:
         levels = [-1] * len(network)
         levels[source] = 0
-        pending = deque((source, ))
+        pending = deque((source,))
         while pending:
             node = pending.popleft()
             for target, _, capacity in network[node]:

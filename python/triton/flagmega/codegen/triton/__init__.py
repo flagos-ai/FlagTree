@@ -25,7 +25,8 @@ from triton.flagmega.codegen.triton.runtime_binding import (
     describe_function_runtime_binding,
 )
 from triton.flagmega.codegen.triton.function_call import (
-    emit_function_call_arguments, )
+    emit_function_call_arguments,
+)
 from triton.flagmega.codegen.triton.physical_access import (
     emit_active_extent,
     emit_buffer_pointer,

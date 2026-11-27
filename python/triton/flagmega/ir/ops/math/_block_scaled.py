@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.ir.types import DType, VectorType
+from triton.flagmega.ir.ops._compute_profile import compute_profile_supports_target
 
 
 def normalize_block_scaled_precision(attrs, opname):
@@ -33,12 +34,11 @@ def normalize_block_scaled_precision(attrs, opname):
 
 
 def verify_block_scaled_precision_inputs(value, weight, scale, attrs, opname):
-    if attrs.get("activation_quantization",
-                 "dynamic_fp8") == "dynamic_fp8" and attrs.get("weight_dequant_dtype") is None:
+    if attrs.get("activation_quantization", "dynamic_fp8") == "dynamic_fp8" and attrs.get("weight_dequant_dtype") is None:
         return
     scalar_weight = weight.dtype.elem_type if isinstance(weight.dtype, VectorType) else weight.dtype
-    if (value.dtype not in {DType.FLOAT16, DType.BFLOAT16, DType.FLOAT32} or scalar_weight != DType.FLOAT8_E4M3FN
-            or scale.dtype != DType.FLOAT32):
+    if (value.dtype not in {DType.FLOAT16, DType.BFLOAT16, DType.FLOAT32}
+            or scalar_weight != DType.FLOAT8_E4M3FN or scale.dtype != DType.FLOAT32):
         raise IRSchemaError(f"{opname} precision overrides require scalar F16/BF16/F32 activations, "
                             "FP8 E4M3FN weights and FP32 scales.")
     if attrs.get("activation_quantization") == "dynamic_fp8_sm90" and value.dtype != DType.BFLOAT16:
@@ -48,16 +48,16 @@ def verify_block_scaled_precision_inputs(value, weight, scale, attrs, opname):
 def normalize_glu_activation_quantization(attrs, opname):
     """GLU shares activation quantization but retains its own weight contract."""
     result = normalize_block_scaled_precision(
-        {
-            "activation_quantization": attrs.get("activation_quantization", "dynamic_fp8"), "weight_encoding":
-            attrs.get("gate_weight_encoding") or attrs.get("up_weight_encoding")
-        }, opname)
+        {"activation_quantization": attrs.get("activation_quantization", "dynamic_fp8"),
+         "weight_encoding": attrs.get("gate_weight_encoding") or attrs.get("up_weight_encoding")}, opname)
     if result.get("activation_quantization") == "none":
         raise IRSchemaError(f"{opname} activation_quantization must be dynamic_fp8 or dynamic_fp8_sm90.")
     return result
 
 
 def block_scaled_precision_supports_target(attrs, platform, architecture):
+    if not compute_profile_supports_target(attrs, platform, architecture):
+        return False
     return (attrs.get("activation_quantization") != "dynamic_fp8_sm90"
             or (platform == "nvidia" and architecture == "sm90"))
 
@@ -136,8 +136,8 @@ def block_scaled_linear(value, weight, weight_scale_inv, *, block_n: int, block_
     if tuple(weight_scale_inv.shape) != expected_scale:
         raise EvaluationError(
             f"Block-scaled weight scale must have shape {expected_scale}, got {tuple(weight_scale_inv.shape)}.")
-    activation = (value.float() if activation_quantization == "none" else dynamic_block_quant_dequant(
-        value, block_k=block_k, mode=activation_quantization))
+    activation = (value.float() if activation_quantization == "none" else
+                  dynamic_block_quant_dequant(value, block_k=block_k, mode=activation_quantization))
     expanded_scale = weight_scale_inv.to(dtype=torch.float32).repeat_interleave(block_n, dim=0).repeat_interleave(
         block_k, dim=1)[:n, :k]
     dequantized_weight = weight.to(dtype=torch.float32) * expanded_scale

@@ -15,7 +15,6 @@ from .sampling import SamplingConfig, sample_logits
 
 
 class ArtifactBackend:
-
     def __init__(self, model, *, sampling=SamplingConfig(), cuda_graph=True, warmups=3):
         import torch
         self.model = model
@@ -33,7 +32,7 @@ class ArtifactBackend:
             raise ValueError("Text serving currently requires the paged-attention state ABI")
         self.capacity = model.state_config.max_sequence_length
         self.state = model.create_state()
-        self.input_ids = torch.zeros((1, ), dtype=torch.int32, device=self.device)
+        self.input_ids = torch.zeros((1,), dtype=torch.int32, device=self.device)
         outputs = model.create_outputs()
         self.logits, self.token = outputs if model.result_kind == "logits_token_state" else (outputs, None)
         vocab = model.ir_module.metadata.get("vocab_size")
@@ -43,8 +42,9 @@ class ArtifactBackend:
         self.generator = torch.Generator(device=self.device).manual_seed(sampling.seed)
         self._builtin_token = self.token is not None
         if self.token is None:
-            self.token = torch.empty((1, ), dtype=torch.int32, device=self.device)
-        self._cpu_token = torch.empty((1, ), dtype=torch.int32, device="cpu", pin_memory=self.device.type == "cuda")
+            self.token = torch.empty((1,), dtype=torch.int32, device=self.device)
+        self._cpu_token = torch.empty((1,), dtype=torch.int32, device="cpu",
+                                      pin_memory=self.device.type == "cuda")
         if cuda_graph and self.device.type != "cuda":
             raise ValueError("CUDA graph execution requires a CUDA device; select eager explicitly")
         if warmups < 0:
@@ -74,8 +74,8 @@ class ArtifactBackend:
     def load(cls, artifact, *, device="cuda:0", frozen_native=None, **kwargs):
         from triton.flagmega.runtime import load
         started = time.perf_counter()
-        model = (load(artifact, device=device)
-                 if frozen_native is None else load(artifact, device=device, frozen_native=frozen_native))
+        model = (load(artifact, device=device) if frozen_native is None
+                 else load(artifact, device=device, frozen_native=frozen_native))
         elapsed = (time.perf_counter() - started) * 1000
         try:
             result = cls(model, **kwargs)
@@ -170,34 +170,25 @@ class ArtifactBackend:
         for source in sorted(Path(__file__).parent.glob("*.py")):
             serving_source.update(source.name.encode())
             serving_source.update(source.read_bytes())
-        return {
-            "backend":
-            "flagmega", "prefill":
-            "compiled_token_scan", "vllm":
-            False, "device":
-            str(self.device), "gpu":
-            torch.cuda.get_device_name(self.device) if self.device.type == "cuda" else None, "cuda_graph":
-            self.graph is not None, "capacity":
-            self.capacity, "num_layers":
-            self.model.state_config.num_layers, "vocab_size":
-            self.vocab_size, "load_ms":
-            self.load_ms, "prepare_ms":
-            self.prepare_ms, "allocated_bytes":
-            torch.cuda.memory_allocated(self.device) if self.device.type == "cuda" else None, "peak_allocated_bytes":
-            torch.cuda.max_memory_allocated(self.device) if self.device.type == "cuda" else None,
-            # The generated source's filename depends on the codegen
-            # backend (`generated_kernels.py` for Triton, `.cpp` for the
-            # C++/FTT backend), so take it from the manifest's own codegen
-            # descriptor rather than assuming one.
-            "artifact_source_sha256":
-            hashlib.sha256((artifact / str(self.model.manifest["codegen"]["source"])).read_bytes()).hexdigest(),
-            "artifact_semantic_hash":
-            self.model.manifest["semantic_hash"], "serving_source_sha256":
-            serving_source.hexdigest(), "numerical_contract":
-            self.model.ir_module.metadata.get("numerical_contract"), "resource":
-            self.model.resource_report, "torch":
-            torch.__version__
-        }
+        return {"backend": "flagmega", "prefill": "compiled_token_scan", "vllm": False,
+                "device": str(self.device),
+                "gpu": torch.cuda.get_device_name(self.device) if self.device.type == "cuda" else None,
+                "cuda_graph": self.graph is not None, "capacity": self.capacity,
+                "num_layers": self.model.state_config.num_layers, "vocab_size": self.vocab_size,
+                "load_ms": self.load_ms, "prepare_ms": self.prepare_ms,
+                "allocated_bytes": torch.cuda.memory_allocated(self.device) if self.device.type == "cuda" else None,
+                "peak_allocated_bytes": torch.cuda.max_memory_allocated(self.device) if self.device.type == "cuda" else None,
+                # The generated source's filename depends on the codegen
+                # backend (`generated_kernels.py` for Triton, `.cpp` for the
+                # C++/FTT backend), so take it from the manifest's own codegen
+                # descriptor rather than assuming one.
+                "artifact_source_sha256": hashlib.sha256(
+                    (artifact / str(self.model.manifest["codegen"]["source"])).read_bytes()
+                ).hexdigest(),
+                "artifact_semantic_hash": self.model.manifest["semantic_hash"],
+                "serving_source_sha256": serving_source.hexdigest(),
+                "numerical_contract": self.model.ir_module.metadata.get("numerical_contract"),
+                "resource": self.model.resource_report, "torch": torch.__version__}
 
     def _require_open(self):
         if self.closed:

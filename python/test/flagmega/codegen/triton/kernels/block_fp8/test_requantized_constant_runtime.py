@@ -21,24 +21,21 @@ def test_offline_requantized_weights_reach_real_gpu_consumer(tmp_path, variant, 
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
     weights = _simple_weights()
-    infos = {
-        name: TensorInfo(name, DType.FLOAT8_E4M3FN if name == "weight" else DType.FLOAT32, tuple(value.shape), "memory")
-        for name, value in weights.items()
-    }
+    infos = {name: TensorInfo(name, DType.FLOAT8_E4M3FN if name == "weight" else DType.FLOAT32,
+                               tuple(value.shape), "memory") for name, value in weights.items()}
     checkpoint = MemoryCheckpoint({}, infos, weights)
     compiler = Compiler()
     proposed = compiler.compile(Requantized(project=True, scale_division=mode).build(), stop_after="propose-tir").module
     assert not any(node.op in {"nn.requantize_block_scaled_fp8", "tensors.pack"} for node in proposed.nodes)
     assert any(node.op == "nn.requantize_block_scaled_fp8"
-               for recipe in proposed.constant_recipes
-               for node in recipe.nodes)
-    choices = [(point.id, variant) for point in proposed.selection_points if any(candidate.id == variant
-                                                                                 for candidate in point.candidates)]
+               for recipe in proposed.constant_recipes for node in recipe.nodes)
+    choices = [(point.id, variant) for point in proposed.selection_points
+               if any(candidate.id == variant for candidate in point.candidates)]
     assert choices
     selected = apply_plan(proposed, override_plan(proposed, choices))
     lowered = compiler.compile(selected).module
-    path = write_artifact(lowered, tmp_path / "requantized", target="nvidia-sm90", checkpoint=checkpoint,
-                          emit_executable=True)
+    path = write_artifact(lowered, tmp_path / "requantized", target="nvidia-sm90",
+                          checkpoint=checkpoint, emit_executable=True)
     runtime = load(path, device="cuda:0")
     try:
         value = torch.zeros((1, 128), dtype=torch.bfloat16, device="cuda")

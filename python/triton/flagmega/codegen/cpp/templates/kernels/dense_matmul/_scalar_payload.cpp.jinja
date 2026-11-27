@@ -1,0 +1,48 @@
+{# Canonical scalar payload arithmetic, shared by the separate tail and
+   the tail overlapped on otherwise idle SME warps. #}
+    for (ftt::dim_t dense_payload = {% if sme_payload %}{{ sme_full_n * lane }}LL + {% endif %}ftt_thread - {{ scalar_thread_base | default(0) }}LL;
+         dense_payload < {{ call.local_n_capacity }}LL * {{ lane }}LL;
+         dense_payload += ftt_threads) {
+        const ftt::dim_t dense_local_n_offsets = dense_payload / {{ lane }}LL;
+        const ftt::dim_t dense_k_in_lane = dense_payload % {{ lane }}LL;
+        const ftt::dim_t dense_global_n = {{ call.global_n | cppexpr }};
+        (void)dense_global_n;
+{# `result_active` depends on N only, so it is uniform across a lane group and
+   the group still reaches its shuffle convergently. #}
+        if (!({{ call.result_active | cppexpr }})) {
+            continue;
+        }
+        float dense_partial[{{ kg_streams }}] = {};
+        for (ftt::dim_t dense_group_base = 0;
+             dense_group_base < {{ groups }}LL;
+             dense_group_base += {{ kg_streams }}LL) {
+            FTT_UNROLL
+            for (ftt::dim_t dense_stream = 0;
+                 dense_stream < {{ kg_streams }}LL; ++dense_stream) {
+                const ftt::dim_t dense_local_k_offsets =
+                    (dense_group_base + dense_stream) * {{ lane }}LL
+                    + dense_k_in_lane;
+                const ftt::dim_t dense_global_k = {{ call.global_k | cppexpr }};
+                (void)dense_global_k;
+{% if not call.k_predicate_redundant %}
+                if (!({{ call.source_active | cppexpr }})) {
+                    continue;
+                }
+{% endif %}
+                dense_partial[(int)dense_stream] +=
+                    ftt::to_float(ftt_weight[{{ call.weight_offset | cppexpr }}])
+                    * ftt::to_float(ftt_source[{{ call.source_offset | cppexpr }}]);
+            }
+        }
+        float dense_accumulator = 0.0f;
+        FTT_UNROLL
+        for (int dense_stream = 0; dense_stream < {{ kg_streams }};
+             ++dense_stream)
+            dense_accumulator += dense_partial[dense_stream];
+        dense_accumulator =
+            ftt::arch::lane_group_reduce_sum<{{ lane }}>(dense_accumulator);
+        if (dense_k_in_lane == 0) {
+            ftt_result[{{ call.result_offset | cppexpr }}] =
+                ftt::store_as(ftt_result, dense_accumulator);
+        }
+    }

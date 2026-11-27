@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{# Map four owner-local heads together while preserving the portable
+{# Map four owner-local heads together while preserving the portable
    16-token softmax boundaries and FP32 reduction order. #}
 {% set geometry = namespace(parallel=render_calls is defined and num_warps is defined and num_warps in [16, 32]) %}
 {% if render_calls is defined %}

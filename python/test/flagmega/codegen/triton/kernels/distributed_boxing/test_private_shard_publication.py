@@ -21,7 +21,8 @@ def test_publication_visits_each_source_owner_only(coordinate_space, lanes, spli
     dtype = "float32" if lanes == 1 else fm.vector_type("float32", lanes)
     width = 24 if split_kind == "contiguous" else 19
     tensor = fm.tensor_type(dtype, (2, width))
-    split = (fm.SBP.split_contiguous((0, 1), 3) if split_kind == "contiguous" else fm.SBP.split_block_cyclic((0, 1), 2))
+    split = (fm.SBP.split_contiguous((0, 1), 3) if split_kind == "contiguous" else
+             fm.SBP.split_block_cyclic((0, 1), 2))
     source_type = fm.DistributedType(tensor, (fm.SBP.broadcast(), split), mesh)
     source = local_abi(source_type)
     source.update(coordinate_space=coordinate_space, memory_sharing_scope="block")
@@ -30,7 +31,7 @@ def test_publication_visits_each_source_owner_only(coordinate_space, lanes, spli
                       storage_coordinate_expressions=source["logical_coordinate_expressions"])
     result = _abi((2, width), lane_count=lanes)
     result.update(distributed_type=None, memory_sharing_scope="chip")
-    leaf = _prepare((source, ), (result, ), ("tensor_store", ))["leaves"][0]
+    leaf = _prepare((source,), (result,), ("tensor_store",))["leaves"][0]
 
     published = Counter()
     for y, x in product(range(2), range(4)):
@@ -43,14 +44,12 @@ def test_publication_visits_each_source_owner_only(coordinate_space, lanes, spli
                 global_column = shard.axes[1].map_local_to_global(column).fixed_value
                 for lane in range(lanes):
                     global_offset = (global_row * width + global_column) * lanes + lane
-                    source_offset = ((row * shape[1] + column) * lanes +
-                                     lane if coordinate_space == "local" else global_offset)
+                    source_offset = ((row * shape[1] + column) * lanes + lane
+                                     if coordinate_space == "local" else global_offset)
                     expected.add((source_offset, global_offset))
         actual = set()
-        scope = {
-            "shard_y": y, "shard_x": x, "shard_coord_0": y, "shard_coord_1": x, "tl":
-            SimpleNamespace(minimum=min, maximum=max)
-        }
+        scope = {"shard_y": y, "shard_x": x, "shard_coord_0": y, "shard_coord_1": x,
+                 "tl": SimpleNamespace(minimum=min, maximum=max)}
         if eval(leaf["writer_active"], {"__builtins__": {}}, scope):
             for offset in range(leaf["capacity"]):
                 scope["boxing_offsets"] = offset
@@ -75,37 +74,34 @@ def test_private_reduction_then_narrow_consumer_publishes_only_current_values(tm
 
     mesh = fm.Placement((8, 16), "yx", "bb")
     tensor = fm.tensor_type("float32", (128, 1, 4096))
-    distributed = fm.DistributedType(tensor, (fm.SBP.split_contiguous(
-        (0, 1), 1), fm.SBP.broadcast(), fm.SBP.broadcast()), mesh)
+    distributed = fm.DistributedType(tensor, (fm.SBP.split_contiguous((0, 1), 1),
+        fm.SBP.broadcast(), fm.SBP.broadcast()), mesh)
 
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("x", tensor, id="x")
             local = fm.F.distributed.sharded_view(x, distributed)
-            partial = fm.F.math.reduce_sum(local, axes=(0, ), keep_dims=False, output_lanes=() if lanes == 1 else
-                                           (lanes, ))
-            reduced = fm.F.distributed.force_boxing(
-                partial, fm.DistributedType(partial.type.tensor, (fm.SBP.broadcast(), ) * 2, mesh), name="allreduce")
-            view = fm.F.distributed.sharded_view(
-                reduced,
-                fm.DistributedType(reduced.type.tensor, (fm.SBP.broadcast(), fm.SBP.split_contiguous(
-                    (0, 1), 32 // lanes)), mesh))
-            consumed = (fm.F.math.add(view, view) if lanes == 1 else fm.F.math.vectorized_binary(
-                view, view, binary_op="add"))
+            partial = fm.F.math.reduce_sum(local, axes=(0,), keep_dims=False,
+                                          output_lanes=() if lanes == 1 else (lanes,))
+            reduced = fm.F.distributed.force_boxing(partial, fm.DistributedType(
+                partial.type.tensor, (fm.SBP.broadcast(),) * 2, mesh), name="allreduce")
+            view = fm.F.distributed.sharded_view(reduced, fm.DistributedType(
+                reduced.type.tensor, (fm.SBP.broadcast(),
+                    fm.SBP.split_contiguous((0, 1), 32 // lanes)), mesh))
+            consumed = (fm.F.math.add(view, view) if lanes == 1 else
+                        fm.F.math.vectorized_binary(view, view, binary_op="add"))
             result = fm.F.distributed.force_boxing(consumed, consumed.type.tensor)
-            self.function("main", (x, ), (result, ))
+            self.function("main", (x,), (result,))
 
-    module = Compiler().compile(
-        Graph(dialect="distributed", stage="frozen_constants", entry="main",
-              metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()).module
+    module = Compiler().compile(Graph(dialect="distributed", stage="frozen_constants", entry="main",
+        metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()).module
     assert fm.verify_buffer_plan(module).buffer_map["allreduce"].storage == "block_local_data"
     runtime = load(write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True),
                    device="cuda:0")
     try:
         x = torch.empty((128, 1, 4096), device="cuda")
-        storage = torch.full((4096 + 64, ), -123., device="cuda")
-        output = storage[32:-32].reshape((1, 4096 // lanes, *(() if lanes == 1 else (lanes, ))))
+        storage = torch.full((4096 + 64,), -123., device="cuda")
+        output = storage[32:-32].reshape((1, 4096 // lanes, *(() if lanes == 1 else (lanes,))))
         arguments = tuple(output if spec["role"] == "result" else x for spec in runtime.external_arguments)
         Runtime.prepare(runtime, *arguments)
         indices = torch.arange(x.numel(), device="cuda", dtype=torch.int64).reshape(x.shape)

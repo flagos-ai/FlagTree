@@ -17,10 +17,9 @@ def sparse_experts_gate_up_call(raw):
     call = {
         **context,
         **pipeline_context(raw, context, operands, ("gate", "up")),
-        "input_pointer":
-        context["pointers"][name],
+        "input_pointer": context["pointers"][name],
         "q_offset":
-        last_axis_offset(operands[name]["abi"], ("_fm_token", ) if fused else ("_fm_token", "_fm_route"), "_fm_k"),
+        last_axis_offset(operands[name]["abi"], ("_fm_token",) if fused else ("_fm_token", "_fm_route"), "_fm_k"),
         "gate_offset":
         emit_local_scalar_offset(operands["gate_weight"]["abi"], ("_fm_expert", "_fm_n[:, None]", "_fm_k[None, :]")),
         "up_offset":

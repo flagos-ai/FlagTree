@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""high-water SAT allocation, optionally avoiding reuse hazards."""
+"""nncase-shaped high-water SAT allocation, optionally avoiding reuse hazards."""
 
 from __future__ import annotations
 
@@ -63,10 +63,10 @@ def _clique_bound_witness(lifetimes, space, lower_bound):
     """
     if max(v.live_start for v in lifetimes) > min(v.live_end for v in lifetimes):
         return None
-    last = max(range(len(lifetimes)),
-               key=lambda i: align_up(lifetimes[i].nbytes, space.granularity) - lifetimes[i].nbytes)
-    order = sorted((i for i in range(len(lifetimes)) if i != last), key=lambda i:
-                   (-max(space.granularity, lifetimes[i].alignment), i))
+    last = max(range(len(lifetimes)), key=lambda i:
+               align_up(lifetimes[i].nbytes, space.granularity) - lifetimes[i].nbytes)
+    order = sorted((i for i in range(len(lifetimes)) if i != last),
+                   key=lambda i: (-max(space.granularity, lifetimes[i].alignment), i))
     offsets, cursor = {}, 0
     for i in (*order, last):
         value = lifetimes[i]
@@ -111,11 +111,10 @@ def _disjoint_cliques(lifetimes, pairs, granularity):
                     bit = bits & -bits
                     choices.append(bit.bit_length() - 1)
                     bits ^= bit
-
                 def score(index):
                     degree = (adjacency[index] & remaining).bit_count()
-                    return ((degree, weights[index], -index) if degree_first else (weights[index], degree, -index))
-
+                    return ((degree, weights[index], -index) if degree_first
+                            else (weights[index], degree, -index))
                 selected = max(choices, key=score)
                 total += weights[selected]
                 members |= 1 << selected
@@ -151,7 +150,8 @@ class SATBufferAllocator:
         self.maximum_time_seconds = float(maximum_time_seconds)
 
     def allocate(self, lifetimes: tuple[BufferLifetime, ...], memory_space: MemorySpace, *,
-                 avoid_reuse: tuple[tuple[str, str], ...] = (), bytes_budget: int = 0) -> AllocationResult:
+                 avoid_reuse: tuple[tuple[str, str], ...] = (),
+                 bytes_budget: int = 0) -> AllocationResult:
         if isinstance(bytes_budget, bool) or not isinstance(bytes_budget, int) or bytes_budget < 0:
             raise IRVerificationError(
                 f"The reuse-avoidance byte budget must be a non-negative integer, got {bytes_budget!r}.")
@@ -193,10 +193,9 @@ class SATBufferAllocator:
                 objectives.append(AllocationObjective("reuse_conflicts", "OPTIMAL", 0, 0))
                 if reuse_budget:
                     objectives.append(AllocationObjective("peak_reclaim", "OPTIMAL", lower_bound, lower_bound))
-            return verify_allocation(
-                lifetimes, memory_space,
-                AllocationResult(tuple((value.id, witness[value.id]) for value in lifetimes),
-                                 memory_space.allocation_bytes(lower_bound), "OPTIMAL", (), tuple(objectives)))
+            return verify_allocation(lifetimes, memory_space, AllocationResult(
+                tuple((value.id, witness[value.id]) for value in lifetimes),
+                memory_space.allocation_bytes(lower_bound), "OPTIMAL", (), tuple(objectives)))
 
         model = cp_model.CpModel()
         pool_end = model.new_int_var(lower_bound, upper_bound, "pool_end")
@@ -280,10 +279,9 @@ class SATBufferAllocator:
             for minimum_peak, clique_pairs in (_disjoint_cliques(nonempty, nonempty_pairs, memory_space.granularity)
                                                if reuse_budget else ()):
                 if minimum_peak > proven_peak and clique_pairs:
-                    savings = sum(
-                        min(align_up(variables[nonempty_pairs[index][0]][4], memory_space.granularity),
-                            align_up(variables[nonempty_pairs[index][1]][4], memory_space.granularity)) *
-                        overlap_vars[index] for index in clique_pairs)
+                    savings = sum(min(align_up(variables[nonempty_pairs[index][0]][4], memory_space.granularity),
+                                      align_up(variables[nonempty_pairs[index][1]][4], memory_space.granularity))
+                                  * overlap_vars[index] for index in clique_pairs)
                     model.add(pool_end + savings >= minimum_peak)
             add_hint(offsets, selected_peak)
             model.minimize(sum(overlap_vars))
@@ -298,10 +296,8 @@ class SATBufferAllocator:
                     bound = solver.best_objective_bound
                     if reuse_budget:
                         conflict_count = solver.value(sum(overlap_vars))
-                        peak_bound = max(
-                            proven_peak,
-                            _reuse_clique_lower_bound(nonempty, nonempty_pairs, memory_space.granularity,
-                                                      conflict_count))
+                        peak_bound = max(proven_peak, _reuse_clique_lower_bound(
+                            nonempty, nonempty_pairs, memory_space.granularity, conflict_count))
                         if peak_bound > selected_peak:
                             raise IRVerificationError("A reuse peak bound exceeds its proven feasible layout.")
                         reclaim_status = "OPTIMAL" if selected_peak == peak_bound else "NOT_RUN_BUDGET"
@@ -321,8 +317,7 @@ class SATBufferAllocator:
                                 selected_peak = solver.value(pool_end)
                             elif peak_status != cp_model.UNKNOWN:
                                 self._require_solution(peak_status, solver, memory_space)
-                        reclaim_objective = AllocationObjective("peak_reclaim", reclaim_status, selected_peak,
-                                                                peak_bound)
+                        reclaim_objective = AllocationObjective("peak_reclaim", reclaim_status, selected_peak, peak_bound)
                 elif status != cp_model.UNKNOWN:
                     self._require_solution(status, solver, memory_space)
                 # UNKNOWN retains the already proven feasible SAT placement,
@@ -334,8 +329,8 @@ class SATBufferAllocator:
             if reclaim_objective is not None:
                 objectives.append(reclaim_objective)
         offsets.update((value.id, 0) for value in lifetimes if not value.nbytes)
-        combined = ("OPTIMAL" if high_water_status == reuse_status == "OPTIMAL" and
-                    (reclaim_objective is None or reclaim_objective.status == "OPTIMAL") else
+        combined = ("OPTIMAL" if high_water_status == reuse_status == "OPTIMAL"
+                    and (reclaim_objective is None or reclaim_objective.status == "OPTIMAL") else
                     f"high-water:{high_water_status};reuse:{reuse_status}")
         if reclaim_objective is not None and reclaim_objective.status != "OPTIMAL":
             combined += f";peak-reclaim:{reclaim_objective.status}"

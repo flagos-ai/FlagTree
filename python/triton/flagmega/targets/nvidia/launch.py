@@ -11,7 +11,10 @@ def sm90_launch_parameters(module, kernel_nodes) -> dict[str, object]:
     del module
     if not kernel_nodes:
         raise IRVerificationError("SM90 launch planning requires selected TIR kernels.")
-    if any("warp_specialize" in node.attrs.get("facts", {}).get("requires", ()) for node in kernel_nodes):
+    if any(
+        "warp_specialize" in node.attrs.get("facts", {}).get("requires", ())
+        for node in kernel_nodes
+    ):
         num_warps = 8
     else:
         num_warps = 4

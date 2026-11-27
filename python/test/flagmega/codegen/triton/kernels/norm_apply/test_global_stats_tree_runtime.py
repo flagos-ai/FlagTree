@@ -42,8 +42,10 @@ def _selected_module(use_mean):
         elif dispatch.microkernel.family == "gather_reduce_norm_apply":
             parameters.update(partial_reduction="global_tree")
         definitions.append(
-            replace(definition, dispatch=replace(dispatch, microkernel=replace(dispatch.microkernel,
-                                                                               parameters=parameters))))
+            replace(
+                definition, dispatch=replace(dispatch, microkernel=replace(dispatch.microkernel, parameters=parameters))
+            )
+        )
     return fm.verify_module(replace(module, kernel_definitions=tuple(definitions)))
 
 
@@ -63,7 +65,7 @@ def _worker(artifact, use_mean):
         runtime.prepare(source, scale, bias, output=output)
         for step in range(3):
             value = source * (step + 1)
-            _reference[(1, )](value, expected, use_mean, num_warps=4)
+            _reference[(1,)](value, expected, use_mean, num_warps=4)
             runtime.run_into(output, value, scale, bias)
             torch.testing.assert_close(output, expected, rtol=0, atol=0)
         assert runtime.resource_report["spill_bytes"] == 0
@@ -85,8 +87,11 @@ def test_invalid_global_statistics_mode_is_rejected(tmp_path, mode):
                         parameters={**item.dispatch.microkernel.parameters, "partial_reduction": mode},
                     ),
                 ),
-            ) if item.dispatch.microkernel.family == "gather_reduce_norm_apply" else item
-            for item in module.kernel_definitions)
+            )
+            if item.dispatch.microkernel.family == "gather_reduce_norm_apply"
+            else item
+            for item in module.kernel_definitions
+        )
         write_artifact(
             replace(module, kernel_definitions=definitions),
             tmp_path / "invalid",

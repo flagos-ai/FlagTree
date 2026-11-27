@@ -21,10 +21,8 @@ def _with_element(dtype, element):
 
 
 def commute_cast_view_rules():
-    return tuple(
-        _rule(view, cast)
-        for view in ("distributed.sharded_view", "tensors.bitcast")
-        for cast in ("tensors.cast", "ntt.vectorized_cast"))
+    return tuple(_rule(view, cast) for view in ("distributed.sharded_view", "tensors.bitcast")
+                 for cast in ("tensors.cast", "ntt.vectorized_cast"))
 
 
 def _rule(view_op, cast_op):
@@ -40,8 +38,7 @@ def _rule(view_op, cast_op):
         source_type, cast_type, result_type = (tensor_of(node.type) for node in (value, cast, view))
         if any(not isinstance(_element(t.dtype), DType) for t in (source_type, cast_type, result_type)):
             return view
-        if cast_op == "tensors.cast" and getattr(source_type.dtype, "lanes",
-                                                 ()) != getattr(cast_type.dtype, "lanes", ()):
+        if cast_op == "tensors.cast" and getattr(source_type.dtype, "lanes", ()) != getattr(cast_type.dtype, "lanes", ()):
             return view
         identity = f"{view.id}.cast_input"
         while identity in module.node_map:
@@ -51,44 +48,39 @@ def _rule(view_op, cast_op):
             if view_op == "distributed.sharded_view":
                 inverse_attrs = ({"new_type": source_type.dtype, "vectorize_axes": cast.attrs["vectorize_axes"]}
                                  if cast_op == "ntt.vectorized_cast" else {"dtype": source_type.dtype})
-                input_type = get_definition(cast_op).prepare((view, ), inverse_attrs).result_type
+                input_type = get_definition(cast_op).prepare((view,), inverse_attrs).result_type
                 source_view = (value if value.type == input_type else make_node(
-                    view_op, identity, (value, ), {"new_type": input_type}, {"formed_by": "CommuteCastView"}))
-                replacement = make_node(cast_op, view.id, (source_view, ), cast.attrs, metadata)
+                    view_op, identity, (value,), {"new_type": input_type}, {"formed_by": "CommuteCastView"}))
+                replacement = make_node(cast_op, view.id, (source_view,), cast.attrs, metadata)
             else:
                 # Bit reinterpretation of scalar values is not a coordinate
                 # view. Only lane regrouping along the physical trailing axis
                 # commutes with a numeric conversion here.
                 if _element(cast_type.dtype) != _element(result_type.dtype):
                     return view
-                if cast_op == "ntt.vectorized_cast" and set(normalize_axes(cast.attrs["vectorize_axes"],
-                                                                           cast_type.rank)) != {cast_type.rank - 1}:
+                if cast_op == "ntt.vectorized_cast" and set(normalize_axes(
+                    cast.attrs["vectorize_axes"], cast_type.rank)) != {cast_type.rank - 1}:
                     return view
                 narrow_dtype = _with_element(result_type.dtype, _element(source_type.dtype))
-                source_view = make_node(view_op, identity, (value, ), {"dtype": narrow_dtype},
+                source_view = make_node(view_op, identity, (value,), {"dtype": narrow_dtype},
                                         {"formed_by": "CommuteCastView"})
                 if source_view.type == value.type:
                     source_view = value
-                metadata = {
-                    key: item
-                    for key, item in metadata.items()
-                    if key not in {"selected_vectorization", "selected_vector_axes", "selected_vector_lanes"}
-                }
+                metadata = {key: item for key, item in metadata.items()
+                            if key not in {"selected_vectorization", "selected_vector_axes", "selected_vector_lanes"}}
                 if isinstance(result_type.dtype, VectorType):
-                    replacement = make_node(
-                        "ntt.vectorized_cast", view.id, (source_view, ), {
-                            "new_type": result_type.dtype,
-                            "vectorize_axes": (result_type.rank - 1, ),
-                            **rounding_attrs(cast.attrs),
-                        }, metadata)
+                    replacement = make_node("ntt.vectorized_cast", view.id, (source_view,), {
+                        "new_type": result_type.dtype, "vectorize_axes": (result_type.rank - 1,),
+                        **rounding_attrs(cast.attrs),
+                    }, metadata)
                 else:
-                    replacement = make_node("tensors.cast", view.id, (source_view, ),
+                    replacement = make_node("tensors.cast", view.id, (source_view,),
                                             {"dtype": result_type.dtype, **rounding_attrs(cast.attrs)}, metadata)
         except IRSchemaError:
             return view
         if replacement.type != view.type:
             return view
-        return RewriteResult(replacement, () if source_view is value else (source_view, ), removed_ids=(cast.id, ))
+        return RewriteResult(replacement, () if source_view is value else (source_view,), removed_ids=(cast.id,))
 
     return RewriteRule(f"CommuteCastView.{view_op}.{cast_op}", pattern, rewrite)
 

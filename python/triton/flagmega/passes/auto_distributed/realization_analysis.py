@@ -4,7 +4,6 @@
 
 
 class ReshardRealizationAnalysis:
-
     def __init__(self, policy):
         self.policy = policy
         self.results = {}

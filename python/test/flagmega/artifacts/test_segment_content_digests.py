@@ -22,22 +22,21 @@ from .test_rdata_segment_verification import _pack
 
 
 class StableCheckpoint(MemoryCheckpoint):
-
     def cache_identity(self, keys):
         return {"schema": "test.immutable-checkpoint/v1", "keys": sorted(keys), "revision": "fixed"}
 
 
 def _cached_fixture(*, cyclic=False):
     placement = fm.Placement((4, 2), "cx", "cb")
-    policy = fm.SBP.split_block_cyclic((0, ), 1) if cyclic else fm.SBP.split_contiguous((0, ))
-    value_type = fm.DistributedType(fm.tensor_type("float32", (16, 4)), (policy, fm.SBP.split_contiguous((1, ))),
-                                    placement)
+    policy = fm.SBP.split_block_cyclic((0,), 1) if cyclic else fm.SBP.split_contiguous((0,))
+    value_type = fm.DistributedType(fm.tensor_type("float32", (16, 4)),
+                                    (policy, fm.SBP.split_contiguous((1,))), placement)
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
     weight = builder.weight("weight", value_type, source="memory", key="weight", id="weight")
-    builder.function("main", (), (weight, ))
-    module = NttBufferizationPolicy(replace(
-        BufferizationOptions.generic(alignment=4), rdata_chip_sharding=True)).bufferize(
-            replace(builder.build(entry="main"), metadata={"launch_contract": {"grid_mesh": placement.to_data()}}))
+    builder.function("main", (), (weight,))
+    module = NttBufferizationPolicy(replace(BufferizationOptions.generic(alignment=4),
+                                           rdata_chip_sharding=True)).bufferize(
+        replace(builder.build(entry="main"), metadata={"launch_contract": {"grid_mesh": placement.to_data()}}))
     source = StableCheckpoint({}, {"weight": TensorInfo("weight", fm.DType.FLOAT32, (16, 4), "memory")},
                               {"weight": torch.arange(64, dtype=torch.float32).reshape(16, 4)})
     return module, source
@@ -94,21 +93,20 @@ def test_chip_writers_use_independent_offsets_concurrently(tmp_path, monkeypatch
 
 def test_packing_hashes_each_payload_byte_once(tmp_path, monkeypatch):
     placement = fm.Placement((4, 2), "cx", "cb")
-    value_type = fm.DistributedType(fm.tensor_type("float32", (128, 128)), (fm.SBP.split_contiguous(
-        (0, )), fm.SBP.split_contiguous((1, ))), placement)
+    value_type = fm.DistributedType(fm.tensor_type("float32", (128, 128)),
+                                    (fm.SBP.split_contiguous((0,)), fm.SBP.split_contiguous((1,))), placement)
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
     weight = builder.weight("weight", value_type, source="memory", key="weight", id="weight")
-    builder.function("main", (), (weight, ))
-    module = NttBufferizationPolicy(replace(
-        BufferizationOptions.generic(alignment=4), rdata_chip_sharding=True)).bufferize(
-            replace(builder.build(entry="main"), metadata={"launch_contract": {"grid_mesh": placement.to_data()}}))
+    builder.function("main", (), (weight,))
+    module = NttBufferizationPolicy(replace(BufferizationOptions.generic(alignment=4),
+                                           rdata_chip_sharding=True)).bufferize(
+        replace(builder.build(entry="main"), metadata={"launch_contract": {"grid_mesh": placement.to_data()}}))
     source = MemoryCheckpoint({}, {"weight": TensorInfo("weight", fm.DType.FLOAT32, (128, 128), "memory")},
                               {"weight": torch.arange(128 * 128, dtype=torch.float32).reshape(128, 128)})
     original = hashlib.sha256
     hashed = []
 
     class Hasher:
-
         def __init__(self, initial=b""):
             self.inner = original(initial)
             hashed.append(len(initial))
@@ -133,8 +131,8 @@ def test_segment_digests_cover_unaligned_windows_once(tmp_path, monkeypatch, chu
     image = tmp_path / "rdata.bin"
     image.write_bytes(payload)
     monkeypatch.setattr(rdata, "_HASH_CHUNK_BYTES", chunk_bytes)
-    assert rdata._segment_digests(image, 7,
-                                  5) == [hashlib.sha256(payload[i:i + 7]).hexdigest() for i in range(0, 35, 7)]
+    assert rdata._segment_digests(image, 7, 5) == [hashlib.sha256(payload[i:i + 7]).hexdigest()
+                                               for i in range(0, 35, 7)]
 
 
 @pytest.mark.parametrize("field", ["digest_kind", "segment_sha256"])
@@ -160,10 +158,8 @@ def test_legacy_payload_and_entry_digests_are_still_supported(tmp_path, schema):
         start = entry["offset"]
         entry["sha256"] = hashlib.sha256(payload[start:start + entry["nbytes"]]).hexdigest()
     index.pop("segment_chunks", None)
-    index["segment_sha256"] = [
-        hashlib.sha256(payload[i:i + index["segment_nbytes"]]).hexdigest()
-        for i in range(0, len(payload), index["segment_nbytes"])
-    ]
+    index["segment_sha256"] = [hashlib.sha256(payload[i:i + index["segment_nbytes"]]).hexdigest()
+                               for i in range(0, len(payload), index["segment_nbytes"])]
     if schema.endswith("v1"):
         index.pop("segment_sha256")
     (tmp_path / "rdata.index.json").write_text(json.dumps(index))
@@ -187,14 +183,14 @@ def test_segment_digest_worker_failure_propagates(tmp_path, monkeypatch):
 def test_generic_manifest_verification_understands_segment_content_identity(tmp_path):
     _, index = _pack(tmp_path)
     image = tmp_path / "rdata.bin"
-    section = record_section(tmp_path, image, name="rdata.image", kind="rdata.image/v2", known_sha256=index["sha256"],
-                             known_nbytes=index["nbytes"])
-    verify_sections(tmp_path, (section, ))
+    section = record_section(tmp_path, image, name="rdata.image", kind="rdata.image/v2",
+                             known_sha256=index["sha256"], known_nbytes=index["nbytes"])
+    verify_sections(tmp_path, (section,))
     with image.open("r+b") as stream:
         stream.seek(index["nbytes"] - 1)
         stream.write(b"\xff")
     with pytest.raises(ArtifactError, match="hash"):
-        verify_sections(tmp_path, (section, ))
+        verify_sections(tmp_path, (section,))
 
 
 def test_failed_chip_write_removes_unpublished_image(tmp_path, monkeypatch):

@@ -36,14 +36,12 @@ def _reference(value):
 
 
 def _module(width, packed):
-
     class Graph(fm.Module):
-
         def forward(self):
-            dtype = fm.vector_type("bfloat16", (8, )) if packed else "bfloat16"
+            dtype = fm.vector_type("bfloat16", (8,)) if packed else "bfloat16"
             value = self.input("value", fm.tensor_type(dtype, (2, width // 8 if packed else width)), id="value")
             stats = fm.F.nn.norm_stats(value, axis=-1, use_mean=False)
-            self.function("main", (value, ), (stats, ))
+            self.function("main", (value,), (stats,))
 
     return Graph(dialect="high_level", stage="imported", entry="main").build()
 
@@ -63,7 +61,11 @@ def test_invalid_contiguous_reduction_layout_is_rejected(tmp_path, layout):
                         parameters={**item.dispatch.microkernel.parameters, "reduction_layout": layout},
                     ),
                 ),
-            ) if item.dispatch.microkernel.family == "norm_stats" else item for item in module.kernel_definitions)
+            )
+            if item.dispatch.microkernel.family == "norm_stats"
+            else item
+            for item in module.kernel_definitions
+        )
         write_artifact(
             replace(module, kernel_definitions=definitions),
             tmp_path / "artifact",
@@ -95,7 +97,11 @@ def test_contiguous_eight_reduction_preserves_order_for_misaligned_inputs(tmp_pa
                     "compute_num_warps": 8,
                     "reduction_layout": "contiguous_8",
                 },
-            ) if item.family == "norm_stats" else item for item in base.implementations),
+            )
+            if item.family == "norm_stats"
+            else item
+            for item in base.implementations
+        ),
     )
     compiler = Compiler()
     compiler.target = NvidiaSm90Target(triton_implementation_model=catalog)

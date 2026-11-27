@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
 {% if call.family == "dense_matmul_glu" and call.variant == dense_matmul_glu_variant %}
 {% set dense_glu_preserve_reduction = corex_preserve_k_reduction | default(false) and call.tile_n == 128 and call.block_k == 32 %}

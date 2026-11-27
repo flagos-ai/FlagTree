@@ -16,20 +16,21 @@ from python.test.flagmega.ir.ops.primitive_helpers import primitive_module
 
 
 def typed_module(op, shape):
-    attrs = {"binary_op": "add"
-             } if op == "math.vectorized_binary" else ({"unary_op": "sigmoid"} if op == "math.vectorized_unary" else {})
-    kind = fm.tensor_type(fm.vector_type("float32", (8, )), shape)
+    attrs = {"binary_op": "add"} if op == "math.vectorized_binary" else (
+        {"unary_op": "sigmoid"} if op == "math.vectorized_unary" else {})
+    kind = fm.tensor_type(fm.vector_type("float32", (8,)), shape)
     definition = fm.get_definition(op)
-    return primitive_module(definition, (kind, ) * len(definition.input_parameters), **attrs)
+    return primitive_module(definition, (kind,) * len(definition.input_parameters), **attrs)
 
 
-@pytest.mark.parametrize("op", ["math.add", "math.mul", "math.silu", "math.vectorized_binary", "math.vectorized_unary"])
+@pytest.mark.parametrize("op", ["math.add", "math.mul", "math.silu",
+                                "math.vectorized_binary", "math.vectorized_unary"])
 @pytest.mark.parametrize("shape", [(), (2, 7)])
 def test_typed_pointwise_contract_survives_normal_selection_and_codegen(tmp_path, op, shape):
     source = typed_module(op, shape)
     contract = vectorization_contract(source.node_map["output"])
     assert contract["kind"] == "typed_elements"
-    assert contract["axes"] == () and contract["lanes"] == (8, )
+    assert contract["axes"] == () and contract["lanes"] == (8,)
     module = Compiler().compile(source).module
     restored = fm.load_module(fm.emit_module(module, tmp_path / "selected.py"))
     assert restored.semantic_hash == module.semantic_hash
@@ -53,12 +54,12 @@ def test_typed_pointwise_gpu_matches_independent_lane_reference(tmp_path, op, sh
     from triton.flagmega.runtime import load
 
     source = typed_module(op, shape)
-    path = write_artifact(Compiler().compile(source).module, tmp_path / "artifact", target="nvidia-sm90",
-                          emit_executable=True)
+    path = write_artifact(Compiler().compile(source).module, tmp_path / "artifact",
+                          target="nvidia-sm90", emit_executable=True)
     runtime = load(path, device="cuda:0")
     try:
         value = (torch.arange(prod((*shape, 8)), device="cuda") % 31 - 15).float().reshape((*shape, 8)) / 8
-        arguments = (value, ) if op == "math.vectorized_unary" else (value, value + 1 / 8)
+        arguments = (value,) if op == "math.vectorized_unary" else (value, value + 1 / 8)
         runtime.prepare(*arguments)
         actual = runtime.run(*arguments)
         torch.cuda.synchronize()

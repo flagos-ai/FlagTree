@@ -16,17 +16,18 @@ from triton.flagmega.passes.tir.bufferize import BufferizationOptions
 @pytest.mark.parametrize('identity_chain', [False, True])
 def test_chip_mesh_view_has_no_redundant_identity_backing(dtype, identity_chain):
     tensor = fm.tensor_type(dtype, (16, 512))
-    policies = (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 128))
+    policies = (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 128))
     source_type = fm.DistributedType(tensor, policies, fm.Placement((4, 8, 16), 'cyx', 'cbb'))
     target_type = replace(source_type, placement=fm.Placement((4, 1, 1), 'cyx', 'cbb'))
     builder = fm.IRBuilder(dialect='tir', stage='selected_tir')
     weight = builder.weight('weight', source_type, source='fixture.safetensors', key='weight', id='weight')
-    view = builder.call('distributed.sharded_view', (weight, ), target_type, id='view', attrs={'new_type': target_type})
+    view = builder.call('distributed.sharded_view', (weight,), target_type,
+                        id='view', attrs={'new_type': target_type})
     if identity_chain:
-        view = builder.call('distributed.sharded_view', (view, ), target_type, id='identity',
-                            attrs={'new_type': target_type})
-    output = builder.call('tir.kernel', (view, ), target_type, id='output')
-    builder.function('main', (), (output, ))
+        view = builder.call('distributed.sharded_view', (view,), target_type,
+                            id='identity', attrs={'new_type': target_type})
+    output = builder.call('tir.kernel', (view,), target_type, id='output')
+    builder.function('main', (), (output,))
     module = builder.build(entry='main')
     options = replace(BufferizationOptions.generic(), rdata_chip_sharding=True)
     plan = fm.make_buffer_plan(module, options=options)
@@ -34,7 +35,7 @@ def test_chip_mesh_view_has_no_redundant_identity_backing(dtype, identity_chain)
     expected_bytes = 16 * 128 * fm.DType(dtype).itemsize
     assert source.distributed_storage_kind is fm.DistributedBufferStorageKind.COMPACT_PER_CHIP
     assert source.mem_span.nbytes == expected_bytes
-    for name in ('view', 'identity') if identity_chain else ('view', ):
+    for name in ('view', 'identity') if identity_chain else ('view',):
         descriptor = plan.buffer_map[name]
         assert descriptor.mem_span.must_alias(source.mem_span)
         assert descriptor.physical_access_span == source.physical_access_span
@@ -50,7 +51,5 @@ def test_chip_mesh_view_has_no_redundant_identity_backing(dtype, identity_chain)
                 original = distributed_buffer_abi(source, chip * 128 + block)
                 assert current.component_offset_elements == original.component_offset_elements == 0
                 for column in range(128):
-                    assert current.storage_axis_coordinate(1, column) == original.storage_axis_coordinate(
-                        1, column) == column
-                    assert current.logical_axis_coordinate(1, column) == original.logical_axis_coordinate(
-                        1, column) == chip * 128 + column
+                    assert current.storage_axis_coordinate(1, column) == original.storage_axis_coordinate(1, column) == column
+                    assert current.logical_axis_coordinate(1, column) == original.logical_axis_coordinate(1, column) == chip * 128 + column

@@ -32,7 +32,7 @@ def _node(name, value_type):
 
 
 def _placement():
-    return fm.Placement((4, ), "x", "b")
+    return fm.Placement((4,), "x", "b")
 
 
 def _policies(tensor, head_axis=1, split=None):
@@ -48,21 +48,24 @@ def _typed(tensor, *, split=None, placement=None, head_axis=1):
 
 def _conv_tensors():
     projection = fm.tensor_type("bfloat16", (1, HEADS, DIM))
-    return (projection, projection, projection, fm.tensor_type("bfloat16", (3, HEADS, DIM, KERNEL - 1)),
+    return (projection, projection, projection,
+            fm.tensor_type("bfloat16", (3, HEADS, DIM, KERNEL - 1)),
             fm.tensor_type("bfloat16", (3, HEADS, DIM, KERNEL)))
 
 
 def _recurrent_tensors():
     activation = fm.tensor_type("bfloat16", (1, HEADS, DIM))
     wide = fm.tensor_type("float32", (1, HEADS, DIM))
-    return (activation, activation, activation, wide, fm.tensor_type("float32", (1, HEADS)),
+    return (activation, activation, activation, wide,
+            fm.tensor_type("float32", (1, HEADS)),
             fm.tensor_type("float32", (1, HEADS, DIM, DIM)))
 
 
 def _gated_tensors():
     activation = fm.tensor_type("bfloat16", (1, HEADS, DIM))
     wide = fm.tensor_type("float32", (1, HEADS, DIM))
-    return (activation, activation, activation, activation, wide, wide, fm.tensor_type("bfloat16", (1, HEADS)),
+    return (activation, activation, activation, activation, wide, wide,
+            fm.tensor_type("bfloat16", (1, HEADS)),
             fm.tensor_type("float32", (1, HEADS, DIM, DIM)))
 
 
@@ -75,20 +78,22 @@ IDS = tuple(case[0] for case in CASES)
 
 
 def _infer(definition, tensors, attrs, *, split=None):
-    inputs = tuple(_node(str(index), _typed(tensor, split=split)) for index, tensor in enumerate(tensors))
+    inputs = tuple(_node(str(index), _typed(tensor, split=split))
+                   for index, tensor in enumerate(tensors))
     return definition.infer_type(inputs, attrs)
 
 
 @pytest.mark.parametrize("_name,definition,tensors,attrs", CASES, ids=IDS)
 def test_a_common_head_split_survives_to_every_output(_name, definition, tensors, attrs):
-    split = fm.SBP.split_contiguous((0, ))
+    split = fm.SBP.split_contiguous((0,))
     result = _infer(definition, tensors(), attrs, split=split)
 
     for field in result.fields:
         assert isinstance(field, fm.DistributedType)
         assert field.placement == _placement()
         assert field.axis_policies[1] == split, f"axis 1 of {field.tensor} lost the head split"
-        assert all(policy == fm.SBP.broadcast() for index, policy in enumerate(field.axis_policies) if index != 1)
+        assert all(policy == fm.SBP.broadcast()
+                   for index, policy in enumerate(field.axis_policies) if index != 1)
         assert field.partial is None
 
 
@@ -105,10 +110,10 @@ def test_a_full_broadcast_is_still_accepted(_name, definition, tensors, attrs):
 def test_mixed_head_ownership_is_rejected(_name, definition, tensors, attrs):
     """One head's state, gate and projections must live on one owner."""
 
-    split = fm.SBP.split_contiguous((0, ))
+    split = fm.SBP.split_contiguous((0,))
     values = tensors()
-    inputs = tuple(
-        _node(str(index), _typed(tensor, split=split if index else None)) for index, tensor in enumerate(values))
+    inputs = tuple(_node(str(index), _typed(tensor, split=split if index else None))
+                   for index, tensor in enumerate(values))
     with pytest.raises(IRSchemaError, match="head"):
         definition.infer_type(inputs, attrs)
 
@@ -117,13 +122,12 @@ def test_mixed_head_ownership_is_rejected(_name, definition, tensors, attrs):
 def test_a_split_on_any_other_axis_is_rejected(_name, definition, tensors, attrs):
     """Only the head axis is independent; channels and state columns are not."""
 
-    split = fm.SBP.split_contiguous((0, ))
+    split = fm.SBP.split_contiguous((0,))
     values = tensors()
     # Axis 2 is the head channel on every operand that has one.
-    inputs = tuple(
-        _node(str(index),
-              _typed(tensor, split=split, head_axis=2) if tensor.rank > 2 else _typed(tensor, split=split))
-        for index, tensor in enumerate(values))
+    inputs = tuple(_node(str(index), _typed(tensor, split=split, head_axis=2)
+                         if tensor.rank > 2 else _typed(tensor, split=split))
+                   for index, tensor in enumerate(values))
     with pytest.raises(IRSchemaError):
         definition.infer_type(inputs, attrs)
 
@@ -132,7 +136,7 @@ def test_a_split_on_any_other_axis_is_rejected(_name, definition, tensors, attrs
 def test_the_head_split_relation_is_offered_to_the_search(_name, definition, tensors, attrs):
     """``distributed_input_type_tuples`` must enumerate the head-split contract."""
 
-    split = fm.SBP.split_contiguous((0, ))
+    split = fm.SBP.split_contiguous((0,))
     choices = tuple((_typed(tensor), _typed(tensor, split=split)) for tensor in tensors())
     offered = tuple(definition.distributed_input_type_tuples(choices, attrs))
 
@@ -149,7 +153,7 @@ def test_the_head_split_relation_is_offered_to_the_search(_name, definition, ten
 def test_a_head_split_output_demand_reaches_the_inputs(_name, definition, tensors, attrs):
     """A consumer that wants head-split results must be able to ask for them."""
 
-    split = fm.SBP.split_contiguous((0, ))
+    split = fm.SBP.split_contiguous((0,))
     values = tensors()
     output = _infer(definition, values, attrs, split=split)
     logical = tuple(value for value in values)

@@ -23,8 +23,8 @@ def test_exact_binary_materializes_specialized_vector_op_and_lowers_one_kernel()
     vectorized = Compiler().compile(module, stop_after="apply-vectorization").module
     assert [node.op for node in vectorized.nodes[-2:]] == ["math.vectorized_binary", "tensors.unpack"]
     assert not any(node.op == 'tensors.pack' for node in vectorized.nodes)
-    assert vectorized.node_map['output.vectorized.compute'].attrs['lhs_pack']['lanes'] == (8, )
-    assert vectorized.node_map["output.vectorized.compute"].type.dtype == fm.vector_type("bfloat16", (8, ))
+    assert vectorized.node_map['output.vectorized.compute'].attrs['lhs_pack']['lanes'] == (8,)
+    assert vectorized.node_map["output.vectorized.compute"].type.dtype == fm.vector_type("bfloat16", (8,))
 
     lhs = torch.randn(1, 16, dtype=torch.bfloat16)
     rhs = torch.randn(1, 16, dtype=torch.bfloat16)
@@ -42,10 +42,14 @@ def test_exact_binary_materializes_specialized_vector_op_and_lowers_one_kernel()
     ]
     # Complete canonical inputs are read through proven chip-local views.
     # The vectorized arithmetic owns lane addressing without staging copies.
-    compute = [kernel for kernel in kernels if kernel.semantic_op == "math.vectorized_binary"]
+    compute = [
+        kernel
+        for kernel in kernels
+        if kernel.semantic_op == "math.vectorized_binary"
+    ]
     assert len(compute) == 1
     assert sum(kernel.semantic_op == "distributed.boxing" for kernel in kernels) == 0
-    assert compute[0].parameters["vector_schedule"]["contract"]["lanes"] == (8, )
+    assert compute[0].parameters["vector_schedule"]["contract"]["lanes"] == (8,)
     assert compute[0].parameters["vector_schedule"]["physical"] == {
         "elements_per_program": 256,
     }
@@ -61,7 +65,7 @@ def test_non_divisible_binary_owns_its_exact_load_and_store_tail():
     output = vectorized.node_map['output']
     assert output.op == 'math.vectorized_binary'
     assert output.attrs['lhs_pack']['padding']['pad_end'] == (0, 6)
-    assert output.attrs['result_unpack'] == {'axes': (1, ), 'lanes': (8, ), 'shape': (3, 10)}
+    assert output.attrs['result_unpack'] == {'axes': (1,), 'lanes': (8,), 'shape': (3, 10)}
     assert output.type == module.node_map['output'].type
 
     lhs = torch.randn(3, 10, dtype=torch.bfloat16)

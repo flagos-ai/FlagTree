@@ -14,7 +14,10 @@ def _round_trip(module, inputs):
     target = NvidiaSm90Target()
     vectorized = AutoVectorizePass.run(AutoVectorizePass.propose(module, target), target)
     normalized = fm.verify_module(lower_vectorization_contracts(vectorized))
-    contracted = tuple(node for node in normalized.nodes if "selected_vectorization" in node.metadata)
+    contracted = tuple(
+        node for node in normalized.nodes
+        if "selected_vectorization" in node.metadata
+    )
     assert contracted
     assert all(node.metadata["selected_vector_axes"] for node in contracted)
     assert all(node.metadata["selected_vector_lanes"] for node in contracted)
@@ -27,9 +30,7 @@ def _round_trip(module, inputs):
 
 
 def test_permute_propagation_normalizes_to_original_semantic_graph():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="decomposed", entry="main")
 
@@ -37,11 +38,12 @@ def test_permute_propagation_normalizes_to_original_semantic_graph():
             value = self.input("value", fm.tensor_type("bfloat16", (2, 16)), id="value")
             activated = fm.F.math.silu(value, name="activated")
             output = fm.F.tensors.permute(activated, (1, 0), name="output")
-            self.function("main", (value, ), (output, ))
+            self.function("main", (value,), (output,))
 
-    vectorized, normalized = _round_trip(Graph().build(), {"value": torch.randn(2, 16, dtype=torch.bfloat16)})
-    assert any(
-        node.metadata.get("vectorization_rule") == "TransposeDevectorizePropagation" for node in vectorized.nodes)
+    vectorized, normalized = _round_trip(
+        Graph().build(), {"value": torch.randn(2, 16, dtype=torch.bfloat16)}
+    )
+    assert any(node.metadata.get("vectorization_rule") == "TransposeDevectorizePropagation" for node in vectorized.nodes)
     assert [node.op for node in normalized.nodes] == [
         "builtin.var",
         "tensors.pack",
@@ -52,9 +54,7 @@ def test_permute_propagation_normalizes_to_original_semantic_graph():
 
 
 def test_pad_and_slice_propagation_normalize_to_original_semantic_graph():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="decomposed", entry="main")
 
@@ -63,9 +63,11 @@ def test_pad_and_slice_propagation_normalize_to_original_semantic_graph():
             activated = fm.F.math.silu(value, name="activated")
             padded = fm.F.tensors.pad(activated, (0, 8), name="padded")
             output = fm.F.tensors.slice_to_shape(padded, (2, 16), name="output")
-            self.function("main", (value, ), (output, ))
+            self.function("main", (value,), (output,))
 
-    _, normalized = _round_trip(Graph().build(), {"value": torch.randn(2, 16, dtype=torch.bfloat16)})
+    _, normalized = _round_trip(
+        Graph().build(), {"value": torch.randn(2, 16, dtype=torch.bfloat16)}
+    )
     assert [node.op for node in normalized.nodes] == [
         "builtin.var",
         "tensors.pack",
@@ -77,19 +79,19 @@ def test_pad_and_slice_propagation_normalize_to_original_semantic_graph():
 
 
 def test_reshape_propagation_normalizes_to_original_semantic_graph():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="decomposed", entry="main")
 
         def forward(self):
             value = self.input("value", fm.tensor_type("bfloat16", (8, 128)), id="value")
             activated = fm.F.math.silu(value, name="activated")
-            output = fm.F.tensors.reshape(activated, (1024, ), name="output")
-            self.function("main", (value, ), (output, ))
+            output = fm.F.tensors.reshape(activated, (1024,), name="output")
+            self.function("main", (value,), (output,))
 
-    _, normalized = _round_trip(Graph().build(), {"value": torch.randn(8, 128, dtype=torch.bfloat16)})
+    _, normalized = _round_trip(
+        Graph().build(), {"value": torch.randn(8, 128, dtype=torch.bfloat16)}
+    )
     assert [node.op for node in normalized.nodes] == [
         "builtin.var",
         "tensors.pack",
@@ -100,9 +102,7 @@ def test_reshape_propagation_normalizes_to_original_semantic_graph():
 
 
 def test_concat_propagation_normalizes_both_vectorized_inputs():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="decomposed", entry="main")
 
@@ -113,7 +113,7 @@ def test_concat_propagation_normalizes_both_vectorized_inputs():
             lhs_value = fm.F.math.silu(lhs, name="lhs_value")
             rhs_value = fm.F.math.silu(rhs, name="rhs_value")
             output = fm.F.tensors.concat(lhs_value, rhs_value, axis=1, name="output")
-            self.function("main", (lhs, rhs), (output, ))
+            self.function("main", (lhs, rhs), (output,))
 
     _, normalized = _round_trip(
         Graph().build(),

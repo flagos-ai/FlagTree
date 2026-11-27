@@ -25,7 +25,7 @@ def _identity_module(value_type: fm.IRType):
         ("float8_e4m3fn", "F8_E4M3"),
     ),
 )
-def test_scalar_dtype_names_match_reference_il(dtype: str, display: str):
+def test_scalar_dtype_names_match_nncase_il(dtype: str, display: str):
     source = il_source(_identity_module(fm.tensor_type(dtype, [1])))
 
     assert f"%value: {display}[1]" in source
@@ -33,7 +33,7 @@ def test_scalar_dtype_names_match_reference_il(dtype: str, display: str):
     assert "// (%value:" not in source
 
 
-def test_tensor_type_uses_reference_dtype_shape_and_vector_spelling():
+def test_tensor_type_uses_nncase_dtype_shape_and_vector_spelling():
     value_type = fm.tensor_type(fm.vector_type("float8_e4m3fn", (2, 16)), [10240, 160])
 
     source = il_source(_identity_module(value_type))
@@ -51,14 +51,16 @@ def test_symbolic_shape_and_non_default_layout_are_compact_but_complete():
         layout=fm.TensorLayout(
             order=(1, 0),
             strides=(None, 1),
-            vector_lanes=(8, ),
+            vector_lanes=(8,),
             tag="packed",
         ),
     )
 
     source = il_source(_identity_module(value_type))
 
-    assert ("%value: bf16[batch,5120]"
-            "{layout=packed, order=[1,0], strides=[?,1], vector_lanes=[8]}") in source
+    assert (
+        "%value: bf16[batch,5120]"
+        "{layout=packed, order=[1,0], strides=[?,1], vector_lanes=[8]}"
+    ) in source
     assert "DimVar(" not in source
     assert "TensorLayout(" not in source

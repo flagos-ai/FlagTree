@@ -1,0 +1,154 @@
+{# Two disjoint batches of flat 1 KB transactions in FIFO order. A G2S
+   count wait completes the oldest batch while leaving the newer one pending.
+   Only consumed slots are reused. The last two batches have constant waits
+   and issue no out-of-bounds prefetch. Their arithmetic follows the bulk
+   walk exactly, including any original independent accumulator streams. #}
+{# Keep each projection's descriptor selected for the whole batch, while
+   preserving old-batch-before-new-batch FIFO order. #}
+    if ({{ sme_issuer_lane }} == 0) {
+{% for bi in range(2) %}
+{% for projection in range(sme_projections) %}
+{% for ui in range(sme_batch) %}
+{% set u = bi * sme_batch + ui %}
+        {{ sme_group_copy | default("ftt::arch::sme_copy_block_from", true) }}(
+            &{{ sme_buffer }}[{{ sme_warp }}][{{ u }}]{% if sme_projections == 2 %}[{{ projection }}]{% endif %}[0],
+            {{ sme_sources[projection] }},
+            ({{ sme_goff }} + {{ u * sme_concurrency }}LL){% if not sme_group_copy | default(false) %} * {{ sme_stride }} * 2LL{% endif %});
+{% endfor %}
+{% endfor %}
+{% endfor %}
+        ftt::arch::sme_wait_pending<{{ sme_batch * sme_projections }}>();
+    }
+{% if sme_partial_streams | default(0) %}
+    float ftt_sme_partial[{{ sme_partial_streams }}] = {};
+{% endif %}
+    int ftt_sme_batch_slot = 0;
+    for (ftt::dim_t ftt_sme_group = 0; ftt_sme_group < {{ sme_groups - 2 * sme_batch * sme_concurrency }}LL;
+         ftt_sme_group += {{ sme_batch * sme_concurrency }}LL) {
+        const int ftt_sme_cur = ftt_sme_batch_slot;
+        const int ftt_sme_next = {{ sme_batch }} - ftt_sme_cur;
+        ftt::bf16_run_t<{{ chunk }}> ftt_sme_act[{{ sme_batch }}];
+        FTT_UNROLL
+        for (int ftt_sme_u = 0; ftt_sme_u < {{ sme_batch }}; ++ftt_sme_u) {
+            ftt_sme_act[ftt_sme_u] = ftt::{{ run_load }}<{{ chunk }}>(
+                {{ sme_act }} + ftt_sme_u * {{ sme_concurrency * sme_lane }}LL);
+        }
+        {{ sme_act }} += {{ sme_batch * sme_concurrency * sme_lane }}LL;
+        FTT_UNROLL
+        for (int ftt_sme_u = 0; ftt_sme_u < {{ sme_batch }}; ++ftt_sme_u) {
+{% for projection in range(sme_projections) %}
+            const auto ftt_sme_w{{ projection }} = ftt::load_run<{{ chunk }}>(
+                &{{ sme_buffer }}[{{ sme_warp }}][ftt_sme_cur + ftt_sme_u]{% if sme_projections == 2 %}[{{ projection }}]{% endif %}[{{ sme_run }}]);
+{% endfor %}
+{% if sme_partial_streams | default(0) %}
+            float ftt_sme_step = 0.0f;
+{% endif %}
+            FTT_UNROLL
+            for (int ftt_sme_pair = 0; ftt_sme_pair < {{ chunk // 2 }}; ++ftt_sme_pair) {
+{% for projection in range(sme_projections) %}
+{% set accumulator = "ftt_sme_step" if sme_partial_streams | default(0) else sme_accumulators[projection] %}
+                {{ accumulator }} = ftt::dot2_step(
+                    ftt_sme_w{{ projection }}, ftt_sme_act[ftt_sme_u],
+                    ftt_sme_pair, {{ accumulator }});
+{% endfor %}
+            }
+{% if sme_partial_streams | default(0) %}
+            ftt_sme_partial[(ftt_sme_group / {{ sme_concurrency }}LL + ftt_sme_u)
+                            % {{ sme_partial_streams }}] += ftt_sme_step;
+{% endif %}
+        }
+        ftt::arch::sme_read_drain();
+        if ({{ sme_issuer_lane }} == 0) {
+
+{% for projection in range(sme_projections) %}
+{% for u in range(sme_batch) %}
+            {{ sme_group_copy | default("ftt::arch::sme_copy_block_from", true) }}(
+                &{{ sme_buffer }}[{{ sme_warp }}][ftt_sme_cur + {{ u }}]{% if sme_projections == 2 %}[{{ projection }}]{% endif %}[0],
+                {{ sme_sources[projection] }},
+                (ftt_sme_group + {{ sme_goff }} + {{ (2 * sme_batch + u) * sme_concurrency }}LL)
+{% if not sme_group_copy | default(false) %}                    * {{ sme_stride }} * 2LL{% endif %});
+{% endfor %}
+{% endfor %}
+            ftt::arch::sme_wait_pending<{{ sme_batch * sme_projections }}>();
+
+        }
+        ftt_sme_batch_slot = ftt_sme_next;
+    }
+    {
+        const ftt::dim_t ftt_sme_group = {{ sme_groups - 2 * sme_batch * sme_concurrency }}LL;
+        const int ftt_sme_cur = ftt_sme_batch_slot;
+        const int ftt_sme_next = {{ sme_batch }} - ftt_sme_cur;
+        ftt::bf16_run_t<{{ chunk }}> ftt_sme_act[{{ sme_batch }}];
+        FTT_UNROLL
+        for (int ftt_sme_u = 0; ftt_sme_u < {{ sme_batch }}; ++ftt_sme_u) {
+            ftt_sme_act[ftt_sme_u] = ftt::{{ run_load }}<{{ chunk }}>(
+                {{ sme_act }} + ftt_sme_u * {{ sme_concurrency * sme_lane }}LL);
+        }
+        {{ sme_act }} += {{ sme_batch * sme_concurrency * sme_lane }}LL;
+        FTT_UNROLL
+        for (int ftt_sme_u = 0; ftt_sme_u < {{ sme_batch }}; ++ftt_sme_u) {
+{% for projection in range(sme_projections) %}
+            const auto ftt_sme_w{{ projection }} = ftt::load_run<{{ chunk }}>(
+                &{{ sme_buffer }}[{{ sme_warp }}][ftt_sme_cur + ftt_sme_u]{% if sme_projections == 2 %}[{{ projection }}]{% endif %}[{{ sme_run }}]);
+{% endfor %}
+{% if sme_partial_streams | default(0) %}
+            float ftt_sme_step = 0.0f;
+{% endif %}
+            FTT_UNROLL
+            for (int ftt_sme_pair = 0; ftt_sme_pair < {{ chunk // 2 }}; ++ftt_sme_pair) {
+{% for projection in range(sme_projections) %}
+{% set accumulator = "ftt_sme_step" if sme_partial_streams | default(0) else sme_accumulators[projection] %}
+                {{ accumulator }} = ftt::dot2_step(
+                    ftt_sme_w{{ projection }}, ftt_sme_act[ftt_sme_u],
+                    ftt_sme_pair, {{ accumulator }});
+{% endfor %}
+            }
+{% if sme_partial_streams | default(0) %}
+            ftt_sme_partial[(ftt_sme_group / {{ sme_concurrency }}LL + ftt_sme_u)
+                            % {{ sme_partial_streams }}] += ftt_sme_step;
+{% endif %}
+        }
+        if ({{ sme_issuer_lane }} == 0) ftt::arch::sme_wait_pending<0>();
+        ftt_sme_batch_slot = ftt_sme_next;
+    }
+    {
+        const ftt::dim_t ftt_sme_group = {{ sme_groups - 1 * sme_batch * sme_concurrency }}LL;
+        const int ftt_sme_cur = ftt_sme_batch_slot;
+        const int ftt_sme_next = {{ sme_batch }} - ftt_sme_cur;
+        ftt::bf16_run_t<{{ chunk }}> ftt_sme_act[{{ sme_batch }}];
+        FTT_UNROLL
+        for (int ftt_sme_u = 0; ftt_sme_u < {{ sme_batch }}; ++ftt_sme_u) {
+            ftt_sme_act[ftt_sme_u] = ftt::{{ run_load }}<{{ chunk }}>(
+                {{ sme_act }} + ftt_sme_u * {{ sme_concurrency * sme_lane }}LL);
+        }
+        {{ sme_act }} += {{ sme_batch * sme_concurrency * sme_lane }}LL;
+        FTT_UNROLL
+        for (int ftt_sme_u = 0; ftt_sme_u < {{ sme_batch }}; ++ftt_sme_u) {
+{% for projection in range(sme_projections) %}
+            const auto ftt_sme_w{{ projection }} = ftt::load_run<{{ chunk }}>(
+                &{{ sme_buffer }}[{{ sme_warp }}][ftt_sme_cur + ftt_sme_u]{% if sme_projections == 2 %}[{{ projection }}]{% endif %}[{{ sme_run }}]);
+{% endfor %}
+{% if sme_partial_streams | default(0) %}
+            float ftt_sme_step = 0.0f;
+{% endif %}
+            FTT_UNROLL
+            for (int ftt_sme_pair = 0; ftt_sme_pair < {{ chunk // 2 }}; ++ftt_sme_pair) {
+{% for projection in range(sme_projections) %}
+{% set accumulator = "ftt_sme_step" if sme_partial_streams | default(0) else sme_accumulators[projection] %}
+                {{ accumulator }} = ftt::dot2_step(
+                    ftt_sme_w{{ projection }}, ftt_sme_act[ftt_sme_u],
+                    ftt_sme_pair, {{ accumulator }});
+{% endfor %}
+            }
+{% if sme_partial_streams | default(0) %}
+            ftt_sme_partial[(ftt_sme_group / {{ sme_concurrency }}LL + ftt_sme_u)
+                            % {{ sme_partial_streams }}] += ftt_sme_step;
+{% endif %}
+        }
+        ftt_sme_batch_slot = ftt_sme_next;
+    }
+{% if sme_partial_streams | default(0) %}
+    FTT_UNROLL
+    for (int ftt_sme_s = 0; ftt_sme_s < {{ sme_partial_streams }}; ++ftt_sme_s)
+        {{ sme_accumulators[0] }} += ftt_sme_partial[ftt_sme_s];
+{% endif %}

@@ -48,6 +48,6 @@ def test_region_edits_are_not_silently_ignored_by_egraph():
     from triton.flagmega.egraph import EGraphRewriter
 
     rule = RewriteRule("region", pm.F.math.is_add(),
-                       lambda result, module: RewriteResult(result.root, removed_ids=("a", )))
+                       lambda result, module: RewriteResult(result.root, removed_ids=("a",)))
     with pytest.raises(IRVerificationError, match="Region edits require DataflowRewriter"):
-        EGraphRewriter((rule, )).rewrite(graph())
+        EGraphRewriter((rule,)).rewrite(graph())

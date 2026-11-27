@@ -15,8 +15,7 @@ from triton.flagmega.runtime import load
 @pytest.mark.parametrize("vector", [False, True])
 @pytest.mark.parametrize("split", [False, True])
 @pytest.mark.parametrize("head,rotary", [(24, 16), (256, 64)])
-def test_native_partial_rope_matches_prefix_math_and_copies_tail_bits(tmp_path, dtype, table_dtype, vector, split, head,
-                                                                      rotary):
+def test_native_partial_rope_matches_prefix_math_and_copies_tail_bits(tmp_path, dtype, table_dtype, vector, split, head, rotary):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")

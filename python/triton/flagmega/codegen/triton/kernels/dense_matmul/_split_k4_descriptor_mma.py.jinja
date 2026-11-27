@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{# Each logical batch owns a distinct K32 part of every K128 block. These
+{# Each logical batch owns a distinct K32 part of every K128 block. These
    four FP32 carries persist across all six epochs on four slots; the final pair tree
    is part of the explicit split_k4_k32_mma_k16_pairtree semantic order. #}
 {{ call.symbol }}__split_mma_layout = tl.constexpr(tle.gpu.MmaEncoding(

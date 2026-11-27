@@ -10,33 +10,31 @@ from triton.flagmega.ir.region import is_region
 
 def mixed_loop(stop=3, kind='ordinary', second_stop=None):
     b = fm.IRBuilder(dialect='high_level', stage='imported')
-    tensor, index = fm.tensor_type('float32', (4096, )), fm.tensor_type('int64', ())
+    tensor, index = fm.tensor_type('float32', (4096,)), fm.tensor_type('int64', ())
     iv = b.var('iv', index, id='iv')
     carried = b.var('carried', tensor, id='carried')
     capture = b.var('capture', tensor, id='capture')
     with construction_scope(b):
         a = fm.F.math.add(carried, capture, name='fixed_before', metadata={'execution_mesh': (8, 16)})
-        c = fm.F.math.add(
-            a, capture, name='dynamic', metadata={
-                'execution_mesh': '*', 'kernel_program_kind': kind,
-                **({'kernel_max_ctas': 2} if kind == 'persistent' else {})
-            })
+        c = fm.F.math.add(a, capture, name='dynamic', metadata={'execution_mesh': '*',
+            'kernel_program_kind': kind, **({'kernel_max_ctas': 2} if kind == 'persistent' else {})})
         d = fm.F.math.add(c, capture, name='fixed_after', metadata={'execution_mesh': (4, 16)})
-    body = b.region('body', (iv, carried, capture), (d, ), iter_count=1)
+    body = b.region('body', (iv, carried, capture), (d,), iter_count=1)
     value = b.var('value', tensor, id='value')
     increment = b.var('increment', tensor, id='increment')
     with construction_scope(b):
         lower = fm.F.builtin.scalar_const(index, 0, name='lower')
         upper = fm.F.builtin.scalar_const(index, stop, name='upper')
         stride = fm.F.builtin.scalar_const(index, 1, name='stride')
-        result = fm.F.control.for_loop(lower, upper, stride, value, body=body, captures=(increment, ), name='loop')
+        result = fm.F.control.for_loop(lower, upper, stride, value, body=body,
+                                      captures=(increment,), name='loop')
         output = fm.F.tensors.get_item(result, 0, name='output')
         if second_stop is not None:
             other_upper = fm.F.builtin.scalar_const(index, second_stop, name='other_upper')
-            other = fm.F.control.for_loop(lower, other_upper, stride, output, body=body, captures=(increment, ),
-                                          name='other_loop')
+            other = fm.F.control.for_loop(lower, other_upper, stride, output, body=body,
+                                         captures=(increment,), name='other_loop')
             output = fm.F.tensors.get_item(other, 0, name='other_output')
-    b.function('main', (value, increment), (output, ))
+    b.function('main', (value, increment), (output,))
     return b.build(entry='main')
 
 
@@ -72,17 +70,14 @@ def test_loop_yield_path_remains_subject_to_target_boundary_policy():
     from triton.flagmega.errors import IRVerificationError
     from triton.flagmega.targets import NvidiaSm90Target
     from triton.flagmega.passes.auto_distributed.realization import (
-        DistributedReshardRealization,
-        DistributedReshardUsageKind,
+        DistributedReshardRealization, DistributedReshardUsageKind,
     )
 
     class Target(NvidiaSm90Target):
-
         def distributed_reshard_realization_policy(self):
             delegate = super().distributed_reshard_realization_policy()
 
             class Policy:
-
                 def classify(self, context):
                     if (context.usage_kind is DistributedReshardUsageKind.FUNCTION_BOUNDARY
                             and context.source_type != context.target_type):
@@ -91,7 +86,6 @@ def test_loop_yield_path_remains_subject_to_target_boundary_policy():
 
                 def uses_sharded_views_for_constants(self):
                     return delegate.uses_sharded_views_for_constants()
-
             return Policy()
 
     compiler = Compiler()

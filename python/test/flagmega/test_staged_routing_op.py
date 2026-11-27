@@ -25,7 +25,6 @@ def _routing_module(*, scoring: str, with_bias: bool, normalize: bool, scaling: 
     from triton.flagmega.ir import F, Module, tensor_type
 
     class Graph(Module):
-
         def forward(self):
             logits = self.input("logits", tensor_type("float32", (rows, experts)), id="logits")
             bias = self.input("bias", tensor_type("float32", (experts, )), id="bias") if with_bias \
@@ -50,9 +49,9 @@ def _reference(logits, bias, *, scoring, normalize, scaling):
 
 
 @pytest.mark.parametrize("scoring,with_bias,normalize,scaling", [
-    ("softmax", False, True, 1.0),  # Qwen3.5 staged routing
+    ("softmax", False, True, 1.0),   # Qwen3.5 staged routing
     ("softmax", True, True, 1.0),
-    ("sigmoid", True, True, 2.5),  # GLM noaux_tc
+    ("sigmoid", True, True, 2.5),    # GLM noaux_tc
     ("sigmoid", False, False, 1.0),
 ])
 def test_staged_routing_evaluator_matches_reference(scoring, with_bias, normalize, scaling):
@@ -60,15 +59,17 @@ def test_staged_routing_evaluator_matches_reference(scoring, with_bias, normaliz
     generator = torch.Generator().manual_seed(3)
     logits = torch.randn(ROWS, EXPERTS, generator=generator)
     bias = torch.randn(EXPERTS, generator=generator) if with_bias else None
-    outputs = TorchEvaluator(DictWeightResolver({})).run(module,
-                                                         {"logits": logits, **({"bias": bias} if with_bias else {})})
-    expected_weights, expected_indices = _reference(logits, bias, scoring=scoring, normalize=normalize, scaling=scaling)
+    outputs = TorchEvaluator(DictWeightResolver({})).run(
+        module, {"logits": logits, **({"bias": bias} if with_bias else {})})
+    expected_weights, expected_indices = _reference(logits, bias, scoring=scoring, normalize=normalize,
+                                                    scaling=scaling)
     torch.testing.assert_close(outputs[0], expected_weights)
     torch.testing.assert_close(outputs[1], expected_indices)
 
 
 def test_staged_routing_prefers_lower_index_on_ties():
-    module = _routing_module(scoring="sigmoid", with_bias=False, normalize=False, scaling=1.0, experts=4, k=2, rows=1)
+    module = _routing_module(scoring="sigmoid", with_bias=False, normalize=False, scaling=1.0, experts=4, k=2,
+                             rows=1)
     logits = torch.zeros(1, 4)
     outputs = TorchEvaluator(DictWeightResolver({})).run(module, {"logits": logits})
     # All-equal scores must select the first k ids in order.
@@ -76,7 +77,8 @@ def test_staged_routing_prefers_lower_index_on_ties():
 
 
 def test_staged_routing_reports_unsupported_extent_at_candidate_selection():
-    module = _routing_module(scoring="sigmoid", with_bias=False, normalize=True, scaling=1.0, experts=2048)
+    module = _routing_module(scoring="sigmoid", with_bias=False, normalize=True, scaling=1.0,
+                             experts=2048)
     with pytest.raises(CodegenError, match="no complete local tile"):
         Compiler().compile(module)
 

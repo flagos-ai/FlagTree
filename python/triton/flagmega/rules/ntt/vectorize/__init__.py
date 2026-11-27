@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""AutoVectorize rules mirroring the reference NTT rule grouping."""
+"""AutoVectorize rules mirroring nncase's NTT rule grouping."""
 
 from triton.flagmega.rules.ntt.vectorize.base import VectorizeCandidate, VectorizeRule, VectorizeRuleRegistry
 from triton.flagmega.rules.ntt.vectorize.binary import VectorizeBinary
@@ -14,16 +14,8 @@ from triton.flagmega.rules.ntt.vectorize.qkv_rope_with_cache import VectorizeQKV
 from triton.flagmega.rules.ntt.vectorize.unary import VectorizeUnary
 
 __all__ = [
-    "NttVectorizationPolicy",
-    "VectorizeBinary",
-    "VectorizeCandidate",
-    "VectorizeMatMul",
-    "VectorizeNormApply",
-    "VectorizeNormStats",
-    "VectorizeQKVRoPEWithCache",
-    "VectorizeRule",
-    "VectorizeRMSNorm",
-    "VectorizeRuleRegistry",
-    "VectorizeUnary",
-    "propagation_rules",
+    "NttVectorizationPolicy", "VectorizeBinary",
+    "VectorizeCandidate", "VectorizeMatMul", "VectorizeNormApply", "VectorizeNormStats",
+    "VectorizeQKVRoPEWithCache", "VectorizeRule", "VectorizeRMSNorm",
+    "VectorizeRuleRegistry", "VectorizeUnary", "propagation_rules",
 ]

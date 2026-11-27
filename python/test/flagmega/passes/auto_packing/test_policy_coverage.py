@@ -5,7 +5,7 @@ from triton.flagmega.rules.ntt.packing import NttPackingPolicy
 
 
 def test_pyntt_packing_policy_catalog_covers_every_represented_rule_family():
-    """Drift gate for reference PyNTT rules representable in current FlagMega IR.
+    """Drift gate for nncase PyNTT rules representable in current FlagMega IR.
 
     ScaledMatMul and NVFP4 families are intentionally absent until their IR
     operations exist; silently naming them here would create fake passes.

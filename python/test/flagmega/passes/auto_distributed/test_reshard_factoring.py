@@ -22,8 +22,13 @@ def _variants(graph, count):
                     candidate,
                     id=f"{candidate.id}:variant{variant}",
                     operation_cost=candidate.operation_cost + count - 1 - variant,
-                ) for candidate in bucket.candidates for variant in range(count)),
-        ) for bucket in graph.buckets)
+                )
+                for candidate in bucket.candidates
+                for variant in range(count)
+            ),
+        )
+        for bucket in graph.buckets
+    )
     sites = tuple(
         replace(
             site,
@@ -31,7 +36,8 @@ def _variants(graph, count):
             consumer_index=(None if consumer is None else site.consumer_index * count + consumer),
         )
         for site in graph.reshard_sites
-        for producer, consumer in product(range(count), (None, ) if site.consumer_index is None else range(count)))
+        for producer, consumer in product(range(count), (None,) if site.consumer_index is None else range(count))
+    )
     return replace(graph, buckets=buckets, reshard_sites=sites)
 
 
@@ -58,9 +64,7 @@ def test_same_layout_implementation_variants_share_reshard_solver_variables(monk
 
 
 def test_zero_cost_independent_adapter_paths_need_no_solver_decisions(monkeypatch):
-
     class OfflineCost(DistributedReshardCostModel):
-
         def realization_cost(self, context, realization):
             return 0
 

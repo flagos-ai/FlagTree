@@ -21,29 +21,28 @@ def structured_projection_loop(*, trips=3, kind='ordinary', second_trips=None, s
     state = b.var('state', state_type, id='state')
     weights = b.var('weights', weight_type, id='weights')
     with construction_scope(b):
-        partial = fm.F.nn.partitioned_linear(
-            state, weights, partitions=4, output_lanes=(2, 4), accumulation_splits=2, name='projection', metadata={
-                'execution_mesh': '*', 'kernel_program_kind': kind,
-                **({'kernel_max_ctas': 2} if kind == 'persistent' else {})
-            })
-        published = fm.F.math.add(partial, state, name='published', metadata={'execution_mesh': (4, 16)})
-    body = b.region('layer', (iv, state, weights), (published, ), iter_count=1)
+        partial = fm.F.nn.partitioned_linear(state, weights, partitions=4, output_lanes=(2, 4),
+            accumulation_splits=2, name='projection', metadata={'execution_mesh': '*',
+                'kernel_program_kind': kind, **({'kernel_max_ctas': 2} if kind == 'persistent' else {})})
+        published = fm.F.math.add(partial, state, name='published',
+                                  metadata={'execution_mesh': (4, 16)})
+    body = b.region('layer', (iv, state, weights), (published,), iter_count=1)
     value = b.var('value', state_type, id='value')
     weight = b.var('weight', weight_type, id='weight')
     with construction_scope(b):
         lower = fm.F.builtin.scalar_const(index, 0, name='lower')
         upper = fm.F.builtin.scalar_const(index, trips, name='upper')
         step = fm.F.builtin.scalar_const(index, 1, name='step')
-        loop = fm.F.control.for_loop(lower, upper, step, value, body=body, captures=(weight, ), name='loop')
+        loop = fm.F.control.for_loop(lower, upper, step, value, body=body, captures=(weight,), name='loop')
         output = fm.F.tensors.get_item(loop, 0, name='output')
         if second_trips is not None:
             second_upper = fm.F.builtin.scalar_const(index, second_trips, name='second_upper')
-            other = fm.F.control.for_loop(lower, second_upper, step, output, body=body, captures=(weight, ),
-                                          name='other_loop')
+            other = fm.F.control.for_loop(lower, second_upper, step, output, body=body,
+                                         captures=(weight,), name='other_loop')
             output = fm.F.tensors.get_item(other, 0, name='other_output')
-    b.function('main', (value, weight), (output, ))
-    return replace(b.build(entry='main'),
-                   metadata={'auto_distribution': {'placement': placement.to_data()}, 'execution_mesh': (8, 16)})
+    b.function('main', (value, weight), (output,))
+    return replace(b.build(entry='main'), metadata={'auto_distribution': {'placement': placement.to_data()},
+                                                   'execution_mesh': (8, 16)})
 
 
 def compile_structured_projection_loop(**options):
@@ -57,12 +56,11 @@ def compile_structured_projection_loop(**options):
     proposal = compiler.compile(structured_projection_loop(**options), stop_after='propose-distribution').module
     search = AutoDistributedPass._build_graph(proposal, compiler.target)
     bucket, = (b for b in search.buckets if b.node_id == 'projection')
-    partial, = (c for c in bucket.candidates if c.return_type.partial == fm.SBPPartial((0, )))
+    partial, = (c for c in bucket.candidates if c.return_type.partial == fm.SBPPartial((0,)))
     result = solve_search_graph(search, fixed_selections={bucket.node_id: partial.id})
     _, records = distribution_selection_state(result, policy=compiler.target.distribution_policy.identity)
-    selected = compiler.run_stage(proposal, 'auto-distributed',
-                                  plan=override_plan(proposal, tuple(
-                                      (r.point_id, r.candidate_id) for r in records))).module
+    selected = compiler.run_stage(proposal, 'auto-distributed', plan=override_plan(proposal,
+        tuple((r.point_id, r.candidate_id) for r in records))).module
     return compiler.compile(selected).module
 
 
@@ -74,7 +72,7 @@ def test_mixed_projection_loop_has_real_partial_collective_and_carry_entries(tmp
     assert restored.semantic_hash == module.semantic_hash
     plan = fm.verify_buffer_plan(restored)
     partial = plan.buffer_map['projection']
-    assert partial.distributed_type.partial == fm.SBPPartial((0, ))
+    assert partial.distributed_type.partial == fm.SBPPartial((0,))
     assert partial.distributed_storage_kind is fm.DistributedBufferStorageKind.COMPACT_PER_CHIP
     assert partial.nbytes == 8192
     descriptor = describe_tir_package(restored)
@@ -83,9 +81,9 @@ def test_mixed_projection_loop_has_real_partial_collective_and_carry_entries(tmp
     dynamic = [p for p in launches if p.get('execution_mesh', {}).get('kind') == 'dynamic']
     assert len(dynamic) == trips
     assert all(p['program_kind'] == kind and len(p['calls']) == 1 for p in dynamic)
-    collective, = (
-        c for c in descriptor['render_calls']
-        if c['implementation'] == 'tir.distributed_boxing.gather_reduce_scatter' and c['mode'] == 'partial_sum')
+    collective, = (c for c in descriptor['render_calls']
+                   if c['implementation'] == 'tir.distributed_boxing.gather_reduce_scatter'
+                   and c['mode'] == 'partial_sum')
     assert collective['partial_owner_count'] == 1
     assert collective['remote_peers'] == 4
     for index, launch in enumerate(launches):

@@ -20,34 +20,29 @@ from triton.flagmega.selection import apply_plan, override_plan
 from triton.flagmega.targets import NvidiaSm90Target
 
 
-@pytest.mark.parametrize('cause', ['flattened', 'wrong_mesh', 'private_pool', 'missing_mapping'])
+@pytest.mark.parametrize('cause', ['flattened','wrong_mesh','private_pool','missing_mapping'])
 def test_split_glu_grid_requires_the_matching_global_owner_abi(cause):
     from triton.flagmega.codegen.triton.kernel_programs import _task_owner_partition
-    mesh = fm.ExecutionMesh.fixed((48, 2)).to_data()
-    request = {
-        'grid': [48, 2, 1], 'execution_mesh': mesh, 'data_placement': fm.Placement((48, 2), 'xy', 'bb').to_data()
-    }
-    descriptor = {'grid': [96, 1, 1]}
-    selected = [{
-        'parameters': {'program_grid': (48, 2, 1), 'program_owner_mapping': 'x-fast'}, 'inputs':
-        [{'buffers': [{'abi': {}}]}], 'outputs': []
-    }]
-    if cause == 'flattened':
-        request['grid'] = [24, 4, 1]
-    elif cause == 'wrong_mesh':
-        request['execution_mesh'] = fm.ExecutionMesh.fixed((24, 4)).to_data()
-    elif cause == 'private_pool':
-        selected[0]['inputs'][0]['buffers'][0]['abi']['pool_scope_stride_bytes'] = 128
+    mesh = fm.ExecutionMesh.fixed((48,2)).to_data()
+    request = {'grid':[48,2,1], 'execution_mesh':mesh,
+               'data_placement':fm.Placement((48,2),'xy','bb').to_data()}
+    descriptor = {'grid':[96,1,1]}
+    selected = [{'parameters':{'program_grid':(48,2,1),'program_owner_mapping':'x-fast'},
+                 'inputs':[{'buffers':[{'abi':{}}]}],'outputs':[]}]
+    if cause=='flattened':
+        request['grid']=[24,4,1]
+    elif cause=='wrong_mesh':
+        request['execution_mesh']=fm.ExecutionMesh.fixed((24,4)).to_data()
+    elif cause=='private_pool':
+        selected[0]['inputs'][0]['buffers'][0]['abi']['pool_scope_stride_bytes']=128
     else:
         selected[0]['parameters'].pop('program_owner_mapping')
-    with pytest.raises(CodegenError, match='explicit task-to-owner ABI'):
-        _task_owner_partition(request, descriptor, selected)
+    with pytest.raises(CodegenError,match='explicit task-to-owner ABI'):
+        _task_owner_partition(request,descriptor,selected)
 
 
 def graph(*, export_mid=True, packed=False):
-
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("x", fm.tensor_type("bfloat16", (1, 128)), id="x")
             if packed:
@@ -57,42 +52,49 @@ def graph(*, export_mid=True, packed=False):
                 none = fm.F.builtin.none()
                 metadata = {
                     "selected_vectorization": "vectorization.matmul.n",
-                    "selected_vector_axes": (1, ),
-                    "selected_vector_lanes": (8, ),
+                    "selected_vector_axes": (1,),
+                    "selected_vector_lanes": (8,),
                 }
-                mid = fm.F.ntt.packed_matmul(x, a, none, none, output_data_type="bfloat16", name="first",
-                                             metadata=metadata)
-                out = fm.F.ntt.packed_matmul(x, b, none, none, output_data_type="bfloat16", name="second",
-                                             metadata=metadata)
+                mid = fm.F.ntt.packed_matmul(
+                    x, a, none, none, output_data_type="bfloat16", name="first", metadata=metadata
+                )
+                out = fm.F.ntt.packed_matmul(
+                    x, b, none, none, output_data_type="bfloat16", name="second", metadata=metadata
+                )
             else:
                 a = self.input("a", fm.tensor_type("bfloat16", (64, 128)), id="a")
                 b = self.input("b", fm.tensor_type("bfloat16", (32, 64)), id="b")
                 mid = fm.F.math.matmul(x, a, transpose_b=True, name="first")
                 out = fm.F.math.matmul(mid, b, transpose_b=True, name="second")
-            self.function("main", (x, a, b), (mid, out) if export_mid else (out, ))
+            self.function("main", (x, a, b), (mid, out) if export_mid else (out,))
 
     return Graph(dialect="nn", stage="frozen_constants", entry="main").build()
 
 
 def compile_programs(*, export_mid=True, packed=False, dependencies=None):
-
     class Target(NvidiaSm90Target):
-
         def propose_tir(self, module):
             module = super().propose_tir(module)
-            choices = [(point.id, "tir.dense_matmul.packed_k_major_mma")
-                       for point in module.selection_points
-                       if point.kind == "tir" and point.owner in module.node_map
-                       and module.node_map[point.owner].op == "ntt.packed_matmul"]
-            module = (apply_plan(
-                module,
-                override_plan(
+            choices = [
+                (point.id, "tir.dense_matmul.packed_k_major_mma")
+                for point in module.selection_points
+                if point.kind == "tir"
+                and point.owner in module.node_map
+                and module.node_map[point.owner].op == "ntt.packed_matmul"
+            ]
+            module = (
+                apply_plan(
                     module,
-                    choices,
-                    policy="test.kernel-programs",
-                    rationale="Exercise separate warp layout namespaces on the same selected MMA family.",
-                ),
-            ) if choices else module)
+                    override_plan(
+                        module,
+                        choices,
+                        policy="test.kernel-programs",
+                        rationale="Exercise separate warp layout namespaces on the same selected MMA family.",
+                    ),
+                )
+                if choices
+                else module
+            )
             owners = {p.owner for p in module.selection_points if p.kind == "tir"}
             calls = tuple(node.id for node in module.nodes if node.id in owners)
             assert len(calls) == 2, calls
@@ -162,7 +164,7 @@ def test_rejects_invalid_program_partition(compiled, cause):
     elif cause == "reordered":
         programs.reverse()
     elif cause == "unknown":
-        programs[0]["calls"] = ("not_a_call", )
+        programs[0]["calls"] = ("not_a_call",)
     elif cause == "warps":
         programs[0]["num_warps"] = 3
     elif cause == "below_minimum":
@@ -175,7 +177,8 @@ def test_rejects_invalid_program_partition(compiled, cause):
         programs[0]["grid"] = (512, 1, 1)
     plan["programs"] = programs
     invalid = replace(
-        compiled, metadata={**compiled.metadata, "codegen_package_plan": plan, "kernel_program_partition": programs})
+        compiled, metadata={**compiled.metadata, "codegen_package_plan": plan, "kernel_program_partition": programs}
+    )
     with pytest.raises(CodegenError, match="[Pp]rogram"):
         describe_tir_package(invalid)
 
@@ -219,8 +222,9 @@ def test_device_serial_cut_preserves_intermediates_rebinding_and_graph(tmp_path,
         pytest.skip("requires SM90")
     if not export_mid:
         compiled = compile_programs(export_mid=False)
-    runtime = load(write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True),
-                   device="cuda:0")
+    runtime = load(
+        write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True), device="cuda:0"
+    )
     generator = torch.Generator(device="cuda").manual_seed(907)
     values = {
         "x": torch.empty((1, 128), device="cuda", dtype=torch.bfloat16),
@@ -229,8 +233,8 @@ def test_device_serial_cut_preserves_intermediates_rebinding_and_graph(tmp_path,
     }
     guards = []
     outputs = []
-    for shape in ((1, 64), (1, 32)) if export_mid else ((1, 32), ):
-        storage = torch.full((shape[1] + 32, ), -123.0, device="cuda", dtype=torch.bfloat16)
+    for shape in ((1, 64), (1, 32)) if export_mid else ((1, 32),):
+        storage = torch.full((shape[1] + 32,), -123.0, device="cuda", dtype=torch.bfloat16)
         guards.append(storage)
         outputs.append(storage[16:-16].reshape(shape))
 
@@ -276,18 +280,19 @@ def compile_loop_program(stop):
     from triton.flagmega.passes.functions import function_nodes
 
     class Target(NvidiaSm90Target):
-
         def propose_tir(self, module):
             module = super().propose_tir(module)
             owners = {p.owner for p in module.selection_points if p.kind == "tir"}
-            items = tuple(f"{module.entry}.{n.id}_iv" if n.op == "control.for" else n.id
-                          for n in function_nodes(module, module.function_map[module.entry])
-                          if n.id in owners or n.op in {"distributed.boxing", "control.for"})
+            items = tuple(
+                f"{module.entry}.{n.id}_iv" if n.op == "control.for" else n.id
+                for n in function_nodes(module, module.function_map[module.entry])
+                if n.id in owners or n.op in {"distributed.boxing", "control.for"}
+            )
             return replace(
                 module,
                 metadata={
                     **module.metadata,
-                    "kernel_program_partition": ({"symbol": "loop_program", "calls": items, "num_warps": 4}, ),
+                    "kernel_program_partition": ({"symbol": "loop_program", "calls": items, "num_warps": 4},),
                 },
             )
 
@@ -304,10 +309,16 @@ def test_program_keeps_a_whole_structured_loop_and_reusable_body(tmp_path, stop)
     source = import_source(tmp_path / "generated_kernels.py")
     assert source.loop_program
     tree = ast.parse((tmp_path / "generated_kernels.py").read_text())
-    assert (len([
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.For) and isinstance(n.target, ast.Name) and n.target.id == "loop_iv"
-    ]) == 1)
+    assert (
+        len(
+            [
+                n
+                for n in ast.walk(tree)
+                if isinstance(n, ast.For) and isinstance(n.target, ast.Name) and n.target.id == "loop_iv"
+            ]
+        )
+        == 1
+    )
     restored = fm.load_module(fm.emit_module(compiled, tmp_path / "loop.py"))
     assert restored.semantic_hash == compiled.semantic_hash
     runtime = load(write_artifact(restored, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True))
@@ -327,8 +338,9 @@ def test_device_program_loop_preserves_zero_and_multiple_trips(tmp_path, stop):
     increment = torch.tensor([1.0, 2.0, 3.0, 4.0], device="cuda")
     output = torch.full_like(value, float("nan"))
     values = {"value": value, "increment": increment}
-    arguments = tuple(output if spec["role"] == "result" else values[spec["value"]]
-                      for spec in runtime.external_arguments)
+    arguments = tuple(
+        output if spec["role"] == "result" else values[spec["value"]] for spec in runtime.external_arguments
+    )
     try:
         Runtime.prepare(runtime, *arguments)
         assert runtime.resource_report["spill_bytes"] == 0
@@ -348,21 +360,23 @@ def test_device_programs_keep_packed_mma_layouts_private(tmp_path):
         pytest.skip("requires SM90")
     compiled = compile_programs(packed=True)
     assert all(d.dispatch.microkernel.variant == "packed_k_major_mma" for d in compiled.kernel_definitions)
-    runtime = load(write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True),
-                   device="cuda:0")
+    runtime = load(
+        write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True), device="cuda:0"
+    )
     generator = torch.Generator(device="cuda").manual_seed(712)
     values = {
         "x": torch.empty((1, 128), dtype=torch.bfloat16, device="cuda"),
         "a": torch.empty((8, 8, 8, 2, 8), dtype=torch.bfloat16, device="cuda"),
         "b": torch.empty((8, 4, 8, 2, 8), dtype=torch.bfloat16, device="cuda"),
     }
-    stores = [torch.full((n + 32, ), -123.0, dtype=torch.bfloat16, device="cuda") for n in (64, 32)]
+    stores = [torch.full((n + 32,), -123.0, dtype=torch.bfloat16, device="cuda") for n in (64, 32)]
     outputs = [v[16:-16].reshape(1, -1, 8) for v in stores]
 
     def args():
         results = iter(outputs)
         return tuple(
-            next(results) if spec["role"] == "result" else values[spec["value"]] for spec in runtime.external_arguments)
+            next(results) if spec["role"] == "result" else values[spec["value"]] for spec in runtime.external_arguments
+        )
 
     try:
         Runtime.prepare(runtime, *args())

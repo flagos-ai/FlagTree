@@ -18,11 +18,17 @@ def test_shared_workspace_descriptor_requires_a_materializable_tensor():
     assert descriptor.alignment_bytes == 16
 
     with pytest.raises(IRSchemaError, match="non-empty name"):
-        fm.T.shared_workspace_descriptor("", fm.tensor_type("bfloat16", (16, )), 16)
+        fm.T.shared_workspace_descriptor(
+            "", fm.tensor_type("bfloat16", (16,)), 16
+        )
     with pytest.raises(IRSchemaError, match="positive power of two"):
-        fm.T.shared_workspace_descriptor("rhs_stage", fm.tensor_type("bfloat16", (16, )), 12)
+        fm.T.shared_workspace_descriptor(
+            "rhs_stage", fm.tensor_type("bfloat16", (16,)), 12
+        )
     with pytest.raises(IRSchemaError, match="at least its element size"):
-        fm.T.shared_workspace_descriptor("rhs_stage", fm.tensor_type("float32", (16, )), 2)
+        fm.T.shared_workspace_descriptor(
+            "rhs_stage", fm.tensor_type("float32", (16,)), 2
+        )
 
 
 def test_shared_workspace_descriptor_requires_finite_positive_bounds():
@@ -33,4 +39,6 @@ def test_shared_workspace_descriptor_requires_finite_positive_bounds():
             16,
         )
     with pytest.raises(IRSchemaError, match="finite positive maximum size"):
-        fm.T.shared_workspace_descriptor("empty", fm.tensor_type("bfloat16", (0, 16)), 16)
+        fm.T.shared_workspace_descriptor(
+            "empty", fm.tensor_type("bfloat16", (0, 16)), 16
+        )

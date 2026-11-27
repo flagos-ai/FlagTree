@@ -49,7 +49,9 @@ def workspace_view_specs(
 ) -> tuple[WorkspaceViewSpec, ...]:
     """Resolve the plan's default workspace through nested call frames."""
 
-    return memory_pool_view_specs(plan, entry=entry, memory_space=plan.default_workspace)
+    return memory_pool_view_specs(
+        plan, entry=entry, memory_space=plan.default_workspace
+    )
 
 
 def memory_pool_view_specs(
@@ -61,7 +63,9 @@ def memory_pool_view_specs(
     """Resolve one function-scoped SAT pool through nested call frames."""
 
     if entry not in plan.function_map:
-        raise RuntimeContractError(f"Diagnostic workspace entry {entry!r} is not in the buffer plan.")
+        raise RuntimeContractError(
+            f"Diagnostic workspace entry {entry!r} is not in the buffer plan."
+        )
     entry_pool = plan.function_map[entry].memory_pool_map.get(memory_space)
     if entry_pool is None:
         return ()
@@ -75,18 +79,25 @@ def memory_pool_view_specs(
         active_functions: tuple[str, ...],
     ) -> None:
         if function_name in active_functions:
-            raise RuntimeContractError("Diagnostic workspace cannot resolve a recursive bufferized "
-                                       f"call graph: {(*active_functions, function_name)!r}.")
+            raise RuntimeContractError(
+                "Diagnostic workspace cannot resolve a recursive bufferized "
+                f"call graph: {(*active_functions, function_name)!r}."
+            )
         function = plan.function_map[function_name]
         function_pool = function.memory_pool_map.get(memory_space)
         function_bytes = 0 if function_pool is None else function_pool.scope_bytes
         if frame_offset < 0 or frame_offset + function_bytes > arena_bytes:
-            raise RuntimeContractError(f"Function @{function_name} {memory_space!r} frame "
-                                       f"[{frame_offset}, {frame_offset + function_bytes}) "
-                                       f"exceeds the entry arena of {arena_bytes} bytes.")
+            raise RuntimeContractError(
+                f"Function @{function_name} {memory_space!r} frame "
+                f"[{frame_offset}, {frame_offset + function_bytes}) "
+                f"exceeds the entry arena of {arena_bytes} bytes."
+            )
         for descriptor in plan.buffers:
-            if (descriptor.function != function_name or descriptor.storage != memory_space
-                    or descriptor.mem_span.buffer.memory_space != memory_space):
+            if (
+                descriptor.function != function_name
+                or descriptor.storage != memory_space
+                or descriptor.mem_span.buffer.memory_space != memory_space
+            ):
                 continue
             scalar_dtype, lane_shape = _scalar_type(descriptor.dtype)
             lane_count = prod(lane_shape, start=1)
@@ -95,39 +106,50 @@ def memory_pool_view_specs(
                 *(int(value) * lane_count for value in descriptor.strides),
                 *_dense_strides(lane_shape),
             )
-            if (descriptor.distributed_storage_kind in {
+            if (
+                descriptor.distributed_storage_kind in {
                     DistributedBufferStorageKind.COMPACT_PER_OWNER,
                     DistributedBufferStorageKind.COMPACT_PER_CHIP,
-            }):
+                }
+            ):
                 if descriptor.distributed_type is None:
-                    raise RuntimeContractError(f"Compact-per-owner buffer {descriptor.id!r} has no DistributedType.")
-                owners = (placement_owner_count(descriptor.distributed_type)
-                          if descriptor.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER else
-                          block_owner_count(descriptor.distributed_type))
+                    raise RuntimeContractError(
+                        f"Compact-per-owner buffer {descriptor.id!r} has no DistributedType."
+                    )
+                owners = (
+                    placement_owner_count(descriptor.distributed_type)
+                    if descriptor.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
+                    else block_owner_count(descriptor.distributed_type)
+                )
                 owner_stride = prod(descriptor.component_shape, start=1) * lane_count
                 shape = (owners, *shape)
                 strides = (owner_stride, *strides)
             byte_size = _view_byte_size(shape, strides, scalar_dtype.itemsize)
             byte_offset = frame_offset + descriptor.offset
             if byte_offset < 0 or byte_offset + byte_size > arena_bytes:
-                raise RuntimeContractError(f"Diagnostic view {descriptor.id!r} resolves to "
-                                           f"[{byte_offset}, {byte_offset + byte_size}), outside the "
-                                           f"{arena_bytes}-byte {memory_space!r} entry arena.")
-            result.append(
-                WorkspaceViewSpec(
-                    key=(descriptor.id if not call_path else f"{'/'.join(call_path)}::{descriptor.id}"),
-                    function=function_name,
-                    call_path=call_path,
-                    buffer=descriptor.id,
-                    memory_space=memory_space,
-                    byte_offset=byte_offset,
-                    byte_size=byte_size,
-                    scalar_dtype=scalar_dtype,
-                    shape=shape,
-                    strides=strides,
-                    live_start=descriptor.live_start,
-                    live_end=descriptor.live_end,
-                ))
+                raise RuntimeContractError(
+                    f"Diagnostic view {descriptor.id!r} resolves to "
+                    f"[{byte_offset}, {byte_offset + byte_size}), outside the "
+                    f"{arena_bytes}-byte {memory_space!r} entry arena."
+                )
+            result.append(WorkspaceViewSpec(
+                key=(
+                    descriptor.id
+                    if not call_path
+                    else f"{'/'.join(call_path)}::{descriptor.id}"
+                ),
+                function=function_name,
+                call_path=call_path,
+                buffer=descriptor.id,
+                memory_space=memory_space,
+                byte_offset=byte_offset,
+                byte_size=byte_size,
+                scalar_dtype=scalar_dtype,
+                shape=shape,
+                strides=strides,
+                live_start=descriptor.live_start,
+                live_end=descriptor.live_end,
+            ))
         for call in function.calls:
             callee = plan.function_map[call.callee]
             callee_pool = callee.memory_pool_map.get(memory_space)
@@ -135,8 +157,10 @@ def memory_pool_view_specs(
                 continue
             call_pool = call.memory_pool_map.get(memory_space)
             if call_pool is None:
-                raise RuntimeContractError(f"Call {call.call!r} has no {memory_space!r} frame for "
-                                           f"@{call.callee}.")
+                raise RuntimeContractError(
+                    f"Call {call.call!r} has no {memory_space!r} frame for "
+                    f"@{call.callee}."
+                )
             visit(
                 call.callee,
                 (*call_path, call.call),
@@ -147,7 +171,9 @@ def memory_pool_view_specs(
     visit(entry, (), 0, ())
     keys = tuple(value.key for value in result)
     if len(set(keys)) != len(keys):
-        raise RuntimeContractError("Diagnostic workspace call-path keys are not unique.")
+        raise RuntimeContractError(
+            "Diagnostic workspace call-path keys are not unique."
+        )
     return tuple(result)
 
 
@@ -175,26 +201,47 @@ def materialize_memory_pool_views(
     try:
         import torch
     except ImportError as error:
-        raise RuntimeContractError("Workspace diagnostics require PyTorch tensor/storage APIs.") from error
-    if (not isinstance(pool, torch.Tensor) or pool.dtype != torch.uint8 or pool.ndim != 1 or not pool.is_contiguous()):
-        raise RuntimeContractError("Memory-pool diagnostics require a contiguous one-dimensional uint8 tensor.")
+        raise RuntimeContractError(
+            "Workspace diagnostics require PyTorch tensor/storage APIs."
+        ) from error
+    if (
+        not isinstance(pool, torch.Tensor)
+        or pool.dtype != torch.uint8
+        or pool.ndim != 1
+        or not pool.is_contiguous()
+    ):
+        raise RuntimeContractError(
+            "Memory-pool diagnostics require a contiguous one-dimensional uint8 tensor."
+        )
     if scope_count <= 0:
         raise RuntimeContractError("Memory-pool scope count must be positive.")
     if scope_nbytes is None:
         if pool.numel() % scope_count:
-            raise RuntimeContractError("Memory-pool allocation is not divisible by its scope count.")
+            raise RuntimeContractError(
+                "Memory-pool allocation is not divisible by its scope count."
+            )
         scope_nbytes = pool.numel() // scope_count
     if scope_nbytes < 0 or scope_nbytes * scope_count > pool.numel():
-        raise RuntimeContractError("Memory-pool scope ABI exceeds its runtime allocation.")
+        raise RuntimeContractError(
+            "Memory-pool scope ABI exceeds its runtime allocation."
+        )
     values: dict[str, object] = {}
     for spec in specs:
         dtype = _torch_dtype(torch, spec.scalar_dtype)
-        final_end = ((scope_count - 1) * scope_nbytes + spec.byte_offset + spec.byte_size)
+        final_end = (
+            (scope_count - 1) * scope_nbytes
+            + spec.byte_offset
+            + spec.byte_size
+        )
         if final_end > pool.numel():
-            raise RuntimeContractError(f"Diagnostic view {spec.key!r} exceeds the runtime pool allocation.")
+            raise RuntimeContractError(
+                f"Diagnostic view {spec.key!r} exceeds the runtime pool allocation."
+            )
         if scope_nbytes % spec.scalar_dtype.itemsize:
-            raise RuntimeContractError(f"Memory-pool scope stride for {spec.key!r} is not aligned to "
-                                       "its scalar dtype.")
+            raise RuntimeContractError(
+                f"Memory-pool scope stride for {spec.key!r} is not aligned to "
+                "its scalar dtype."
+            )
         raw = pool.narrow(0, spec.byte_offset, final_end - spec.byte_offset)
         typed = raw.view(dtype)
         shape = spec.shape
@@ -212,7 +259,9 @@ def _scalar_type(dtype) -> tuple[DType, tuple[int, ...]]:
         return dtype, ()
     if isinstance(dtype, VectorType):
         return dtype.elem_type, dtype.lanes
-    raise RuntimeContractError(f"Workspace diagnostics cannot materialize {type(dtype).__name__} buffers.")
+    raise RuntimeContractError(
+        f"Workspace diagnostics cannot materialize {type(dtype).__name__} buffers."
+    )
 
 
 def _dense_strides(shape: tuple[int, ...]) -> tuple[int, ...]:
@@ -233,7 +282,10 @@ def _view_byte_size(
         raise RuntimeContractError("Diagnostic workspace view has invalid strides.")
     if any(value == 0 for value in shape):
         return 0
-    elements = 1 + sum((extent - 1) * stride for extent, stride in zip(shape, strides, strict=True))
+    elements = 1 + sum(
+        (extent - 1) * stride
+        for extent, stride in zip(shape, strides, strict=True)
+    )
     return elements * itemsize
 
 

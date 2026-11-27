@@ -25,10 +25,10 @@ def test_pipeline_under_counted_loop_is_mirrored_on_both_sides():
         fm.dim("i", minimum=0, maximum=0),
         fm.T.range(0, 1),
         fm.T.LoopMode.SERIAL,
-        fm.T.sequential((dispatch, )),
+        fm.T.sequential((dispatch,)),
     )
     function = prim_function("kernel", ())
-    function = replace(function, body=fm.T.sequential((loop, )))
+    function = replace(function, body=fm.T.sequential((loop,)))
 
     lowered = lower_transfer_pipeline_regions(module(function))
     region = lowered.prim_function_map["kernel"].body.fields[0]
@@ -40,9 +40,9 @@ def test_pipeline_under_counted_loop_is_mirrored_on_both_sides():
 
 def test_pipeline_under_unbounded_control_flow_fails_fast():
     dispatch = pipeline_dispatch("kernel", 0, shared_start=0)
-    scoped = fm.T.block("guarded", fm.T.sequential((dispatch, )))
+    scoped = fm.T.block("guarded", fm.T.sequential((dispatch,)))
     function = prim_function("kernel", ())
-    function = replace(function, body=fm.T.sequential((scoped, )))
+    function = replace(function, body=fm.T.sequential((scoped,)))
 
     with pytest.raises(IRVerificationError, match="straight-line stage order"):
         lower_transfer_pipeline_regions(module(function))
@@ -54,11 +54,15 @@ def test_pipeline_requires_fixed_function_owned_shared_memspan():
     wrong_owner = replace(shared.mem_span.buffer, function="another_function")
     dispatch = replace(
         dispatch,
-        shared_workspace_buffers=(replace(shared, mem_span=fm.T.mem_span(wrong_owner)), ),
+        shared_workspace_buffers=(
+            replace(shared, mem_span=fm.T.mem_span(wrong_owner)),
+        ),
     )
 
     with pytest.raises(IRVerificationError, match="function-owned post-Bufferize"):
-        lower_transfer_pipeline_regions(module(prim_function("kernel", (dispatch, ))))
+        lower_transfer_pipeline_regions(
+            module(prim_function("kernel", (dispatch,)))
+        )
 
 
 def test_ordinary_write_to_transfer_source_requires_explicit_block_barrier():
@@ -72,4 +76,6 @@ def test_ordinary_write_to_transfer_source_requires_explicit_block_barrier():
     pipeline = pipeline_dispatch("kernel", 1, shared_start=0)
 
     with pytest.raises(IRVerificationError, match="first-class block barrier"):
-        lower_transfer_pipeline_regions(module(prim_function("kernel", (ordinary, pipeline))))
+        lower_transfer_pipeline_regions(
+            module(prim_function("kernel", (ordinary, pipeline)))
+        )

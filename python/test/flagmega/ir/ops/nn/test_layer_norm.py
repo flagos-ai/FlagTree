@@ -8,7 +8,6 @@ from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 
 
 class _LayerNormModule(fm.Module):
-
     def __init__(self, use_mean):
         super().__init__(dialect="nn", stage="imported", entry="main")
         self.use_mean = use_mean
@@ -26,16 +25,17 @@ class _LayerNormModule(fm.Module):
             use_mean=self.use_mean,
             name="output",
         )
-        self.function("main", (value, scale, bias), (output, ))
+        self.function("main", (value, scale, bias), (output,))
 
 
 def test_layer_norm_fused_evaluator_matches_torch_layer_norm():
     module = _LayerNormModule(True).build()
     value = torch.randn((2, 16), dtype=torch.float32)
-    scale = torch.randn((16, ), dtype=torch.float32)
-    bias = torch.randn((16, ), dtype=torch.float32)
-    actual = TorchEvaluator(DictWeightResolver({})).run(module, {"value": value, "scale": scale, "bias": bias})[0]
-    expected = torch.nn.functional.layer_norm(value, (16, ), scale, bias, 1e-5)
+    scale = torch.randn((16,), dtype=torch.float32)
+    bias = torch.randn((16,), dtype=torch.float32)
+    actual = TorchEvaluator(DictWeightResolver({})).run(
+        module, {"value": value, "scale": scale, "bias": bias})[0]
+    expected = torch.nn.functional.layer_norm(value, (16,), scale, bias, 1e-5)
     torch.testing.assert_close(actual, expected)
 
 

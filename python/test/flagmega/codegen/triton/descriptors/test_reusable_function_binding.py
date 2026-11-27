@@ -7,8 +7,9 @@ from triton.flagmega.codegen.triton.tir_package import (
 )
 from triton.flagmega.runtime import TensorDescriptorCache
 
-
-def test_each_reusable_call_binds_its_own_root_storage_descriptor(two_call_descriptor_module, ):
+def test_each_reusable_call_binds_its_own_root_storage_descriptor(
+    two_call_descriptor_module,
+):
     module = two_call_descriptor_module()
     package = describe_tir_package(module)
     specs = package["host_tensor_descriptor_specs"]
@@ -17,14 +18,26 @@ def test_each_reusable_call_binds_its_own_root_storage_descriptor(two_call_descr
     assert len({value["name"] for value in specs}) == 2
     assert {value["source"] for value in specs} == {"first_weight", "second_weight"}
     assert all(value["offset_bytes"] == 0 for value in specs)
-    assert TensorDescriptorCache.validate_specs(specs, source_names=package["runtime_binding"]["signature"]) == tuple(
-        value["name"] for value in specs)
+    assert TensorDescriptorCache.validate_specs(
+        specs, source_names=package["runtime_binding"]["signature"]
+    ) == tuple(value["name"] for value in specs)
 
-    projection_wrapper = next(value for value in package["render_calls"] if value["call"] == "projection")
-    assert projection_wrapper["descriptor_parameters"] == ("weight_descriptor", )
-    function_calls = tuple(value for value in package["entry_events"] if value["kind"] == "function_call")
+    projection_wrapper = next(
+        value for value in package["render_calls"]
+        if value["call"] == "projection"
+    )
+    assert projection_wrapper["descriptor_parameters"] == (
+        "weight_descriptor",
+    )
+    function_calls = tuple(
+        value for value in package["entry_events"]
+        if value["kind"] == "function_call"
+    )
     assert len(function_calls) == 2
-    assert {value["arguments"].rsplit(", ", 1)[-1] for value in function_calls} == {value["name"] for value in specs}
+    assert {
+        value["arguments"].rsplit(", ", 1)[-1]
+        for value in function_calls
+    } == {value["name"] for value in specs}
 
     source = render_tir_package(package, "unit")
     definition, = package["device_functions"]

@@ -12,12 +12,10 @@ from triton.flagmega.options import CompileOptions
 @pytest.mark.parametrize("stop", ["decompose-gdn", "propose-distribution"])
 @pytest.mark.parametrize("use_output_stage", [False, True])
 def test_resume_at_existing_boundary_is_identity_and_emits_checkpoint(tmp_path, stop, use_output_stage):
-
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("x", fm.tensor_type("bfloat16", (1, 64)))
-            self.function("main", (x, ), (fm.F.math.silu(x), ))
+            self.function("main", (x,), (fm.F.math.silu(x),))
 
     original = Graph(dialect="high_level", stage="imported", entry="main").build()
     checkpoint = Compiler().compile(original, stop_after=stop).module

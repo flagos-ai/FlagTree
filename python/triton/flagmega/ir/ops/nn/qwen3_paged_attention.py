@@ -30,8 +30,7 @@ from triton.flagmega.ir.type_pattern import has_dtype, has_rank, is_ref, is_tens
 class Qwen3PagedAttention(OpDefinition):
     value = input_parameter(is_tensor() & has_rank(2))
     state = input_parameter(
-        is_ref(),
-        parameter_kind=ParameterKind.ATTRIBUTE,
+        is_ref(), parameter_kind=ParameterKind.ATTRIBUTE,
         memory_effect=MemoryEffect.CHIP_READ_WRITE.partitioned_by_argument(8),
     )
     q_weight = input_parameter(is_tensor() & has_rank(2))
@@ -124,7 +123,7 @@ class Qwen3PagedAttention(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(flops=None, bytes_read=None, bytes_written=None, notes=("stateful-qwen3-paged-attention", ))
+        return OpCost(flops=None, bytes_read=None, bytes_written=None, notes=("stateful-qwen3-paged-attention",))
 
 
 def qwen3_paged_attention(
@@ -153,8 +152,11 @@ def qwen3_paged_attention(
     state.validate()
     if hidden.shape[0] != 1:
         raise EvaluationError("Qwen3 P0 decode attention requires exactly one input token.")
-    if (state.config.num_kv_heads != num_key_value_heads or state.config.head_dim != head_dim
-            or state.config.num_layers <= layer_id):
+    if (
+        state.config.num_kv_heads != num_key_value_heads
+        or state.config.head_dim != head_dim
+        or state.config.num_layers <= layer_id
+    ):
         raise EvaluationError("Paged-attention state config does not match the Qwen3 operation.")
 
     query = torch.nn.functional.linear(hidden, q_weight).reshape(num_attention_heads, head_dim)
@@ -171,13 +173,15 @@ def qwen3_paged_attention(
         layer_id=layer_id,
         advance_sequence=advance_sequence,
     )
-    key_history, value_history = state.gather(layer_id=layer_id, length=position + 1)
+    key_history, value_history = state.gather(
+        layer_id=layer_id, length=position + 1
+    )
 
     groups = num_attention_heads // num_key_value_heads
     head_to_kv = torch.arange(num_attention_heads, device=hidden.device) // groups
     expanded_key = key_history[:, head_to_kv, :].permute(1, 0, 2)
     expanded_value = value_history[:, head_to_kv, :].permute(1, 0, 2)
-    scores = torch.einsum("hd,hsd->hs", query.float(), expanded_key.float()) * (head_dim**-0.5)
+    scores = torch.einsum("hd,hsd->hs", query.float(), expanded_key.float()) * (head_dim ** -0.5)
     probabilities = torch.softmax(scores, dim=-1, dtype=torch.float32).to(dtype=query.dtype)
     attention = torch.einsum("hs,hsd->hd", probabilities, expanded_value)
     merged = attention.reshape(1, num_attention_heads * head_dim)
@@ -194,7 +198,9 @@ def _scalar_int(value) -> int:
 def _scalar_bool(value) -> bool:
     result = value.item() if hasattr(value, "item") else value
     if not isinstance(result, bool):
-        raise EvaluationError(f"Qwen3 advance_sequence must evaluate to bool, got {result!r}.")
+        raise EvaluationError(
+            f"Qwen3 advance_sequence must evaluate to bool, got {result!r}."
+        )
     return result
 
 
@@ -213,7 +219,7 @@ def _apply_rope(value, *, position: int, theta: float):
     torch = __import__("torch")
     head_dim = value.shape[-1]
     indices = torch.arange(0, head_dim, 2, dtype=torch.float32, device=value.device)
-    inverse_frequency = theta**(-indices / head_dim)
+    inverse_frequency = theta ** (-indices / head_dim)
     angles = position * inverse_frequency
     frequency = torch.cat((angles, angles), dim=-1)
     cosine = frequency.cos().to(dtype=value.dtype)

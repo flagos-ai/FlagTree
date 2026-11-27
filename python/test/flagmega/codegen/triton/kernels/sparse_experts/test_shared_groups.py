@@ -27,16 +27,13 @@ def imported_moe(torch, tokens, shared_width):
     }
 
     class Graph(fm.Module):
-
         def forward(self):
             value = self.input("value", fm.tensor_type("bfloat16", (tokens, 16)), id="value")
-            weights = {
-                name: self.weight(name, fm.tensor_type("bfloat16", shape), source="model.safetensors", key=name,
-                                  id=name)
-                for name, shape in shapes.items()
-            }
+            weights = {name: self.weight(name, fm.tensor_type("bfloat16", shape),
+                                         source="model.safetensors", key=name, id=name)
+                       for name, shape in shapes.items()}
             result = build_moe(value, weights, config, prefix="moe")
-            self.function("main", (value, ), (result, ))
+            self.function("main", (value,), (result,))
 
     module = Graph(dialect="nn", stage="imported", entry="main").build()
     generator = torch.Generator().manual_seed(183)

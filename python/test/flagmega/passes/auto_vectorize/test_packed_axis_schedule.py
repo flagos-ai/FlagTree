@@ -18,15 +18,21 @@ def _module() -> fm.IRModule:
     lhs = builder.var("lhs", value_type, id="lhs")
     rhs = builder.var("rhs", value_type, id="rhs")
     output = builder.call("math.add", (lhs, rhs), value_type, id="output")
-    builder.function("main", (lhs, rhs), (output, ))
+    builder.function("main", (lhs, rhs), (output,))
     return builder.build(entry="main")
 
 
 def _compile_axis_zero():
     compiler = Compiler()
-    proposed = compiler.compile(_module(), stop_after="propose-vectorization").module
-    plan = override_plan(proposed, (("vectorization.output", "vectorization.axes_0"), ))
-    applied = compiler.run_stage(proposed, "apply-vectorization", plan=plan).module
+    proposed = compiler.compile(
+        _module(), stop_after="propose-vectorization"
+    ).module
+    plan = override_plan(
+        proposed, (("vectorization.output", "vectorization.axes_0"),)
+    )
+    applied = compiler.run_stage(
+        proposed, "apply-vectorization", plan=plan
+    ).module
     return compiler.compile(applied).module
 
 
@@ -36,7 +42,7 @@ def test_noncontiguous_axis_selection_becomes_a_padded_physical_traversal(tmp_pa
                     and value.semantic_op == "math.vectorized_binary")
     schedule = dispatch.parameters["vector_schedule"]
     assert schedule["contract"]["kind"] == "axes"
-    assert schedule["contract"]["axes"] == (0, )
+    assert schedule["contract"]["axes"] == (0,)
     assert schedule["lowering"] == "packed_axes"
 
     package = render_triton_package(module, tmp_path)

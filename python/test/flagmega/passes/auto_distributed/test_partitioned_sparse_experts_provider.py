@@ -18,10 +18,8 @@ def context_for(lanes, experts=3):
     module = PartitionedProjection(lanes=lanes, tokens=2, hidden=64, experts=experts).build()
     node = module.node_map["projection"]
     return DistributedCandidateContext(
-        module,
-        node,
-        fm.Placement((4, 8), "cy", "cb"),
-        tuple((module.node_map[name].type, ) for name in node.inputs),
+        module, node, fm.Placement((4, 8), "cy", "cb"),
+        tuple((module.node_map[name].type,) for name in node.inputs),
         PyNttDistributedSplitCandidateProvider(128),
     )
 
@@ -32,15 +30,15 @@ def test_candidates_shard_partition_and_hidden_without_implicit_reduction(lanes)
     definition = PartitionedSparseExpertsDown
     candidates = candidates_for(context)
     assert candidates
-    assert any(
-        isinstance(candidate.return_type.axis_policies[0], fm.SBPSplit) and candidate.return_type.axis_policies[0].
-        hierarchy_axes == (0, ) and isinstance(candidate.return_type.axis_policies[3], fm.SBPSplit)
-        and candidate.return_type.axis_policies[3].hierarchy_axes == (1, ) for candidate in candidates)
+    assert any(isinstance(candidate.return_type.axis_policies[0], fm.SBPSplit)
+               and candidate.return_type.axis_policies[0].hierarchy_axes == (0,)
+               and isinstance(candidate.return_type.axis_policies[3], fm.SBPSplit)
+               and candidate.return_type.axis_policies[3].hierarchy_axes == (1,)
+               for candidate in candidates)
     b = fm.SBP.broadcast()
     for candidate in candidates:
-        inputs = tuple(
-            fm.Node(parameter.name, "builtin.var", (), kind)
-            for parameter, kind in zip(definition.input_parameters, candidate.input_types, strict=True))
+        inputs = tuple(fm.Node(parameter.name, "builtin.var", (), kind)
+                       for parameter, kind in zip(definition.input_parameters, candidate.input_types, strict=True))
         assert definition.infer_type(inputs, context.source_call.attrs) == candidate.return_type
         assert candidate.return_type.partial is None
         assert all(kind.partial is None for kind in candidate.input_types)
@@ -55,11 +53,12 @@ def test_candidates_shard_partition_and_hidden_without_implicit_reduction(lanes)
 def test_available_hidden_cyclic_policy_uses_scalar_weight_and_vector_output_units():
     context = context_for((2, 2))
     available = list(context.available_input_types)
-    available[3] = (fm.DistributedType(available[3][0], (fm.SBP.broadcast(), fm.SBP.split_contiguous(
-        (0, )), fm.SBP.split_block_cyclic((1, ), 8), fm.SBP.broadcast()), context.placement), )
+    available[3] = (fm.DistributedType(available[3][0],
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,)), fm.SBP.split_block_cyclic((1,), 8), fm.SBP.broadcast()),
+        context.placement),)
     context = replace(context, available_input_types=tuple(available))
     assert any(candidate.input_types[3] == available[3][0]
-               and candidate.return_type.axis_policies[3] == fm.SBP.split_block_cyclic((1, ), 2)
+               and candidate.return_type.axis_policies[3] == fm.SBP.split_block_cyclic((1,), 2)
                for candidate in candidates_for(context))
 
 
@@ -81,14 +80,13 @@ def test_cost_separates_per_block_arithmetic_and_per_chip_selected_traffic(level
     definition = PartitionedSparseExpertsDown
     context = context_for(())
     context = replace(context, placement=fm.Placement((4, 8), "cy", level + "b"))
-    candidate = next(
-        c for c in candidates_for(context)
-        if isinstance(c.return_type.axis_policies[0], fm.SBPSplit) and c.return_type.axis_policies[0].hierarchy_axes ==
-        (0, ) and isinstance(c.return_type.axis_policies[3], fm.SBPSplit)
-        and c.return_type.axis_policies[3].hierarchy_axes == (1, ))
-    inputs = tuple(
-        fm.Node(p.name, "builtin.var", (), kind)
-        for p, kind in zip(definition.input_parameters, candidate.input_types, strict=True))
+    candidate = next(c for c in candidates_for(context)
+                     if isinstance(c.return_type.axis_policies[0], fm.SBPSplit)
+                     and c.return_type.axis_policies[0].hierarchy_axes == (0,)
+                     and isinstance(c.return_type.axis_policies[3], fm.SBPSplit)
+                     and c.return_type.axis_policies[3].hierarchy_axes == (1,))
+    inputs = tuple(fm.Node(p.name, "builtin.var", (), kind) for p, kind in
+                   zip(definition.input_parameters, candidate.input_types, strict=True))
     factors = definition.cost_factors(inputs, context.source_call.attrs, candidate.return_type)
     # Four P shards run on separate chips, and eight H shards share each chip.
     assert factors.chip_aggregate_memory_load_bytes == 2 * 2 * 64 * 128

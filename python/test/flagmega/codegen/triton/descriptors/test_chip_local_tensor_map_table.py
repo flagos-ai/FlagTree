@@ -15,10 +15,12 @@ import pytest
 from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.call_abi import describe_local_buffer_abi
 from triton.flagmega.codegen.triton.tensor_descriptor_planner import (
-    packed_distributed_tensor_map_table_request, )
+    packed_distributed_tensor_map_table_request,
+)
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.passes.tir.bufferize.planner import BufferizationOptions
 from triton.flagmega.passes.tir.bufferize.policy import NttBufferizationPolicy
+
 
 # A chip axis that splits K, and a block axis that splits N: the shape of the
 # GLM attention projections that drive the 4-card capacity budget.
@@ -34,21 +36,24 @@ def _chip_local_weight_abi():
     distributed = fm.DistributedType(
         fm.tensor_type(fm.vector_type("bfloat16", (8, 2, 8)), _LOGICAL_SHAPE),
         (
-            fm.SBP.split_contiguous((0, ), _LOGICAL_SHAPE[0] // _CHIP_EXTENT),
-            fm.SBP.split_contiguous((2, ), _LOGICAL_SHAPE[1] // _BLOCK_EXTENT),
+            fm.SBP.split_contiguous((0,), _LOGICAL_SHAPE[0] // _CHIP_EXTENT),
+            fm.SBP.split_contiguous((2,), _LOGICAL_SHAPE[1] // _BLOCK_EXTENT),
         ),
         _PLACEMENT,
     )
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
-    weight = builder.weight("weight", distributed, source="memory", key="weight", id="weight")
-    builder.function("main", (), (weight, ))
+    weight = builder.weight(
+        "weight", distributed, source="memory", key="weight", id="weight"
+    )
+    builder.function("main", (), (weight,))
     module = builder.build(entry="main")
     module = replace(
         module,
         metadata={"launch_contract": {"grid_mesh": _PLACEMENT.to_data()}},
     )
-    module = NttBufferizationPolicy(replace(BufferizationOptions.generic(alignment=128),
-                                            rdata_chip_sharding=True)).bufferize(module)
+    module = NttBufferizationPolicy(replace(
+        BufferizationOptions.generic(alignment=128), rdata_chip_sharding=True
+    )).bufferize(module)
     buffer = fm.verify_buffer_plan(module).buffer_map["weight"]
     return describe_local_buffer_abi(buffer)
 
@@ -110,7 +115,10 @@ def test_chip_local_table_offsets_stay_inside_one_chip_segment():
     component_stride = int(abi["component_stride_scalar_elements"])
     limit = component_stride * len(request["entries"]) * 2
     for entry in request["entries"]:
-        span = 1 + sum((extent - 1) * stride for extent, stride in zip(entry["shape"], entry["strides"]))
+        span = 1 + sum(
+            (extent - 1) * stride
+            for extent, stride in zip(entry["shape"], entry["strides"])
+        )
         assert entry["offset_bytes"] + span * 2 <= limit
 
 
@@ -124,8 +132,8 @@ def test_canonical_table_still_addresses_every_placement_owner():
     distributed = fm.DistributedType(
         fm.tensor_type(fm.vector_type("bfloat16", (8, 2, 8)), _LOGICAL_SHAPE),
         (
-            fm.SBP.split_contiguous((0, ), 48),
-            fm.SBP.split_contiguous((1, ), 16),
+            fm.SBP.split_contiguous((0,), 48),
+            fm.SBP.split_contiguous((1,), 16),
         ),
         fm.Placement((8, 16), "yx", "bb"),
     )

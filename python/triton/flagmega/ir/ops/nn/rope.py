@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""rotary position embedding application."""
+"""nncase-compatible rotary position embedding application."""
 
 from __future__ import annotations
 
@@ -42,8 +42,10 @@ class RoPE(OpDefinition):
 
     @staticmethod
     def validate_rotary_dim(rotary_dim):
-        if rotary_dim is not None and (isinstance(rotary_dim, bool) or not isinstance(rotary_dim, int)
-                                       or rotary_dim <= 0 or rotary_dim % 2):
+        if rotary_dim is not None and (
+            isinstance(rotary_dim, bool) or not isinstance(rotary_dim, int)
+            or rotary_dim <= 0 or rotary_dim % 2
+        ):
             raise IRSchemaError("RoPE rotary_dim must be a positive even integer or None.")
 
     @classmethod
@@ -77,7 +79,10 @@ class RoPE(OpDefinition):
         placement = placement_of(value_type, cosine_type, sine_type)
         if placement is None:
             return value_type
-        if not all(isinstance(item, DistributedType) for item in (value_type, cosine_type, sine_type)):
+        if not all(
+            isinstance(item, DistributedType)
+            for item in (value_type, cosine_type, sine_type)
+        ):
             raise IRSchemaError("Distributed RoPE requires every tensor operand to name a placement.")
         assert isinstance(value_type, DistributedType)
         assert isinstance(cosine_type, DistributedType)
@@ -93,13 +98,13 @@ class RoPE(OpDefinition):
     @classmethod
     def evaluate(cls, node, arguments, context):
         value = cls.input.read(arguments)
-        return cls.apply_rotary(value, cls.cos.read(arguments), cls.sin.read(arguments), node.attrs.get("rotary_dim"),
-                                context.torch)
+        return cls.apply_rotary(value, cls.cos.read(arguments), cls.sin.read(arguments),
+                                node.attrs.get("rotary_dim"), context.torch)
 
     @staticmethod
     def apply_rotary(value, cosine, sine, rotary_dim, torch):
         extent = value.shape[-1] if rotary_dim is None else rotary_dim
-        # Like reference, storage dtypes do not introduce intermediate rounding.
+        # Like nncase, storage dtypes do not introduce intermediate rounding.
         # In particular, an FP32 rotary table must not first pass through BF16.
         prefix = value[..., :extent].float()
         half = extent // 2
@@ -130,9 +135,10 @@ class RoPE(OpDefinition):
         size = tensor_nbytes(output)
         if count is None or size is None:
             return None
-        table_bytes = sum(count * tensor_of(value.type).dtype.itemsize //
-                          getattr(tensor_of(value.type).dtype, "lane_count", 1) for value in inputs[1:])
-        return OpCostFactors(elementwise_operations=count * 3, block_local_memory_load_bytes=size * 2 + table_bytes,
+        table_bytes = sum(count * tensor_of(value.type).dtype.itemsize
+                          // getattr(tensor_of(value.type).dtype, "lane_count", 1) for value in inputs[1:])
+        return OpCostFactors(elementwise_operations=count * 3,
+                             block_local_memory_load_bytes=size * 2 + table_bytes,
                              block_local_memory_store_bytes=size)
 
 

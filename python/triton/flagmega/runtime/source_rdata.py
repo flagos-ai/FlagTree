@@ -13,6 +13,7 @@ from triton.flagmega.errors import ArtifactError
 from triton.flagmega.artifacts.source_layout import component_layouts
 from triton.flagmega.runtime.source_rdata_windows import source_transfers
 
+
 PINNED_SOURCE_LIMIT = 1024 * 1024 * 1024
 SOURCE_COPY_CHUNK_BYTES = 8 * 1024 * 1024
 
@@ -26,27 +27,32 @@ def _contiguous_source_copy(program, layouts, sources, destination_nbytes):
     """
     shape = tuple(program["shape"])
     axis = program["axis"]
-    if (len(layouts) != 1 or not shape or any(type(n) is not int or n <= 0
-                                              for n in shape) or type(axis) is not int or not 0 <= axis < len(shape)
-            or any(type(n) is not int for n in program["concat_shape"]) or tuple(program["concat_shape"]) != shape
-            or program["transforms"] not in ([], ()) or len(program["operands"]) != 1):
+    if (len(layouts) != 1 or not shape
+            or any(type(n) is not int or n <= 0 for n in shape)
+            or type(axis) is not int or not 0 <= axis < len(shape)
+            or any(type(n) is not int for n in program["concat_shape"])
+            or tuple(program["concat_shape"]) != shape
+            or program["transforms"] not in ([], ())
+            or len(program["operands"]) != 1):
         return None
     destination, component_shape, maps = layouts[0]
-    if (any(type(n) is not int for n in component_shape) or tuple(component_shape) != shape or maps not in ([], ())):
+    if (any(type(n) is not int for n in component_shape)
+            or tuple(component_shape) != shape or maps not in ([], ())):
         return None
     count = prod(shape)
     operand = program["operands"][0]
     source, offset = operand["source"], operand["offset"]
-    if (any(
-            type(n) is not int
-            for n in (destination, destination_nbytes, source, offset, operand["nbytes"], operand["extent"]))
-            or not 0 <= source < len(sources) or not 0 <= destination <= destination_nbytes - count
+    if (any(type(n) is not int for n in
+            (destination, destination_nbytes, source, offset, operand["nbytes"], operand["extent"]))
+            or not 0 <= source < len(sources)
+            or not 0 <= destination <= destination_nbytes - count
             or operand["nbytes"] != count or operand["extent"] != shape[axis]):
         return None
     source_nbytes = sources[source]["nbytes"]
     ranges = program["ranges"]
-    if (type(source_nbytes) is not int or not 0 <= offset <= source_nbytes - count or len(ranges) != 1
-            or len(ranges[0]) != 2 or any(type(n) is not int for n in ranges[0])
+    if (type(source_nbytes) is not int or not 0 <= offset <= source_nbytes - count
+            or len(ranges) != 1 or len(ranges[0]) != 2
+            or any(type(n) is not int for n in ranges[0])
             or tuple(ranges[0]) != (destination, count)):
         return None
     # maps=[] makes local flat index j the global flat index; no transforms
@@ -58,8 +64,8 @@ def _copy_source_bytes(pool, source, source_offset, destination, count):
     """Keep the file view alive through each bounded, synchronous H2D copy."""
     for begin in range(0, count, SOURCE_COPY_CHUNK_BYTES):
         size = min(SOURCE_COPY_CHUNK_BYTES, count - begin)
-        pool.narrow(0, destination + begin, size).copy_(source.narrow(0, source_offset + begin, size),
-                                                        non_blocking=False)
+        pool.narrow(0, destination + begin, size).copy_(
+            source.narrow(0, source_offset + begin, size), non_blocking=False)
 
 
 def byte_addresses(program, shape, maps, start, count):
@@ -74,8 +80,7 @@ def byte_addresses(program, shape, maps, start, count):
             active, stages = maps[axis]
             valid &= coord < active
             for index, block, shards, capacity in stages:
-                coord = coord + index * capacity if block == 0 else (coord // block) * (
-                    shards * block) + index * block + coord % block
+                coord = coord + index * capacity if block == 0 else (coord // block) * (shards * block) + index * block + coord % block
         flat += coord * prod(program["shape"][axis + 1:])
     for transform in program["transforms"]:
         shape = transform["shape"]
@@ -94,7 +99,6 @@ def byte_addresses(program, shape, maps, start, count):
 
 class _RegisteredFile:
     """Read-only file pages mapped into CUDA, with explicit pin lifetime."""
-
     def __init__(self, path, offset=0, nbytes=None):
         import numpy as np
         size = Path(path).stat().st_size
@@ -103,7 +107,7 @@ class _RegisteredFile:
         if offset < 0 or offset % mmap.PAGESIZE or nbytes <= 0 or offset + nbytes > size:
             raise ArtifactError("Readonly source registration needs an aligned, nonempty file range.")
         self.offset = offset
-        self.array = np.memmap(path, dtype=np.uint8, mode="r", offset=offset, shape=(nbytes, ))
+        self.array = np.memmap(path, dtype=np.uint8, mode="r", offset=offset, shape=(nbytes,))
         self.registered = False
         import torch
         # ROCm's torch reports device type "cuda" but ships no libcuda; the HIP
@@ -123,7 +127,7 @@ class _RegisteredFile:
             register_flags = 0x01 | 0x02 | 0x08
         register.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint)
         get_pointer.argtypes = (ctypes.POINTER(ctypes.c_uint64), ctypes.c_void_p, ctypes.c_uint)
-        self._unregister.argtypes = (ctypes.c_void_p, )
+        self._unregister.argtypes = (ctypes.c_void_p,)
         self.address = int(self.array.ctypes.data)
         result = register(self.address, self.array.nbytes, register_flags)
         if result:
@@ -186,8 +190,8 @@ def load_source_rdata(root, index, module, *, chip, device, pool=None, buffer_id
     size = int(index["segment_nbytes"])
     shared = pool is not None
     if shared:
-        if (not isinstance(pool, torch.Tensor) or pool.dtype != torch.uint8 or tuple(pool.shape) != (size, )
-                or pool.device != target or not pool.is_contiguous()):
+        if (not isinstance(pool, torch.Tensor) or pool.dtype != torch.uint8
+                or tuple(pool.shape) != (size,) or pool.device != target or not pool.is_contiguous()):
             raise ArtifactError("Readonly destination must be a matching contiguous byte pool.")
     else:
         pool = torch.zeros(size, dtype=torch.uint8, device=target)
@@ -200,8 +204,7 @@ def load_source_rdata(root, index, module, *, chip, device, pool=None, buffer_id
     host = torch.from_file(str(root / index["image"]), shared=False, size=index["nbytes"], dtype=torch.uint8)
     if shared or buffer_ids is not None:
         virtual = {p["buffer"] for p in index["programs"]}
-        ranges = ((offset, prod(shape))
-                  for name in selected - virtual
+        ranges = ((offset, prod(shape)) for name in selected - virtual
                   for offset, shape, _ in component_layouts(buffers[name], chip))
         chunks = _selected_physical_chunks(index["segment_chunks"][chip], ranges)
     else:
@@ -240,8 +243,9 @@ def load_source_rdata(root, index, module, *, chip, device, pool=None, buffer_id
                 source, offset, destination, count = direct
                 if source not in source_views:
                     descriptor = index["sources"][source]
-                    source_views[source] = torch.from_file(str(root / descriptor["path"]), shared=False,
-                                                           size=descriptor["nbytes"], dtype=torch.uint8)
+                    source_views[source] = torch.from_file(
+                        str(root / descriptor["path"]), shared=False,
+                        size=descriptor["nbytes"], dtype=torch.uint8)
                 _copy_source_bytes(pool, source_views[source], offset, destination, count)
                 continue
             from triton.flagmega.runtime.source_rdata_kernel import gather_source_bytes
@@ -250,14 +254,11 @@ def load_source_rdata(root, index, module, *, chip, device, pool=None, buffer_id
             stages = tuple(tuple((block, shards, capacity) for _, block, shards, capacity in axis[1]) for axis in maps)
             rows = []
             for _, other_shape, owner_maps in layouts:
-                other_stages = tuple(
-                    tuple((block, shards, capacity) for _, block, shards, capacity in axis[1]) for axis in owner_maps)
+                other_stages = tuple(tuple((block, shards, capacity) for _, block, shards, capacity in axis[1]) for axis in owner_maps)
                 if tuple(other_shape) != shape or other_stages != stages:
                     raise ArtifactError("Readonly source owner components have incompatible static geometry.")
-                rows.append([
-                    value for active, stage_list in owner_maps
-                    for value in (active, *(stage[0] for stage in stage_list))
-                ])
+                rows.append([value for active, stage_list in owner_maps
+                             for value in (active, *(stage[0] for stage in stage_list))])
             parameters = torch.tensor(rows or [[]], dtype=torch.int64, device=target)
             offsets = torch.tensor([layout[0] for layout in layouts], dtype=torch.int64, device=target)
             extents = [operand["extent"] for operand in program["operands"]]
@@ -272,52 +273,38 @@ def load_source_rdata(root, index, module, *, chip, device, pool=None, buffer_id
                 with ExitStack() as stack:
                     mappings = []
                     for window in transfer.windows:
-                        mapping = _RegisteredFile(root / index["sources"][window.source]["path"], window.begin,
-                                                  window.end - window.begin)
+                        mapping = _RegisteredFile(root / index["sources"][window.source]["path"],
+                                                  window.begin, window.end - window.begin)
                         stack.callback(mapping.close)
                         mappings.append(mapping)
                     # All transfers finish before any window is unregistered,
                     # including when allocation or a later launch raises.
                     stack.callback(torch.cuda.synchronize, target)
-                    addresses = torch.tensor([[
-                        0 if slot is None else mappings[slot].device_pointer - mappings[slot].offset + operand["offset"]
-                        for operand, slot in zip(program["operands"], row, strict=True)
-                    ]
-                                              for row in transfer.window_indices], dtype=torch.uint64, device=target)
+                    addresses = torch.tensor([
+                        [0 if slot is None else mappings[slot].device_pointer - mappings[slot].offset + operand["offset"]
+                         for operand, slot in zip(program["operands"], row, strict=True)]
+                        for row in transfer.window_indices
+                    ], dtype=torch.uint64, device=target)
                     gather_source_bytes[((transfer.count + 1023) // 1024, transfer.owner_end - transfer.owner_begin)](
-                        pool,
-                        addresses,
-                        prefix,
-                        offsets[transfer.owner_begin:transfer.owner_end],
-                        parameters[transfer.owner_begin:transfer.owner_end],
-                        transfer.start,
-                        transfer.count,
-                        SHAPE=shape,
-                        GLOBAL_SHAPE=tuple(program["shape"]),
+                        pool, addresses, prefix, offsets[transfer.owner_begin:transfer.owner_end],
+                        parameters[transfer.owner_begin:transfer.owner_end], transfer.start, transfer.count,
+                        SHAPE=shape, GLOBAL_SHAPE=tuple(program["shape"]),
                         LOCAL_STRIDES=tuple(prod(shape[axis + 1:]) for axis in range(len(shape))),
                         GLOBAL_STRIDES=tuple(prod(program["shape"][axis + 1:]) for axis in range(len(shape))),
-                        STAGE_COUNTS=stage_counts,
-                        STAGE_BEGIN=stage_begin,
+                        STAGE_COUNTS=stage_counts, STAGE_BEGIN=stage_begin,
                         STAGE_BLOCKS=tuple(stage[0] for stage in flat_stages),
                         STAGE_SHARDS=tuple(stage[1] for stage in flat_stages),
                         STAGE_CAPACITIES=tuple(stage[2] for stage in flat_stages),
                         TRANSFORM_BEGIN=transform_begin,
                         TRANSFORM_END=tuple(begin + count for begin, count in zip(transform_begin, transform_counts)),
                         TRANSFORM_DIMS=tuple(dim for transform in transforms for dim in transform["shape"]),
-                        TRANSFORM_OUTPUT_STRIDES=tuple(
-                            prod(transform["shape"][axis + 1:])
-                            for transform in transforms
-                            for axis in range(len(transform["shape"]))),
-                        TRANSFORM_SOURCE_STRIDES=tuple(stride for transform in transforms
-                                                       for stride in transform["source_strides"]),
-                        PARAMS=parameters.shape[1],
-                        CONCAT=tuple(program["concat_shape"]),
-                        AXIS=program["axis"],
-                        OPERANDS=len(extents),
-                        UNIFORM=extents[0] if len(set(extents)) == 1 else 0,
+                        TRANSFORM_OUTPUT_STRIDES=tuple(prod(transform["shape"][axis + 1:])
+                                                       for transform in transforms for axis in range(len(transform["shape"]))),
+                        TRANSFORM_SOURCE_STRIDES=tuple(stride for transform in transforms for stride in transform["source_strides"]),
+                        PARAMS=parameters.shape[1], CONCAT=tuple(program["concat_shape"]), AXIS=program["axis"],
+                        OPERANDS=len(extents), UNIFORM=extents[0] if len(set(extents)) == 1 else 0,
                         SEARCH_STEPS=(len(extents) + 1).bit_length(),
                         TRAILING=prod(program["concat_shape"][program["axis"] + 1:]),
-                        COMPONENT_NBYTES=prod(shape),
-                        BLOCK=1024,
+                        COMPONENT_NBYTES=prod(shape), BLOCK=1024,
                     )
     return pool

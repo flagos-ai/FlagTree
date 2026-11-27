@@ -10,17 +10,9 @@ from dataclasses import replace
 
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir.tir import (
-    Barrier,
-    KernelInvoke,
-    PipelineDrain,
-    PipelineHandoff,
-    PipelineReadiness,
-    PipelineStage,
-    PrimFunctionCall,
-    ProducerConsumerRegion,
-    Sequential,
-    execution_calls_of,
-    iter_tir_children,
+    Barrier, KernelInvoke, PipelineDrain, PipelineHandoff, PipelineReadiness,
+    PipelineStage, PrimFunctionCall, ProducerConsumerRegion, Sequential,
+    execution_calls_of, iter_tir_children,
 )
 from triton.flagmega.ir.bufferization import BufferPlan
 
@@ -38,11 +30,8 @@ def _region(function):
 
 def _readonly_buffers(module, plan):
     """Close readonly storage through aliases and every actual/formal edge."""
-    result = {
-        b.id
-        for b in plan.buffers
-        if plan.memory_space_map[b.mem_span.buffer.memory_space].kind == "readonly_device"
-    }
+    result = {b.id for b in plan.buffers
+              if plan.memory_space_map[b.mem_span.buffer.memory_space].kind == "readonly_device"}
     actuals = {}
     for function in module.execution_functions:
         for call in execution_calls_of(function):
@@ -97,7 +86,7 @@ def _target(module, call, readonly):
     if not prefix or first_mutable is None:
         raise IRVerificationError("Imported readiness requires a readonly prefix followed by a mutable transfer.")
     # Declared immutable sources must remain unwritten throughout the callee.
-    _sources = {source for leaf in prefix for source in leaf.transfer_sources}
+    sources = {source for leaf in prefix for source in leaf.transfer_sources}
     if any(readonly.intersection(leaf.writes) for leaf in execution_calls_of(callee)):
         raise IRVerificationError("A readonly producer prefix aliases a callee write.")
     return first_mutable.call_id, tuple(value for value in callee.parameters if value in readonly)
@@ -107,13 +96,16 @@ def _publication(module, plan, function, region, stage, handoff):
     from .bufferize.synchronization import transfer_source_dependencies
     from .lower_transfer_pipeline_regions import _publication_barrier_indices
 
-    order = tuple(x.operation if isinstance(x, PipelineStage) else x for x in region.consume_body.fields)
-    commits = [i for i, value in enumerate(order) if isinstance(value, PipelineHandoff) and value.handoff_id == handoff]
+    order = tuple(x.operation if isinstance(x, PipelineStage) else x
+                  for x in region.consume_body.fields)
+    commits = [i for i, value in enumerate(order)
+               if isinstance(value, PipelineHandoff) and value.handoff_id == handoff]
     if len(commits) != 1 or order[commits[0]].wrap_around:
         raise IRVerificationError("Imported readiness requires exactly one local one-shot commit.")
     commit = commits[0]
     calls = execution_calls_of(function)
-    indices = {x.call_id: i for i, x in enumerate(order) if isinstance(x, (PrimFunctionCall, KernelInvoke))}
+    indices = {x.call_id: i for i, x in enumerate(order)
+               if isinstance(x, (PrimFunctionCall, KernelInvoke))}
     if stage.operation.call_id not in indices or commit >= indices[stage.operation.call_id]:
         raise IRVerificationError("Imported readiness commit must precede its consumer invocation.")
     requirements = transfer_source_dependencies(module, plan, function.name, calls)[stage.operation.call_id]
@@ -133,14 +125,12 @@ def _publication(module, plan, function, region, stage, handoff):
 def verify_pipeline_readiness(module):
     contracts = []
     for function in module.execution_functions:
-
         def visit(node):
             if isinstance(node, PipelineStage) and node.source_readiness is not None:
                 contracts.append((function, node))
                 return
             for child in iter_tir_children(node):
                 visit(child)
-
         visit(function.body)
     if not contracts:
         return
@@ -157,10 +147,8 @@ def verify_pipeline_readiness(module):
         target, parameters = _target(module, stage.operation, readonly)
         if (binding.before_call_id, binding.readonly_parameters) != (target, parameters):
             raise IRVerificationError("Imported readiness target or readonly formal closure differs from its proof.")
-        occurrences = [
-            x for x in (*region.produce_body.fields, *region.consume_body.fields)
-            if isinstance(x, PipelineStage) and x.stage_id == stage.stage_id
-        ]
+        occurrences = [x for x in (*region.produce_body.fields, *region.consume_body.fields)
+                       if isinstance(x, PipelineStage) and x.stage_id == stage.stage_id]
         if len(occurrences) != 2 or any(x != stage for x in occurrences):
             raise IRVerificationError("Both call roles must carry the same imported readiness contract.")
         key = (function.name, stage.stage_id)
@@ -186,7 +174,8 @@ def route_pipeline_source_readiness(module, *, callees=()):
     functions = []
     count = 0
     for function in module.execution_functions:
-        if not (len(function.body.fields) == 1 and isinstance(function.body.fields[0], ProducerConsumerRegion)):
+        if not (len(function.body.fields) == 1
+                and isinstance(function.body.fields[0], ProducerConsumerRegion)):
             functions.append(function)
             continue
         region = function.body.fields[0]
@@ -209,14 +198,13 @@ def route_pipeline_source_readiness(module, *, callees=()):
             removed.add(index - 1)
             count += 1
         if replacements:
-
             def rewrite(values):
-                return Sequential(
-                    tuple(replacements.get(x.stage_id, x) if isinstance(x, PipelineStage) else x for x in values))
-
-            region = ProducerConsumerRegion(rewrite([x for i, x in enumerate(producer) if i not in removed]),
-                                            rewrite(region.consume_body.fields))
-            function = replace(function, body=Sequential((region, )))
+                return Sequential(tuple(replacements.get(x.stage_id, x)
+                                        if isinstance(x, PipelineStage) else x for x in values))
+            region = ProducerConsumerRegion(
+                rewrite([x for i, x in enumerate(producer) if i not in removed]),
+                rewrite(region.consume_body.fields))
+            function = replace(function, body=Sequential((region,)))
         functions.append(function)
     if not count:
         verify_pipeline_readiness(module)

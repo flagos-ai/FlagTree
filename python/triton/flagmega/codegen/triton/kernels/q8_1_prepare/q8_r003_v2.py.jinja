@@ -1,0 +1,10 @@
+{# Copyright 2026 FlagOS Contributors; SPDX-License-Identifier: MIT #}
+{# Accepted arithmetic stays in the repository JIT module. #}
+from triton.flagmega.codegen.triton.iq4_q8_kernels import q8_prepare as _r003_q8_1_prepare
+{% for call in render_calls %}
+{% if call.family == "q8_1_prepare" %}
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+    _r003_q8_1_prepare({{ call.pointers | join(', ') }}{% for name, value in call.constexprs.items() %}, {{ name }}={{ value }}{% endfor %})
+{% endif %}
+{% endfor %}

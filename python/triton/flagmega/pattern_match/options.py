@@ -9,9 +9,8 @@ from triton.flagmega.pattern_match.pattern import Pattern
 
 
 class MatchOptions:
-
     def __init__(self) -> None:
-        # reference keys this table by expression reference identity.  Node ids are
+        # nncase keys this table by expression reference identity.  Node ids are
         # only module-local, so using their spelling here would leak a
         # suppression when one MatchOptions instance is used with two modules.
         self._suppressed: dict[int, set[Pattern]] = {}

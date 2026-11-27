@@ -44,8 +44,7 @@ class KdaStateConfig:
                 tensor = logical.tensor if isinstance(logical, DistributedType) else logical
                 if not isinstance(tensor, TensorType) or tensor.dtype != physical.dtype:
                     raise IRSchemaError("KDA logical and physical state dtypes must match.")
-                if isinstance(logical, DistributedType) and (logical.partial is not None
-                                                             or logical.exclusive is not None):
+                if isinstance(logical, DistributedType) and (logical.partial is not None or logical.exclusive is not None):
                     raise IRSchemaError("KDA persistent state must be materialized and non-exclusive.")
         if self.chip_index is not None:
             if self.logical_types is None or type(self.chip_index) is not int or self.chip_index < 0:

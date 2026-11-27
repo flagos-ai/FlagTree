@@ -28,6 +28,7 @@ from triton.flagmega.ir.types import (
     data_type_to_data,
 )
 
+
 _ENUMS = {
     "LoopMode": LoopMode,
     "LoopPartition": LoopPartition,
@@ -41,15 +42,20 @@ _ENUMS = {
 def tir_to_data(node: TIRNode) -> dict[str, object]:
     result = {
         "kind": node.kind,
-        **{field.name: _encode(getattr(node, field.name))
-           for field in fields(node)},
+        **{field.name: _encode(getattr(node, field.name)) for field in fields(node)},
     }
-    if (node.kind == "kernel_dispatch" and getattr(node, "inplace_alias_candidates", None) is None):
+    if (
+        node.kind == "kernel_dispatch"
+        and getattr(node, "inplace_alias_candidates", None) is None
+    ):
         # Preserve semantic hashes of editable checkpoints written before the
         # named TIR alias contract existed. Explicit ``()`` remains encoded
         # and means the producer proved that no alias opportunity exists.
         result.pop("inplace_alias_candidates", None)
-    if (node.kind == "buffer" and getattr(node, "distributed_backing_type", None) is None):
+    if (
+        node.kind == "buffer"
+        and getattr(node, "distributed_backing_type", None) is None
+    ):
         result.pop("distributed_backing_type", None)
     if node.kind == "buffer" and getattr(node, "owner_stride_bytes", None) is None:
         result.pop("owner_stride_bytes", None)
@@ -72,7 +78,11 @@ def tir_from_data(data: Mapping[str, object]) -> TIRNode:
         cls = node_type(str(data["kind"]))
     except (KeyError, ValueError) as error:
         raise ValueError(f"Unknown TIR node kind {data.get('kind')!r}.") from error
-    values = {field.name: _decode(data[field.name]) for field in fields(cls) if field.name in data}
+    values = {
+        field.name: _decode(data[field.name])
+        for field in fields(cls)
+        if field.name in data
+    }
     if str(data.get("kind")) == "kernel_dispatch" and "semantic_candidate" not in data:
         for legacy_name in ("candidate", "parameters", "facts"):
             if legacy_name in data:
@@ -80,9 +90,16 @@ def tir_from_data(data: Mapping[str, object]) -> TIRNode:
     if str(data.get("kind")) == "prim_function_call" and "memory_pools" not in data:
         workspace_offset = int(data.get("workspace_offset", 0))
         workspace_nbytes = int(data.get("workspace_nbytes", 0))
-        values["memory_pools"] = (MemoryPoolFrame("workspace", None, workspace_offset,
-                                                  workspace_nbytes), ) if workspace_offset or workspace_nbytes else ()
-    return cls(**values)
+        values["memory_pools"] = (
+            MemoryPoolFrame(
+                "workspace", None, workspace_offset, workspace_nbytes
+            ),
+        ) if workspace_offset or workspace_nbytes else ()
+    node = cls(**values)
+    if node.kind == "kernel_dispatch" and getattr(node, "semantic_attrs", {}).get("phase_plan") is not None:
+        from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import validate_phase_plan
+        validate_phase_plan(node.semantic_attrs["phase_plan"])
+    return node
 
 
 def _encode(value: object) -> object:
@@ -112,6 +129,10 @@ def _encode(value: object) -> object:
     if isinstance(value, Enum):
         return {"$enum": type(value).__name__, "value": value.value}
     if isinstance(value, Mapping):
+        if value.get('kind') in {'argument', 'scalar_argument', 'pointer', 'immediate', 'fixed', 'dynamic'}:
+            # These ordinary data contracts have a discriminator too. A tagged
+            # mapping avoids weakening the unknown-TIR-kind rejection below.
+            return {'$mapping': {str(key): _encode(item) for key,item in sorted(value.items())}}
         return {str(key): _encode(item) for key, item in sorted(value.items())}
     if isinstance(value, tuple):
         return {"$tuple": [_encode(item) for item in value]}
@@ -127,6 +148,8 @@ def _decode(value: object) -> object:
         return tuple(_decode(item) for item in value)
     if not isinstance(value, Mapping):
         return value
+    if "$mapping" in value:
+        return {str(key): _decode(item) for key,item in value["$mapping"].items()}
     if "$fusion" in value:
         from triton.flagmega.ir.fusion import Fusion
         return Fusion.from_data(value["$fusion"])

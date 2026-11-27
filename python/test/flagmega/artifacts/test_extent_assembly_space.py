@@ -9,7 +9,6 @@ from triton.flagmega.artifacts import rdata
 
 
 def test_copy_assembly_needs_only_one_extra_extent(tmp_path, monkeypatch):
-
     def no_clone(*args):
         raise OSError(errno.EOPNOTSUPP, "test filesystem has no reflinks")
 

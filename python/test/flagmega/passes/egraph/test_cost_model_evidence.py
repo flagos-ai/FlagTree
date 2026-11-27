@@ -9,8 +9,8 @@ def _module():
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
     value_type = fm.tensor_type("float32", [4])
     value = builder.var("value", value_type, id="value")
-    output = builder.call("math.silu", (value, ), value_type, id="output")
-    builder.function("main", (value, ), (output, ))
+    output = builder.call("math.silu", (value,), value_type, id="output")
+    builder.function("main", (value,), (output,))
     return fm.verify_module(builder.build(entry="main"))
 
 

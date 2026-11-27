@@ -55,8 +55,9 @@ class Gather(OpDefinition):
             if dim == axis:
                 continue
             if indices.shape[dim] != value.shape[dim]:
-                raise IRSchemaError(f"Gather indices extent {indices.shape[dim]} on axis {dim} must match value extent "
-                                    f"{value.shape[dim]}.")
+                raise IRSchemaError(
+                    f"Gather indices extent {indices.shape[dim]} on axis {dim} must match value extent "
+                    f"{value.shape[dim]}.")
         if isinstance(source, DistributedType) != isinstance(index_source, DistributedType):
             raise IRSchemaError("Gather requires value and indices to use the same distribution contract.")
         if isinstance(source, DistributedType):

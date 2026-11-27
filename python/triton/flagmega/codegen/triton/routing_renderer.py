@@ -26,11 +26,10 @@ def routing_call(raw):
     source_type = _tensor_type(source["abi"])
     bias_type = None if bias is None else _tensor_type(bias["abi"])
     result_type = TupleType((_tensor_type(values["abi"]), _tensor_type(indices["abi"])))
-    if StagedRouting.infer_type(
-        (Node("source", "builtin.var",
-              (), source_type), Node("bias", "builtin.none",
-                                     (), NoneType()) if bias is None else Node("bias", "builtin.var",
-                                                                               (), bias_type)), attrs) != result_type:
+    if StagedRouting.infer_type((Node("source", "builtin.var", (), source_type),
+                                 Node("bias", "builtin.none", (), NoneType()) if bias is None
+                                 else Node("bias", "builtin.var", (), bias_type)),
+                                attrs) != result_type:
         raise CodegenError("Routing tuple buffers disagree with the inferred materialized-axis contract.")
     axis = len(source["abi"]["local_capacity_shape"]) - 1
     domain = local_reduction_domain(source["abi"], (axis, ), int(raw["parameters"]["elements_per_program"]))
@@ -39,24 +38,20 @@ def routing_call(raw):
     coordinates = list(domain["coordinates"])
     coordinates[axis] = "_fm_selected_offsets"
     return {
-        **domain,
-        "k": attrs["k"],
-        "scoring": attrs["scoring"],
-        "normalize": attrs["normalize"],
+        **domain, "k": attrs["k"], "scoring": attrs["scoring"], "normalize": attrs["normalize"],
         "scaling": repr(float(attrs["scaling"])),
         "arithmetic": attrs["arithmetic"],
         "score_groups": domain["tile"] // 8,
         "score_group_steps": (domain["tile"] // 8).bit_length() - 1,
         "has_bias": bias is not None,
         "selected_tile": 1 << (attrs["k"] - 1).bit_length(),
-        "source": _pointer(source),
-        "source_offset": emit_local_scalar_offset(source["abi"], domain["coordinates"]),
+        "source": _pointer(source), "source_offset": emit_local_scalar_offset(source["abi"], domain["coordinates"]),
         "bias": _pointer(bias) if bias is not None else None,
         # The bias is one entry per expert: address it by the reduction-axis
         # coordinate alone, independent of the row loop.
-        "bias_offset": None if bias is None else emit_local_scalar_offset(bias["abi"], (domain["coordinates"][axis], )),
-        "values_pointer": _pointer(values),
-        "indices_pointer": _pointer(indices),
+        "bias_offset": None if bias is None else emit_local_scalar_offset(
+            bias["abi"], (domain["coordinates"][axis], )),
+        "values_pointer": _pointer(values), "indices_pointer": _pointer(indices),
         "values_offset": emit_local_scalar_offset(values["abi"], coordinates),
         "indices_offset": emit_local_scalar_offset(indices["abi"], coordinates),
         "values_active": _canonical_writer_active(values["abi"]),

@@ -25,23 +25,24 @@ def graph(lanes, distributed, *, partial=False, round_weighted=False):
     b = fm.SBP.broadcast()
     placement = fm.Placement((2, 2), "yx", "bb")
     if distributed:
-        values = fm.DistributedType(values, (b, fm.SBP.split_block_cyclic(
-            (0, ), 2) if partial else b, fm.SBP.split_contiguous((1, ))), placement)
+        values = fm.DistributedType(
+            values, (b, fm.SBP.split_block_cyclic((0,), 2) if partial else b, fm.SBP.split_contiguous((1,))), placement
+        )
         coefficients = fm.DistributedType(coefficients, values.axis_policies[:2], placement)
 
     class Graph(fm.Module):
-
         def forward(self):
             v = self.input("projections", values, id="projections")
             c = self.input("coefficients", coefficients, id="coefficients")
-            y = fm.F.nn.sparse_experts_combine(v, c, output_dtype=result_dtype, round_weighted_output=round_weighted,
-                                               name="combined")
-            self.function("main", (v, c), (y, ))
+            y = fm.F.nn.sparse_experts_combine(
+                v, c, output_dtype=result_dtype, round_weighted_output=round_weighted, name="combined"
+            )
+            self.function("main", (v, c), (y,))
 
     return Graph(dialect="tir", stage="distributed_tir", entry="main").build()
 
 
-@pytest.mark.parametrize("lanes", [(), (8, ), (2, 4)])
+@pytest.mark.parametrize("lanes", [(), (8,), (2, 4)])
 @pytest.mark.parametrize("distributed", [False, True])
 @pytest.mark.parametrize("round_weighted", [False, True])
 def test_complete_combine_stores_requested_dtype_without_adapter(lanes, distributed, round_weighted, tmp_path):
@@ -71,7 +72,7 @@ def test_complete_combine_stores_requested_dtype_without_adapter(lanes, distribu
     assert torch.equal(got, wanted.bfloat16().reshape(result_shape))
 
 
-@pytest.mark.parametrize("lanes", [(), (8, ), (2, 4)])
+@pytest.mark.parametrize("lanes", [(), (8,), (2, 4)])
 def test_cross_owner_sum_retains_fp32_until_materialized(lanes):
     module = graph(lanes, True, partial=True)
     lowered = lower_sparse_experts(module)
@@ -80,10 +81,11 @@ def test_cross_owner_sum_retains_fp32_until_materialized(lanes):
     dtype = partial.type.tensor.dtype
     assert getattr(dtype, "elem_type", dtype) is fm.DType.FLOAT32
     assert not partial.attrs["cast_output"]
-    assert lowered.node_map["combined"].inputs == ("combined.owner_sum", )
+    assert lowered.node_map["combined"].inputs == ("combined.owner_sum",)
     with pytest.raises(IRSchemaError, match="owner reduction"):
-        SparseExpertsWeightedSum.prepare(tuple(module.node_map[key] for key in partial.inputs),
-                                         {**partial.attrs, "cast_output": True})
+        SparseExpertsWeightedSum.prepare(
+            tuple(module.node_map[key] for key in partial.inputs), {**partial.attrs, "cast_output": True}
+        )
 
 
 def test_legacy_weighted_sum_keeps_fp32_default():
@@ -96,7 +98,7 @@ def test_legacy_weighted_sum_keeps_fp32_default():
 def test_complete_combine_cost_has_no_separate_cast_materialization():
     from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine
 
-    module = graph((8, ), False)
+    module = graph((8,), False)
     node = module.node_map["combined"]
     inputs = tuple(module.node_map[key] for key in node.inputs)
     factors = SparseExpertsCombine.cost_factors(inputs, node.attrs, node.type)
@@ -125,12 +127,12 @@ def test_device_complete_route_sum_rounds_once_and_preserves_guards(tmp_path, la
 
     module = graph(lanes, True, round_weighted=round_weighted)
     result = module.node_map["combined"]
-    published = make_node("distributed.boxing", "published", (result, ), {"new_type": result.type.tensor}, {})
+    published = make_node("distributed.boxing", "published", (result,), {"new_type": result.type.tensor}, {})
     placement = result.type.placement
     module = replace(
         module,
         nodes=(*module.nodes, published),
-        functions=(replace(module.functions[0], outputs=(published.id, )), ),
+        functions=(replace(module.functions[0], outputs=(published.id,)),),
         dialect="nn",
         stage="frozen_constants",
         metadata={"auto_distribution": {"placement": placement.to_data()}},
@@ -155,15 +157,16 @@ def test_device_complete_route_sum_rounds_once_and_preserves_guards(tmp_path, la
         guards = []
         inputs = {}
         for name, value in (("projections", v.reshape(shape)), ("coefficients", c)):
-            backing = torch.full((value.numel() + 128, ), -123.0, dtype=value.dtype, device="cuda")
+            backing = torch.full((value.numel() + 128,), -123.0, dtype=value.dtype, device="cuda")
             inputs[name] = backing[64:-64].reshape(value.shape)
             inputs[name].copy_(value)
             guards.extend((backing[:64], backing[-64:]))
-        backing = torch.full((256 + 128, ), -123.0, dtype=torch.bfloat16, device="cuda")
+        backing = torch.full((256 + 128,), -123.0, dtype=torch.bfloat16, device="cuda")
         output = backing[64:-64].reshape(result_shape)
         guards.extend((backing[:64], backing[-64:]))
-        args = tuple(output if spec["role"] == "result" else inputs[spec["value"]]
-                     for spec in runtime.external_arguments)
+        args = tuple(
+            output if spec["role"] == "result" else inputs[spec["value"]] for spec in runtime.external_arguments
+        )
         Runtime.prepare(runtime, *args)
         assert runtime.resource_report["spill_bytes"] == 0
         for mutation in range(3):

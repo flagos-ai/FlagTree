@@ -4,7 +4,7 @@
 from dataclasses import replace
 
 from triton.flagmega.errors import IRSchemaError
-from triton.flagmega.ir import DistributedType, Node, TupleType, get_definition, tensor_type, verify_module, ExecutionMesh
+from triton.flagmega.ir import DistributedType, SBP, Node, TupleType, get_definition, tensor_type, verify_module, ExecutionMesh
 from triton.flagmega.ir.distributed_inference import broadcast_ir_type
 from triton.flagmega.ir.ops.ntt.split_k_dense_glu import SplitKDenseGluProjection, SplitKDenseGluEpilogue
 from triton.flagmega.passes.auto_distributed.candidates import DistributedCandidate, DistributedCandidateProviderBase
@@ -17,22 +17,21 @@ class _SplitGluDistributionProvider(DistributedCandidateProviderBase):
 
     def _enumerate_candidates(self, context):
         node, placement = context.source_call, context.placement
-        required = (48, 2) if node.op == SplitKDenseGluProjection.op_name else (24, )
+        required = (48, 2) if node.op == SplitKDenseGluProjection.op_name else (24,)
         if placement.hierarchy != required or placement.hierarchy_levels != 'b' * len(required):
             return ()
         inputs = tuple(broadcast_ir_type(context.module.node_map[v].type, placement) for v in node.inputs)
         operands = tuple(replace(context.module.node_map[v], type=t) for v, t in zip(node.inputs, inputs, strict=True))
         definition = SplitKDenseGluProjection if node.op == SplitKDenseGluProjection.op_name else SplitKDenseGluEpilogue
         output = definition.infer_type(operands, node.attrs)
-        return (DistributedCandidate('distribution.' + node.id + '.split_glu_physical_domain', output, inputs, 0,
-                                     'explicit-complete-disjoint-GU-domain', objective_kind='agent',
-                                     objective_model='flagmega.split-glu-domain/v1',
-                                     objective_evidence=('48x2-split-projection-or-24x256-complete-epilogue', )), )
+        return (DistributedCandidate('distribution.' + node.id + '.split_glu_physical_domain',
+            output, inputs, 0, 'explicit-complete-disjoint-GU-domain', objective_kind='agent',
+            objective_model='flagmega.split-glu-domain/v1',
+            objective_evidence=('48x2-split-projection-or-24x256-complete-epilogue',)),)
 
 
 class SplitKDenseGluDistributionPolicy:
     """Add only the two explicit ops; preserve the supplied distribution policy."""
-
     def __init__(self, base):
         self.base = base
 
@@ -67,8 +66,7 @@ def rewrite_split_k_dense_glu(module, *, node_id='decode_layer_mlp_gate_up'):
     old = module.node_map[node_id]
     if (old.op != 'nn.packed_dense_matmul_glu' or old.attrs.get('packed_layout') != 'k_major_n8_k16'
             or old.attrs.get('round_activation', True) or old.attrs.get('gate_clamp_max') is not None
-            or old.attrs.get('up_clamp') is not None
-            or any(isinstance(module.node_map[i].type, DistributedType) for i in old.inputs)):
+            or old.attrs.get('up_clamp') is not None or any(isinstance(module.node_map[i].type, DistributedType) for i in old.inputs)):
         raise IRSchemaError('Split GU rewrite requires the original packed scalar BF16 boundary before distribution.')
     gate_id, up_id = old.inputs[1:]
     function = next((f for f in module.functions if gate_id in f.parameters and up_id in f.parameters), None)
@@ -84,8 +82,8 @@ def rewrite_split_k_dense_glu(module, *, node_id='decode_layer_mlp_gate_up'):
     def make(identity, op, inputs, attrs=None, metadata=None):
         values = tuple(definitions[i] for i in inputs)
         prepared = get_definition(op).prepare(values, attrs or {})
-        value = Node(identity, op, tuple(inputs), prepared.result_type, attrs=prepared.attrs, effect=prepared.effect,
-                     metadata=metadata or {})
+        value = Node(identity, op, tuple(inputs), prepared.result_type, attrs=prepared.attrs,
+                     effect=prepared.effect, metadata=metadata or {})
         definitions[identity] = value
         fresh.append(value)
         return value
@@ -104,29 +102,25 @@ def rewrite_split_k_dense_glu(module, *, node_id='decode_layer_mlp_gate_up'):
                 raise IRSchemaError('Split GU paired weight lacks original immutable logical checkpoint provenance.')
             logical.append(root.id)
         joined = make(call.id + '.gu_weight_join', 'tensors.concat', logical, {'axis': 0})
-        weight = make(call.id + '.gu_weight_rowmajor', 'tensors.permute', (joined.id, ), {'axes': (1, 0)}, {
-            'rdata_group': {'name': 'qwen3.layer.mlp.paired_gu.weight', 'index': index, 'count': len(callers)},
-            'readonly_checkpoint_roots': tuple(logical), 'introduced_by': 'SplitKDenseGlu'
-        })
+        weight = make(call.id + '.gu_weight_rowmajor', 'tensors.permute', (joined.id,), {'axes': (1, 0)},
+                      {'rdata_group': {'name': 'qwen3.layer.mlp.paired_gu.weight', 'index': index, 'count': len(callers)},
+                       'readonly_checkpoint_roots': tuple(logical), 'introduced_by': 'SplitKDenseGlu'})
         inputs = tuple(weight.id if i == gi else v for i, v in enumerate(call.inputs) if i != ui)
-        metadata = {k: v for k, v in call.metadata.items() if k not in ('lifted_parameter_transforms', )}
+        metadata = {k: v for k, v in call.metadata.items() if k not in ('lifted_parameter_transforms',)}
         replacements[call.id] = replace(call, inputs=inputs, metadata=metadata)
-    partial = make(
-        node_id + '.split_projection', SplitKDenseGluProjection.op_name, (old.inputs[0], paired_id), metadata={
-            'execution_mesh': ExecutionMesh.fixed((48, 2)).to_data(), 'kernel_program_kind': 'ordinary',
-            'kernel_num_warps': 8, 'kernel_maxnreg': 64, 'introduced_by': 'SplitKDenseGlu'
-        })
-    prepared = SplitKDenseGluEpilogue.prepare((partial, ), {})
-    replacement = replace(
-        old, op=SplitKDenseGluEpilogue.op_name, inputs=(partial.id, ), attrs=prepared.attrs, type=prepared.result_type,
-        effect=prepared.effect, metadata={
-            'execution_mesh': ExecutionMesh.fixed((24, )).to_data(), 'kernel_program_kind': 'ordinary',
-            'kernel_num_warps': 8, 'introduced_by': 'SplitKDenseGlu'
-        })
+    partial = make(node_id + '.split_projection', SplitKDenseGluProjection.op_name,
+        (old.inputs[0], paired_id), metadata={'execution_mesh': ExecutionMesh.fixed((48, 2)).to_data(),
+            'kernel_program_kind': 'ordinary', 'kernel_num_warps': 8, 'kernel_maxnreg': 64,
+            'introduced_by': 'SplitKDenseGlu'})
+    prepared = SplitKDenseGluEpilogue.prepare((partial,), {})
+    replacement = replace(old, op=SplitKDenseGluEpilogue.op_name, inputs=(partial.id,), attrs=prepared.attrs,
+        type=prepared.result_type, effect=prepared.effect, metadata={'execution_mesh': ExecutionMesh.fixed((24,)).to_data(),
+            'kernel_program_kind': 'ordinary', 'kernel_num_warps': 8, 'introduced_by': 'SplitKDenseGlu'})
     replacements[node_id] = replacement
     # Place definitions before their consumers without inventing a new
     # allocation or source mutation. The normal function graph owns order.
-    fresh_by_call = {call.id: [n for n in fresh if n.id.startswith(call.id + '.gu_weight')] for call in callers}
+    fresh_by_call = {call.id: [n for n in fresh if n.id.startswith(call.id + '.gu_weight')]
+                     for call in callers}
     rewritten = []
     for node in module.nodes:
         if node.id in (gate_id, up_id):
@@ -138,17 +132,12 @@ def rewrite_split_k_dense_glu(module, *, node_id='decode_layer_mlp_gate_up'):
             rewritten.append(partial)
         rewritten.append(replacements.get(node.id, node))
     parameters = tuple(paired_id if i == gi else value for i, value in enumerate(function.parameters) if i != ui)
-    updated = replace(
-        function, parameters=parameters, attrs={
-            k: v
-            for k, v in function.attrs.items()
-            if k not in ('function_boundary_layout', 'post_auto_distributed_boundary_layout')
-        })
+    updated = replace(function, parameters=parameters, attrs={k: v for k, v in function.attrs.items()
+        if k not in ('function_boundary_layout', 'post_auto_distributed_boundary_layout')})
     removed_points = {p.id for p in module.selection_points if p.owner == node_id}
-    result = replace(module, nodes=tuple(rewritten), functions=tuple(updated if f.name == function.name else f
-                                                                     for f in module.functions),
-                     selection_points=tuple(p for p in module.selection_points if p.id not in removed_points),
-                     selections=tuple(s for s in module.selections if s.point_id not in removed_points))
+    result = replace(module, nodes=tuple(rewritten), functions=tuple(updated if f.name == function.name else f for f in module.functions),
+        selection_points=tuple(p for p in module.selection_points if p.id not in removed_points),
+        selections=tuple(s for s in module.selections if s.point_id not in removed_points))
     from triton.flagmega.passes.functions.remove_unused import remove_unused_functions
     from triton.flagmega.passes.constants import freeze_constant_islands
     result = verify_module(freeze_constant_islands(remove_unused_functions(result)))
@@ -159,13 +148,16 @@ def rewrite_split_k_dense_glu(module, *, node_id='decode_layer_mlp_gate_up'):
     from triton.flagmega.passes.functions.outline_stages import FunctionStage, outline_function_stages
     body = function_nodes(result, result.function_map[function.name])
     parameters = set(parameters)
-    foreign = {n.id for f in result.functions if f.name != function.name for n in function_nodes(result, f)}
+    foreign = {n.id for f in result.functions if f.name != function.name
+               for n in function_nodes(result, f)}
     owned = tuple(n.id for n in body if n.id not in parameters and n.id not in foreign)
     projection_index, epilogue_index = owned.index(partial.id), owned.index(node_id)
     if epilogue_index != projection_index + 1:
         raise IRSchemaError('Split GU stages require adjacent typed projection and epilogue operations.')
-    stages = (FunctionStage('before_gu', owned[:projection_index]), FunctionStage('gu_projection', (partial.id, )),
-              FunctionStage('gu_epilogue', (node_id, )), FunctionStage('after_gu', owned[epilogue_index + 1:]))
+    stages = (FunctionStage('before_gu', owned[:projection_index]),
+              FunctionStage('gu_projection', (partial.id,)),
+              FunctionStage('gu_epilogue', (node_id,)),
+              FunctionStage('after_gu', owned[epilogue_index + 1:]))
     outlined = outline_function_stages(result, function.name, stages)
     record = outlined.metadata['outlined_function_stages'][-1]
     bindings = {value: value for value in updated.parameters}
@@ -175,16 +167,16 @@ def rewrite_split_k_dense_glu(module, *, node_id='decode_layer_mlp_gate_up'):
         output_types = tuple(result.node_map[value].type for value in output_ids)
         result_type = output_types[0] if len(output_types) == 1 else TupleType(output_types)
         identity = f'{function.name}.gu_stage{index}'
-        wrapper_nodes.append(
-            Node(identity, 'builtin.call', tuple(bindings.get(value, value) for value in stage['inputs']), result_type,
-                 attrs={'callee': stage['function']}, effect=callers[0].effect if index == 0 else partial.effect))
+        wrapper_nodes.append(Node(identity, 'builtin.call',
+            tuple(bindings.get(value, value) for value in stage['inputs']), result_type,
+            attrs={'callee': stage['function']}, effect=callers[0].effect if index == 0 else partial.effect))
         for field, value in enumerate(output_ids):
             if len(output_ids) == 1:
                 bindings[value] = identity
             else:
                 projection = f'{identity}.result{field}'
-                wrapper_nodes.append(
-                    Node(projection, 'builtin.get_item', (identity, ), output_types[field], attrs={'index': field}))
+                wrapper_nodes.append(Node(projection, 'builtin.get_item', (identity,), output_types[field],
+                                          attrs={'index': field}))
                 bindings[value] = projection
     wrapper = replace(updated, outputs=tuple(bindings.get(value, value) for value in updated.outputs))
     caller_nodes = {n.id for n in result.nodes}

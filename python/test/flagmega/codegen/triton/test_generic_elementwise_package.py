@@ -62,7 +62,8 @@ def test_package_resolves_selected_elementwise_family_variant_template(
         # Conversion belongs to the normal tensor-load epilogue after fusion.
         # Preserve its semantics rather than require a redundant cast kernel.
         fused = call["semantic_attrs"]["post_ops"][0]["$fusion"]
-        assert any(node["op"] == "tensors.cast" and node["attrs"]["dtype"] == "float32" for node in fused["nodes"])
+        assert any(node["op"] == "tensors.cast" and node["attrs"]["dtype"] == "float32"
+                   for node in fused["nodes"])
         assert call["inputs"][0]["buffers"][0]["abi"]["scalar_dtype"] == "bfloat16"
         assert call["outputs"][0]["buffers"][0]["abi"]["scalar_dtype"] == "float32"
     assert call["variant"] == variant

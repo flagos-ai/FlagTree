@@ -11,20 +11,21 @@ def _grouped_module(indices=(0, 1, 2), *, count=3):
     builder = IRBuilder(dialect="high_level", stage="selected_tir")
     values = []
     for index in indices:
-        values.append(
-            builder.weight(
-                f"layers.{index}.projection.weight",
-                tensor_type(DType.BFLOAT16, [16, 16]),
-                source="metadata.safetensors",
-                key=f"layers.{index}.projection.weight",
-                id=f"weight_{index}",
-                metadata={"rdata_group": {
+        values.append(builder.weight(
+            f"layers.{index}.projection.weight",
+            tensor_type(DType.BFLOAT16, [16, 16]),
+            source="metadata.safetensors",
+            key=f"layers.{index}.projection.weight",
+            id=f"weight_{index}",
+            metadata={
+                "rdata_group": {
                     "name": "decoder.projection.weight",
                     "index": index,
                     "count": count,
-                }},
-            ))
-    builder.function("main", (), (values[-1], ))
+                }
+            },
+        ))
+    builder.function("main", (), (values[-1],))
     return builder.build(entry="main")
 
 

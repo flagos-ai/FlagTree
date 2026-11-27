@@ -4,23 +4,24 @@
 import pytest
 
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
-    prepare_kernel_calls, )
+    prepare_kernel_calls,
+)
 from triton.flagmega.errors import CodegenError
 
 
 def _abi(
-        shape,
-        *,
-        local_shape=None,
-        storage_kind="canonical_global",
-        coordinate_space="canonical_global",
-        coordinates=None,
-        axis_policies=None,
-        partial_axes=None,
-        owner_stride=0,
-        lane_count=1,
-        hierarchy=(8, 16),
-        hierarchy_levels=None,
+    shape,
+    *,
+    local_shape=None,
+    storage_kind="canonical_global",
+    coordinate_space="canonical_global",
+    coordinates=None,
+    axis_policies=None,
+    partial_axes=None,
+    owner_stride=0,
+    lane_count=1,
+    hierarchy=(8, 16),
+    hierarchy_levels=None,
 ):
     local_shape = tuple(shape if local_shape is None else local_shape)
     scalar_strides = []
@@ -37,10 +38,12 @@ def _abi(
         "logical_shape": tuple(shape),
         "local_capacity_shape": local_shape,
         "active_shape_expressions": tuple(str(value) for value in local_shape),
-        "logical_coordinate_expressions": tuple(coordinates
-                                                or (f"local_coord_{axis}" for axis in range(len(local_shape)))),
+        "logical_coordinate_expressions": tuple(
+            coordinates
+            or (f"local_coord_{axis}" for axis in range(len(local_shape)))
+        ),
         "scalar_storage_strides": tuple(reversed(scalar_strides)),
-        "scalar_lane_shape": () if lane_count == 1 else (lane_count, ),
+        "scalar_lane_shape": () if lane_count == 1 else (lane_count,),
         "scalar_lane_count": lane_count,
         "component_stride_scalar_elements": owner_stride,
         "coordinate_space": coordinate_space,
@@ -52,8 +55,15 @@ def _abi(
                 # emits.  Default to an all-block placement.
                 "hierarchy_levels": hierarchy_levels or "b" * len(hierarchy),
             },
-            "axis_policies": tuple(axis_policies or ({"kind": "broadcast"} for _ in shape)),
-            "partial": (None if partial_axes is None else {"axes": tuple(partial_axes), "reduce_op": "sum"}),
+            "axis_policies": tuple(
+                axis_policies
+                or ({"kind": "broadcast"} for _ in shape)
+            ),
+            "partial": (
+                None
+                if partial_axes is None
+                else {"axes": tuple(partial_axes), "reduce_op": "sum"}
+            ),
         },
     }
 
@@ -70,14 +80,10 @@ def _binding(name, abi):
 
 def _raw(sources, results, transitions):
     return {
-        "call":
-        "boxing",
-        "family":
-        "distributed_boxing",
-        "variant":
-        "gather_reduce_scatter",
-        "execution_kind":
-        "collective",
+        "call": "boxing",
+        "family": "distributed_boxing",
+        "variant": "gather_reduce_scatter",
+        "execution_kind": "collective",
         "parameters": {
             "tile": 16,
             "leaf_transitions": tuple(transitions),
@@ -85,19 +91,26 @@ def _raw(sources, results, transitions):
         "semantic_attrs": {},
         "inputs": ({
             "formal": "value",
-            "buffers": tuple(_binding(f"source_{index}", abi) for index, abi in enumerate(sources)),
-        }, ),
-        "outputs":
-        tuple({
-            "formal": "result" if len(results) == 1 else f"result_{index}",
-            "buffers": (_binding(f"result_{index}", abi), ),
-        } for index, abi in enumerate(results)),
+            "buffers": tuple(
+                _binding(f"source_{index}", abi)
+                for index, abi in enumerate(sources)
+            ),
+        },),
+        "outputs": tuple(
+            {
+                "formal": "result" if len(results) == 1 else f"result_{index}",
+                "buffers": (_binding(f"result_{index}", abi),),
+            }
+            for index, abi in enumerate(results)
+        ),
         "workspaces": (),
     }
 
 
 def _prepare(sources, results, transitions):
-    return prepare_kernel_calls((_raw(sources, results, transitions), ), function_name="main")[0]
+    return prepare_kernel_calls(
+        (_raw(sources, results, transitions),), function_name="main"
+    )[0]
 
 
 def test_all_axis_partial_reduces_compact_owner_components_once():
@@ -110,14 +123,18 @@ def test_all_axis_partial_reduces_compact_owner_components_once():
     )
     result = _abi((1, 8))
 
-    leaf = _prepare((source, ), (result, ), ("gather_reduce_scatter", ))["leaves"][0]
+    leaf = _prepare(
+        (source,), (result,), ("gather_reduce_scatter",)
+    )["leaves"][0]
 
     assert leaf["reduction"] is True
     assert leaf["capacity"] == 8
     assert leaf["partial_owner_count"] == 128
     assert leaf["partial_owner"] == "(boxing_partial_member)"
     assert leaf["owner_stride"] == 8
-    assert leaf["writer_active"] == ("(shard_y == 0) & (shard_x == 0)")
+    assert leaf["writer_active"] == (
+        "(shard_y == 0) & (shard_x == 0)"
+    )
 
 
 def test_hybrid_split_and_partial_reduce_preserves_local_logical_shard():
@@ -131,19 +148,23 @@ def test_hybrid_split_and_partial_reduce_preserves_local_logical_shard():
             {"kind": "broadcast"},
             {
                 "kind": "split",
-                "stages": ({"hierarchy_axes": (0, )}, ),
+                "stages": ({"hierarchy_axes": (0,)},),
             },
         ),
-        partial_axes=(1, ),
+        partial_axes=(1,),
         owner_stride=256,
     )
     result = _abi((1, 2048))
 
-    leaf = _prepare((source, ), (result, ), ("gather_reduce_scatter", ))["leaves"][0]
+    leaf = _prepare(
+        (source,), (result,), ("gather_reduce_scatter",)
+    )["leaves"][0]
 
     assert leaf["capacity"] == 256
     assert leaf["partial_owner_count"] == 16
-    assert leaf["partial_owner"] == ("(shard_y * 16 + (boxing_partial_member))")
+    assert leaf["partial_owner"] == (
+        "(shard_y * 16 + (boxing_partial_member))"
+    )
     assert leaf["writer_active"] == "(shard_x == 0)"
     assert "shard_y" in leaf["result_offset"]
 
@@ -159,10 +180,10 @@ def test_partial_y_reduction_keeps_every_distinct_x_output_writer():
             {"kind": "broadcast"},
             {
                 "kind": "split",
-                "stages": ({"hierarchy_axes": (1, )}, ),
+                "stages": ({"hierarchy_axes": (1,)},),
             },
         ),
-        partial_axes=(0, ),
+        partial_axes=(0,),
         owner_stride=128,
         lane_count=8,
     )
@@ -174,16 +195,20 @@ def test_partial_y_reduction_keeps_every_distinct_x_output_writer():
             {"kind": "broadcast"},
             {
                 "kind": "split",
-                "stages": ({"hierarchy_axes": (1, )}, ),
+                "stages": ({"hierarchy_axes": (1,)},),
             },
         ),
         lane_count=8,
     )
 
-    leaf = _prepare((source, ), (result, ), ("gather_reduce_scatter", ))["leaves"][0]
+    leaf = _prepare(
+        (source,), (result,), ("gather_reduce_scatter",)
+    )["leaves"][0]
 
     assert leaf["partial_owner_count"] == 8
-    assert leaf["partial_owner"] == ("((boxing_partial_member) * 16 + shard_x)")
+    assert leaf["partial_owner"] == (
+        "((boxing_partial_member) * 16 + shard_x)"
+    )
     assert leaf["writer_active"] == "(shard_y == 0)"
     assert "shard_x" in leaf["result_offset"]
 
@@ -215,13 +240,15 @@ def test_relayouting_partial_reduce_iterates_its_destination_domain():
             {"kind": "broadcast"},
             {
                 "kind": "split",
-                "stages": ({
-                    "hierarchy_axes": (1, ),
-                    "distribution": {"kind": "block_cyclic", "block_size": 8},
-                }, ),
+                "stages": (
+                    {
+                        "hierarchy_axes": (1,),
+                        "distribution": {"kind": "block_cyclic", "block_size": 8},
+                    },
+                ),
             },
         ),
-        partial_axes=(0, ),
+        partial_axes=(0,),
         owner_stride=128,
         lane_count=8,
     )
@@ -232,21 +259,24 @@ def test_relayouting_partial_reduce_iterates_its_destination_domain():
         axis_policies=(
             {"kind": "broadcast"},
             {
-                "kind":
-                "split",
-                "stages": ({
-                    "hierarchy_axes": (1, ),
-                    "distribution": {
-                        "kind": "contiguous",
-                        "granularity": {"fixed": 16},
+                "kind": "split",
+                "stages": (
+                    {
+                        "hierarchy_axes": (1,),
+                        "distribution": {
+                            "kind": "contiguous",
+                            "granularity": {"fixed": 16},
+                        },
                     },
-                }, ),
+                ),
             },
         ),
         lane_count=8,
     )
 
-    leaf = _prepare((source, ), (result, ), ("gather_reduce_scatter", ))["leaves"][0]
+    leaf = _prepare(
+        (source,), (result,), ("gather_reduce_scatter",)
+    )["leaves"][0]
 
     # The destination's own owner map decides the columns this block writes.
     assert "* 16" in leaf["result_offset"]
@@ -281,13 +311,15 @@ def test_partial_reduce_into_a_group_axis_split_keeps_every_owner_a_writer():
             {"kind": "broadcast"},
             {
                 "kind": "split",
-                "stages": ({
-                    "hierarchy_axes": (1, ),
-                    "distribution": {"kind": "block_cyclic", "block_size": 8},
-                }, ),
+                "stages": (
+                    {
+                        "hierarchy_axes": (1,),
+                        "distribution": {"kind": "block_cyclic", "block_size": 8},
+                    },
+                ),
             },
         ),
-        partial_axes=(0, ),
+        partial_axes=(0,),
         owner_stride=64,
         lane_count=8,
     )
@@ -298,21 +330,24 @@ def test_partial_reduce_into_a_group_axis_split_keeps_every_owner_a_writer():
         axis_policies=(
             {"kind": "broadcast"},
             {
-                "kind":
-                "split",
-                "stages": ({
-                    "hierarchy_axes": (0, ),
-                    "distribution": {
-                        "kind": "contiguous",
-                        "granularity": {"fixed": 2},
+                "kind": "split",
+                "stages": (
+                    {
+                        "hierarchy_axes": (0,),
+                        "distribution": {
+                            "kind": "contiguous",
+                            "granularity": {"fixed": 2},
+                        },
                     },
-                }, ),
+                ),
             },
         ),
         lane_count=8,
     )
 
-    leaf = _prepare((source, ), (result, ), ("gather_reduce_scatter", ))["leaves"][0]
+    leaf = _prepare(
+        (source,), (result,), ("gather_reduce_scatter",)
+    )["leaves"][0]
 
     # Every y owner writes its own two columns instead of one elected block
     # publishing all sixteen.
@@ -357,7 +392,9 @@ def test_partial_vector_leaf_expands_physical_elements_into_scalar_lanes():
     )
     result = _abi((1, 2), lane_count=4)
 
-    leaf = _prepare((source, ), (result, ), ("gather_reduce_scatter", ))["leaves"][0]
+    leaf = _prepare(
+        (source,), (result,), ("gather_reduce_scatter",)
+    )["leaves"][0]
 
     assert leaf["capacity"] == 8
     assert "// 4" in leaf["source_offset"]
@@ -367,37 +404,32 @@ def test_partial_vector_leaf_expands_physical_elements_into_scalar_lanes():
 
 def test_broadcast_canonical_copy_writes_each_physical_block_owner():
     source = _abi(
-        (1, 8),
-        hierarchy=(4, 8, 16),
-        hierarchy_levels="cbb",
+        (1, 8), hierarchy=(4, 8, 16), hierarchy_levels="cbb",
     )
     result = _abi(
-        (1, 8),
-        hierarchy=(4, 8, 16),
-        hierarchy_levels="cbb",
+        (1, 8), hierarchy=(4, 8, 16), hierarchy_levels="cbb",
     )
 
-    leaf = _prepare((source, ), (result, ), ("identity", ))["leaves"][0]
+    leaf = _prepare((source,), (result,), ("identity",))["leaves"][0]
 
-    assert leaf["writer_active"] == ("(shard_coord1 == 0) & (shard_coord2 == 0)")
+    assert leaf["writer_active"] == (
+        "(shard_coord1 == 0) & (shard_coord2 == 0)"
+    )
 
 
 def test_scatter_to_canonical_keeps_split_writers_on_each_rank():
     source = _abi(
-        (1, 16),
-        local_shape=(1, 2),
-        storage_kind="compact_local",
-        coordinate_space="local",
+        (1, 16), local_shape=(1, 2),
+        storage_kind="compact_local", coordinate_space="local",
         coordinates=("local_coord_0", "local_coord_1 + shard_coord_1 * 2"),
         axis_policies=(
             {"kind": "broadcast"},
-            {"kind": "split", "stages": ({"hierarchy_axes": (1, )}, )},
+            {"kind": "split", "stages": ({"hierarchy_axes": (1,)},)},
         ),
-        hierarchy=(4, 8, 16),
-        hierarchy_levels="cbb",
+        hierarchy=(4, 8, 16), hierarchy_levels="cbb",
     )
     result = _abi((1, 16), hierarchy=(4, 8, 16), hierarchy_levels="cbb")
-    leaf = _prepare((source, ), (result, ), ("tensor_store", ))["leaves"][0]
+    leaf = _prepare((source,), (result,), ("tensor_store",))["leaves"][0]
     assert leaf["mode"] == "scatter"
     assert leaf["writer_active"] == "(shard_coord2 == 0)"
     assert "shard_coord1" in leaf["result_offset"]
@@ -408,11 +440,11 @@ def test_partial_canonical_storage_is_rejected_instead_of_double_counted():
     result = _abi((1, 8))
 
     with pytest.raises(CodegenError, match="compact source component"):
-        _prepare((source, ), (result, ), ("gather_reduce_scatter", ))
+        _prepare((source,), (result,), ("gather_reduce_scatter",))
 
 
 def test_leaf_transition_count_is_part_of_the_executable_contract():
     value = _abi((1, 8))
 
     with pytest.raises(CodegenError, match="leaf transitions must match"):
-        _prepare((value, ), (value, ), ())
+        _prepare((value,), (value,), ())

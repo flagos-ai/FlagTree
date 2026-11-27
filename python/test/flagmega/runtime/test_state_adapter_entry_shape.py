@@ -44,7 +44,7 @@ def test_state_fields_alone_do_not_select_single_token_convenience_adapter(monke
 @pytest.mark.parametrize("with_dsa", (False, True))
 def test_composite_adapter_selection_returns_type_before_construction(monkeypatch, with_dsa):
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
-    token = builder.var("input_ids", fm.tensor_type("int32", (1, )))
+    token = builder.var("input_ids", fm.tensor_type("int32", (1,)))
     paged = builder.var("paged_state", PagedAttentionStateConfig(1, 2, 8).ref_type)
     parameters = [token, paged]
     abi = {
@@ -53,7 +53,7 @@ def test_composite_adapter_selection_returns_type_before_construction(monkeypatc
         "paged_state": {"input": str(paged), "output": str(paged)},
     }
     if with_dsa:
-        dsa = builder.var("dsa_state", DsaIndexerStateConfig((0, ), 8, 4, 2).ref_type)
+        dsa = builder.var("dsa_state", DsaIndexerStateConfig((0,), 8, 4, 2).ref_type)
         parameters.append(dsa)
         abi["dsa_state"] = {"input": str(dsa), "output": str(dsa)}
     builder.metadata["composite_abi"] = abi
@@ -62,7 +62,6 @@ def test_composite_adapter_selection_returns_type_before_construction(monkeypatc
     constructed = []
 
     class Adapter:
-
         def __init__(self, *args):
             constructed.append(args)
 

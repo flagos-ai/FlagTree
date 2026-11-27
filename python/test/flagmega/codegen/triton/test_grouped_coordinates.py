@@ -10,8 +10,8 @@ from triton.flagmega.codegen.triton.grouped_coordinates import tiles_stay_within
 
 
 def distributed(size, policy, mesh=(2, 4)):
-    return fm.DistributedType(fm.tensor_type("bfloat16", (1, size)), (fm.SBP.broadcast(), policy),
-                              fm.Placement(mesh, "yx", "bb"))
+    return fm.DistributedType(fm.tensor_type("bfloat16", (1, size)),
+                              (fm.SBP.broadcast(), policy), fm.Placement(mesh, "yx", "bb"))
 
 
 @pytest.mark.parametrize("tile", [1, 2, 4, 8, 16, 32])
@@ -48,16 +48,13 @@ def test_local_tensor_is_aligned_but_dynamic_extent_is_not_assumed():
 
 
 def test_vector_element_indices_are_not_scalar_head_indices():
-    value = fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (4, )), (1, 256))
+    value = fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (4,)), (1, 256))
     assert not tiles_stay_within_groups(value, -1, 16, 128)
 
 
-@pytest.mark.parametrize("policy", [
-    fm.SBP.broadcast(),
-    fm.SBP.split_contiguous((0, 1)),
-    fm.SBP.split_block_cyclic((0, 1), 1),
-    fm.SBP.split_block_cyclic((0, 1), 4)
-])
+@pytest.mark.parametrize("policy", [fm.SBP.broadcast(), fm.SBP.split_contiguous((0, 1)),
+                                   fm.SBP.split_block_cyclic((0, 1), 1),
+                                   fm.SBP.split_block_cyclic((0, 1), 4)])
 def test_every_accepted_proof_agrees_with_complete_small_coordinate_domains(policy):
     for size, tile, group in product((8, 24, 32, 48, 64), (1, 2, 4, 8), (6, 12, 16, 32)):
         value = distributed(size, policy)
@@ -66,10 +63,8 @@ def test_every_accepted_proof_agrees_with_complete_small_coordinate_domains(poli
         for owner in product(range(2), range(4)):
             axis = fm.local_shard_descriptor(value, owner).axes[-1]
             for start in range(0, axis.active_extent.fixed_value, tile):
-                groups = {
-                    axis.map_local_to_global(index).fixed_value // group
-                    for index in range(start, min(start + tile, axis.active_extent.fixed_value))
-                }
+                groups = {axis.map_local_to_global(index).fixed_value // group
+                          for index in range(start, min(start + tile, axis.active_extent.fixed_value))}
                 assert len(groups) == 1
 
 

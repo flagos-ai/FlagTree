@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}from triton.experimental.tle.language.gpu.iluvatar import sme
+from triton.experimental.tle.language.gpu.iluvatar import sme
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls if call.corex_flat_sme_down is defined %}
 {{ entry.kernel_decorator(call) }}

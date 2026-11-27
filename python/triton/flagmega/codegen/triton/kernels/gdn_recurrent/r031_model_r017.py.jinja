@@ -1,0 +1,14 @@
+# Copyright 2026 FlagOS Contributors
+# SPDX-License-Identifier: MIT
+{% with render_calls=() %}
+{% include "kernels/gdn_recurrent/r017_split4lut.py.jinja" %}
+{% endwith %}
+{% for call in render_calls if call.family == "gdn_recurrent" and call.variant == "r017_split4lut" %}
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+{% if call.phase == "partials" %}
+    _r017_partials({{ call.model_native_arguments | join(", ") }})
+{% else %}
+    _r017_{{ call.phase }}_split4lut({{ call.model_native_arguments | join(", ") }})
+{% endif %}
+{% endfor %}

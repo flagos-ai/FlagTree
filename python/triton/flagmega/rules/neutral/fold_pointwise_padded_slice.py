@@ -54,7 +54,7 @@ def fold_pointwise_padded_slice_rule():
         return RewriteResult(result, (compute, restored))
 
     return RewriteRule("FoldPointwisePaddedSlice", lambda node, _: node.op == "tensors.slice_to_shape", rewrite,
-                       root_ops=("tensors.slice_to_shape", ))
+                       root_ops=("tensors.slice_to_shape",))
 
 
 __all__ = ["fold_pointwise_padded_slice_rule"]

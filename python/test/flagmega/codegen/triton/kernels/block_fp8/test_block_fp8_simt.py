@@ -6,15 +6,18 @@ from triton.flagmega.codegen.triton.templates import (
     TritonTemplateRegistry,
 )
 from triton.flagmega.targets.portable_triton_implementations import (
-    portable_triton_implementation_model, )
+    portable_triton_implementation_model,
+)
 
 
 def test_simt_fallback_has_a_complete_parameter_and_template_contract():
-    implementation = portable_triton_implementation_model().implementation("tir.block_fp8.simt")
+    implementation = portable_triton_implementation_model().implementation(
+        "tir.block_fp8.simt"
+    )
 
     assert implementation is not None
     assert implementation.parameters == {"tile_n": 16}
-    assert implementation.requires == ("fp8", )
+    assert implementation.requires == ("fp8",)
     registry = TritonTemplateRegistry()
     spec = KernelTemplateSpec("block_fp8", "simt", "nvidia", "sm90")
     assert registry.resolve(spec) == "kernels/block_fp8/simt.py.jinja"

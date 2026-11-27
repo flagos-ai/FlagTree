@@ -15,7 +15,6 @@ from triton.flagmega.targets.selection import CapabilitySelectionPolicy
 
 
 class _AllCapabilities:
-
     def supports(self, requirements) -> bool:
         return True
 
@@ -31,7 +30,7 @@ class _PortableTestMachine:
 
     def default_ntt_options(self) -> NttTargetOptions:
         return NttTargetOptions(
-            placements=(fm.Placement((2, 4), "xy", "bb"), ),
+            placements=(fm.Placement((2, 4), "xy", "bb"),),
             vector_lane_bytes=8,
             vector_max_axes=2,
             packing_vector_bytes=8,
@@ -57,7 +56,7 @@ class _PortableTestMachine:
         return tuple(candidates)
 
     def plan_launch(self, module, kernel_nodes):
-        return {"grid": (1, )}
+        return {"grid": (1,)}
 
     def plan_codegen_package(self, module, kernel_nodes, options):
         return {"profile": self.name}
@@ -67,9 +66,7 @@ class _PortableTestMachine:
 
 
 def _binary_module(stage: str) -> fm.IRModule:
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage=stage, entry="main")
 
@@ -78,20 +75,20 @@ def _binary_module(stage: str) -> fm.IRModule:
             lhs = self.input("lhs", value_type, id="lhs")
             rhs = self.input("rhs", value_type, id="rhs")
             output = fm.F.math.add(lhs, rhs, name="output")
-            self.function("main", (lhs, rhs), (output, ))
+            self.function("main", (lhs, rhs), (output,))
 
     return Graph().build()
 
 
 def _dense_module(stage: str) -> fm.IRModule:
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage=stage, entry="main")
 
         def forward(self):
-            value = self.input("value", fm.tensor_type("bfloat16", (1, 128)), id="value")
+            value = self.input(
+                "value", fm.tensor_type("bfloat16", (1, 128)), id="value"
+            )
             weight = self.weight(
                 "weight",
                 fm.tensor_type("bfloat16", (128, 128)),
@@ -99,8 +96,10 @@ def _dense_module(stage: str) -> fm.IRModule:
                 key="weight",
                 id="weight",
             )
-            output = fm.F.math.matmul(value, weight, transpose_b=True, name="output")
-            self.function("main", (value, ), (output, ))
+            output = fm.F.math.matmul(
+                value, weight, transpose_b=True, name="output"
+            )
+            self.function("main", (value,), (output,))
 
     return Graph().build()
 
@@ -119,10 +118,15 @@ def test_vectorization_selection_records_ntt_rule_set_not_machine_generation():
 def test_distribution_materialization_records_pyntt_split_policy_provenance():
     target = NvidiaSm90Target()
     distributed = target.auto_distribute(_binary_module("stats_threaded"))
-    records = tuple(record for record in distributed.selections if record.point_id.startswith("distribution."))
+    records = tuple(
+        record for record in distributed.selections
+        if record.point_id.startswith("distribution.")
+    )
 
     assert records
-    assert {record.policy for record in records} == {target.distribution_policy.identity}
+    assert {record.policy for record in records} == {
+        target.distribution_policy.identity
+    }
     assert all("pyntt" in record.policy for record in records)
     assert all("nvidia" not in record.policy.lower() for record in records)
     assert all("sm90" not in record.policy.lower() for record in records)
@@ -154,7 +158,9 @@ def test_selected_tir_serializes_backend_and_machine_as_separate_fields():
 
     assert compiled.metadata["target_backend"] == "pyntt"
     assert compiled.metadata["target_machine"] == "nvidia-sm90"
-    assert compiled.metadata["target_machine_policy"].startswith("nvidia-sm90-machine/")
+    assert compiled.metadata["target_machine_policy"].startswith(
+        "nvidia-sm90-machine/"
+    )
 
 
 def test_pyntt_rules_run_with_a_non_nvidia_machine_and_its_options():
@@ -165,19 +171,26 @@ def test_pyntt_rules_run_with_a_non_nvidia_machine_and_its_options():
 
     assert target.name == "pyntt:portable-test-machine"
     assert target.options.vector_lane_bytes == 8
-    assert target.options.placements == (fm.Placement((2, 4), "xy", "bb"), )
+    assert target.options.placements == (fm.Placement((2, 4), "xy", "bb"),)
     assert "nvidia" not in target.distribution_policy.identity.lower()
     assert any(point.id == "vectorization.output" for point in vectorized.selection_points)
-    assert any(record.point_id.startswith("distribution.") for record in distributed.selections)
-    assert all("nvidia" not in record.policy.lower() and "sm90" not in record.policy.lower()
-               for record in vectorized.selections + distributed.selections
-               if record.point_id.startswith(("vectorization.", "distribution.")))
+    assert any(
+        record.point_id.startswith("distribution.")
+        for record in distributed.selections
+    )
+    assert all(
+        "nvidia" not in record.policy.lower() and "sm90" not in record.policy.lower()
+        for record in vectorized.selections + distributed.selections
+        if record.point_id.startswith(("vectorization.", "distribution."))
+    )
 
 
 def test_portable_pyntt_packing_default_is_not_reinterpreted_as_sm90_policy():
     target = PyNttTarget(_PortableTestMachine())
     proposed = target.propose_packing(_dense_module("vectorized"))
-    point = next(point for point in proposed.selection_points if point.id == "packing.output")
+    point = next(
+        point for point in proposed.selection_points if point.id == "packing.output"
+    )
     record = proposed.selection_map[point.id]
 
     assert point.default_candidate == "packing.k_major_n4_k16"

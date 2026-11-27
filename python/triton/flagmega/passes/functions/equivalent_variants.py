@@ -11,6 +11,7 @@ from dataclasses import replace
 from triton.flagmega.ir import Function, IRModule, verify_module
 from triton.flagmega.passes.functions.graph import function_nodes
 
+
 # These fields record the transformations that led to the current signature.
 # The exact signature, body, effects and selected implementation are compared
 # separately. Unknown attributes/metadata always participate in equivalence.
@@ -35,8 +36,7 @@ def merge_equivalent_function_variants(module: IRModule) -> IRModule:
     if module.prim_functions or module.kernel_definitions or module.execution_functions:
         raise ValueError("Function variant merging must precede TIR materialization.")
     functions = module.function_map
-    variants = tuple(f for f in module.functions
-                     if f.name != module.entry and f.attrs.get("specialized_from") in functions)
+    variants = tuple(f for f in module.functions if f.name != module.entry and f.attrs.get("specialized_from") in functions)
     if not variants:
         return module
     bodies = {f.name: {n.id for n in function_nodes(module, f)} for f in module.functions}
@@ -77,27 +77,27 @@ def merge_equivalent_function_variants(module: IRModule) -> IRModule:
         return name
 
     nodes = tuple(
-        replace(node, attrs={**dict(node.attrs), "callee": canonical(str(node.attrs["callee"]))}
-                ) if node.op == "builtin.call" and node.attrs.get("callee") in replacements else node
-        for node in module.nodes
-        if node.id not in removed_nodes)
+        replace(node, attrs={**dict(node.attrs), "callee": canonical(str(node.attrs["callee"]))})
+        if node.op == "builtin.call" and node.attrs.get("callee") in replacements else node
+        for node in module.nodes if node.id not in removed_nodes
+    )
     retained = tuple(
-        replace(f, attrs={**dict(f.attrs), "specialized_from": canonical(str(f.attrs["specialized_from"]))}) if f.attrs.
-        get("specialized_from") in replacements else f for f in module.functions if f.name not in replacements)
+        replace(f, attrs={**dict(f.attrs), "specialized_from": canonical(str(f.attrs["specialized_from"]))})
+        if f.attrs.get("specialized_from") in replacements else f
+        for f in module.functions if f.name not in replacements
+    )
     retained_points = tuple(p for p in module.selection_points if p.owner not in removed_nodes)
     point_ids = {p.id for p in retained_points}
     history = tuple(module.metadata.get("function_variant_merges", ())) + tuple(
         {"variant": variant, "canonical": canonical(variant), "reason": "equivalent_finalized_contract"}
-        for variant in replacements)
-    return verify_module(
-        replace(
-            module,
-            nodes=nodes,
-            functions=retained,
-            selection_points=retained_points,
-            selections=tuple(r for r in module.selections if r.point_id in point_ids),
-            metadata={**dict(module.metadata), "function_variant_merges": history},
-        ))
+        for variant in replacements
+    )
+    return verify_module(replace(
+        module, nodes=nodes, functions=retained,
+        selection_points=retained_points,
+        selections=tuple(r for r in module.selections if r.point_id in point_ids),
+        metadata={**dict(module.metadata), "function_variant_merges": history},
+    ))
 
 
 def _equivalent_nodes(module, source: Function, variant: Function, owners, points, records):
@@ -123,8 +123,7 @@ def _equivalent_nodes(module, source: Function, variant: Function, owners, point
         if left_id != right_id and left.op == "builtin.var" and left_id not in variant.parameters:
             # A free variable is a captured value, not an alpha-renamable binder.
             return None
-        if left.op != right.op or left.type != right.type or left.effect != right.effect or len(left.inputs) != len(
-                right.inputs):
+        if left.op != right.op or left.type != right.type or left.effect != right.effect or len(left.inputs) != len(right.inputs):
             return None
         mapping[left_id], inverse[right_id] = right_id, left_id
         pending.extend(zip(left.inputs, right.inputs))

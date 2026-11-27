@@ -13,8 +13,10 @@ from triton.flagmega.targets import NvidiaSm90Target
 from python.test.flagmega.codegen.triton.kernels.sparse_experts.helpers import stage_module
 
 
-@pytest.mark.parametrize("n,k,distributed,expected", [(4, 2048, False, (4, 2048)), (64, 2048, False, (64, 128)),
-                                                      (128, 2048, True, (64, 128)), (20, 72, False, (4, 2048))])
+@pytest.mark.parametrize("n,k,distributed,expected", [(4, 2048, False, (4, 2048)),
+                                                    (64, 2048, False, (64, 128)),
+                                                    (128, 2048, True, (64, 128)),
+                                                    (20, 72, False, (4, 2048))])
 @pytest.mark.parametrize("packed", [False, True])
 def test_static_tile_catalog_uses_scalar_owner_local_extents(n, k, distributed, expected, packed):
     module = stage_module(SparseExpertsGateUp, hidden=k, intermediate=n, packed=packed, tokens=1,

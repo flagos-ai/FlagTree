@@ -15,20 +15,18 @@ from .helpers import single_spec
 def _construct(monkeypatch, specs, *, signature, dynamic):
     monkeypatch.setattr(runtime_module, "verify_buffer_plan", lambda module: object())
     binding = {
-        "arguments": ({"name": "source", "buffer": "buffer"}, ),
+        "arguments": ({"name": "source", "buffer": "buffer"},),
         "pools": (),
-        "signature": ("source", ),
+        "signature": ("source",),
     }
     return GeneratedTirCallGraphModule(
         artifact=None,
-        manifest={
-            "codegen": {
-                "runtime_binding": binding,
-                "host_tensor_descriptor_specs": specs,
-                "signature_arguments": signature,
-                "dynamic_argument_indices": dynamic,
-            }
-        },
+        manifest={"codegen": {
+            "runtime_binding": binding,
+            "host_tensor_descriptor_specs": specs,
+            "signature_arguments": signature,
+            "dynamic_argument_indices": dynamic,
+        }},
         ir_module=SimpleNamespace(metadata={}),
         kernel=object(),
     )
@@ -38,9 +36,9 @@ def test_artifact_rejects_descriptor_source_outside_runtime_roots(monkeypatch):
     with pytest.raises(ArtifactError, match="unbound source"):
         _construct(
             monkeypatch,
-            (single_spec(source="missing"), ),
+            (single_spec(source="missing"),),
             signature=("source", "weight_descriptor"),
-            dynamic=(0, ),
+            dynamic=(0,),
         )
 
 
@@ -49,14 +47,14 @@ def test_artifact_rejects_descriptor_signature_or_dynamic_index_drift(monkeypatc
     with pytest.raises(ArtifactError, match="generated signature"):
         _construct(
             monkeypatch,
-            (spec, ),
-            signature=("source", ),
+            (spec,),
+            signature=("source",),
             dynamic=(0, 1),
         )
     with pytest.raises(ArtifactError, match="dynamic arguments"):
         _construct(
             monkeypatch,
-            (spec, ),
+            (spec,),
             signature=("source", "weight_descriptor"),
-            dynamic=(0, ),
+            dynamic=(0,),
         )

@@ -17,8 +17,10 @@ from triton.flagmega.runtime.kernel_programs import verified_kernel_programs
 
 def _program_metadata(path):
     module = ast.parse(path.read_text())
-    declaration = next(node for node in module.body if isinstance(node, ast.Assign) and any(
-        isinstance(target, ast.Name) and target.id == "FLAGMEGA_KERNEL_PROGRAMS" for target in node.targets))
+    declaration = next(node for node in module.body if isinstance(node, ast.Assign)
+                       and any(isinstance(target, ast.Name)
+                               and target.id == "FLAGMEGA_KERNEL_PROGRAMS"
+                               for target in node.targets))
     return ast.literal_eval(declaration.value)
 
 
@@ -28,10 +30,8 @@ def test_independent_sources_carry_only_their_own_invocations(tmp_path):
     assert len(package["kernels"]) == len(package["program_sources"]) == 2
     assert _program_metadata(tmp_path / package["source"]) == package["kernels"]
     for record in package["program_sources"]:
-        expected = [
-            invocation for invocation in package["kernels"]
-            if invocation.get("entry_symbol", invocation["symbol"]) == record["symbol"]
-        ]
+        expected = [invocation for invocation in package["kernels"]
+                    if invocation.get("entry_symbol", invocation["symbol"]) == record["symbol"]]
         assert _program_metadata(tmp_path / record["source"]) == expected
 
 
@@ -65,10 +65,8 @@ def test_v1_full_metadata_keeps_jit_identity_and_runtime_verification(tmp_path, 
     original = renderer.render_program_source_files
 
     def legacy(descriptor, version, render, destination, source):
-
         def full_metadata(context, version):
             return render({**context, "kernels": descriptor["kernels"]}, version)
-
         result = original(descriptor, version, full_metadata, destination, source)
         return {**result, "program_source_layout": LEGACY_PROGRAM_SOURCE_LAYOUT}
 

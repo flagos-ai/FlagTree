@@ -9,10 +9,10 @@ import pytest
 
 from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.microkernels import (
-    PackedQKVMicroKernelProvider,
-    TIRMicroKernelContext,
+    PackedQKVMicroKernelProvider, TIRMicroKernelContext,
 )
 from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
+
 
 IMPLEMENTATION = "tir.qkv_parallel_linear.packed_gemv_smem_pipeline"
 
@@ -21,12 +21,10 @@ def _context(module, changes=None):
     function = next(function for function in module.kernel_definitions
                     if (dispatch := fm.kernel_dispatch_of(function)) is not None
                     and dispatch.semantic_op == "ntt.packed_qkv_parallel_linear_fused_rhs")
-    parameters = {
-        name: replace(parameter, type=(changes or {}).get(name, parameter.type))
-        for name, parameter in function.parameter_map.items()
-    }
-    return TIRMicroKernelContext(module, SimpleNamespace(parameter_map=parameters), fm.kernel_dispatch_of(function),
-                                 portable_triton_implementation_model())
+    parameters = {name: replace(parameter, type=(changes or {}).get(name, parameter.type))
+                  for name, parameter in function.parameter_map.items()}
+    return TIRMicroKernelContext(module, SimpleNamespace(parameter_map=parameters),
+                                fm.kernel_dispatch_of(function), portable_triton_implementation_model())
 
 
 def _ids(context):
@@ -47,8 +45,7 @@ def test_simt_qkv_proves_every_output_dtype(packed_qkv_simt_pipeline_module, ind
     name = context.dispatch.outputs[index]
     original = context.function.parameter_map[name].type
     different_dtype = replace(original, tensor=replace(
-        original.tensor,
-        dtype=fm.vector_type("float32", (8, )),
+        original.tensor, dtype=fm.vector_type("float32", (8,)),
     ))
     assert IMPLEMENTATION not in _ids(_context(packed_qkv_simt_pipeline_module, {name: different_dtype}))
 
@@ -84,7 +81,6 @@ def test_simt_output_capacity_bound_is_enforced(packed_qkv_simt_pipeline_module,
     contract.pop("required_local_output_extent")
     contract["max_local_output_extent"] = limit
     bounded = replace(original, contract=contract)
-    model = replace(model,
-                    implementations=tuple(bounded if i.id == IMPLEMENTATION else i for i in model.implementations))
+    model = replace(model, implementations=tuple(bounded if i.id == IMPLEMENTATION else i for i in model.implementations))
     context = replace(context, implementation_model=model)
     assert (IMPLEMENTATION in _ids(context)) is accepted

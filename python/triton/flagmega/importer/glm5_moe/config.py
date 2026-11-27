@@ -76,14 +76,16 @@ class Glm5MoeConfig:
             raise ImporterError("GLM-5.3 Flash quantization_config must be an object when present.")
         quant_method = quantization.get("quant_method")
         if quant_method is not None and str(quant_method).lower() != "fp8":
-            raise ImporterError("GLM-5.3 Flash supports only dynamic FP8 E4M3 quantization; "
-                                f"got quant_method={quant_method!r}.")
+            raise ImporterError(
+                "GLM-5.3 Flash supports only dynamic FP8 E4M3 quantization; "
+                f"got quant_method={quant_method!r}.")
         quantized = str(quant_method).lower() == "fp8"
         if quantized:
             activation_scheme = str(quantization.get("activation_scheme", "")).lower()
             fmt = str(quantization.get("fmt", "")).lower()
             if activation_scheme != "dynamic" or fmt not in {"e4m3", "float8_e4m3fn"}:
-                raise ImporterError("GLM-5.3 Flash FP8 requires activation_scheme='dynamic' and fmt='e4m3'.")
+                raise ImporterError(
+                    "GLM-5.3 Flash FP8 requires activation_scheme='dynamic' and fmt='e4m3'.")
         block_size = quantization.get("weight_block_size", (128, 128))
         if (not isinstance(block_size, (list, tuple)) or len(block_size) != 2
                 or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in block_size)):
@@ -102,7 +104,9 @@ class Glm5MoeConfig:
         if not isinstance(mhc, bool):
             raise ImporterError("GLM-5.3 Flash mhc must be a boolean when present.")
         if mhc and not allow_mhc:
-            raise ImporterError("GLM-5.3 Flash hyper-connections (mhc) are not supported by the single-block importer.")
+            raise ImporterError(
+                "GLM-5.3 Flash hyper-connections (mhc) are not supported by the single-block importer."
+            )
         if mhc:
             hc_mult = text.get("hc_mult")
             hc_sinkhorn_iters = text.get("hc_sinkhorn_iters")
@@ -125,10 +129,11 @@ class Glm5MoeConfig:
             index_topk = index_head_dim = index_n_heads = index_kpool = 0
             index_kpool_always_select_tail = True
         else:
-            if (not isinstance(raw_indexer_types,
-                               (list, tuple)) or len(raw_indexer_types) != text.get("num_hidden_layers")
+            if (not isinstance(raw_indexer_types, (list, tuple))
+                    or len(raw_indexer_types) != text.get("num_hidden_layers")
                     or any(kind not in {"full", "shared"} for kind in raw_indexer_types)):
-                raise ImporterError("GLM-5.3 Flash indexer_types must classify every layer as full or shared.")
+                raise ImporterError(
+                    "GLM-5.3 Flash indexer_types must classify every layer as full or shared.")
             indexer_types = tuple(raw_indexer_types)
             if indexer_types[0] != "full":
                 raise ImporterError("GLM-5.3 Flash sparse-indexer schedule must begin with a full layer.")
@@ -138,9 +143,8 @@ class Glm5MoeConfig:
                 "index_n_heads": text.get("index_n_heads"),
                 "index_kpool": text.get("index_kpool"),
             }
-            if any(
-                    isinstance(value, bool) or not isinstance(value, int) or value <= 0
-                    for value in index_fields.values()):
+            if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                   for value in index_fields.values()):
                 raise ImporterError("GLM-5.3 Flash sparse-indexer dimensions must be positive integers.")
             index_topk = index_fields["index_topk"]
             index_head_dim = index_fields["index_head_dim"]
@@ -181,7 +185,8 @@ class Glm5MoeConfig:
             if name == "intermediate_size" and value is None:
                 # Older synthetic fixtures predate the dense-MLP field. Their
                 # reduced dense layers use the same width as the shared MLP.
-                value = text.get("shared_expert_intermediate_size", text.get("moe_intermediate_size"))
+                value = text.get("shared_expert_intermediate_size",
+                                 text.get("moe_intermediate_size"))
             minimum = 0 if name in nonnegative else 1
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
                 qualifier = "non-negative" if minimum == 0 else "positive"
@@ -198,14 +203,14 @@ class Glm5MoeConfig:
             limit = float(text.get("swiglu_limit", 0.0))
         except (TypeError, ValueError) as error:
             raise ImporterError("Invalid GLM-5.3 Flash numeric attributes.") from error
-        if (not isfinite(scaling) or not isfinite(epsilon) or not isfinite(limit) or scaling <= 0 or epsilon <= 0
-                or limit <= 0):
+        if (not isfinite(scaling) or not isfinite(epsilon) or not isfinite(limit)
+                or scaling <= 0 or epsilon <= 0 or limit <= 0):
             raise ImporterError("GLM-5.3 Flash scaling/epsilon/swiglu_limit must be positive.")
         linear = text.get("linear_attn_config")
         if not isinstance(linear, Mapping):
             raise ImporterError("GLM-5.3 Flash importer requires linear_attn_config for KDA layers.")
-        for name, key in (("kda_num_heads", "num_heads"), ("kda_head_dim", "head_dim"), ("kda_conv_kernel_size",
-                                                                                         "short_conv_kernel_size")):
+        for name, key in (("kda_num_heads", "num_heads"), ("kda_head_dim", "head_dim"),
+                          ("kda_conv_kernel_size", "short_conv_kernel_size")):
             value = linear.get(key)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ImporterError(f"GLM-5.3 Flash linear_attn_config.{key} must be a positive integer.")
@@ -233,19 +238,22 @@ class Glm5MoeConfig:
         else:
             raise ImporterError("GLM-5.3 Flash gate_lower_bound is required for KDA layers.")
         if values["qk_nope_head_dim"] != values["v_head_dim"]:
-            raise ImporterError("GLM-5.3 Flash importer requires equal MLA key and value head dimensions "
-                                "for the shared paged-attention cache.")
+            raise ImporterError(
+                "GLM-5.3 Flash importer requires equal MLA key and value head dimensions "
+                "for the shared paged-attention cache."
+            )
         layer_types = text.get("layer_types")
         mlp_layer_types = text.get("mlp_layer_types")
         known_attention = {"linear_attention", "deepseek_sparse_attention"}
         known_mlp = {"dense", "sparse"}
-        for name, kinds, allowed in (("layer_types", layer_types, known_attention), ("mlp_layer_types", mlp_layer_types,
-                                                                                     known_mlp)):
+        for name, kinds, allowed in (("layer_types", layer_types, known_attention),
+                                     ("mlp_layer_types", mlp_layer_types, known_mlp)):
             if (not isinstance(kinds, (list, tuple)) or len(kinds) != values["num_hidden_layers"]
                     or any(kind not in allowed for kind in kinds)):
                 raise ImporterError(f"GLM-5.3 Flash {name} must classify every decoder layer.")
         expected_kda = tuple(index for index, kind in enumerate(layer_types) if kind == "linear_attention")
-        expected_full = tuple(index for index, kind in enumerate(layer_types) if kind == "deepseek_sparse_attention")
+        expected_full = tuple(index for index, kind in enumerate(layer_types)
+                              if kind == "deepseek_sparse_attention")
         for name, declared, expected in (("kda_layers", linear.get("kda_layers"), expected_kda),
                                          ("full_attn_layers", linear.get("full_attn_layers"), expected_full)):
             if declared is None:
@@ -354,12 +362,14 @@ class Glm5MoeConfig:
             })
             if self.indexer_types and indexer_type != "shared":
                 shapes.update({
-                    "self_attn.indexer.wq_b.weight": (self.index_n_heads * self.index_head_dim, self.q_lora_rank),
+                    "self_attn.indexer.wq_b.weight": (self.index_n_heads * self.index_head_dim,
+                                                        self.q_lora_rank),
                     "self_attn.indexer.wk.weight": (self.index_head_dim, h),
-                    "self_attn.indexer.k_norm.weight": (self.index_head_dim, ),
-                    "self_attn.indexer.k_norm.bias": (self.index_head_dim, ),
+                    "self_attn.indexer.k_norm.weight": (self.index_head_dim,),
+                    "self_attn.indexer.k_norm.bias": (self.index_head_dim,),
                     "self_attn.indexer.weights_proj.weight": (self.index_n_heads, h),
-                    "self_attn.indexer.index_kpool_compress_ape": (self.index_kpool, self.index_head_dim),
+                    "self_attn.indexer.index_kpool_compress_ape":
+                    (self.index_kpool, self.index_head_dim),
                     "self_attn.indexer.index_kpool_compress_gate": (self.index_head_dim, h),
                 })
         elif kind == "linear_attention":
@@ -397,52 +407,50 @@ class Glm5MoeConfig:
             fp8_weights = set()
             if mlp_kind == "dense":
                 fp8_weights.update({
-                    "mlp.gate_proj.weight",
-                    "mlp.up_proj.weight",
-                    "mlp.down_proj.weight",
+                    "mlp.gate_proj.weight", "mlp.up_proj.weight", "mlp.down_proj.weight",
                 })
             else:
                 fp8_weights.update({
-                    "mlp.experts.gate_up_proj",
-                    "mlp.experts.down_proj",
-                    "mlp.shared_experts.gate_proj.weight",
-                    "mlp.shared_experts.up_proj.weight",
+                    "mlp.experts.gate_up_proj", "mlp.experts.down_proj",
+                    "mlp.shared_experts.gate_proj.weight", "mlp.shared_experts.up_proj.weight",
                     "mlp.shared_experts.down_proj.weight",
                 })
             if kind == "mla_attention":
                 fp8_weights.update({
-                    "self_attn.q_a_proj.weight",
-                    "self_attn.q_b_proj.weight",
-                    "self_attn.kv_a_proj_with_mqa.weight",
-                    "self_attn.o_proj.weight",
+                    "self_attn.q_a_proj.weight", "self_attn.q_b_proj.weight",
+                    "self_attn.kv_a_proj_with_mqa.weight", "self_attn.o_proj.weight",
                 })
             for name, shape in tuple(shapes.items()):
                 if name not in fp8_weights:
                     continue
                 if len(shape) == 3:
-                    shapes[name + "_scale_inv"] = (shape[0],
-                                                   (shape[1] + self.weight_block_n - 1) // self.weight_block_n,
-                                                   (shape[2] + self.weight_block_k - 1) // self.weight_block_k)
+                    shapes[name + "_scale_inv"] = (
+                        shape[0], (shape[1] + self.weight_block_n - 1) // self.weight_block_n,
+                        (shape[2] + self.weight_block_k - 1) // self.weight_block_k)
                 elif len(shape) == 2:
-                    shapes[name + "_scale_inv"] = ((shape[0] + self.weight_block_n - 1) // self.weight_block_n,
-                                                   (shape[1] + self.weight_block_k - 1) // self.weight_block_k)
+                    shapes[name + "_scale_inv"] = (
+                        (shape[0] + self.weight_block_n - 1) // self.weight_block_n,
+                        (shape[1] + self.weight_block_k - 1) // self.weight_block_k)
                 else:
-                    raise ImporterError(f"GLM FP8 weight {name!r} must be rank 2 or 3, got {len(shape)}.")
+                    raise ImporterError(
+                        f"GLM FP8 weight {name!r} must be rank 2 or 3, got {len(shape)}.")
             return {
-                name:
-                tensor_type(
-                    "float32" if name in {
-                        "self_attn.A_log", "self_attn.dt_bias", "hc_attn_base", "hc_attn_scale", "hc_ffn_base",
-                        "hc_ffn_scale", "mlp.gate.e_score_correction_bias"
-                    } or name.endswith("_scale_inv") else "float8_e4m3fn" if name in fp8_weights else "bfloat16", shape)
+                name: tensor_type(
+                    "float32" if name in {"self_attn.A_log", "self_attn.dt_bias",
+                                             "hc_attn_base", "hc_attn_scale",
+                                             "hc_ffn_base", "hc_ffn_scale",
+                                             "mlp.gate.e_score_correction_bias"}
+                    or name.endswith("_scale_inv")
+                    else "float8_e4m3fn" if name in fp8_weights else "bfloat16",
+                    shape)
                 for name, shape in shapes.items()
             }
         return {
-            name:
-            tensor_type(
-                "float32" if name in {
-                    "self_attn.A_log", "self_attn.dt_bias", "hc_attn_base", "hc_attn_scale", "hc_ffn_base",
-                    "hc_ffn_scale", "mlp.gate.e_score_correction_bias"
-                } else "bfloat16", shape)
+            name: tensor_type("float32" if name in {"self_attn.A_log", "self_attn.dt_bias",
+                                                       "hc_attn_base", "hc_attn_scale",
+                                                       "hc_ffn_base", "hc_ffn_scale",
+                                                       "mlp.gate.e_score_correction_bias"}
+                              else "bfloat16",
+                              shape)
             for name, shape in shapes.items()
         }

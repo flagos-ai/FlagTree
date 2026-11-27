@@ -14,7 +14,7 @@ from triton.flagmega.ir import DistributedType, IRType, OpCostFactors, TupleType
 class DistributedOperationCostModel:
     """Map op-local factors to target cycles without owning graph policy.
 
-    This is the Python counterpart of the reference ``TritonTargetOpCostModel``.
+    This is the Python counterpart of nncase's ``TritonTargetOpCostModel``.
     Block-local work is evaluated both against the nearest block memory and
     against aggregate chip-global traffic across the active blocks of one
     chip. Different chips have independent bandwidth budgets. Compute and
@@ -65,24 +65,43 @@ class DistributedOperationCostModel:
         chip_load = factors.chip_global_memory_load_bytes
         chip_store = factors.chip_global_memory_store_bytes
 
-        block_memory_cycles = (local_load / self.block_local_read_bytes_per_cycle +
-                               local_store / self.block_local_write_bytes_per_cycle +
-                               (self.block_local_latency_cycles if local_load + local_store > 0 else 0))
+        block_memory_cycles = (
+            local_load / self.block_local_read_bytes_per_cycle
+            + local_store / self.block_local_write_bytes_per_cycle
+            + (
+                self.block_local_latency_cycles
+                if local_load + local_store > 0
+                else 0
+            )
+        )
         chip_read_bytes = (local_load + chip_load) * active_blocks + factors.chip_aggregate_memory_load_bytes
         chip_write_bytes = (local_store + chip_store) * active_blocks + factors.chip_aggregate_memory_store_bytes
-        chip_memory_cycles = (chip_read_bytes / self.chip_global_read_bytes_per_cycle +
-                              chip_write_bytes / self.chip_global_write_bytes_per_cycle +
-                              (self.chip_global_latency_cycles if chip_read_bytes + chip_write_bytes > 0 else 0))
-        compute_cycles = (factors.cpu_cycles +
-                          ceil(factors.elementwise_operations / self.elementwise_elements_per_cycle) +
-                          ceil(factors.simt_fma_operations / self.simt_fma_per_cycle))
+        chip_memory_cycles = (
+            chip_read_bytes / self.chip_global_read_bytes_per_cycle
+            + chip_write_bytes / self.chip_global_write_bytes_per_cycle
+            + (self.chip_global_latency_cycles if chip_read_bytes + chip_write_bytes > 0 else 0)
+        )
+        compute_cycles = (
+            factors.cpu_cycles
+            + ceil(
+                factors.elementwise_operations
+                / self.elementwise_elements_per_cycle
+            )
+            + ceil(factors.simt_fma_operations / self.simt_fma_per_cycle)
+        )
         overlapped_cycles = max(
             compute_cycles,
             block_memory_cycles,
             chip_memory_cycles,
         )
-        latency = (overlapped_cycles + factors.block_synchronizations * self.block_synchronization_cycles +
-                   factors.grid_synchronizations * self.grid_synchronization_cycles + factors.communication_cycles)
+        latency = (
+            overlapped_cycles
+            + factors.block_synchronizations
+            * self.block_synchronization_cycles
+            + factors.grid_synchronizations
+            * self.grid_synchronization_cycles
+            + factors.communication_cycles
+        )
         return min(max(ceil(latency), 0), 2_000_000_000)
 
 

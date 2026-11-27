@@ -18,8 +18,8 @@ def has_full_static_rows(value_type) -> bool:
         for owner in product(*(range(n) for n in value_type.placement.hierarchy)):
             shard = local_shard_descriptor(value_type, owner)
             if (any(not axis.active_extent.is_fixed or not axis.local_capacity.is_fixed
-                    or axis.active_extent.fixed_value != axis.local_capacity.fixed_value
-                    for axis in shard.axes) or prod(axis.local_capacity.fixed_value for axis in shard.axes[:-1]) != 1
+                    or axis.active_extent.fixed_value != axis.local_capacity.fixed_value for axis in shard.axes)
+                    or prod(axis.local_capacity.fixed_value for axis in shard.axes[:-1]) != 1
                     or shard.axes[-1].local_capacity.fixed_value <= 0):
                 return False
         return True
@@ -34,7 +34,6 @@ def validate_async_row_copy(abi, copy_tile: int, *, owned_pool_origin=None) -> N
     step and an aligned origin for every owner. External pointers lack the
     prepared runtime's owned-pool base contract and are not accepted here.
     """
-
     def reject(reason):
         raise CodegenError(f"LHS async copy requires {reason}.")
 
@@ -42,16 +41,20 @@ def validate_async_row_copy(abi, copy_tile: int, *, owned_pool_origin=None) -> N
     lanes = int(abi.get("scalar_lane_count", 1))
     itemsize = int(abi["scalar_itemsize"])
     strides = tuple(abi["scalar_storage_strides"])
-    if (not shape or prod(shape[:-1]) != 1 or lanes <= 0 or shape[-1] * lanes % copy_tile or strides[-1] != lanes):
+    if (not shape or prod(shape[:-1]) != 1 or lanes <= 0
+            or shape[-1] * lanes % copy_tile or strides[-1] != lanes):
         reject("a contiguous scalar row with complete copy tiles")
     owned = abi.get("pooled", False)
     alignment = int(abi.get("alignment_bytes", 0))
     if owned_pool_origin is not None:
         proof = owned_pool_origin
         if (proof.get("schema") != "flagmega.closed-function-pool-origin/v1"
-                or proof.get("storage") not in {"rdata", "workspace"} or not proof.get("calls")
-                or type(proof.get("alignment_bytes")) is not int or proof["alignment_bytes"] <= 0
-                or proof["alignment_bytes"] & (proof["alignment_bytes"] - 1) or "view_byte_offset" in abi):
+                or proof.get("storage") not in {"rdata", "workspace"}
+                or not proof.get("calls")
+                or type(proof.get("alignment_bytes")) is not int
+                or proof["alignment_bytes"] <= 0
+                or proof["alignment_bytes"] & (proof["alignment_bytes"] - 1)
+                or "view_byte_offset" in abi):
             reject("a complete closed-function pool-origin proof")
         owned = True
         alignment = gcd(proof["alignment_bytes"], int(abi.get("pool_byte_offset", 0)))

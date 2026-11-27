@@ -36,40 +36,41 @@ def _fixture(tmp_path, variant="full-ring"):
     root = tmp_path / variant
     root.mkdir()
     semantic = "a" * 64
-    config = dict(schema="flagmega.triton-trace/v1", base_semantic_hash=semantic, capacity=4096, coarse_calls=True,
-                  detailed_calls=[], typed_ctas=list(range(128)), layer_bindings={"main": {"constant": -1}})
-    dictionary = dict(schema="flagmega.trace-sites/v1", base_semantic_hash=semantic, config_sha256=_digest(config),
-                      sites=[])
+    config = dict(schema="flagmega.triton-trace/v1", base_semantic_hash=semantic,
+                  capacity=4096, coarse_calls=True, detailed_calls=[],
+                  typed_ctas=list(range(128)), layer_bindings={"main": {"constant": -1}})
+    dictionary = dict(schema="flagmega.trace-sites/v1", base_semantic_hash=semantic,
+                      config_sha256=_digest(config), sites=[])
     census = variant == "full-census"
     if census:
-        config = dict(schema="flagmega.triton-census/v1", base_semantic_hash=semantic, ctas=128,
-                      expected_occurrences=367, service_calls=[], layer_bindings={"main": {"constant": -1}})
-        dictionary = dict(schema="flagmega.census-sites/v1", base_semantic_hash=semantic, config_sha256=_digest(config),
-                          occurrences=[dict(index=i) for i in range(367)])
+        config = dict(schema="flagmega.triton-census/v1", base_semantic_hash=semantic,
+                      ctas=128, expected_occurrences=367, service_calls=[],
+                      layer_bindings={"main": {"constant": -1}})
+        dictionary = dict(schema="flagmega.census-sites/v1", base_semantic_hash=semantic,
+                          config_sha256=_digest(config), occurrences=[dict(index=i) for i in range(367)])
     config_pin = _write(root / "trace-config.json", config)
     dictionary_pin = _write(root / "trace-dictionary.json", dictionary)
     source = root / "kernel.py"
     source.write_text("# CPU source identity: " + variant)
     source_pin = _pin(source)
-    trace = dict(
-        schema=config["schema"], config=config, dictionary=dictionary, config_sha256=_digest(config),
-        dictionary_sha256=_digest(dictionary), config_file="trace-config.json", dictionary_file="trace-dictionary.json",
-        config_file_sha256=config_pin["sha256"], dictionary_file_sha256=dictionary_pin["sha256"],
-        accepted_timing_eligible=False, native_contract=dict(typed_ctas=list(range(128)), capacity=4096,
-                                                             record_bytes=64, runtime_stream_filtering=False))
+    trace = dict(schema=config["schema"], config=config, dictionary=dictionary,
+                 config_sha256=_digest(config), dictionary_sha256=_digest(dictionary),
+                 config_file="trace-config.json", dictionary_file="trace-dictionary.json",
+                 config_file_sha256=config_pin["sha256"], dictionary_file_sha256=dictionary_pin["sha256"],
+                 accepted_timing_eligible=False,
+                 native_contract=dict(typed_ctas=list(range(128)), capacity=4096, record_bytes=64,
+                                      runtime_stream_filtering=False))
     if census:
         trace["native_contract"] = dict(occurrences=367, ctas=128)
-    codegen = dict(kind="tir_call_graph/v1", symbol="entry", source="kernel.py", num_warps=8, grid=[128, 1, 1],
-                   dynamic_argument_indices=[], triton_trace=trace,
+    codegen = dict(kind="tir_call_graph/v1", symbol="entry", source="kernel.py", num_warps=8,
+                   grid=[128, 1, 1], dynamic_argument_indices=[], triton_trace=trace,
                    runtime_binding=dict(arguments=[], pools=[], signature=[]))
-    sections = [
-        dict(name="diagnostic.trace." + name, path=path.name, kind="diagnostic.trace-" + name + "/v1",
-             sha256=pin["sha256"], nbytes=pin["nbytes"])
-        for name, path, pin in [("config", root / "trace-config.json",
-                                 config_pin), ("dictionary", root / "trace-dictionary.json", dictionary_pin)]
-    ]
-    manifest = dict(status="executable", codegen_backend="triton", target="nvidia-sm90", semantic_hash=semantic,
-                    codegen=codegen, sections=sections)
+    sections = [dict(name="diagnostic.trace." + name, path=path.name, kind="diagnostic.trace-" + name + "/v1",
+                     sha256=pin["sha256"], nbytes=pin["nbytes"])
+                for name, path, pin in [("config", root / "trace-config.json", config_pin),
+                                        ("dictionary", root / "trace-dictionary.json", dictionary_pin)]]
+    manifest = dict(status="executable", codegen_backend="triton", target="nvidia-sm90",
+                    semantic_hash=semantic, codegen=codegen, sections=sections)
     artifact_pin = _write(root / "artifact.json", manifest)
     minimal = variant == "minimal-ring"
     stack, stores, loads = (576, 1228, 684) if minimal else (584, 1240, 696)
@@ -77,33 +78,34 @@ def _fixture(tmp_path, variant="full-ring"):
         stack = stores = loads = 0
     registers, profile = (167, 11776) if census else (168, 3146496)
     key = _digest(variant)
-    metadata = dict(name="entry", hash=key, target=dict(backend="cuda", arch=90, warp_size=32), num_warps=12,
-                    num_ctas=1, cluster_dims=[1, 1, 1], shared=155900, global_scratch_size=2144, global_scratch_align=4,
-                    profile_scratch_size=profile, profile_scratch_align=64, ptxas_stack_frame_bytes=stack,
-                    ptxas_spill_store_bytes=stores, ptxas_spill_load_bytes=loads)
+    metadata = dict(name="entry", hash=key, target=dict(backend="cuda", arch=90, warp_size=32),
+                    num_warps=12, num_ctas=1, cluster_dims=[1, 1, 1], shared=155900,
+                    global_scratch_size=2144, global_scratch_align=4,
+                    profile_scratch_size=profile, profile_scratch_align=64,
+                    ptxas_stack_frame_bytes=stack, ptxas_spill_store_bytes=stores,
+                    ptxas_spill_load_bytes=loads)
     meta_pin = _write(root / "entry.json", metadata)
     cubin = root / "entry.cubin"
     cubin.write_bytes(b"CPU native identity carrier " + variant.encode())
     resources = dict(registers_per_thread=registers, physical_num_warps=12, block_threads=384,
-                     dynamic_shared_memory_bytes=155900, grid=[128, 1, 1], stack_frame_bytes=stack,
-                     local_memory_bytes=stack, spill_store_bytes=stores, spill_load_bytes=loads,
-                     spill_bytes=stores + loads, global_scratch_bytes_per_CTA=2144, global_scratch_alignment=4,
+                     dynamic_shared_memory_bytes=155900, grid=[128, 1, 1],
+                     stack_frame_bytes=stack, local_memory_bytes=stack,
+                     spill_store_bytes=stores, spill_load_bytes=loads, spill_bytes=stores + loads,
+                     global_scratch_bytes_per_CTA=2144, global_scratch_alignment=4,
                      profile_scratch_bytes_per_CTA=profile, profile_scratch_alignment=64)
-    payload = dict(
-        schema="flagmega.diagnostic-resource-contract/v1", execution_purpose="diagnostic_only",
-        accepted_timing_eligible=False, artifact_identity=artifact_pin, base_semantic_hash=semantic,
-        target="nvidia-sm90", codegen_backend="triton", trace_identity={
-            k: trace[k]
-            for k in ("schema", "config_sha256", "dictionary_sha256", "config_file_sha256", "dictionary_file_sha256")
-        }, entries=[
-            dict(symbol="entry", source_identity=source_pin, native_key=key, native_cubin_identity=_pin(cubin),
-                 native_metadata_identity=meta_pin, exact_resources=resources)
-        ], evidence_refs=[source_pin])
+    payload = dict(schema="flagmega.diagnostic-resource-contract/v1", execution_purpose="diagnostic_only",
+                   accepted_timing_eligible=False, artifact_identity=artifact_pin,
+                   base_semantic_hash=semantic, target="nvidia-sm90", codegen_backend="triton",
+                   trace_identity={k: trace[k] for k in ("schema", "config_sha256", "dictionary_sha256",
+                                                        "config_file_sha256", "dictionary_file_sha256")},
+                   entries=[dict(symbol="entry", source_identity=source_pin, native_key=key,
+                                 native_cubin_identity=_pin(cubin), native_metadata_identity=meta_pin,
+                                 exact_resources=resources)], evidence_refs=[source_pin])
     _approve(root, payload, variant)
     compiled = SimpleNamespace(name="entry", hash=key, n_regs=registers, n_spills=stack // 4,
                                metadata=SimpleNamespace(**metadata), asm={"cubin": cubin.read_bytes()},
-                               metadata_group={"entry.json": str(root / "entry.json"), "entry.cubin":
-                                               str(cubin)}, run=lambda *args, **kwargs: None)
+                               metadata_group={"entry.json": str(root / "entry.json"),
+                                               "entry.cubin": str(cubin)}, run=lambda *args, **kwargs: None)
     return root, manifest, payload, compiled
 
 
@@ -114,22 +116,22 @@ def _approve(root, payload, variant):
     plan.write_text("Reviewed resource input sha256 " + input_pin["sha256"])
     plan_pin = _pin(plan)
     approval_pin = _write(root / "approval.json", {"body_sha256": plan_pin["sha256"]})
-    flow = dict(schema="flagmega.orchestrator-flow-signoff/v1", implementation_authorized=True, technical_plan=plan_pin,
-                applicable_own_scope_receipts=[dict(technical_body_sha256=plan_pin["sha256"], receipt=approval_pin)])
+    flow = dict(schema="flagmega.orchestrator-flow-signoff/v1", implementation_authorized=True,
+                technical_plan=plan_pin, applicable_own_scope_receipts=[
+                    dict(technical_body_sha256=plan_pin["sha256"], receipt=approval_pin)])
     flow_pin = _write(root / "flow.json", flow)
     payload["approval_provenance"] = dict(resource_input_identity=input_pin, resource_input_key=variant,
-                                          root_flow_identity=flow_pin, plan_identity=plan_pin,
-                                          approval_refs=[approval_pin])
+                                           root_flow_identity=flow_pin, plan_identity=plan_pin,
+                                           approval_refs=[approval_pin])
 
 
 def _public_prepare(monkeypatch, root, manifest, payload, compiled):
     # Only artifact decoding, source import and CUDA allocation are carriers.
     # Public load, context binding, per-entry factory and resource validator are real.
     calls = []
-    compilers = compiled if isinstance(compiled, tuple) else (compiled, )
-    kernels = tuple(
-        SimpleNamespace(run=lambda *args, _compiled=item, **kwargs: (calls.append(kwargs), _compiled)[1])
-        for item in compilers)
+    compilers = compiled if isinstance(compiled, tuple) else (compiled,)
+    kernels = tuple(SimpleNamespace(run=lambda *args, _compiled=item, **kwargs: (calls.append(kwargs), _compiled)[1])
+                    for item in compilers)
     monkeypatch.setattr(runtime_module, "verify_buffer_plan", lambda ir: SimpleNamespace())
     module = GeneratedTirCallGraphModule(root, manifest, SimpleNamespace(metadata={}),
                                          kernels if len(kernels) > 1 else kernels[0])
@@ -147,12 +149,10 @@ def _public_prepare(monkeypatch, root, manifest, payload, compiled):
     monkeypatch.setattr(loader.package_registry, "resolve", lambda *args: SimpleNamespace(factory=factory))
     names = ([spec["symbol"] for spec in manifest["codegen"]["kernels"]]
              if manifest["codegen"].get("kernels") is not None else ["entry"])
-    monkeypatch.setattr(loader, "_import_source",
-                        lambda *args: SimpleNamespace(**dict(zip(names, kernels, strict=True))))
+    monkeypatch.setattr(loader, "_import_source", lambda *args: SimpleNamespace(**dict(zip(names, kernels, strict=True))))
     monkeypatch.setattr(prepared, "_prepare_global_scratch", lambda *args, **kwargs: None)
     try:
-        contract_type = importlib.import_module(
-            "triton.flagmega.runtime.diagnostic_resources").DiagnosticResourceContract
+        contract_type = importlib.import_module("triton.flagmega.runtime.diagnostic_resources").DiagnosticResourceContract
     except ModuleNotFoundError as error:
         if error.name != "triton.flagmega.runtime.diagnostic_resources":
             raise
@@ -182,10 +182,9 @@ def _typed(payload):
     return DiagnosticResourceContract.from_data(payload)
 
 
-@pytest.mark.parametrize("field", [
-    "spill_store_bytes", "spill_load_bytes", "stack_frame_bytes", "local_memory_bytes", "registers_per_thread",
-    "dynamic_shared_memory_bytes", "global_scratch_bytes_per_CTA", "profile_scratch_bytes_per_CTA"
-])
+@pytest.mark.parametrize("field", ["spill_store_bytes", "spill_load_bytes", "stack_frame_bytes", "local_memory_bytes",
+                                    "registers_per_thread", "dynamic_shared_memory_bytes",
+                                    "global_scratch_bytes_per_CTA", "profile_scratch_bytes_per_CTA"])
 def test_each_actual_resource_change_rejects(tmp_path, monkeypatch, field):
     root, manifest, payload, compiled = _fixture(tmp_path)
     if field == "local_memory_bytes":
@@ -227,17 +226,15 @@ def test_actual_native_identity_drift_rejects(tmp_path, monkeypatch, change):
         _public_prepare(monkeypatch, root, manifest, payload, compiled)
 
 
-@pytest.mark.parametrize("field", [
-    "artifact_identity", "source_identity", "native_cubin_identity", "native_metadata_identity", "config", "dictionary",
-    "approval", "evidence"
-])
+@pytest.mark.parametrize("field", ["artifact_identity", "source_identity", "native_cubin_identity",
+                                    "native_metadata_identity", "config", "dictionary", "approval", "evidence"])
 def test_changed_file_bytes_reject_before_publication(tmp_path, field):
     root, manifest, payload, compiled = _fixture(tmp_path)
     entry = payload["entries"][0]
-    path = (Path(payload[field]["path"])
-            if field == "artifact_identity" else Path(entry[field]["path"]) if field.endswith("identity") else root /
-            ("trace-" + field + ".json") if field in ("config", "dictionary") else root /
-            "approval.json" if field == "approval" else Path(payload["evidence_refs"][0]["path"]))
+    path = (Path(payload[field]["path"]) if field == "artifact_identity" else
+            Path(entry[field]["path"]) if field.endswith("identity") else
+            root / ("trace-" + field + ".json") if field in ("config", "dictionary") else
+            root / "approval.json" if field == "approval" else Path(payload["evidence_refs"][0]["path"]))
     path.write_bytes(path.read_bytes() + b"changed")
     with pytest.raises(ArtifactError, match="changed file identity"):
         _typed(payload).bind(root, manifest)
@@ -251,10 +248,8 @@ def test_cross_variant_same_semantics_does_not_bind(tmp_path):
         _typed(full).bind(minimal_root, minimal_manifest)
 
 
-@pytest.mark.parametrize("change", [
-    "unknown", "schema", "timing", "negative", "nonfinite", "boolean", "missing", "duplicate", "spill_sum",
-    "missing_provenance", "backend"
-])
+@pytest.mark.parametrize("change", ["unknown", "schema", "timing", "negative", "nonfinite", "boolean", "missing",
+                                    "duplicate", "spill_sum", "missing_provenance", "backend"])
 def test_strict_input_rejects_malformed_or_unreviewed_contract(tmp_path, change):
     _, _, payload, _ = _fixture(tmp_path)
     if change == "unknown":
@@ -265,8 +260,7 @@ def test_strict_input_rejects_malformed_or_unreviewed_contract(tmp_path, change)
         payload["accepted_timing_eligible"] = True
     elif change in ("negative", "nonfinite", "boolean"):
         payload["entries"][0]["exact_resources"]["local_memory_bytes"] = {
-            "negative": -1, "nonfinite": float("nan"), "boolean": True
-        }[change]
+            "negative": -1, "nonfinite": float("nan"), "boolean": True}[change]
     elif change == "missing":
         del payload["entries"][0]["exact_resources"]["stack_frame_bytes"]
     elif change == "duplicate":
@@ -281,10 +275,8 @@ def test_strict_input_rejects_malformed_or_unreviewed_contract(tmp_path, change)
         _typed(payload)
 
 
-@pytest.mark.parametrize("change", [
-    "partial_entries", "reordered_entries", "ordinary_artifact", "config_hash", "dictionary_link", "partial_CTA",
-    "unreviewed_tuple", "partial_approvals"
-])
+@pytest.mark.parametrize("change", ["partial_entries", "reordered_entries", "ordinary_artifact", "config_hash",
+                                    "dictionary_link", "partial_CTA", "unreviewed_tuple", "partial_approvals"])
 def test_complete_binding_rejects_partial_or_unlinked_input(tmp_path, change):
     root, manifest, payload, _ = _fixture(tmp_path)
     if change in ("partial_entries", "reordered_entries"):
@@ -374,8 +366,7 @@ def test_bound_context_cannot_disable_ordinary_guard_or_enter_non_ptxas_backend(
     root, manifest, payload, compiled = _fixture(tmp_path)
     result = _public_prepare(monkeypatch, root, manifest, payload, compiled)
     contract = result._prepared[0].contract
-    for change in (dict(forbid_spills=False), dict(spill_tolerance_bytes=1936),
-                   dict(reports_ptxas_resource_fields=False)):
+    for change in (dict(forbid_spills=False), dict(spill_tolerance_bytes=1936), dict(reports_ptxas_resource_fields=False)):
         with pytest.raises(RuntimeContractError, match="preserve.*zero-spill"):
             replace(contract, **change)
     with pytest.raises(ArtifactError, match="SM90"):
@@ -405,9 +396,8 @@ def test_multiple_entries_select_their_own_native_contract(tmp_path, monkeypatch
     entry.update(symbol="second", native_key=second.hash, native_metadata_identity=second_meta,
                  native_cubin_identity=_pin(root / "second.cubin"))
     payload["entries"].append(entry)
-    manifest["codegen"]["kernels"] = [
-        dict(symbol=name, grid=[128, 1, 1], dynamic_argument_indices=[]) for name in ("entry", "second")
-    ]
+    manifest["codegen"]["kernels"] = [dict(symbol=name, grid=[128, 1, 1], dynamic_argument_indices=[])
+                                        for name in ("entry", "second")]
     payload["artifact_identity"] = _write(root / "artifact.json", manifest)
     _approve(root, payload, "two-entries")
     result = _public_prepare(monkeypatch, root, manifest, payload, (first, second))
@@ -499,14 +489,10 @@ def test_live_numeric_aliases_reject_through_public_prepare(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize("field,value", [
-    ("shared", 155900.0),
-    ("ptxas_spill_store_bytes", 1240.0),
-    ("global_scratch_align", 4.0),
-    ("cluster_dims", [True, 1, 1]),
+    ("shared", 155900.0), ("ptxas_spill_store_bytes", 1240.0),
+    ("global_scratch_align", 4.0), ("cluster_dims", [True, 1, 1]),
     ("target", {"backend": "cuda", "arch": 90.0, "warp_size": 32}),
-    ("n_regs", 168.0),
-    ("n_spills", 146.0),
-    ("n_spills", 146.25),
+    ("n_regs", 168.0), ("n_spills", 146.0), ("n_spills", 146.25),
 ])
 def test_neighboring_live_type_aliases_reject(tmp_path, monkeypatch, field, value):
     root, manifest, payload, compiled = _fixture(tmp_path)

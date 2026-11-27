@@ -57,13 +57,13 @@ def test_explicit_projection_rounding_survives_private_widening(pipeline, dtype)
 
     source = graph(dtype=dtype, output_dtype=dtype)
     result = decompose_complex_ops(source) if pipeline else DataflowRewriter(
-        (fold_matmul_cast_rule(), )).rewrite(source)
-    lhs = torch.ones((2, 64), dtype=getattr(torch, dtype))
-    rhs = torch.zeros((32, 64), dtype=getattr(torch, dtype))
-    rhs[:, 0] = 1
-    rhs[:, 1] = 2.**-12
+        (fold_matmul_cast_rule(),)).rewrite(source)
+    lhs = torch.ones((2,64), dtype=getattr(torch,dtype))
+    rhs = torch.zeros((32,64), dtype=getattr(torch,dtype))
+    rhs[:,0] = 1
+    rhs[:,1] = 2. ** -12
     evaluator = TorchEvaluator(DictWeightResolver({}))
-    actual = evaluator.run(result, {'lhs': lhs, 'rhs': rhs})
-    expected = evaluator.run(source, {'lhs': lhs, 'rhs': rhs})
+    actual = evaluator.run(result, {'lhs':lhs, 'rhs':rhs})
+    expected = evaluator.run(source, {'lhs':lhs, 'rhs':rhs})
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
     assert result.node_map['projection'].attrs['output_data_type'] == dtype

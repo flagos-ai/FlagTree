@@ -19,7 +19,12 @@ def test_k_major_layout_identity_round_trips_target_supplied_lanes():
 
 def test_generic_k_major_unpack_does_not_assume_sm90_n8_k16_geometry():
     logical = torch.arange(32 * 64, dtype=torch.float32).reshape(32, 64)
-    packed = (logical.reshape(2, 16, 1, 64).permute(2, 0, 1, 3).reshape(1, 2, 4, 256).contiguous())
+    packed = (
+        logical.reshape(2, 16, 1, 64)
+        .permute(2, 0, 1, 3)
+        .reshape(1, 2, 4, 256)
+        .contiguous()
+    )
 
     actual = unpack_k_major_weight(packed, "k_major_n16_k64")
 

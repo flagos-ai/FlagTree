@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: gdn_convolution/persistent
+# flagmega-kernel: gdn_convolution/persistent
 @triton.jit
 def _flagmega_gdn_convolution_local_tile(
     qkv, destination, conv_state, conv_weight,

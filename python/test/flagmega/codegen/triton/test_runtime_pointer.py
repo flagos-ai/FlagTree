@@ -24,7 +24,9 @@ def _abi(**overrides) -> dict[str, object]:
 
 
 def test_pooled_pointer_applies_typed_byte_offset():
-    assert emit_buffer_pointer(_abi(), "workspace") == ("(workspace.to(tl.pointer_type(tl.bfloat16)) + 128)")
+    assert emit_buffer_pointer(_abi(), "workspace") == (
+        "(workspace.to(tl.pointer_type(tl.bfloat16)) + 128)"
+    )
 
 
 def test_compact_per_owner_pointer_applies_component_after_pool_offset():
@@ -36,8 +38,10 @@ def test_compact_per_owner_pointer_applies_component_after_pool_offset():
         ),
         "rdata",
         owner_index="owner",
-    ) == ("((rdata.to(tl.pointer_type(tl.bfloat16)) + 128) + "
-          "(owner) * 64)")
+    ) == (
+        "((rdata.to(tl.pointer_type(tl.bfloat16)) + 128) + "
+        "(owner) * 64)"
+    )
 
 
 def test_storage_pointer_does_not_preapply_callee_owner_offset():

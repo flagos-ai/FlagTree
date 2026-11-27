@@ -71,7 +71,8 @@ def test_multi_group_k_tile_indexes_the_scale_per_lane(tmp_path, definition):
     assert scale_loads, "the block-scaled stage must emit at least one scale load"
     for load in scale_loads:
         assert "_fm_k_start // 16" not in load, f"per-tile group index on a multi-group tile: {load.strip()}"
-        assert re.search(r"_fm_k\[None, :\]\)*\s*// 16", load), (f"scale is not indexed per K lane: {load.strip()}")
+        assert re.search(r"_fm_k\[None, :\]\)*\s*// 16", load), (
+            f"scale is not indexed per K lane: {load.strip()}")
     assert "_fm_group_scale" in source, "the activation abs-max must reduce per weight scale group"
 
 
@@ -103,8 +104,8 @@ def test_activation_quantization_preserves_round_to_even_ties(tmp_path, definiti
         pytest.skip("SM90 CUDA required")
     from triton.flagmega import ir as fm
 
-    module = stage_module(definition, dtype="bfloat16", weight_dtype="float8_e4m3fn", block_scaled=True,
-                          weight_block=128, hidden=128, intermediate=128, tokens=1)
+    module = stage_module(definition, dtype="bfloat16", weight_dtype="float8_e4m3fn",
+                          block_scaled=True, weight_block=128, hidden=128, intermediate=128, tokens=1)
     values = {}
     activation = definition.input_parameters[0].name
     for name in module.function_map[module.entry].parameters:

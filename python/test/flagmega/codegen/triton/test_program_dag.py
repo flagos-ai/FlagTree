@@ -26,9 +26,7 @@ from python.test.flagmega.codegen.triton.test_kernel_programs import compile_pro
 
 
 def compile_fork_join(*, common_prefix=False):
-
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("x", fm.tensor_type("bfloat16", (1, 128)), id="x")
             bias = self.input("bias", fm.tensor_type("bfloat16", (1, 128)), id="bias") if common_prefix else None
@@ -42,36 +40,38 @@ def compile_fork_join(*, common_prefix=False):
             right0 = fm.F.math.matmul(value, c, transpose_b=True, name="right0")
             right1 = fm.F.math.matmul(right0, d, transpose_b=True, name="right1")
             joined = fm.F.math.add(left1, right1, name="joined")
-            self.function("main", (x, bias, a, b, c, d) if common_prefix else (x, a, b, c, d), (left1, right1, joined))
+            self.function("main", (x, bias, a, b, c, d) if common_prefix else (x, a, b, c, d),
+                          (left1, right1, joined))
 
     class Target(NvidiaSm90Target):
-
         def propose_tir(self, module):
             module = super().propose_tir(module)
             owners = {p.owner for p in module.selection_points if p.kind == "tir"}
             calls = tuple(node.id for node in module.nodes if node.id in owners)
             expected = ("left0", "left1", "right0", "right1", "joined")
             assert calls == (("prefix", *expected) if common_prefix else expected), calls
-            parent = ("prefix", ) if common_prefix else ()
+            parent = ("prefix",) if common_prefix else ()
             dependencies = {
                 "prefix": (),
                 "left0": parent,
-                "left1": ("left0", ),
+                "left1": ("left0",),
                 "right0": parent,
-                "right1": ("right0", ),
+                "right1": ("right0",),
                 "joined": ("left1", "right1"),
             }
             return replace(
                 module,
                 metadata={
                     **module.metadata,
-                    "kernel_program_partition":
-                    tuple({
-                        "symbol": f"program_{name}",
-                        "calls": (name, ),
-                        "num_warps": 4,
-                        "depends_on": tuple(f"program_{p}" for p in dependencies[name]),
-                    } for name in calls),
+                    "kernel_program_partition": tuple(
+                        {
+                            "symbol": f"program_{name}",
+                            "calls": (name,),
+                            "num_warps": 4,
+                            "depends_on": tuple(f"program_{p}" for p in dependencies[name]),
+                        }
+                        for name in calls
+                    ),
                 },
             )
 
@@ -102,11 +102,11 @@ def test_fork_after_materialized_prefix_is_preserved_by_normal_codegen(tmp_path)
 
 @pytest.mark.parametrize(
     "dependencies",
-    [((), ("first", )), (("second", ), ()), ((), ("missing", )), ((), ("second", )), ((), ("first", "first"))],
+    [((), ("first",)), (("second",), ()), ((), ("missing",)), ((), ("second",)), ((), ("first", "first"))],
 )
 def test_program_dependency_parser_rejects_missing_forward_self_and_duplicate_edges(dependencies):
     values = [{"symbol": "first", "depends_on": dependencies[0]}, {"symbol": "second", "depends_on": dependencies[1]}]
-    if dependencies == ((), ("first", )):
+    if dependencies == ((), ("first",)):
         assert program_ancestors(values)["second"] == {"first"}
         assert program_stream_indices(values) == {"first": 0, "second": 0}
     else:
@@ -154,7 +154,7 @@ def test_missing_data_dependency_is_rejected_from_real_physical_effects(tmp_path
 
 
 def test_dag_entry_allocation_ends_after_its_last_ordered_reader(tmp_path):
-    module = compile_programs(export_mid=False, dependencies=((), ("program_first", )))
+    module = compile_programs(export_mid=False, dependencies=((), ("program_first",)))
     plan = verify_buffer_plan(module)
     first = plan.buffer_map[dict(plan.function_map[module.entry].values)["first"][0]]
     from triton.flagmega.passes.functions.graph import function_nodes
@@ -168,14 +168,14 @@ def test_dag_entry_allocation_ends_after_its_last_ordered_reader(tmp_path):
 @pytest.mark.parametrize("registers,shared,passes", [(100, 100000, True), (130, 100000, False), (100, 120000, False)])
 def test_joint_residency_uses_rounded_stream_peaks(registers, shared, passes):
     contract = ResourceContract(8, 1)
-    specs = [{
-        "symbol": str(i), "depends_on": (), "grid": (128, 1, 1), "requires_grid_wide_sync": True, "stream_index": i
-    } for i in range(2)]
+    specs = [{"symbol": str(i), "depends_on": (), "grid": (128, 1, 1),
+              "requires_grid_wide_sync": True, "stream_index": i} for i in range(2)]
     kernels = [
         SimpleNamespace(
             contract=contract,
             resource_report={"registers_per_thread": registers, "shared_memory_bytes": shared, "num_warps": 8},
-        ) for _ in specs
+        )
+        for _ in specs
     ]
     if passes:
         assert verify_joint_resources(specs, kernels, 132)["registers"] == 2 * 104 * 256
@@ -186,13 +186,13 @@ def test_joint_residency_uses_rounded_stream_peaks(registers, shared, passes):
 
 def test_joint_residency_rejects_unproved_subpartition_packing():
     contract = ResourceContract(2, 1)
-    specs = [{
-        "symbol": "first", "depends_on": (), "grid": (128, 1, 1), "requires_grid_wide_sync": True, "stream_index": 0
-    }]
-    kernel = SimpleNamespace(contract=contract,
-                             resource_report={"registers_per_thread": 32, "shared_memory_bytes": 0, "num_warps": 2})
+    specs = [{"symbol": "first", "depends_on": (), "grid": (128, 1, 1),
+              "requires_grid_wide_sync": True, "stream_index": 0}]
+    kernel = SimpleNamespace(
+        contract=contract, resource_report={"registers_per_thread": 32, "shared_memory_bytes": 0, "num_warps": 2}
+    )
     with pytest.raises(RuntimeContractError, match="complete four-warp groups"):
-        verify_joint_resources(specs, (kernel, ), 132)
+        verify_joint_resources(specs, (kernel,), 132)
 
 
 def test_device_program_dag_matches_independent_fp64_and_captures(tmp_path):
@@ -200,15 +200,16 @@ def test_device_program_dag_matches_independent_fp64_and_captures(tmp_path):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("requires SM90")
     module = compile_programs(packed=True, dependencies=((), ()))
-    runtime = load(write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True),
-                   device="cuda:0")
+    runtime = load(
+        write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True), device="cuda:0"
+    )
     generator = torch.Generator(device="cuda").manual_seed(6123)
     x = torch.empty((1, 128), dtype=torch.bfloat16, device="cuda")
     a = torch.empty((8, 8, 8, 2, 8), dtype=torch.bfloat16, device="cuda")
     b = torch.empty((8, 4, 8, 2, 8), dtype=torch.bfloat16, device="cuda")
     storages = [
-        torch.full((64 + 32, ), 128.0, dtype=torch.bfloat16, device="cuda"),
-        torch.full((32 + 32, ), 128.0, dtype=torch.bfloat16, device="cuda"),
+        torch.full((64 + 32,), 128.0, dtype=torch.bfloat16, device="cuda"),
+        torch.full((32 + 32,), 128.0, dtype=torch.bfloat16, device="cuda"),
     ]
     values = {
         "x": x,
@@ -281,8 +282,9 @@ def test_device_program_dag_fork_join_orders_repeated_captured_requests(tmp_path
             Runtime.prepare(runtime, *actuals)
             assert all(p.resource_report["spill_bytes"] == 0 for p in runtime._prepared)
             for _ in range(4):
-                values["x"].copy_((torch.randint(-8, 9,
-                                                 (1, 128), device="cuda", generator=generator).float() / 8).bfloat16())
+                values["x"].copy_(
+                    (torch.randint(-8, 9, (1, 128), device="cuda", generator=generator).float() / 8).bfloat16()
+                )
                 Runtime.run_into(runtime, *actuals)
                 stream.synchronize()
                 left0 = (values["x"].double() @ values["a"].double().T).bfloat16()
@@ -296,16 +298,15 @@ def test_device_program_dag_fork_join_orders_repeated_captured_requests(tmp_path
                 for _ in range(3):
                     Runtime.run_into(runtime, *actuals)
             with torch.profiler.profile(
-                    activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]) as profile:
+                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
+            ) as profile:
                 graph.replay()
                 stream.synchronize()
             path = tmp_path / "fork-join.trace.json"
             profile.export_chrome_trace(str(path))
             events = [event for event in json.loads(path.read_text())["traceEvents"] if event.get("cat") == "kernel"]
             by_name = {
-                name: sorted((e
-                              for e in events
-                              if e["name"].startswith("program_" + name)), key=lambda e: e["ts"])
+                name: sorted((e for e in events if e["name"].startswith("program_" + name)), key=lambda e: e["ts"])
                 for name in ("left0", "left1", "right0", "right1", "joined")
             }
             assert len(events) == 15 and all(len(v) == 3 for v in by_name.values())

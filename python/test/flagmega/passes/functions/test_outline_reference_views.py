@@ -15,7 +15,6 @@ def reference_view_graph(*, single_effect=False):
     config = GatedDeltaNetStateConfig(3, 1, 2, 4, 4, 4, 16)
 
     class Graph(fm.Module):
-
         def forward(self):
             qkv = self.input("qkv", fm.tensor_type("bfloat16", (1, 16)), id="qkv")
             state = self.input("state", config.ref_type, id="state")
@@ -28,14 +27,13 @@ def reference_view_graph(*, single_effect=False):
             if single_effect:
                 output = value
             else:
-                second = fm.F.nn.gated_delta_net_convolution(value, updated, weight, conv_kernel_size=4,
-                                                             name="second_conv")
+                second = fm.F.nn.gated_delta_net_convolution(value, updated, weight, conv_kernel_size=4, name="second_conv")
                 output = fm.F.tensors.get_item(second, 0, name="second_value")
             parameters = (qkv, state, weight, layer)
             self.function("worker", parameters, (output, state), attrs={"noinline": True, "reusable": True})
             actual = tuple(self.input("entry_" + n.id, n.type, id="entry_" + n.id) for n in parameters)
-            call = fm.F.builtin.call(*actual, result_type=fm.TupleType((output.type, state.type)), callee="worker",
-                                     effect=fm.effect("read_write", "state"), name="call")
+            call = fm.F.builtin.call(*actual, result_type=fm.TupleType((output.type, state.type)),
+                                     callee="worker", effect=fm.effect("read_write", "state"), name="call")
             self.function("main", actual, (fm.F.tensors.get_item(call, 0), fm.F.tensors.get_item(call, 1)))
 
     return Graph(dialect="high_level", stage="imported", entry="main",
@@ -51,7 +49,7 @@ def outlined_reference_view_module(*, single_effect=False):
     cut = owned.index("first_value" if single_effect else "second_conv")
     stages = (FunctionStage("first", tuple(owned[:cut])), FunctionStage("second", tuple(owned[cut:])))
     outlined = outline_function_stages(source, "worker", stages,
-                                       **({"effect_stage": 0} if single_effect else {"effect_stages": (0, 1)}))
+                                      **({"effect_stage": 0} if single_effect else {"effect_stages": (0, 1)}))
     return Compiler().compile(outlined).module
 
 
@@ -98,24 +96,22 @@ def test_device_state_views_preserve_ordered_updates(tmp_path, single_effect):
         parameters = dict(runtime.buffer_plan.function_map["main"].parameters)
         fields = dict(zip(parameters["entry_state"], (state.convolution, state.recurrent), strict=True))
         tensors = {"entry_qkv": qkv, "entry_weight": weight}
-
         def arguments(index):
             values = {**tensors, "entry_layer": index}
-            return tuple(output if a["role"] == "result" else fields[a["buffer"]] if a["value"] ==
-                         "entry_state" else values[a["value"]] for a in runtime.external_arguments)
-
+            return tuple(output if a["role"] == "result" else
+                         fields[a["buffer"]] if a["value"] == "entry_state" else values[a["value"]]
+                         for a in runtime.external_arguments)
         GeneratedTirCallGraphModule.prepare(runtime, *arguments(0))
         for index in (0, 2, 1, 2):
             qkv.add_(1)
             first = torch.nn.functional.silu(qkv)
-            for value in (qkv, ) if single_effect else (qkv, first):
+            for value in (qkv,) if single_effect else (qkv, first):
                 expected[index, :, :-1, :] = expected[index, :, 1:, :].clone()
                 expected[index, :, -1, :] = value.reshape(2, 8)
             output.fill_(float("nan"))
             GeneratedTirCallGraphModule.run_into(runtime, *arguments(index))
             torch.cuda.synchronize()
-            torch.testing.assert_close(output, first if single_effect else torch.nn.functional.silu(first), rtol=0,
-                                       atol=0)
+            torch.testing.assert_close(output, first if single_effect else torch.nn.functional.silu(first), rtol=0, atol=0)
             torch.testing.assert_close(state.convolution, expected, rtol=0, atol=0)
             assert bool((state.recurrent == 17).all())
         assert runtime.resource_report["spill_bytes"] == 0
@@ -131,9 +127,8 @@ def test_reference_view_contract_cannot_hide_data_access_or_foreign_operands(inv
 
     class Bad(OpDefinition):
         source = input_parameter(is_ref(), memory_effect="read" if invalid == "data_access" else "none")
-
-    Bad.reference_view_input_parameters = ((Bad.source, Bad.source) if invalid == "duplicate" else
-                                           (GatedDeltaNetStateSlice.state, ) if invalid == "foreign" else
-                                           (Bad.source, ))
+    Bad.reference_view_input_parameters = (
+        (Bad.source, Bad.source) if invalid == "duplicate" else
+        (GatedDeltaNetStateSlice.state,) if invalid == "foreign" else (Bad.source,))
     with pytest.raises(TypeError, match="reference_view_input_parameters"):
         op_definition("test.reference_view_" + invalid)(Bad)

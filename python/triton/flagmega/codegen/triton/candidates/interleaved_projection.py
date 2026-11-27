@@ -10,9 +10,8 @@ class InterleavedProjectionCandidateProvider:
 
     def propose(self, node, context: TritonCandidateContext):
         del node
-        candidates = tuple(
-            context.configure_implementation(implementation)
-            for implementation in context.implementations("interleaved_projection"))
+        candidates = tuple(context.configure_implementation(implementation)
+                           for implementation in context.implementations("interleaved_projection"))
         if not candidates:
             return None
         return TritonCandidateProposal(candidates, context.choose_default("interleaved_projection", candidates))

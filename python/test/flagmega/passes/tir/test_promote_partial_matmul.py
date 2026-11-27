@@ -28,9 +28,9 @@ def test_each_shared_materialization_rounds_its_own_result():
     original = module.node_map["reduce"]
     second = replace(original, id="second_materialization")
     entry = module.function_map[module.entry]
-    module = fm.verify_module(
-        replace(module, nodes=(*module.nodes, second), functions=(replace(entry,
-                                                                          outputs=(*entry.outputs, second.id)), )))
+    module = fm.verify_module(replace(module, nodes=(*module.nodes, second), functions=(
+        replace(entry, outputs=(*entry.outputs, second.id)),
+    )))
     result = promote_partial_matmul(module)
     assert result.node_map[original.id].op == "ntt.vectorized_cast"
     assert result.node_map[second.id].op == "ntt.vectorized_cast"
@@ -41,7 +41,7 @@ def test_each_shared_materialization_rounds_its_own_result():
 def test_partial_function_output_is_not_retyped_behind_callers():
     module = matmul_module(False)
     entry = module.function_map[module.entry]
-    module = fm.verify_module(replace(module, functions=(replace(entry, outputs=(*entry.outputs, "dot")), )))
+    module = fm.verify_module(replace(module, functions=(replace(entry, outputs=(*entry.outputs, "dot")),)))
     assert promote_partial_matmul(module) is module
 
 

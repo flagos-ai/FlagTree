@@ -21,7 +21,7 @@ from triton.flagmega.ir import (
 
 
 class DistributedBoxingCandidateProvider:
-    """Map boxing leaves to the reference three explicit NTT transfer forms.
+    """Map boxing leaves to nncase's three explicit NTT transfer forms.
 
     Applicability is purely semantic: the logical tensor is unchanged.  The
     target implementation model decides which physical transfer forms exist
@@ -52,7 +52,9 @@ class DistributedBoxingCandidateProvider:
         semantics = transition.replace("_", "-")
         if tuple_boxing:
             semantics = f"tuple-{semantics}"
-        implementations = context.implementations("distributed_boxing", transition=transition)
+        implementations = context.implementations(
+            "distributed_boxing", transition=transition
+        )
         applicable = []
         for implementation in implementations:
             for name, predicate in (("peer_gather", _peer_gather), ("peer_partial_reduce", _peer_partial_reduce)):
@@ -87,7 +89,9 @@ class DistributedBoxingCandidateProvider:
                     "leaf_transitions": transitions,
                 },
                 facts=dict(facts),
-            ) for implementation in implementations)
+            )
+            for implementation in implementations
+        )
         if not candidates:
             return None
         return TritonCandidateProposal(
@@ -117,10 +121,10 @@ def _reads_peer_blocks(source, target) -> bool:
         if isinstance(before, TupleType) and isinstance(after, TupleType):
             pending.extend(zip(before.fields, after.fields, strict=True))
         elif (isinstance(before, DistributedType) and isinstance(after, DistributedType)
-              and before.placement == after.placement and before.partial is None and before.exclusive is None
-              and after.partial is None and any(
-                  level == "b" and extent > 1
-                  for level, extent in zip(before.placement.hierarchy_levels, before.placement.hierarchy, strict=True))
+              and before.placement == after.placement and before.partial is None
+              and before.exclusive is None and after.partial is None
+              and any(level == "b" and extent > 1 for level, extent in zip(
+                  before.placement.hierarchy_levels, before.placement.hierarchy, strict=True))
               and not is_local_shard_subview(before, after)):
             return True
     return False
@@ -139,8 +143,8 @@ def _peer_gather(source, target, tile) -> bool:
                 return False
             pending.extend(zip(before.fields, after.fields))
             continue
-        if (not isinstance(before, DistributedType) or before.partial is not None or before.exclusive is not None
-                or not boxing_reads_peer_chips(before, after)):
+        if (not isinstance(before, DistributedType) or before.partial is not None
+                or before.exclusive is not None or not boxing_reads_peer_chips(before, after)):
             return False
         mesh = before.placement
         if not _cooperative_output_tiles(mesh, after, tile):
@@ -181,12 +185,8 @@ def _cooperative_output_tiles(mesh, result, tile) -> bool:
     if isinstance(result, DistributedType):
         if result.placement != mesh or result.partial is not None or result.exclusive is not None:
             return False
-        used = {
-            axis
-            for policy in result.axis_policies
-            for stage in getattr(policy, "stages", ())
-            for axis in stage.hierarchy_axes
-        }
+        used = {axis for policy in result.axis_policies for stage in getattr(policy, "stages", ())
+                for axis in stage.hierarchy_axes}
         if used & block_axes:
             return False
         shape, dtype = local_shape(result), result.tensor.dtype
@@ -211,8 +211,11 @@ def _leaf_transitions(source, target) -> tuple[str, ...]:
         # Expand even an unchanged subtree: its flattened ABI still has one
         # buffer per tensor. Validate structure before classifying leaves.
         if isinstance(source, TupleType) or isinstance(target, TupleType):
-            if (not isinstance(source, TupleType) or not isinstance(target, TupleType)
-                    or len(source.fields) != len(target.fields)):
+            if (
+                not isinstance(source, TupleType)
+                or not isinstance(target, TupleType)
+                or len(source.fields) != len(target.fields)
+            ):
                 return ()
             pending.extend(reversed(tuple(zip(source.fields, target.fields))))
             continue

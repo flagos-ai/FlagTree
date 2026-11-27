@@ -11,8 +11,8 @@ def _module():
     lhs = builder.var("lhs", value_type, id="lhs")
     rhs = builder.var("rhs", value_type, id="rhs")
     add = builder.call("math.add", (lhs, rhs), value_type, id="add")
-    output = builder.call("math.silu", (add, ), value_type, id="output")
-    dead = builder.call("math.silu", (rhs, ), value_type, id="dead")
+    output = builder.call("math.silu", (add,), value_type, id="output")
+    dead = builder.call("math.silu", (rhs,), value_type, id="dead")
     del dead
     builder.function("main", (lhs, rhs), (add, output))
     scalar_type = fm.tensor_type("int32", [])
@@ -20,7 +20,7 @@ def _module():
         "constant_one",
         "triton",
         (),
-        fm.T.sequential((fm.T.evaluate(fm.T.immediate(1, scalar_type)), )),
+        fm.T.sequential((fm.T.evaluate(fm.T.immediate(1, scalar_type)),)),
         fm.T.return_(),
     )
     builder.prim_function(prim)
@@ -28,7 +28,6 @@ def _module():
 
 
 class RecordingVisitor(fm.IRVisitor):
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.ops = []

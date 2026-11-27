@@ -10,7 +10,9 @@ def _descriptor(name, dtype, shape):
     nbytes = dtype.itemsize
     for extent in shape:
         nbytes *= extent
-    physical = fm.PhysicalBuffer(f"physical:{name}", "workspace", fm.dim(nbytes), 16)
+    physical = fm.PhysicalBuffer(
+        f"physical:{name}", "workspace", fm.dim(nbytes), 16
+    )
     strides = []
     stride = 1
     for extent in reversed(shape):
@@ -40,27 +42,25 @@ def _binding(formal, descriptor):
 def test_local_rms_norm_reduces_each_outer_row_and_expands_vector_lanes():
     vector = fm.vector_type("bfloat16", 4)
     value = _descriptor("value", vector, (2, 3, 2))
-    weight = _descriptor("weight", vector, (2, ))
+    weight = _descriptor("weight", vector, (2,))
     result = _descriptor("result", vector, (2, 3, 2))
     call = prepare_kernel_calls(
         ({
-            "call":
-            "norm",
-            "family":
-            "rms_norm",
-            "variant":
-            "local",
-            "execution_kind":
-            "local_shard",
+            "call": "norm",
+            "family": "rms_norm",
+            "variant": "local",
+            "execution_kind": "local_shard",
             "parameters": {"block_size": 128},
             "semantic_attrs": {"epsilon": 1e-6, "weight_bias": 0.25},
             "inputs": (
-                {"formal": "value", "buffers": (_binding("value", value), )},
-                {"formal": "weight", "buffers": (_binding("weight", weight), )},
+                {"formal": "value", "buffers": (_binding("value", value),)},
+                {"formal": "weight", "buffers": (_binding("weight", weight),)},
             ),
-            "outputs": ({"formal": "result", "buffers": (_binding("result", result), )}, ),
+            "outputs": (
+                {"formal": "result", "buffers": (_binding("result", result),)},
+            ),
             "workspaces": (),
-        }, ),
+        },),
         function_name="main",
     )[0]
 

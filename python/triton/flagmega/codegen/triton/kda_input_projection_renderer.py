@@ -23,7 +23,7 @@ def kda_input_projection_call(raw):
         raise CodegenError("KDA input projection implements 64-row tiles.")
 
     def origin(binding):
-        return emit_local_scalar_offset(binding["abi"], ("0", ) * len(binding["abi"]["logical_shape"]))
+        return emit_local_scalar_offset(binding["abi"], ("0",) * len(binding["abi"]["logical_shape"]))
 
     def dense(binding):
         abi = binding["abi"]
@@ -43,16 +43,10 @@ def kda_input_projection_call(raw):
         raise CodegenError("KDA input projection requires one token.")
     reduction = shape[-1] * lanes
     fields, requests, start = [], [{
-        "parameter": "source_descriptor",
-        "source": str(x["runtime_argument"]),
-        "kind": "single",
-        "offset_bytes": int(x["abi"].get("pool_byte_offset", 0)),
-        "dtype": "bfloat16",
-        "shape": (1, reduction),
-        "strides": (reduction, 1),
-        "block_shape": (8, reduction_tile),
-        "source_shape_axes": ((), ()),
-        "padding": "zero",
+        "parameter": "source_descriptor", "source": str(x["runtime_argument"]), "kind": "single",
+        "offset_bytes": int(x["abi"].get("pool_byte_offset", 0)), "dtype": "bfloat16",
+        "shape": (1, reduction), "strides": (reduction, 1), "block_shape": (8, reduction_tile),
+        "source_shape_axes": ((), ()), "padding": "zero",
     }], 0
     for i, (w, out) in enumerate(zip(weights, outputs, strict=True)):
         w_shape, w_lanes = dense(w)
@@ -63,27 +57,21 @@ def kda_input_projection_call(raw):
         if prod(out_shape) * out_lanes != rows:
             raise CodegenError("KDA input projection output capacity disagrees with its weight rows.")
         tasks = (rows + tile - 1) // tile
-        fields.append({
-            "index": i, "rows": rows, "start": start, "end": start + tasks, "weight":
-            f"({_pointer(w)} + ({origin(w)}))", "output": f"({_pointer(out)} + ({origin(out)}))", "row_origin":
-            f"(({origin(w)}) // {reduction})"
-        })
+        fields.append({"index": i, "rows": rows, "start": start, "end": start + tasks,
+                       "weight": f"({_pointer(w)} + ({origin(w)}))",
+                       "output": f"({_pointer(out)} + ({origin(out)}))",
+                       "row_origin": f"(({origin(w)}) // {reduction})"})
         start += tasks
         descriptor_shape = (_static_shape(w["abi"], "logical_shape")
                             if w["abi"].get("coordinate_space") == "canonical_global" else w_shape)
         if tma and max(prod(descriptor_shape[:-1]), reduction) >= 2**31:
             raise CodegenError("KDA TMA coordinates must fit signed int32.")
         requests.append({
-            "parameter": f"weight_descriptor_{i}",
-            "source": str(w["runtime_argument"]),
-            "kind": "single",
-            "offset_bytes": int(w["abi"].get("pool_byte_offset", 0)),
-            "dtype": "bfloat16",
-            "shape": (prod(descriptor_shape[:-1]), reduction),
-            "strides": (reduction, 1),
-            "block_shape": (tile, reduction_tile),
-            "source_shape_axes": ((), ()),
-            "padding": "zero",
+            "parameter": f"weight_descriptor_{i}", "source": str(w["runtime_argument"]),
+            "kind": "single", "offset_bytes": int(w["abi"].get("pool_byte_offset", 0)),
+            "dtype": "bfloat16", "shape": (prod(descriptor_shape[:-1]), reduction),
+            "strides": (reduction, 1), "block_shape": (tile, reduction_tile),
+            "source_shape_axes": ((), ()), "padding": "zero",
         })
     for field in fields:
         field["branch"] = ("else:" if field["index"] == 5 else
@@ -110,13 +98,11 @@ def kda_input_projection_call(raw):
         intervals = sorted((offsets[w["name"]], offsets[w["name"]] + w["nbytes"]) for w in workspaces)
         if intervals[0][1] > intervals[1][0]:
             raise CodegenError("Local KDA WGMMA weight and activation live simultaneously.")
-        resources = {
-            "local_shared_bytes": cursor, "local_shared_alignment": max(w["alignment_bytes"] for w in workspaces),
-            "local_weight_offset": offsets["weight"], "local_activation_offset": offsets["activation"]
-        }
+        resources = {"local_shared_bytes": cursor,
+                     "local_shared_alignment": max(w["alignment_bytes"] for w in workspaces),
+                     "local_weight_offset": offsets["weight"],
+                     "local_activation_offset": offsets["activation"]}
         requests = tuple(device_descriptor_request(request, workspaces) for request in requests)
-    return {
-        **resources, "source": f"({_pointer(x)} + ({origin(x)}))", "reduction": reduction, "block_k": reduction_tile,
-        "tile_n": tile, "fields": tuple(fields), "tasks": start, "host_tensor_descriptor_requests":
-        tuple(requests) if tma else ()
-    }
+    return {**resources, "source": f"({_pointer(x)} + ({origin(x)}))", "reduction": reduction,
+            "block_k": reduction_tile, "tile_n": tile, "fields": tuple(fields), "tasks": start,
+            "host_tensor_descriptor_requests": tuple(requests) if tma else ()}

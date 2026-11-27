@@ -32,9 +32,13 @@ class PipelineStage(TIRStmt):
         if not isinstance(self.stage_id, str) or not self.stage_id.strip():
             raise IRSchemaError("Pipeline stage ID must not be empty.")
         if not isinstance(self.operation, (KernelDispatch, PrimFunctionCall, KernelInvoke)):
-            raise IRSchemaError("PipelineStage requires a KernelDispatch or PrimFunctionCall.")
-        if self.source_readiness is not None and (not isinstance(self.source_readiness, PipelineReadiness)
-                                                  or not isinstance(self.operation, PrimFunctionCall)):
+            raise IRSchemaError(
+                "PipelineStage requires a KernelDispatch or PrimFunctionCall."
+            )
+        if self.source_readiness is not None and (
+            not isinstance(self.source_readiness, PipelineReadiness)
+            or not isinstance(self.operation, PrimFunctionCall)
+        ):
             raise IRSchemaError("Imported source readiness requires a typed execution-function call.")
 
 

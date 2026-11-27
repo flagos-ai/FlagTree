@@ -14,28 +14,24 @@ from python.test.flagmega.passes.tir.bufferize.test_call_result_alias_groups imp
 
 
 def compile_alias_results(*, program_dag, view_first):
-
     class Target(NvidiaSm90Target):
-
         def propose_tir(self, module):
             module = super().propose_tir(module)
             if not program_dag:
                 return module
             programs = tuple(
-                dict(symbol=name, calls=(call, ), num_warps=4, depends_on=dependencies)
+                dict(symbol=name, calls=(call,), num_warps=4, depends_on=dependencies)
                 for name, call, dependencies in (
-                    ("first", "call0", ()),
-                    ("second", "call1", ("first", )),
-                    ("sum", "output", ("second", )),
-                ))
+                    ("first", "call0", ()), ("second", "call1", ("first",)),
+                    ("sum", "output", ("second",)),
+                )
+            )
             return replace(module, metadata={**module.metadata, "kernel_program_partition": programs})
 
     compiler = Compiler()
     compiler.target = Target()
     return compiler.compile(result_alias_graph(
-        dialect="ntt",
-        stage="frozen_constants",
-        view_first=view_first,
+        dialect="ntt", stage="frozen_constants", view_first=view_first,
     )).module
 
 
@@ -48,7 +44,7 @@ def test_device_returned_view_reads_the_produced_tuple_leaf(tmp_path, program_da
     module = compile_alias_results(program_dag=program_dag, view_first=view_first)
     runtime = load(write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True),
                    device="cuda:0")
-    guard = torch.full((48, ), -123., dtype=torch.float32, device="cuda")
+    guard = torch.full((48,), -123., dtype=torch.float32, device="cuda")
     output = guard[16:-16].reshape(2, 8)
     values = [torch.zeros_like(output) for _ in range(2)]
     generator = torch.Generator(device="cuda").manual_seed(857)
@@ -63,7 +59,7 @@ def test_device_returned_view_reads_the_produced_tuple_leaf(tmp_path, program_da
         runtime.prepare(*values, output=output)
         reports = runtime.resource_report
         if isinstance(reports, dict):
-            reports = (reports, )
+            reports = (reports,)
         assert all(r["spill_bytes"] == 0 for r in reports)
         if program_dag:
             assert runtime._prepared[0].compiled_kernel is runtime._prepared[1].compiled_kernel

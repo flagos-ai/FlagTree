@@ -1,0 +1,62 @@
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "norm_apply" and call.variant == "local" %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    const float norm_apply_inner_count = {{ call.normalization_size }}.0f;
+{{ entry.strided_loop("norm_apply_local_offsets", call.local_capacity) }} {
+        if (!({{ call.active | cppexpr }})) {
+            continue;
+        }
+        auto *const ftt_stats = {{ call.stats | cppexpr }};
+{% if call.use_mean %}
+        const float norm_apply_mean =
+            ftt::to_float(ftt_stats[{{ call.stats_sum_offset | cppexpr }}])
+            / norm_apply_inner_count;
+{% else %}
+        const float norm_apply_mean = 0.0f;
+{% endif %}
+        float norm_apply_variance =
+            ftt::to_float(ftt_stats[{{ call.stats_square_sum_offset | cppexpr }}])
+            / norm_apply_inner_count;
+{% if call.use_mean %}
+        norm_apply_variance -= norm_apply_mean * norm_apply_mean;
+{% endif %}
+        norm_apply_variance = ftt::max(norm_apply_variance, 0.0f);
+        const float norm_apply_inverse_std =
+            ftt::rsqrt(norm_apply_variance + {{ call.epsilon }}f);
+        auto *const ftt_source = {{ call.source | cppexpr }};
+        auto *const ftt_scale = {{ call.scale | cppexpr }};
+        auto *const ftt_bias = {{ call.bias | cppexpr }};
+        const float norm_apply_value =
+            ftt::to_float(ftt_source[{{ call.source_offset | cppexpr }}]);
+        const float norm_apply_scale =
+            ftt::to_float(ftt_scale[{{ call.scale_offset | cppexpr }}]);
+        const float norm_apply_bias =
+            ftt::to_float(ftt_bias[{{ call.bias_offset | cppexpr }}]);
+        float norm_apply_normalized =
+            (norm_apply_value - norm_apply_mean) * norm_apply_inverse_std;
+{% if call.round_before_scale %}
+{# The Triton form round-trips through the input dtype before scaling, which
+   is a numerically visible step, not a formality: it is how this kernel
+   matches the reference implementation's rounding. #}
+        norm_apply_normalized = ftt::to_float(
+            ftt::store_as(ftt_source, norm_apply_normalized));
+{% endif %}
+        const float norm_apply_output =
+            norm_apply_normalized * norm_apply_scale + norm_apply_bias;
+        if ({{ call.writer_active | cppexpr }}) {
+            auto *const ftt_result = {{ call.result | cppexpr }};
+{# Two conversions, as in the Triton form: the computation is rounded to the
+   input dtype first, then stored in the output dtype. #}
+            ftt_result[{{ call.result_offset | cppexpr }}] = ftt::store_as(
+                ftt_result,
+                ftt::to_float(ftt::store_as(ftt_source, norm_apply_output)));
+        }
+    }
+}
+
+
+{% endif %}
+{% endfor %}

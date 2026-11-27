@@ -9,9 +9,7 @@ from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 
 
 def test_pack_unpack_boundaries_are_eliminated_between_vectorized_ops():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
@@ -20,7 +18,7 @@ def test_pack_unpack_boundaries_are_eliminated_between_vectorized_ops():
             rhs = self.input("rhs", fm.tensor_type("bfloat16", (1, 16)), id="rhs")
             added = fm.F.math.add(lhs, rhs, name="added")
             output = fm.F.math.silu(added, name="output")
-            self.function("main", (lhs, rhs), (output, ))
+            self.function("main", (lhs, rhs), (output,))
 
     module = Graph().build()
     vectorized = Compiler().compile(module, stop_after="apply-vectorization").module
@@ -37,11 +35,19 @@ def test_pack_unpack_boundaries_are_eliminated_between_vectorized_ops():
     )
 
     lowered = Compiler().compile(module).module
-    calls = [node for node in lowered.nodes if fm.kernel_dispatch_for_call(lowered, node) is not None]
+    calls = [
+        node
+        for node in lowered.nodes
+        if fm.kernel_dispatch_for_call(lowered, node) is not None
+    ]
     kernels = [fm.kernel_dispatch_for_call(lowered, node) for node in calls]
-    compute_pairs = [(call, kernel)
-                     for call, kernel in zip(calls, kernels)
-                     if kernel.semantic_op in {"math.vectorized_binary", "math.vectorized_unary"}]
+    compute_pairs = [
+        (call, kernel)
+        for call, kernel in zip(calls, kernels)
+        if kernel.semantic_op in {
+            "math.vectorized_binary", "math.vectorized_unary"
+        }
+    ]
     calls = [call for call, _ in compute_pairs]
     kernels = [kernel for _, kernel in compute_pairs]
     assert [node.semantic_op for node in kernels] == ["math.vectorized_binary"]
@@ -50,4 +56,4 @@ def test_pack_unpack_boundaries_are_eliminated_between_vectorized_ops():
     # the add before evaluating SiLU; no bridge or duplicate add is required.
     post = kernels[0].semantic_attrs['post_ops'][0]
     assert post.nodes[-1].op == 'math.vectorized_unary'
-    assert post.input_type.tensor.dtype == fm.vector_type('bfloat16', (8, ))
+    assert post.input_type.tensor.dtype == fm.vector_type('bfloat16', (8,))

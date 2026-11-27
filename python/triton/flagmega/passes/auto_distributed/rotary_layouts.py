@@ -27,13 +27,7 @@ def rotary_dimension_splits(context, tensor, axis, mesh_axes, rotary_dim):
     groups = (extent.fixed_value + physical_rotary - 1) // physical_rotary
     grouped = replace(tensor, shape=(*tensor.shape[:axis], dim(groups), *tensor.shape[axis + 1:]))
     group_context = DistributedSplitCandidateContext(
-        grouped,
-        axis,
-        context.placement,
-        mesh_axes,
-        (groups + owners - 1) // owners,
-        groups,
-        "output",
+        grouped, axis, context.placement, mesh_axes, (groups + owners - 1) // owners, groups, "output",
     )
     for split in context.split_candidate_provider.get_candidates(group_context):
         scaled = scale_split_units(split, physical_rotary, 1)
@@ -66,10 +60,8 @@ def rotary_dimension_splits(context, tensor, axis, mesh_axes, rotary_dim):
 def coupled_rotary_layouts(context, tensors, head_axis, dim_axis, rotary_dim):
     """Avoid a Cartesian product of unrelated Q/K/V dimension assignments."""
     for head_axes, dim_axes in _mesh_assignments(context):
-        fields = [
-            tuple(_layout_options(context, tensor, head_axis, dim_axis, rotary_dim, head_axes, dim_axes))
-            for tensor in tensors
-        ]
+        fields = [tuple(_layout_options(context, tensor, head_axis, dim_axis, rotary_dim, head_axes, dim_axes))
+                  for tensor in tensors]
         for query in fields[0]:
             for key in fields[1]:
                 for value in fields[2]:
@@ -84,8 +76,8 @@ def rotary_layouts(context, tensor, head_axis, dim_axis, rotary_dim):
 
 def _mesh_assignments(context):
     mesh = tuple(index for index, count in enumerate(context.placement.hierarchy) if count > 1)
-    assignments = [((), (axis, )) for axis in mesh]
-    assignments.extend(((head, ), (dimension, )) for head, dimension in permutations(mesh, 2))
+    assignments = [((), (axis,)) for axis in mesh]
+    assignments.extend(((head,), (dimension,)) for head, dimension in permutations(mesh, 2))
     if len(mesh) > 1:
         assignments.extend(((), axes) for axes in (mesh, tuple(reversed(mesh))))
     return assignments
@@ -93,7 +85,7 @@ def _mesh_assignments(context):
 
 def _layout_options(context, tensor, head_axis, dim_axis, rotary_dim, head_axes, dim_axes):
     heads = context.split_candidates(tensor, head_axis, head_axes, purpose="output") if head_axes else ()
-    heads = heads or (SBP.broadcast(), )
+    heads = heads or (SBP.broadcast(),)
     dims = rotary_dimension_splits(context, tensor, dim_axis, dim_axes, rotary_dim)
     for head, dimension in product(heads, dims):
         policies = [SBP.broadcast()] * tensor.rank

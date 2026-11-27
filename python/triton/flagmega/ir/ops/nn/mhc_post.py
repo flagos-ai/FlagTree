@@ -33,7 +33,8 @@ from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import DType, VectorType
 
 
-@op_definition("nn.mhc_post", namespace="nn", functional_name="mhc_post", display_name="NN.MhcPost")
+@op_definition("nn.mhc_post", namespace="nn", functional_name="mhc_post",
+               display_name="NN.MhcPost")
 class MhcPost(OpDefinition):
     """Mix residual streams and add the sublayer result's per-stream share.
 
@@ -77,19 +78,15 @@ class MhcPost(OpDefinition):
                     raise IRSchemaError(f"MhcPost {name} must be float16, bfloat16 or float32.")
                 attrs[name] = dtype.value
         if not isinstance(attrs["accumulation_mode"], str) or attrs["accumulation_mode"] not in {
-                "residual_then_value", "value_fma_first"
-        }:
+                "residual_then_value", "value_fma_first"}:
             raise IRSchemaError("MhcPost accumulation_mode must be residual_then_value or value_fma_first.")
         return attrs
 
     @classmethod
     def ir_attrs(cls, attrs: Mapping[str, object]) -> Mapping[str, object]:
-        return {
-            key: value
-            for key, value in attrs.items()
-            if (key not in {"output_dtype", "residual_input_dtype"} or value is not None) and (
-                key != "accumulation_mode" or value != "residual_then_value")
-        }
+        return {key: value for key, value in attrs.items()
+                if (key not in {"output_dtype", "residual_input_dtype"} or value is not None)
+                and (key != "accumulation_mode" or value != "residual_then_value")}
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -143,7 +140,8 @@ class MhcPost(OpDefinition):
             else:
                 output = post.unsqueeze(-1) * value.unsqueeze(-2)
             for source in range(1, residual.shape[-2]):
-                output = context.torch.addcmul(output, comb[:, source, :, None], residual[:, source, None, :].float())
+                output = context.torch.addcmul(output, comb[:, source, :, None],
+                                               residual[:, source, None, :].float())
         else:
             mixed = context.torch.einsum("tij,tih->tjh", comb, residual.float())
             output = mixed + post.unsqueeze(-1) * value.unsqueeze(-2)

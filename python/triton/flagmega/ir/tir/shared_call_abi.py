@@ -19,8 +19,7 @@ def verify_shared_call_abi(call, formals, *, stage, leaf, maximum_bytes=None):
     def fail(message):
         raise IRVerificationError(
             f"Execution call {call.call_id!r} Shared {message}",
-            stage=stage,
-            node_id=call.call_id,
+            stage=stage, node_id=call.call_id,
         )
 
     if len(formals) != len(actuals):
@@ -46,7 +45,8 @@ def verify_shared_call_abi(call, formals, *, stage, leaf, maximum_bytes=None):
         # Preserve the formal view's proven alignment, not a guessed arena floor.
         required_alignment = gcd(formal.mem_span.buffer.alignment, relative)
         physical_alignment = actual.mem_span.buffer.alignment
-        if (physical_start % physical_alignment or physical_alignment < required_alignment
+        if (physical_start % physical_alignment
+                or physical_alignment < required_alignment
                 or actual_start % required_alignment):
             fail(f"payload {actual.name!r} violates its allocation/formal alignment.")
         if maximum_bytes is not None and actual_end > maximum_bytes:

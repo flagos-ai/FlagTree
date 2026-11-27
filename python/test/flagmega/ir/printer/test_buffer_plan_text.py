@@ -1,5 +1,3 @@
-# Copyright 2026 FlagOS Contributors
-# SPDX-License-Identifier: MIT
 from triton.flagmega.compiler import Compiler
 from triton.flagmega import ir as fm
 from triton.flagmega.ir.printer import script_source

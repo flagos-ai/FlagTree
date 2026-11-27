@@ -15,7 +15,7 @@ def _context(*, use_pyntt: bool) -> DistributedCandidateContext:
         module,
         node,
         fm.Placement((8, 16), "yx", "bb"),
-        tuple((module.node_map[input_id].type, ) for input_id in node.inputs),
+        tuple((module.node_map[input_id].type,) for input_id in node.inputs),
     )
     if use_pyntt:
         return DistributedCandidateContext(
@@ -36,7 +36,7 @@ def test_pyntt_split_provider_retains_ragged_block_cyclic_full_mesh_policy():
         purpose="output",
     )
 
-    assert candidates == (fm.SBP.split_block_cyclic((0, 1), 1), )
+    assert candidates == (fm.SBP.split_block_cyclic((0, 1), 1),)
 
 
 def test_portable_split_provider_rejects_non_divisible_contiguous_policy():

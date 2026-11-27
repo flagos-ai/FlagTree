@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Hierarchical, flag-controlled compiler dumps inspired by reference.
+"""Hierarchical, flag-controlled compiler dumps inspired by nncase.
 
 Python checkpoints are the authoritative editable representation.  Every IR
 dump also gets the dialect-appropriate compact ``.il`` or ``.script`` view.
@@ -36,7 +36,7 @@ from triton.flagmega.ir import (
 
 
 class DumpFlags(IntFlag):
-    """Categories compatible with the reference dump flag model."""
+    """Categories compatible with the nncase dump flag model."""
 
     NONE = 0
     IMPORT_OPS = 1 << 1
@@ -50,7 +50,7 @@ class DumpFlags(IntFlag):
     SCHEDULE = 1 << 9
     CODEGEN = 1 << 10
 
-    # Familiar spellings for code ported from reference.Diagnostics.DumpFlags.
+    # Familiar spellings for code ported from Nncase.Diagnostics.DumpFlags.
     Nothing = NONE
     ImportOps = IMPORT_OPS
     PassIR = PASS_IR
@@ -216,7 +216,9 @@ class DumpManager:
         # module object two or three times. Keep a bounded render cache so the
         # files remain independent while verification and Python/IL rendering
         # are performed only once per function view.
-        self._render_cache: OrderedDict[tuple[int, str, bool], _RenderedFunctionDump] = OrderedDict()
+        self._render_cache: OrderedDict[
+            tuple[int, str, bool], _RenderedFunctionDump
+        ] = OrderedDict()
         self._weight_analysis: WeightPrintAnalysis | None = None
         if self.directory is not None and self.flags != DumpFlags.NONE:
             self.directory.mkdir(parents=True, exist_ok=True)
@@ -239,8 +241,9 @@ class DumpManager:
             return
         destination = self.directory / "dumps.json"
         destination.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=destination.parent, delete=False,
-                                         prefix=f".{destination.name}.") as stream:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=destination.parent, delete=False, prefix=f".{destination.name}."
+        ) as stream:
             json.dump([item.to_data() for item in self._records], stream, indent=2, sort_keys=True)
             stream.write("\n")
             temporary = Path(stream.name)
@@ -291,8 +294,12 @@ class DumpManager:
                     function_count=len(module.functions),
                     module_semantic_hash=module.semantic_hash,
                     node_order=tuple(node.id for node in module.nodes),
-                    selection_point_order=tuple(point.id for point in module.selection_points),
-                    selection_order=tuple(record.point_id for record in module.selections),
+                    selection_point_order=tuple(
+                        point.id for point in module.selection_points
+                    ),
+                    selection_order=tuple(
+                        record.point_id for record in module.selections
+                    ),
                 ),
             ),
             companion=text_source(view, weight_analysis=self._weight_analysis),
@@ -328,7 +335,7 @@ class Dumper:
         child_flags = self.flags if flags is None else self.flags & DumpFlags(flags)
         return Dumper(self.manager, self.relative_directory / relative, child_flags)
 
-    # Alias the corrected Python spelling and the historical reference spelling.
+    # Alias the corrected Python spelling and the historical nncase spelling.
     create_sub_dummper = create_sub_dumper
 
     def dump_module(
@@ -345,24 +352,27 @@ class Dumper:
         root = self.manager.directory
         assert root is not None
         for function_index, function in enumerate(module.functions):
-            rendered = self.manager._render_function(module, function.name, function_index)
+            rendered = self.manager._render_function(
+                module, function.name, function_index
+            )
             path = directory / f"{_file_name(function.name)}.py"
             _atomic_text(path, rendered.source)
             companion = path.with_suffix(rendered.suffix)
             _atomic_text(companion, rendered.companion)
-            function_dump = FunctionDump(function.name, path, companion, rendered.semantic_hash)
+            function_dump = FunctionDump(
+                function.name, path, companion, rendered.semantic_hash
+            )
             function_dumps.append(function_dump)
-            self.manager._record(
-                DumpRecord(
-                    category=_flag_name(category),
-                    function=function.name,
-                    relative_path=path.relative_to(root).as_posix(),
-                    companion_path=companion.relative_to(root).as_posix(),
-                    dialect=module.dialect,
-                    stage=module.stage,
-                    semantic_hash=rendered.semantic_hash,
-                    module_semantic_hash=module.semantic_hash,
-                ))
+            self.manager._record(DumpRecord(
+                category=_flag_name(category),
+                function=function.name,
+                relative_path=path.relative_to(root).as_posix(),
+                companion_path=companion.relative_to(root).as_posix(),
+                dialect=module.dialect,
+                stage=module.stage,
+                semantic_hash=rendered.semantic_hash,
+                module_semantic_hash=module.semantic_hash,
+            ))
         return ModuleDump(directory, tuple(function_dumps))
 
     def open_file(self, relative_path: str | Path, mode: str = "w", **kwargs: object) -> IO[object]:
@@ -387,8 +397,10 @@ class Dumper:
         """Write and checksum one flag-gated non-IR diagnostic artifact."""
 
         if not self.is_enabled(category):
-            raise RuntimeError(f"Diagnostic producer {producer!r} tried to write disabled category "
-                               f"{_flag_name(category)!r}.")
+            raise RuntimeError(
+                f"Diagnostic producer {producer!r} tried to write disabled category "
+                f"{_flag_name(category)!r}."
+            )
         if not kind or not producer:
             raise ValueError("Diagnostic artifacts require non-empty kind and producer.")
         relative = _safe_relative(relative_path)
@@ -401,23 +413,22 @@ class Dumper:
         root = self.manager.directory
         assert root is not None
         payload = path.read_bytes()
-        self.manager._record_artifact(
-            ArtifactRecord(
-                category=_flag_name(category),
-                kind=kind,
-                producer=producer,
-                relative_path=path.relative_to(root).as_posix(),
-                size=len(payload),
-                sha256=hashlib.sha256(payload).hexdigest(),
-                source_semantic_hash=source_semantic_hash,
-            ))
+        self.manager._record_artifact(ArtifactRecord(
+            category=_flag_name(category),
+            kind=kind,
+            producer=producer,
+            relative_path=path.relative_to(root).as_posix(),
+            size=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(),
+            source_semantic_hash=source_semantic_hash,
+        ))
 
 
 _CURRENT_DUMPER: ContextVar[Dumper | None] = ContextVar("flagmega_current_dumper", default=None)
 
 
 class DumpScope(AbstractContextManager[Dumper]):
-    """Context-local hierarchical dumper, using DumpScope model."""
+    """Context-local hierarchical dumper, matching nncase's DumpScope model."""
 
     def __init__(
         self,
@@ -425,8 +436,11 @@ class DumpScope(AbstractContextManager[Dumper]):
         flags: DumpFlags | None = None,
     ) -> None:
         current = self.current()
-        self.dumper = (dumper_or_subdirectory if isinstance(dumper_or_subdirectory, Dumper) else
-                       current.create_sub_dumper(dumper_or_subdirectory, flags))
+        self.dumper = (
+            dumper_or_subdirectory
+            if isinstance(dumper_or_subdirectory, Dumper)
+            else current.create_sub_dumper(dumper_or_subdirectory, flags)
+        )
         self._token = None
 
     @staticmethod
@@ -467,7 +481,9 @@ def _file_name(name: str) -> str:
 
 def _atomic_text(destination: Path, source: str) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
+    )
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
             stream.write(source)
@@ -485,11 +501,8 @@ def _atomic_text(destination: Path, source: str) -> None:
 def _atomic_json(destination: Path, value: object) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=destination.parent,
-            delete=False,
-            prefix=f".{destination.name}.",
+        "w", encoding="utf-8", dir=destination.parent, delete=False,
+        prefix=f".{destination.name}.",
     ) as stream:
         json.dump(value, stream, indent=2, sort_keys=True)
         stream.write("\n")

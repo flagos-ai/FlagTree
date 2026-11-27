@@ -46,7 +46,7 @@ class BufferView(OpDefinition):
     """
 
     value = input_parameter(is_ir_type())
-    byte_preserving_input_parameters = (value, )
+    byte_preserving_input_parameters = (value,)
     new_type = attribute_parameter(positional=True)
     alias_kind = attribute_parameter()
 
@@ -57,8 +57,10 @@ class BufferView(OpDefinition):
             raise IRSchemaError("F.tir.buffer_view new_type must be an IRType.")
         alias_kind = str(cls.alias_kind.read((), attrs))
         if alias_kind not in {"sharded_view", "vector_reinterpret", "reshape"}:
-            raise IRSchemaError("F.tir.buffer_view alias_kind must be 'sharded_view' or "
-                                "a byte-preserving representation view.")
+            raise IRSchemaError(
+                "F.tir.buffer_view alias_kind must be 'sharded_view' or "
+                "a byte-preserving representation view."
+            )
         return {"new_type": cls.new_type.read((), attrs), "alias_kind": alias_kind}
 
     @classmethod
@@ -71,7 +73,9 @@ class BufferView(OpDefinition):
         else:
             valid = _same_physical_tensor_extent(source, target)
         if not valid:
-            raise IRSchemaError(f"T.BufferView {alias_kind!r} cannot alias {source!r} as {target!r}.")
+            raise IRSchemaError(
+                f"T.BufferView {alias_kind!r} cannot alias {source!r} as {target!r}."
+            )
         return target
 
     @classmethod
@@ -85,9 +89,12 @@ class BufferView(OpDefinition):
     @classmethod
     def verify(cls, node: Node, module: IRModule) -> None:
         cls.verify_arity(node)
-        if set(node.attrs) != {"alias_kind"
-                               } or node.attrs["alias_kind"] not in {"sharded_view", "vector_reinterpret", "reshape"}:
-            raise IRVerificationError("tir.buffer_view requires a reviewed alias_kind.", node_id=node.id)
+        if set(node.attrs) != {"alias_kind"} or node.attrs["alias_kind"] not in {
+            "sharded_view", "vector_reinterpret", "reshape"
+        }:
+            raise IRVerificationError(
+                "tir.buffer_view requires a reviewed alias_kind.", node_id=node.id
+            )
         source = module.node_map[node.inputs[0]].type
         if node.attrs["alias_kind"] == "sharded_view":
             valid = logical_type(source) == logical_type(node.type)
@@ -129,10 +136,8 @@ def _same_physical_tensor_extent(lhs: IRType, rhs: IRType) -> bool:
         if lhs.placement != rhs.placement:
             return False
         if not _same_extent(
-                local_shape(lhs),
-                lhs_tensor.dtype.itemsize,
-                local_shape(rhs),
-                rhs_tensor.dtype.itemsize,
+            local_shape(lhs), lhs_tensor.dtype.itemsize,
+            local_shape(rhs), rhs_tensor.dtype.itemsize,
         ):
             return False
     return _same_extent(

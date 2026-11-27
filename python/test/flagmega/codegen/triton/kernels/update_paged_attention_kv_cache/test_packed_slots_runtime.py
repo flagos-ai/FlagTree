@@ -15,31 +15,29 @@ def cache_update_module(config, packed, layout, split_heads, advance, tokens=1, 
     placement = placement or fm.Placement((2, 2), "yx", "bb")
 
     class Update(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="distributed", entry="main",
                              metadata={"auto_distribution": {"placement": placement.to_data()}})
 
         def forward(self):
-            extents = {
-                "seq": tokens, "head": config.num_kv_heads, "dim": config.head_dim // (config.lanes if packed else 1)
-            }
-            dtype = fm.vector_type("bfloat16", (config.lanes, )) if packed else fm.DType.BFLOAT16
+            extents = {"seq": tokens, "head": config.num_kv_heads,
+                       "dim": config.head_dim // (config.lanes if packed else 1)}
+            dtype = fm.vector_type("bfloat16", (config.lanes,)) if packed else fm.DType.BFLOAT16
             tensor = fm.tensor_type(dtype, tuple(extents[axis] for axis in layout))
             policies = [fm.SBP.broadcast()] * 3
             if split_heads:
-                policies[layout.index("head")] = fm.SBP.split(
-                    fm.SplitStage((placement.hierarchy_levels.index("b"), ), fm.ContiguousSplit()))
+                policies[layout.index("head")] = fm.SBP.split(fm.SplitStage(
+                    (placement.hierarchy_levels.index("b"),), fm.ContiguousSplit()))
             value = self.input("slots", tensor)
             slots = fm.F.distributed.boxing(value, fm.DistributedType(tensor, tuple(policies), placement))
             state = self.input("state", config.ref_type)
             layer = fm.F.builtin.scalar_const(fm.tensor_type("int32", ()), 1)
             increment = fm.F.builtin.scalar_const(fm.tensor_type("bool", ()), advance)
-            updated = fm.F.nn.update_paged_attention_kv_cache(slots, state, layer, increment, cache_kind="value",
-                                                              layout=layout)
+            updated = fm.F.nn.update_paged_attention_kv_cache(
+                slots, state, layer, increment, cache_kind="value", layout=layout)
             # Aggregate output intentionally selects the general flattened ABI.
             result = fm.F.builtin.tuple(updated)
-            self.function("main", (value, state), (result, ))
+            self.function("main", (value, state), (result,))
 
     return Update().build()
 

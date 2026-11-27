@@ -84,20 +84,18 @@ class ForLoop(OpDefinition):
         expected = tuple(module.node_map[value].type for value in region.parameters)
         actual = (TensorType(DType.INT64, ()), *(value.type for value in inputs[3:]))
         if actual != expected or cls.infer_type(inputs, node.attrs) != node.type:
-            raise IRVerificationError("For capture/iter argument types differ from the body signature.",
-                                      node_id=node.id)
+            raise IRVerificationError("For capture/iter argument types differ from the body signature.", node_id=node.id)
         if node.effect != region_effect(module, region):
             raise IRVerificationError("For effect differs from its body Region.", node_id=node.id)
 
     @classmethod
     def python_call(cls, node):
         count = node.attrs["iter_count"]
-        return PythonCall(
-            "F.control.for_loop", tuple(NodeRef(value) for value in node.inputs[:3 + count]), {
-                "body": node.attrs["callee"], "captures": tuple(NodeRef(value) for value in node.inputs[3 + count:]),
-                "effect_kind": node.effect.kind.value, "effect_resource": node.effect.resource, "name": node.id,
-                **({"metadata": node.metadata} if node.metadata else {})
-            })
+        return PythonCall("F.control.for_loop", tuple(NodeRef(value) for value in node.inputs[:3 + count]),
+                          {"body": node.attrs["callee"],
+                           "captures": tuple(NodeRef(value) for value in node.inputs[3 + count:]),
+                           "effect_kind": node.effect.kind.value, "effect_resource": node.effect.resource,
+                           "name": node.id, **({"metadata": node.metadata} if node.metadata else {})})
 
 
 def static_trip_count(node, module):

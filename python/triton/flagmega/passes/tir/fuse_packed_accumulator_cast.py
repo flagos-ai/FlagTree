@@ -26,8 +26,8 @@ def fuse_packed_accumulator_casts(module, *, predicate=None):
     return DataflowPass(
         "FusePackedAccumulatorCast",
         (
-            *pre_post_ops_rules(("ntt.packed_matmul", ), supported),
-            *post_ops_through_view_rules(("ntt.packed_matmul", ), supported, views=("distributed.sharded_view", )),
+            *pre_post_ops_rules(("ntt.packed_matmul",), supported),
+            *post_ops_through_view_rules(("ntt.packed_matmul",), supported, views=("distributed.sharded_view",)),
         ),
         rewrite_constants=False,
     ).run(module)

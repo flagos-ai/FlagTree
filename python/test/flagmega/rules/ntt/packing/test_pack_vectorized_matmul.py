@@ -10,9 +10,7 @@ from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 
 
 def _module(output_data_type=None):
-
     class Projection(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
@@ -26,7 +24,7 @@ def _module(output_data_type=None):
                 id="rhs",
             )
             output = fm.F.math.matmul(lhs, rhs, output_data_type=output_data_type, name="output")
-            self.function("main", (lhs, ), (output, ))
+            self.function("main", (lhs,), (output,))
 
     return Projection().build()
 
@@ -39,12 +37,14 @@ def test_auto_packing_matches_vectorized_owner_and_keeps_stable_root_selection_i
     assert compute.op == "math.vectorized_matmul"
     assert point.owner == compute.id
     assert point.default_candidate == "packing.k_major_n8_k16"
-    assert next(candidate for candidate in point.candidates
-                if candidate.id == point.default_candidate).facts["preserves_vectorized_result"]
+    assert next(
+        candidate for candidate in point.candidates
+        if candidate.id == point.default_candidate
+    ).facts["preserves_vectorized_result"]
 
 
 @pytest.mark.parametrize("output_data_type", [None, "float32"])
-def test_k_major_rule_rewrites_exact_reference_recipe_and_preserves_vector_result(output_data_type):
+def test_k_major_rule_rewrites_exact_nncase_recipe_and_preserves_vector_result(output_data_type):
     original = _module(output_data_type)
     vectorized = Compiler().compile(original, stop_after="apply-vectorization").module
     packed = Compiler().compile(original, stop_after="apply-packing").module
@@ -55,8 +55,13 @@ def test_k_major_rule_rewrites_exact_reference_recipe_and_preserves_vector_resul
     assert compute.type == vectorized.node_map[compute.id].type
     assert isinstance(fm.logical_type(compute.type), fm.TensorType)
     packed_rhs = packed.node_map[compute.inputs[1]]
-    assert packed_rhs.type == fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8, 2, 8)), (4, 16))
-    assert [node.op for node in packed.nodes if node.id.startswith("output.vectorized.compute.rhs_k_major.")] == [
+    assert packed_rhs.type == fm.tensor_type(
+        fm.VectorType(fm.DType.BFLOAT16, (8, 2, 8)), (4, 16)
+    )
+    assert [
+        node.op for node in packed.nodes
+        if node.id.startswith("output.vectorized.compute.rhs_k_major.")
+    ] == [
         "tensors.unpack",
         "tensors.pack",
         "tensors.pack",

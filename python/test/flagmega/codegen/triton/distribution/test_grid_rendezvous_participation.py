@@ -27,16 +27,20 @@ def test_internal_grid_rendezvous_retains_every_block_in_selected_chips(barriers
     rank = len(levels)
     raw = {
         "facts": {"internal_grid_barriers": barriers},
-        "inputs": [{
-            "buffers": [{
-                "abi": {
-                    "distributed_type": {
-                        "placement": {"hierarchy": (4, ) * rank, "hierarchy_levels": levels},
-                        "exclusive": {"axes": axes, "owner_coordinates": (1, ) * len(axes)},
+        "inputs": [
+            {
+                "buffers": [
+                    {
+                        "abi": {
+                            "distributed_type": {
+                                "placement": {"hierarchy": (4,) * rank, "hierarchy_levels": levels},
+                                "exclusive": {"axes": axes, "owner_coordinates": (1,) * len(axes)},
+                            }
+                        }
                     }
-                }
-            }]
-        }],
+                ]
+            }
+        ],
     }
     actual = _exclusive_participation_active(raw)
     if barriers:
@@ -60,7 +64,6 @@ def _run_cache_pipeline(directory, schedule):
     config = PagedAttentionStateConfig(1, 1, 32)
 
     class Graph(fm.Module):
-
         def forward(self):
             kinds = {
                 "q": fm.tensor_type("bfloat16", (1, 2, 16)),
@@ -68,16 +71,15 @@ def _run_cache_pipeline(directory, schedule):
                 "w": fm.tensor_type("bfloat16", (64, 32)),
                 "topk": fm.tensor_type("int32", (1, 2)),
                 "state": config.ref_type,
-                "sentinel": fm.tensor_type("float32", (128, )),
+                "sentinel": fm.tensor_type("float32", (128,)),
             }
             raw = {name: self.input(name, kind, id=name) for name, kind in kinds.items()}
             values = {
-                name:
-                fm.F.distributed.force_boxing(
+                name: fm.F.distributed.force_boxing(
                     raw[name],
                     fm.DistributedType(
                         kinds[name],
-                        (fm.SBP.broadcast(), ) * kinds[name].rank,
+                        (fm.SBP.broadcast(),) * kinds[name].rank,
                         mesh,
                         exclusive=fm.SBP.exclusive((0, 1)) if name == "c" else None,
                     ),
@@ -87,11 +89,13 @@ def _run_cache_pipeline(directory, schedule):
             pair = fm.F.tensors.reshape(fm.F.tensors.concat(values["c"], values["c"], axis=1), (1, 1, 64))
             layer = fm.F.builtin.scalar_const(fm.tensor_type("int32", ()), 0)
             advance = fm.F.builtin.scalar_const(fm.tensor_type("bool", ()), True)
-            state = fm.F.nn.update_paged_attention_kv_cache_pair(pair, raw["state"], layer, advance,
-                                                                 layout=("seq", "head", "dim"))
+            state = fm.F.nn.update_paged_attention_kv_cache_pair(
+                pair, raw["state"], layer, advance, layout=("seq", "head", "dim")
+            )
             attrs = {"qk_head_dim": 16, "value_head_dim": 16, "latent_dim": 32}
-            ql = fm.F.nn.mla_projection(values["q"], values["w"], fm.F.builtin.none(), direction="absorb_query",
-                                        **attrs)
+            ql = fm.F.nn.mla_projection(
+                values["q"], values["w"], fm.F.builtin.none(), direction="absorb_query", **attrs
+            )
             latent = fm.F.nn.dsa_paged_attention(
                 ql,
                 values["topk"],
@@ -102,10 +106,11 @@ def _run_cache_pipeline(directory, schedule):
                 hidden_size=64,
                 probability_rounding="online_bf16",
             )
-            context = fm.F.nn.mla_projection(latent, values["w"], fm.F.builtin.none(), direction="expand_value",
-                                             **attrs)
+            context = fm.F.nn.mla_projection(
+                latent, values["w"], fm.F.builtin.none(), direction="expand_value", **attrs
+            )
             context = fm.F.distributed.force_boxing(context, fm.logical_type(context.type))
-            split = fm.DistributedType(kinds["sentinel"], (fm.SBP.split_contiguous((0, 1), 1), ), mesh)
+            split = fm.DistributedType(kinds["sentinel"], (fm.SBP.split_contiguous((0, 1), 1),), mesh)
             local = fm.F.distributed.force_boxing(raw["sentinel"], split)
             aux = fm.F.distributed.force_boxing(fm.F.math.add(local, local), kinds["sentinel"])
             self.function("main", tuple(raw.values()), (context, aux))
@@ -124,8 +129,11 @@ def _run_cache_pipeline(directory, schedule):
         catalog = replace(
             base,
             implementations=tuple(
-                replace(value, parameters={**value.parameters, "decode_schedule": schedule, "compute_num_warps": 8}
-                        ) if value.id == "tir.dsa_paged_attention.decode" else value for value in base.implementations),
+                replace(value, parameters={**value.parameters, "decode_schedule": schedule, "compute_num_warps": 8})
+                if value.id == "tir.dsa_paged_attention.decode"
+                else value
+                for value in base.implementations
+            ),
         )
         compiler.target = NvidiaSm90Target(triton_implementation_model=catalog)
     compiled = compiler.compile(source).module
@@ -151,7 +159,8 @@ def _run_cache_pipeline(directory, schedule):
                     ids,
                     (state.kv_caches, state.query_start_loc, state.seq_lens, state.slot_mapping, state.block_table),
                     strict=True,
-                ))
+                )
+            )
         else:
             buffers[ids[0]] = values[compiled.node_map[value].attrs["name"]]
     context = torch.empty((1, 2, 16), dtype=torch.bfloat16, device="cuda")
@@ -179,8 +188,7 @@ def test_exclusive_cache_update_rendezvous_then_latent_attention(tmp_path, sched
     require_nvidia_sm90()
     # Bound the child lifetime: the regression was a device barrier deadlock.
     result = subprocess.run(
-        [sys.executable, str(Path(__file__).resolve()),
-         str(tmp_path), schedule],
+        [sys.executable, str(Path(__file__).resolve()), str(tmp_path), schedule],
         env=dict(os.environ, OMP_NUM_THREADS="4", MKL_NUM_THREADS="4"),
         capture_output=True,
         text=True,

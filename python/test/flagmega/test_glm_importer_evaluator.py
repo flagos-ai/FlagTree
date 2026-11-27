@@ -74,7 +74,8 @@ def test_full_importer_builds_general_mhc_stream_contract():
 
 
 def test_full_importer_stacks_published_per_expert_weight_layout():
-    checkpoint = glm_helpers.checkpoint(REDUCED, with_values=False, full_model=True, expert_layout="separate")
+    checkpoint = glm_helpers.checkpoint(REDUCED, with_values=False, full_model=True,
+                                       expert_layout="separate")
     module = Glm5MoeModelImporter(checkpoint).import_module()
     assert module.metadata["num_hidden_layers"] == len(REDUCED["layer_types"])
 
@@ -111,13 +112,11 @@ def test_synthetic_glm_kda_evaluator_runs_with_published_weight_names():
     module = importer.import_module()
     text = glm_helpers.configuration(REDUCED)["text_config"]
     inputs = {
-        "input_ids":
-        torch.tensor([11], dtype=torch.int32),
-        "kda_conv_state":
-        torch.zeros(3, text["kda_num_heads"], text["kda_head_dim"], text["kda_conv_kernel_size"] - 1,
-                    dtype=torch.bfloat16),
-        "kda_recurrent_state":
-        torch.zeros(1, text["kda_num_heads"], text["kda_head_dim"], text["kda_head_dim"], dtype=torch.float32),
+        "input_ids": torch.tensor([11], dtype=torch.int32),
+        "kda_conv_state": torch.zeros(3, text["kda_num_heads"], text["kda_head_dim"],
+                                       text["kda_conv_kernel_size"] - 1, dtype=torch.bfloat16),
+        "kda_recurrent_state": torch.zeros(1, text["kda_num_heads"], text["kda_head_dim"],
+                                            text["kda_head_dim"], dtype=torch.float32),
     }
     outputs = TorchEvaluator(CheckpointWeightResolver(checkpoint)).run(module, inputs)
     assert outputs[0].shape == (1, text["vocab_size"])
@@ -129,15 +128,14 @@ def test_synthetic_glm_kda_evaluator_runs_with_published_weight_names():
 def test_glm_importer_rejects_native_fp8_weight_without_scale_contract():
     source = glm_helpers.checkpoint(REDUCED, with_values=False)
     infos = {
-        key:
-        TensorInfo(
+        key: TensorInfo(
             info.key,
             DType.FLOAT8_E4M3FN if key.endswith("mlp.gate.weight") else info.dtype,
             info.shape,
             info.source,
         )
         for key in source.keys
-        for info in (source.tensor_info(key), )
+        for info in (source.tensor_info(key),)
     }
     checkpoint = MemoryCheckpoint(source.config, infos)
     with pytest.raises(ImporterError, match="requires bfloat16"):
@@ -146,7 +144,8 @@ def test_glm_importer_rejects_native_fp8_weight_without_scale_contract():
 
 def test_full_importer_compiles_native_fp8_block_scaled_separate_experts():
     scale = dict(REDUCED, quantized=True, fp8_block_size=(4, 4))
-    checkpoint = glm_helpers.checkpoint(scale, with_values=False, full_model=True, expert_layout="separate")
+    checkpoint = glm_helpers.checkpoint(scale, with_values=False, full_model=True,
+                                        expert_layout="separate")
     module = Glm5MoeModelImporter(checkpoint).import_module()
     assert any(node.op == "math.block_scaled_matmul" for node in module.nodes)
     assert any(node.op == "nn.sparse_experts" for node in module.nodes)
@@ -165,20 +164,21 @@ def test_full_importer_evaluates_native_fp8_block_scaled_paths():
         "paged_attention_state": create_paged_attention_state(importer.paged_config),
     }
     for layer in importer.kda_layers:
-        _qkv = text["kda_num_heads"] * text["kda_head_dim"]
+        qkv = text["kda_num_heads"] * text["kda_head_dim"]
         inputs[f"kda_conv_state_{layer}"] = torch.zeros(
-            (3, text["kda_num_heads"], text["kda_head_dim"], text["kda_conv_kernel_size"] - 1), dtype=torch.bfloat16)
+            (3, text["kda_num_heads"], text["kda_head_dim"], text["kda_conv_kernel_size"] - 1),
+            dtype=torch.bfloat16)
         inputs[f"kda_recurrent_state_{layer}"] = torch.zeros(
             (1, text["kda_num_heads"], text["kda_head_dim"], text["kda_head_dim"]), dtype=torch.float32)
     outputs = TorchEvaluator(CheckpointWeightResolver(checkpoint)).run(module, inputs)
     assert outputs[0].shape == (1, text["vocab_size"])
-    assert outputs[1].shape == (1, )
+    assert outputs[1].shape == (1,)
 
 
 def test_full_importer_evaluates_stateful_dsa_indexer_and_sparse_attention():
     scale = dict(
         REDUCED,
-        indexer_types=("full", ) * len(REDUCED["layer_types"]),
+        indexer_types=("full",) * len(REDUCED["layer_types"]),
         index_topk=4,
         index_head_dim=4,
         index_n_heads=2,
@@ -196,11 +196,13 @@ def test_full_importer_evaluates_stateful_dsa_indexer_and_sparse_attention():
         "dsa_indexer_state": dsa_state,
     }
     for layer in importer.kda_layers:
-        _qkv = text["kda_num_heads"] * text["kda_head_dim"]
+        qkv = text["kda_num_heads"] * text["kda_head_dim"]
         inputs[f"kda_conv_state_{layer}"] = torch.zeros(
-            (3, text["kda_num_heads"], text["kda_head_dim"], text["kda_conv_kernel_size"] - 1), dtype=torch.bfloat16)
+            (3, text["kda_num_heads"], text["kda_head_dim"], text["kda_conv_kernel_size"] - 1),
+            dtype=torch.bfloat16)
         inputs[f"kda_recurrent_state_{layer}"] = torch.zeros(
-            (1, text["kda_num_heads"], text["kda_head_dim"], text["kda_head_dim"]), dtype=torch.float32)
+            (1, text["kda_num_heads"], text["kda_head_dim"], text["kda_head_dim"]),
+            dtype=torch.float32)
     outputs = TorchEvaluator(CheckpointWeightResolver(checkpoint)).run(module, inputs)
     assert outputs[0].shape == (1, text["vocab_size"])
     assert dsa_state.sequence_length == 1
@@ -215,8 +217,7 @@ def test_glm_importer_rejects_mla_cache_dimension_mismatch():
     config["text_config"]["v_head_dim"] += 1
     checkpoint = MemoryCheckpoint(
         config,
-        {key: source.tensor_info(key)
-         for key in source.keys},
+        {key: source.tensor_info(key) for key in source.keys},
     )
     with pytest.raises(ImporterError, match="equal MLA key and value head dimensions"):
         Glm5MoeImporter(checkpoint)
@@ -274,7 +275,8 @@ def test_synthetic_glm_executable_matches_reference(tmp_path):
     assert runtime.prepare_count == 1
     torch.testing.assert_close(logits.cpu(), reference_logits, **ARTIFACT_TOLERANCE)
     assert_greedy_token(logits.cpu(), reference_logits, token)
-    torch.testing.assert_close(runtime_state.kv_caches.cpu().float(), state.kv_caches.float(), **ARTIFACT_TOLERANCE)
+    torch.testing.assert_close(runtime_state.kv_caches.cpu().float(), state.kv_caches.float(),
+                               **ARTIFACT_TOLERANCE)
 
 
 @pytest.mark.cuda
@@ -285,16 +287,18 @@ def test_synthetic_glm_kda_layer_matches_reference(tmp_path):
     checkpoint = glm_helpers.checkpoint(REDUCED, kind="kda")
     imported = Glm5MoeImporter(checkpoint, layer=4).import_module()
     compiled = Compiler().compile(imported).module
-    artifact = write_artifact(compiled, tmp_path / "glm-kda-artifact", target="nvidia-sm90", checkpoint=checkpoint,
-                              emit_executable=True)
+    artifact = write_artifact(compiled, tmp_path / "glm-kda-artifact", target="nvidia-sm90",
+                              checkpoint=checkpoint, emit_executable=True)
 
     text = glm_helpers.configuration(REDUCED)["text_config"]
     input_ids = torch.tensor([11], dtype=torch.int32)
     conv = torch.zeros(3, text["kda_num_heads"], text["kda_head_dim"], text["kda_conv_kernel_size"] - 1,
                        dtype=torch.bfloat16)
-    recurrent = torch.zeros(1, text["kda_num_heads"], text["kda_head_dim"], text["kda_head_dim"], dtype=torch.float32)
-    reference_logits, _, reference_conv, reference_recurrent = TorchEvaluator(CheckpointWeightResolver(checkpoint)).run(
-        imported, {"input_ids": input_ids, "kda_conv_state": conv, "kda_recurrent_state": recurrent})
+    recurrent = torch.zeros(1, text["kda_num_heads"], text["kda_head_dim"], text["kda_head_dim"],
+                            dtype=torch.float32)
+    reference_logits, _, reference_conv, reference_recurrent = TorchEvaluator(
+        CheckpointWeightResolver(checkpoint)).run(imported, {"input_ids": input_ids, "kda_conv_state": conv,
+                                                             "kda_recurrent_state": recurrent})
 
     runtime = load(artifact, device="cuda:0")
     device_ids = input_ids.to("cuda:0")
@@ -329,14 +333,15 @@ def test_full_glm_import_covers_the_declared_layer_schedule():
         "paged_attention_state": create_paged_attention_state(importer.paged_config),
     }
     for layer in importer.kda_layers:
-        _qkv = text["kda_num_heads"] * text["kda_head_dim"]
+        qkv = text["kda_num_heads"] * text["kda_head_dim"]
         inputs[f"kda_conv_state_{layer}"] = torch.zeros(
-            (3, text["kda_num_heads"], text["kda_head_dim"], text["kda_conv_kernel_size"] - 1), dtype=torch.bfloat16)
+            (3, text["kda_num_heads"], text["kda_head_dim"], text["kda_conv_kernel_size"] - 1),
+            dtype=torch.bfloat16)
         inputs[f"kda_recurrent_state_{layer}"] = torch.zeros(
             (1, text["kda_num_heads"], text["kda_head_dim"], text["kda_head_dim"]), dtype=torch.float32)
     outputs = TorchEvaluator(CheckpointWeightResolver(checkpoint)).run(module, inputs)
     assert outputs[0].shape == (1, text["vocab_size"])
-    assert outputs[1].shape == (1, )
+    assert outputs[1].shape == (1,)
 
 
 def test_published_glm_contract_uses_real_dimensions():

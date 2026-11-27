@@ -15,15 +15,10 @@ from triton.flagmega.errors import IRVerificationError
 
 
 def _request():
-    return {
-        "storage":
-        "workspace", "resources": [
-            {
-                "name": "channel", "nbytes": 8448, "alignment": 256, "initialization": "zero", "programs":
-                ["first", "second"]
-            },
-        ]
-    }
+    return {"storage": "workspace", "resources": [
+        {"name": "channel", "nbytes": 8448, "alignment": 256,
+         "initialization": "zero", "programs": ["first", "second"]},
+    ]}
 
 
 def test_channel_range_follows_whole_scratch_and_reuses_only_ordered_actors():
@@ -53,26 +48,19 @@ def test_load_reserves_and_initializes_persistent_window_tail(monkeypatch):
     runtime.codegen = {
         "device_window_storage": "workspace",
         "persistent_window_resources": {
-            "schema":
-            "flagmega.persistent-window-resources/v1",
-            "storage":
-            "workspace",
-            "scratch_nbytes":
-            4096,
-            "allocation_nbytes":
-            4352,
-            "resources": [{
-                "name": "channel", "offset": 4096, "nbytes": 256, "alignment": 256, "initialization": "zero",
-                "programs": ["first", "second"]
-            }],
+            "schema": "flagmega.persistent-window-resources/v1",
+            "storage": "workspace",
+            "scratch_nbytes": 4096,
+            "allocation_nbytes": 4352,
+            "resources": [{"name": "channel", "offset": 4096, "nbytes": 256,
+                           "alignment": 256, "initialization": "zero", "programs": ["first", "second"]}],
         },
     }
     runtime.manifest = {"target": "nvidia-sm90"}
     runtime.runtime_binding = {"pools": [{"name": "workspace", "storage": "workspace", "nbytes": 4096}]}
-    runtime.buffer_plan = SimpleNamespace(
-        memory_space_map={
-            "workspace": SimpleNamespace(kind="global", allocation_scope=SimpleNamespace(value="function")),
-        })
+    runtime.buffer_plan = SimpleNamespace(memory_space_map={
+        "workspace": SimpleNamespace(kind="global", allocation_scope=SimpleNamespace(value="function")),
+    })
     runtime._needs_device_dptr = True
     runtime._device_window = None
     runtime._function_offset_specs = ()

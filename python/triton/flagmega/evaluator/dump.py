@@ -45,28 +45,27 @@ class EvaluatorDumpWriter:
         names: list[str] = []
         for parameter in definition.input_parameters:
             if parameter.variadic:
-                names.extend(f"{parameter.name}[{index}]" for index in range(len(names), len(arguments)))
+                names.extend(
+                    f"{parameter.name}[{index}]"
+                    for index in range(len(names), len(arguments))
+                )
             else:
                 names.append(parameter.name)
         payload = {
-            "schema":
-            "flagmega.evaluator-call/v1",
-            "phase":
-            "before",
-            "sequence":
-            token,
-            "function":
-            function,
-            "node":
-            node.id,
-            "op":
-            node.op,
-            "module_semantic_hash":
-            self.module.semantic_hash,
-            "arguments": [{
-                "name": names[index] if index < len(names) else f"arg{index}",
-                "value": self._value(directory, f"arg{index}", value),
-            } for index, value in enumerate(arguments)],
+            "schema": "flagmega.evaluator-call/v1",
+            "phase": "before",
+            "sequence": token,
+            "function": function,
+            "node": node.id,
+            "op": node.op,
+            "module_semantic_hash": self.module.semantic_hash,
+            "arguments": [
+                {
+                    "name": names[index] if index < len(names) else f"arg{index}",
+                    "value": self._value(directory, f"arg{index}", value),
+                }
+                for index, value in enumerate(arguments)
+            ],
         }
         self._json(f"{directory}/arguments.json", payload)
         return token
@@ -100,12 +99,12 @@ class EvaluatorDumpWriter:
             byte_tensor = tensor.reshape(-1).view(_torch().uint8)
             payload = byte_tensor.numpy().tobytes()
             with self.dumper.open_artifact(
-                    relative,
-                    "wb",
-                    category=DumpFlags.EVALUATOR,
-                    kind="tensor-bytes",
-                    producer="TorchEvaluator",
-                    source_semantic_hash=self.module.semantic_hash,
+                relative,
+                "wb",
+                category=DumpFlags.EVALUATOR,
+                kind="tensor-bytes",
+                producer="TorchEvaluator",
+                source_semantic_hash=self.module.semantic_hash,
             ) as stream:
                 stream.write(payload)
             return {
@@ -120,8 +119,10 @@ class EvaluatorDumpWriter:
         if isinstance(value, (tuple, list)):
             return {
                 "kind": "tuple" if isinstance(value, tuple) else "list",
-                "fields":
-                [self._value(directory, f"item_{index}", item, parents=path) for index, item in enumerate(value)],
+                "fields": [
+                    self._value(directory, f"item_{index}", item, parents=path)
+                    for index, item in enumerate(value)
+                ],
             }
         if isinstance(value, Mapping):
             return {
@@ -148,12 +149,12 @@ class EvaluatorDumpWriter:
 
     def _json(self, relative: str, payload: object) -> None:
         with self.dumper.open_artifact(
-                relative,
-                category=DumpFlags.EVALUATOR,
-                kind="evaluator-manifest",
-                producer="TorchEvaluator",
-                source_semantic_hash=self.module.semantic_hash,
-                encoding="utf-8",
+            relative,
+            category=DumpFlags.EVALUATOR,
+            kind="evaluator-manifest",
+            producer="TorchEvaluator",
+            source_semantic_hash=self.module.semantic_hash,
+            encoding="utf-8",
         ) as stream:
             json.dump(payload, stream, indent=2, sort_keys=True)
             stream.write("\n")

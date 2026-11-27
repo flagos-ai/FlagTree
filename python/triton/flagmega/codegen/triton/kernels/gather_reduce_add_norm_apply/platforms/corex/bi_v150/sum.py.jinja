@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{# Batch the eight original gather rounds while retaining each FP32 fold. #}
+{# Batch the eight original gather rounds while retaining each FP32 fold. #}
 {% set ns = namespace(batched=[], portable=[]) %}
 {% for call in render_calls | default([]) %}
 {% if call.family == "gather_reduce_add_norm_apply" and call.variant == "sum" %}

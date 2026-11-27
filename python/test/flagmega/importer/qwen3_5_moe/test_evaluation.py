@@ -37,7 +37,8 @@ def test_mixed_decoder_multistep_updates_every_independent_layer():
 
 def test_attention_query_and_gate_are_split_within_each_head():
     source = checkpoint(with_values=True)
-    importer = Qwen35MoeImporter(source, layer=1, block_size=2, num_blocks=2, fused_qkvg_projection=True)
+    importer = Qwen35MoeImporter(source, layer=1, block_size=2, num_blocks=2,
+                                 fused_qkvg_projection=True)
     module = importer.import_module()
     _, trace = TorchEvaluator(CheckpointWeightResolver(source)).run_with_trace(
         module, {
@@ -56,11 +57,9 @@ def test_attention_query_and_gate_are_split_within_each_head():
     query_expected = projected_old.reshape(heads, 2, dim)[:, 0].reshape(1, heads * dim)
     gate_expected = projected_old.reshape(heads, 2, dim)[:, 1].reshape(1, heads * dim)
     packed = trace["decode_attention_qkvg"].float()
-    torch.testing.assert_close(trace["decode_attention_query_slice"].float(), packed[:, :heads * dim].float(), rtol=0,
-                               atol=0)
+    torch.testing.assert_close(trace["decode_attention_query_slice"].float(), packed[:, :heads * dim].float(), rtol=0, atol=0)
     torch.testing.assert_close(trace["decode_attention_query_slice"].float(), query_expected.float(), rtol=0, atol=0)
-    torch.testing.assert_close(trace["decode_attention_gate_slice"].float(), packed[:, -heads * dim:].float(), rtol=0,
-                               atol=0)
+    torch.testing.assert_close(trace["decode_attention_gate_slice"].float(), packed[:, -heads * dim:].float(), rtol=0, atol=0)
     torch.testing.assert_close(trace["decode_attention_gate_slice"].float(), gate_expected.float(), rtol=0, atol=0)
 
 

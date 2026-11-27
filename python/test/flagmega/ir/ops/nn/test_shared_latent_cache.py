@@ -2,8 +2,7 @@
 # SPDX-License-Identifier: MIT
 from dataclasses import replace
 from itertools import permutations
-import pytest
-import torch
+import pytest, torch
 from triton.flagmega import ir as fm, pattern_match as pm
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
@@ -12,15 +11,17 @@ from python.test.flagmega.ir.ops.nn._shared_latent_cache_fixtures import SharedM
 
 
 @pytest.mark.parametrize("layout", tuple(permutations(("seq", "head", "dim"))))
-@pytest.mark.parametrize("lanes", [(), (2, 4), (16, )])
+@pytest.mark.parametrize("lanes", [(), (2, 4), (16,)])
 @pytest.mark.parametrize("advance", [False, True])
 def test_shared_latent_preserves_the_whole_state_without_concat(layout, lanes, advance):
     config = PagedAttentionStateConfig(3, 4, 32, block_size=4, num_blocks=4)
     source = SharedModule(config, shared_kv=None, lanes=lanes, layout=layout, advance=advance).build()
     fused = SharedModule(config, lanes=lanes, layout=layout, advance=advance).build()
     assert any(n.op == "tensors.concat" for n in source.nodes)
-    assert not any(n.op in {"tensors.concat", "tensors.slice", "tensors.pack", "tensors.unpack", "tensors.cast"}
-                   for n in fused.nodes)
+    assert not any(
+        n.op in {"tensors.concat", "tensors.slice", "tensors.pack", "tensors.unpack", "tensors.cast"}
+        for n in fused.nodes
+    )
     semantic, value = physical(config, 3, lanes, layout)
     states = [create_paged_attention_state(config) for _ in range(2)]
     for graph, state in zip((source, fused), states, strict=True):
@@ -35,8 +36,11 @@ def test_shared_latent_preserves_the_whole_state_without_concat(layout, lanes, a
             for kind in range(2):
                 expected[page, 1, kind, (3 + row) % 4].copy_(semantic[row].reshape(4, 4, 8))
         torch.testing.assert_close(state.kv_caches, expected, rtol=0, atol=0)
-        assert (state.seq_lens.item() == 3 + 3 * advance and state.slot_mapping.item() == 3
-                and state.query_start_loc.tolist() == [0, 3])
+        assert (
+            state.seq_lens.item() == 3 + 3 * advance
+            and state.slot_mapping.item() == 3
+            and state.query_start_loc.tolist() == [0, 3]
+        )
     for field in ["kv_caches", "seq_lens", "slot_mapping", "query_start_loc", "block_table"]:
         assert torch.equal(getattr(states[0], field), getattr(states[1], field))
 
@@ -52,9 +56,12 @@ def test_shared_mode_roundtrip_patterns_cost_and_old_default(tmp_path):
         assert restored.semantic_hash == graph.semantic_hash
         n = restored.node_map["update"]
         for requested, expected in [(None, True), (False, not shared), (True, shared)]:
-            assert (bool(
-                pm.try_match_root(n, pm.F.nn.is_update_paged_attention_kv_cache_pair(shared_kv=requested),
-                                  restored)) == expected)
+            assert (
+                bool(
+                    pm.try_match_root(n, pm.F.nn.is_update_paged_attention_kv_cache_pair(shared_kv=requested), restored)
+                )
+                == expected
+            )
         definition = fm.get_definition(n.op)
         factors = definition.cost_factors([restored.node_map[i] for i in n.inputs], n.attrs, n.type)
         assert factors.block_local_memory_load_bytes == 3 * 4 * 32 * 2 * (1 if shared else 2)
@@ -80,9 +87,9 @@ def test_shared_mode_keeps_input_legality(kind):
         mesh = fm.Placement((2, 2), "cb", "cb")
         t = fm.DistributedType(
             t,
-            (b, b, fm.SBP.split_contiguous((0, ))) if kind == "chip" else (b, b, b),
+            (b, b, fm.SBP.split_contiguous((0,))) if kind == "chip" else (b, b, b),
             mesh,
-            partial=fm.SBP.partial((1, )) if kind == "partial" else None,
+            partial=fm.SBP.partial((1,)) if kind == "partial" else None,
         )
     elif kind == "width":
         t = fm.tensor_type("bfloat16", (3, 4, 64))

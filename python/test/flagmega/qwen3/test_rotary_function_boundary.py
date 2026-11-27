@@ -23,8 +23,7 @@ def test_import_computes_position_embeddings_in_main_and_passes_to_reusable_deco
     assert len(calls) == layers
     assert len({node.inputs[-2:] for node in calls}) == 1
     assert module.node_map["decode_layer_query_rope"].inputs[-2:] == (
-        "decode_layer_rotary_cos",
-        "decode_layer_rotary_sin",
+        "decode_layer_rotary_cos", "decode_layer_rotary_sin",
     )
 
 
@@ -43,7 +42,7 @@ def test_rotary_is_evaluated_once_per_token_step_and_before_sequence_advance(mon
     monkeypatch.setattr(RotaryEmbedding, "evaluate", classmethod(evaluate))
     evaluator = TorchEvaluator(CheckpointWeightResolver(checkpoint))
     for token in (3, 4):
-        evaluator.run(module,
-                      {"input_ids": torch.tensor([token], dtype=torch.int32), "paged_attention_kv_cache": state})
+        evaluator.run(module, {"input_ids": torch.tensor([token], dtype=torch.int32),
+                               "paged_attention_kv_cache": state})
     assert positions == [0, 1]
     assert state.sequence_length == 2

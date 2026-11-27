@@ -15,6 +15,8 @@ on a 4-chip launch every chip stores a full copy. For GLM-5.3 that table is
 1.18 GiB against a 2.68 GiB per-chip overflow.
 """
 
+import pytest
+
 from triton.flagmega import ir as fm
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.ir import DistributedBufferStorageKind as StorageKind
@@ -39,7 +41,9 @@ def _embedding_module(*, feature_axes):
             policy = fm.SBP.split_contiguous(feature_axes)
             indices = self.input(
                 "indices",
-                fm.DistributedType(fm.tensor_type("int32", (1, )), (fm.SBP.broadcast(), ), PLACEMENT),
+                fm.DistributedType(
+                    fm.tensor_type("int32", (1, )), (fm.SBP.broadcast(), ), PLACEMENT
+                ),
             )
             weight = self.input(
                 "weight",
@@ -70,9 +74,15 @@ def _weight_buffer(plan):
     name: it is the only `VOCAB x FEATURES` buffer.
     """
 
-    matches = [buffer for buffer in plan.buffers if tuple(buffer.shape) == (VOCAB, FEATURES)]
-    assert len(matches) == 1, (f"expected exactly one {VOCAB}x{FEATURES} table, got "
-                               f"{[buffer.id for buffer in matches]}")
+    matches = [
+        buffer
+        for buffer in plan.buffers
+        if tuple(buffer.shape) == (VOCAB, FEATURES)
+    ]
+    assert len(matches) == 1, (
+        f"expected exactly one {VOCAB}x{FEATURES} table, got "
+        f"{[buffer.id for buffer in matches]}"
+    )
     return matches[0]
 
 
@@ -90,7 +100,8 @@ def test_chip_split_feature_axis_keeps_the_table_chip_local():
     weight = _weight_buffer(verify_buffer_plan(compiled))
     assert weight.distributed_storage_kind is not StorageKind.CANONICAL_GLOBAL, (
         "a chip-split embedding table must not be stored canonical global: "
-        f"{weight.id} is {weight.distributed_storage_kind}")
+        f"{weight.id} is {weight.distributed_storage_kind}"
+    )
 
 
 def test_block_only_feature_split_still_uses_the_canonical_table():
@@ -134,5 +145,9 @@ def test_chip_local_table_is_addressed_without_the_chip_coordinate():
     load = loads[0]
     # 16 block owners share each row of 64 features.
     assert "(token_id) * 4" in load, f"row stride is not the local width: {load}"
-    assert "shard_coord0" not in load, (f"a chip-private table must not be indexed by the chip axis: {load}")
-    assert re.search(r"shard_coord[12]", load), (f"the block owner's slice must still be selected: {load}")
+    assert "shard_coord0" not in load, (
+        f"a chip-private table must not be indexed by the chip axis: {load}"
+    )
+    assert re.search(r"shard_coord[12]", load), (
+        f"the block owner's slice must still be selected: {load}"
+    )

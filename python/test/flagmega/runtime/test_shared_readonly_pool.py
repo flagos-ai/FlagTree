@@ -38,19 +38,14 @@ def test_two_identical_phases_bind_one_exact_readonly_allocation(tmp_path, devic
 
 def test_same_checkpoint_with_different_owner_layout_cannot_alias(tmp_path):
     a, b = tmp_path / "a", tmp_path / "b"
-    a.mkdir()
-    b.mkdir()
+    a.mkdir(); b.mkdir()
     first, checkpoint, _ = _fixture(a)
     second, checkpoint2, _ = _fixture(b, cyclic=True)
     size = max(fm.verify_buffer_plan(first).rdata_bytes, fm.verify_buffer_plan(second).rdata_bytes)
-    first = relocate_readonly(first,
-                              {v.id: v.offset
-                               for v in fm.verify_buffer_plan(first).buffers
-                               if v.storage == "rdata"}, nbytes=size)
-    second = relocate_readonly(second,
-                               {v.id: v.offset
-                                for v in fm.verify_buffer_plan(second).buffers
-                                if v.storage == "rdata"}, nbytes=size)
+    first = relocate_readonly(first, {v.id: v.offset for v in fm.verify_buffer_plan(first).buffers
+                                     if v.storage == "rdata"}, nbytes=size)
+    second = relocate_readonly(second, {v.id: v.offset for v in fm.verify_buffer_plan(second).buffers
+                                       if v.storage == "rdata"}, nbytes=size)
     root, index = assets(a, first, checkpoint)
     root2, index2 = assets(b, second, checkpoint2)
     assert [s["sha256"] for s in index["sources"]] == [s["sha256"] for s in index2["sources"]]
@@ -66,8 +61,7 @@ def test_same_checkpoint_with_different_owner_layout_cannot_alias(tmp_path):
 
 def test_relocated_new_phase_preserves_prior_bytes_and_views(tmp_path):
     a, b = tmp_path / "a", tmp_path / "b"
-    a.mkdir()
-    b.mkdir()
+    a.mkdir(); b.mkdir()
     first, checkpoint, _ = _fixture(a)
     second, checkpoint2, _ = _fixture(b, cyclic=True)
     plan = fm.verify_buffer_plan(first)

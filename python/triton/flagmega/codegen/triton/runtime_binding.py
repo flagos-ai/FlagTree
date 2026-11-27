@@ -21,6 +21,7 @@ from triton.flagmega.codegen.triton.pool_abi import (
 from triton.flagmega.ir.distributed_storage import DistributedBufferStorageKind
 from triton.flagmega.ir.distributed_type import launch_chip_count
 
+
 FUNCTION_RUNTIME_BINDING_SCHEMA = "flagmega.function-runtime-binding/v1"
 DEVICE_CONTEXT_ABI = "runtime-handles/v2"
 DEVICE_CONTEXT_HANDLES = ("device_mem_ptr", "device_comm_ptr")
@@ -44,11 +45,17 @@ def describe_function_runtime_binding(
 
     plan = verify_buffer_plan(module)
     name = module.entry if function_name is None else str(function_name)
-    call_abi = deepcopy(describe_function_call_abi(module, function_name=name) if call_abi is None else call_abi)
+    call_abi = deepcopy(
+        describe_function_call_abi(module, function_name=name)
+        if call_abi is None
+        else call_abi
+    )
     try:
         function_plan = plan.function_map[name]
     except KeyError as error:
-        raise CodegenError(f"Cannot bind runtime arguments for unknown function {name!r}.") from error
+        raise CodegenError(
+            f"Cannot bind runtime arguments for unknown function {name!r}."
+        ) from error
 
     argument_by_physical: dict[str, str] = {}
     arguments: list[dict[str, object]] = []
@@ -121,9 +128,9 @@ def describe_function_runtime_binding(
     }
     for call in call_abi["kernel_calls"]:
         for parameter in (
-                *call["inputs"],
-                *call["outputs"],
-                *call["workspaces"],
+            *call["inputs"],
+            *call["outputs"],
+            *call["workspaces"],
         ):
             for binding in parameter["buffers"]:
                 used_storages.add(str(binding["abi"]["storage"]))
@@ -135,7 +142,10 @@ def describe_function_runtime_binding(
             continue
         for edge in (*event["arguments"], *event["results"]):
             used_storages.add(str(edge["actual_abi"]["storage"]))
-        used_storages.update(str(frame["memory_space"]) for frame in event["memory_pools"])
+        used_storages.update(
+            str(frame["memory_space"])
+            for frame in event["memory_pools"]
+        )
         # A callee may read module-scope storage this function never names in
         # an argument edge, such as readonly data reached through a parameter
         # bank. The pool must still be forwarded, so take the transitive
@@ -154,7 +164,11 @@ def describe_function_runtime_binding(
         storage = space.name
         if storage not in used_storages or not _is_runtime_pool_storage(plan, storage):
             continue
-        scope_nbytes = (plan.rdata_bytes if storage == "rdata" else plan.function_memory_space_bytes(name, storage))
+        scope_nbytes = (
+            plan.rdata_bytes
+            if storage == "rdata"
+            else plan.function_memory_space_bytes(name, storage)
+        )
         physical_scope_count = memory_scope_count(module, space.sharing_scope)
         scope_count = physical_scope_count if name == module.entry else 1
         pool_name = _unique_argument_name(storage, used_names)
@@ -164,9 +178,12 @@ def describe_function_runtime_binding(
             "nbytes": scope_nbytes * scope_count,
         }
         if storage == "rdata":
-            chip_sharded = any(buffer.storage == "rdata"
-                               and buffer.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_CHIP
-                               for buffer in plan.buffers)
+            chip_sharded = any(
+                buffer.storage == "rdata"
+                and buffer.distributed_storage_kind
+                is DistributedBufferStorageKind.COMPACT_PER_CHIP
+                for buffer in plan.buffers
+            )
             pool["chip_sharded"] = chip_sharded
             pool["chip_count"] = launch_chip_count(module) if chip_sharded else 1
             pool["segment_nbytes"] = scope_nbytes
@@ -183,7 +200,9 @@ def describe_function_runtime_binding(
                 "scope_local": name != module.entry,
             })
         pools.append(pool)
-    pool_by_storage = {str(value["storage"]): str(value["name"]) for value in pools}
+    pool_by_storage = {
+        str(value["storage"]): str(value["name"]) for value in pools
+    }
     for value in value_bindings:
         if value["runtime_argument"] is None:
             value["runtime_argument"] = pool_by_storage[str(value["storage"])]
@@ -191,9 +210,9 @@ def describe_function_runtime_binding(
 
     for call in call_abi["kernel_calls"]:
         for parameter in (
-                *call["inputs"],
-                *call["outputs"],
-                *call["workspaces"],
+            *call["inputs"],
+            *call["outputs"],
+            *call["workspaces"],
         ):
             for binding in parameter["buffers"]:
                 if name != module.entry:
@@ -208,8 +227,10 @@ def describe_function_runtime_binding(
                     argument_by_physical,
                 )
                 if argument is None:
-                    raise CodegenError(f"Function @{name} call {call['call']!r} buffer "
-                                       f"{binding['actual']!r} has no runtime storage root.")
+                    raise CodegenError(
+                        f"Function @{name} call {call['call']!r} buffer "
+                        f"{binding['actual']!r} has no runtime storage root."
+                    )
                 binding["runtime_argument"] = argument
                 binding["runtime_value_kind"] = value_kind
                 address_arguments = _bind_view_offset(module, plan, abi, pool_by_storage, argument_by_physical)
@@ -220,8 +241,7 @@ def describe_function_runtime_binding(
         abi = binding['abi']
         if name != module.entry:
             _make_pool_abi_scope_local(plan, abi)
-        argument, value_kind = _resolve_runtime_root(module, plan, abi, binding['actual'], pool_by_storage,
-                                                     argument_by_physical)
+        argument, value_kind = _resolve_runtime_root(module, plan, abi, binding['actual'], pool_by_storage, argument_by_physical)
         if argument is None:
             raise CodegenError(f"Loop buffer {binding['actual']!r} has no runtime storage root.")
         binding['runtime_argument'] = argument
@@ -245,13 +265,17 @@ def describe_function_runtime_binding(
                 argument_by_physical,
             )
             if argument is None:
-                raise CodegenError(f"Function @{name} nested call {event['call']!r} actual "
-                                   f"buffer {edge['actual']!r} has no runtime storage root.")
+                raise CodegenError(
+                    f"Function @{name} nested call {event['call']!r} actual "
+                    f"buffer {edge['actual']!r} has no runtime storage root."
+                )
             edge["actual_runtime_argument"] = argument
             edge["actual_runtime_value_kind"] = value_kind
             _bind_view_offset(module, plan, actual_abi, pool_by_storage, argument_by_physical)
         for frame in event["memory_pools"]:
-            frame["runtime_argument"] = pool_by_storage[str(frame["memory_space"])]
+            frame["runtime_argument"] = pool_by_storage[
+                str(frame["memory_space"])
+            ]
 
     return {
         "schema": FUNCTION_RUNTIME_BINDING_SCHEMA,
@@ -259,7 +283,10 @@ def describe_function_runtime_binding(
         "arguments": arguments,
         "values": value_bindings,
         "pools": pools,
-        "signature": [value["name"] for value in (*arguments, *pools)],
+        "signature": [
+            value["name"]
+            for value in (*arguments, *pools)
+        ],
         "call_abi": call_abi,
     }
 
@@ -301,7 +328,10 @@ def _bind_view_offset(module, plan, abi, pools, arguments):
 
 def _is_runtime_pool_storage(plan, storage: str) -> bool:
     space = plan.memory_space_map.get(storage)
-    return bool(space is not None and is_runtime_pool_space(space))
+    return bool(
+        space is not None
+        and is_runtime_pool_space(space)
+    )
 
 
 def _resolve_runtime_root(
@@ -331,11 +361,13 @@ def _scalar_immediate(module: IRModule, plan, buffer_id: str) -> str:
         try:
             buffer = plan.buffer_map[current]
         except KeyError as error:
-            raise CodegenError(f"Scalar runtime binding references unknown buffer {current!r}.") from error
+            raise CodegenError(
+                f"Scalar runtime binding references unknown buffer {current!r}."
+            ) from error
         node = module.node_map.get(str(buffer.source_node or current))
         if node is not None and node.op in {
-                "builtin.scalar_const",
-                "tir.scalar_const",
+            "builtin.scalar_const",
+            "tir.scalar_const",
         }:
             return repr(node.attrs["value"])
         loop_variable = _loop_induction_variable(module, str(buffer.source_node or current))
@@ -349,15 +381,18 @@ def _scalar_immediate(module: IRModule, plan, buffer_id: str) -> str:
             expression = node.attrs["expression"]
             # A scalar immediate has no owning function recorded, so find
             # the loop body that contains this node instead.
-            symbols = _dimension_symbols(module, expression, _owning_region(module, node.id))
+            symbols = _dimension_symbols(
+                module, expression, _owning_region(module, node.id))
             if isinstance(expression, LogicalExpr):
                 return emit_logical(expression, symbols=symbols)
             return emit_dimension(expression, symbols=symbols)
         if buffer.alias_of is None:
             break
         current = buffer.alias_of
-    raise CodegenError(f"Scalar buffer {buffer_id!r} is neither a function argument nor a "
-                       "compile-time scalar constant.")
+    raise CodegenError(
+        f"Scalar buffer {buffer_id!r} is neither a function argument nor a "
+        "compile-time scalar constant."
+    )
 
 
 def _unique_argument_name(value: str, used: set[str]) -> str:
@@ -402,9 +437,9 @@ def _callee_pool_storages(plan, name: str, seen: frozenset[str] = frozenset()) -
     seen = seen | {name}
     result: set[str] = set()
     for value, ids in (
-            *function_plan.parameters,
-            *function_plan.outputs,
-            *function_plan.values,
+        *function_plan.parameters,
+        *function_plan.outputs,
+        *function_plan.values,
     ):
         for buffer_id in ids:
             buffer = plan.buffer_map.get(buffer_id)
@@ -433,9 +468,9 @@ def _dimension_symbols(module, expression, function_name=None) -> dict[str, str]
             names[value.symbol] = value.symbol
             return
         for operand in (
-                *getattr(value, "operands", ()),
-                *((value.lhs, value.rhs) if isinstance(value, DimCompare) else ()),
-                *((value.operand, ) if isinstance(value, LogicalNot) else ()),
+            *getattr(value, "operands", ()),
+            *((value.lhs, value.rhs) if isinstance(value, DimCompare) else ()),
+            *((value.operand,) if isinstance(value, LogicalNot) else ()),
         ):
             visit(operand)
 

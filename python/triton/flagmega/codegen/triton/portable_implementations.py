@@ -20,15 +20,13 @@ def portable_sparse_experts_implementations() -> tuple[TritonImplementation, ...
     """SIMT selected-expert projections without moving route rounding across K."""
     return tuple(
         TritonImplementation(
-            f"tir.{family}.simt",
-            family,
-            "simt",
+            f"tir.{family}.simt", family, "simt",
             {"block_n": 8, "block_k": 128},
             {"indexing": "local", "rounding": "explicit"},
-            requires=("fp8", ) if family == "partitioned_sparse_experts_down" else (),
+            requires=("fp8",) if family == "partitioned_sparse_experts_down" else (),
             facts={"portable_triton": True},
-        ) for family in ("sparse_experts_gate_up", "sparse_experts_down", "sparse_experts_dispatch",
-                         "sparse_experts_weighted_sum", "partitioned_sparse_experts_down"))
+        ) for family in ("sparse_experts_gate_up", "sparse_experts_down", "sparse_experts_dispatch", "sparse_experts_weighted_sum",
+                         "partitioned_sparse_experts_down"))
 
 
 def portable_tensor_transform_implementations() -> tuple[TritonImplementation, ...]:
@@ -66,6 +64,7 @@ def portable_axis_reduction_implementations() -> tuple[TritonImplementation, ...
         ) for family in ("softmax", "reduce_sum", "top_k", "l2_normalization"))
 
 
+
 def portable_staged_routing_implementations() -> tuple[TritonImplementation, ...]:
     """Single-tile staged routing; the tile must cover the whole router extent."""
     return tuple(
@@ -82,12 +81,15 @@ def portable_staged_routing_implementations() -> tuple[TritonImplementation, ...
 def portable_kda_implementations() -> tuple[TritonImplementation, ...]:
     """GLM KDA decode operators over compact scalar decode buffers."""
     return (
-        TritonImplementation("tir.kda_convolution.local", "kda_convolution", "local", {"elements_per_program": 1024},
-                             {"indexing": "local"}, facts={"portable_triton": True}),
+        TritonImplementation("tir.kda_convolution.local", "kda_convolution", "local",
+                             {"elements_per_program": 1024}, {"indexing": "local"},
+                             facts={"portable_triton": True}),
         TritonImplementation("tir.kda_recurrent_core.local", "kda_recurrent_core", "local",
-                             {"elements_per_program": 128}, {"indexing": "local"}, facts={"portable_triton": True}),
-        TritonImplementation("tir.kda_gated_recurrent_core.local", "kda_gated_recurrent_core", "local",
-                             {"elements_per_program": 128}, {"indexing": "local"}, facts={"portable_triton": True}),
+                             {"elements_per_program": 128}, {"indexing": "local"},
+                             facts={"portable_triton": True}),
+        TritonImplementation("tir.kda_gated_recurrent_core.local", "kda_gated_recurrent_core",
+                             "local", {"elements_per_program": 128}, {"indexing": "local"},
+                             facts={"portable_triton": True}),
     )
 
 
@@ -98,14 +100,16 @@ def portable_mhc_implementations() -> tuple[TritonImplementation, ...]:
     shrink it further so the staged weight or product block fits in registers.
     """
     return (
-        TritonImplementation("tir.mhc_pre.local", "mhc_pre", "local", {"elements_per_program": 256},
-                             {"indexing": "local"}, facts={"portable_triton": True}),
+        TritonImplementation("tir.mhc_pre.local", "mhc_pre", "local",
+                             {"elements_per_program": 256}, {"indexing": "local"},
+                             facts={"portable_triton": True}),
         TritonImplementation("tir.mhc_pre.stream_fma", "mhc_pre", "stream_fma",
                              {"elements_per_program": 256, "compute_num_warps": 4},
                              {"indexing": "local", "projection_reduction": "stream_fma_128"},
                              facts={"portable_triton": True}),
-        TritonImplementation("tir.mhc_post.local", "mhc_post", "local", {"elements_per_program": 256},
-                             {"indexing": "local"}, facts={"portable_triton": True}),
+        TritonImplementation("tir.mhc_post.local", "mhc_post", "local",
+                             {"elements_per_program": 256}, {"indexing": "local"},
+                             facts={"portable_triton": True}),
     )
 
 
@@ -118,7 +122,7 @@ def portable_gather_implementations() -> tuple[TritonImplementation, ...]:
         {"elements_per_program": 128},
         {"indexing": "local"},
         facts={"portable_triton": True},
-    ), )
+    ),)
 
 
 def portable_router_elementwise_implementations() -> tuple[TritonImplementation, ...]:
@@ -131,8 +135,7 @@ def portable_router_elementwise_implementations() -> tuple[TritonImplementation,
             {"elements_per_program": 128} if kind == "scalar" else {"vector_groups": 32},
             {"semantic_op": f"math.{variant}", "vectorization_kind": kind},
             facts={"portable_triton": True},
-        ) for variant, kind in (("div", "scalar"), ("exp", "scalar"), ("exp", "axes"), ("sigmoid", "scalar"),
-                                ("sigmoid", "axes")))
+        ) for variant, kind in (("div", "scalar"), ("exp", "scalar"), ("exp", "axes"), ("sigmoid", "scalar"), ("sigmoid", "axes")))
 
 
 def portable_attention_implementations() -> tuple[TritonImplementation, ...]:
@@ -208,12 +211,8 @@ def portable_attention_implementations() -> tuple[TritonImplementation, ...]:
             facts=portable,
         ),
         TritonImplementation(
-            "tir.paged_attention_partial.decode_t64",
-            "paged_attention_partial",
-            "decode_t64",
-            {"token_tile": 64},
-            {"mode": "decode"},
-            facts=portable,
+            "tir.paged_attention_partial.decode_t64", "paged_attention_partial", "decode_t64",
+            {"token_tile": 64}, {"mode": "decode"}, facts=portable,
         ),
         # Warp-layout variants of the same token tiles: these choose how a
         # token row's 128-wide reduction maps onto warps rather than how many
@@ -304,12 +303,9 @@ def portable_attention_implementations() -> tuple[TritonImplementation, ...]:
         ),
         *(TritonImplementation(
             f"tir.paged_attention_gated_combine.decode_t{tile}",
-            "paged_attention_gated_combine",
-            "decode",
-            {"elements_per_program": tile},
-            {"mode": "decode"},
-            requires=("cooperative_grid", "grid_sync"),
-            facts=portable,
+            "paged_attention_gated_combine", "decode",
+            {"elements_per_program": tile}, {"mode": "decode"},
+            requires=("cooperative_grid", "grid_sync"), facts=portable,
         ) for tile in (32, 64)),
     )
 
@@ -318,15 +314,17 @@ def portable_attention_preferences() -> Mapping[str, tuple[str, ...]]:
     """Return deterministic fallbacks for the portable attention families."""
 
     return {
-        "rotary_embedding": ("tir.rotary_embedding.decode", ),
-        "rope": ("tir.rope.decode", ),
-        "update_paged_attention_kv_cache": ("tir.update_paged_attention_kv_cache.decode", ),
+        "rotary_embedding": ("tir.rotary_embedding.decode",),
+        "rope": ("tir.rope.decode",),
+        "update_paged_attention_kv_cache": (
+            "tir.update_paged_attention_kv_cache.decode",
+        ),
         # decode_t16 stays first: it is the measured best at short context,
         # which is what batch-one decode serves. The rest are ordered so a
         # target that filters out earlier entries still lands on a legal tile.
-        "update_paged_attention_kv_cache_pair": ("tir.update_paged_attention_kv_cache_pair.decode", ),
-        "dsa_indexer": ("tir.dsa_indexer.decode", ),
-        "dsa_paged_attention": ("tir.dsa_paged_attention.decode", ),
+        "update_paged_attention_kv_cache_pair": ("tir.update_paged_attention_kv_cache_pair.decode",),
+        "dsa_indexer": ("tir.dsa_indexer.decode",),
+        "dsa_paged_attention": ("tir.dsa_paged_attention.decode",),
         "paged_attention_partial": (
             "tir.paged_attention_partial.decode_t16",
             "tir.paged_attention_partial.decode_layout4",
@@ -337,14 +335,14 @@ def portable_attention_preferences() -> Mapping[str, tuple[str, ...]]:
             "tir.paged_attention_partial.decode_t128_layout32",
             "tir.paged_attention_partial.decode_t64",
         ),
-        "paged_attention_combine": ("tir.paged_attention_combine.decode", ),
+        "paged_attention_combine": ("tir.paged_attention_combine.decode",),
         "paged_attention_gated_combine": (
             "tir.paged_attention_gated_combine.decode",
             "tir.paged_attention_gated_combine.decode_t64",
             "tir.paged_attention_gated_combine.decode_t32",
         ),
-        "qkv_rope_with_cache": ("tir.qkv_rope_with_cache.decode", ),
-        "gather_reduce_qkv_rope_with_cache": ("tir.gather_reduce_qkv_rope_with_cache.decode", ),
+        "qkv_rope_with_cache": ("tir.qkv_rope_with_cache.decode",),
+        "gather_reduce_qkv_rope_with_cache": ("tir.gather_reduce_qkv_rope_with_cache.decode",),
     }
 
 
@@ -359,13 +357,9 @@ def portable_local_reduction_implementations() -> tuple[TritonImplementation, ..
     return (
         *(TritonImplementation(
             "tir.add_norm_stats.local_rows_rms_" + layout,
-            "add_norm_stats",
-            "local_rows_rms",
-            {"tile": 128},
-            {
-                "input_kind": "materialized", "axis_kind": "last", "use_mean": False, "outer_rows": "multiple",
-                "output_layout": layout
-            },
+            "add_norm_stats", "local_rows_rms", {"tile": 128},
+            {"input_kind": "materialized", "axis_kind": "last", "use_mean": False,
+             "outer_rows": "multiple", "output_layout": layout},
             facts={"portable_triton": True, "owner_local_stats": True},
         ) for layout in ("broadcast", "distributed")),
         TritonImplementation(
@@ -429,7 +423,7 @@ def portable_normalization_implementations() -> tuple[TritonImplementation, ...]
                 "supports_mean": True,
                 "outer_rows": "batched",
             },
-            requires=("cooperative_grid", ),
+            requires=("cooperative_grid",),
             facts={
                 "portable_triton": True,
                 "cross_owner_read": True,
@@ -442,7 +436,7 @@ def portable_normalization_implementations() -> tuple[TritonImplementation, ...]
             "sum",
             {"block_size": 1024, "reduction_width": 32},
             {"supports_mean": True, "axis_kind": "suffix"},
-            requires=("cooperative_grid", ),
+            requires=("cooperative_grid",),
             facts={
                 "portable_triton": True,
                 "cross_owner_read": True,
@@ -454,9 +448,15 @@ def portable_normalization_implementations() -> tuple[TritonImplementation, ...]
 
 def portable_normalization_preferences() -> Mapping[str, tuple[str, ...]]:
     return {
-        "gather_reduce_add_norm_stats": ("tir.gather_reduce_add_norm_stats.local_shard_sum_rms", ),
-        "gather_reduce_add_norm_apply": ("tir.gather_reduce_add_norm_apply.sum", ),
-        "gather_reduce_norm_apply": ("tir.gather_reduce_norm_apply.sum", ),
+        "gather_reduce_add_norm_stats": (
+            "tir.gather_reduce_add_norm_stats.local_shard_sum_rms",
+        ),
+        "gather_reduce_add_norm_apply": (
+            "tir.gather_reduce_add_norm_apply.sum",
+        ),
+        "gather_reduce_norm_apply": (
+            "tir.gather_reduce_norm_apply.sum",
+        ),
     }
 
 

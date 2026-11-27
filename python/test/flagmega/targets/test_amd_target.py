@@ -7,6 +7,11 @@ selected_tir stage and later, so it does not fire before propose-tir; the only
 pre-TIR gate is the AMD capability filter over the implementation catalog, which
 keeps the portable bf16 candidates and drops the fp8/tma/mma_v3 ones."""
 
+from pathlib import Path
+from types import SimpleNamespace
+import runpy
+import sys
+
 import pytest
 
 from triton.flagmega import ir as fm
@@ -25,7 +30,9 @@ def _bf16_matmul_module() -> fm.IRModule:
     value_type = fm.tensor_type("bfloat16", (1, 128))
     weight_type = fm.tensor_type("bfloat16", (128, 128))
     value = builder.var("value", value_type, id="value")
-    weight = builder.weight("weight", weight_type, source="memory", key="weight", id="weight")
+    weight = builder.weight(
+        "weight", weight_type, source="memory", key="weight", id="weight"
+    )
     projection = builder.call(
         "math.matmul",
         (value, weight),
@@ -33,7 +40,7 @@ def _bf16_matmul_module() -> fm.IRModule:
         id="projection",
         attrs={"transpose_a": False, "transpose_b": True},
     )
-    builder.function("main", (value, ), (projection, ))
+    builder.function("main", (value,), (projection,))
     return builder.build(entry="main")
 
 
@@ -50,8 +57,9 @@ def test_amd_target_constructs(target_name):
 
 @pytest.mark.parametrize("target_name", AMD_TARGETS)
 def test_amd_bf16_matmul_reaches_propose_tir(target_name):
-    module = Compiler(CompileOptions(target=target_name)).compile(_bf16_matmul_module(),
-                                                                  stop_after="propose-tir").module
+    module = Compiler(CompileOptions(target=target_name)).compile(
+        _bf16_matmul_module(), stop_after="propose-tir"
+    ).module
 
     assert module.stage == _PROPOSE_TIR_STAGE
 
@@ -60,8 +68,10 @@ def test_amd_bf16_matmul_reaches_propose_tir(target_name):
     # The AMD capability filter must not have emptied any selection point: every
     # node keeps at least one capability-supported candidate (portable bf16).
     for point in points:
-        assert point.candidates, (f"{target_name}: selection point {point.id!r} has no "
-                                  f"capability-supported candidate")
+        assert point.candidates, (
+            f"{target_name}: selection point {point.id!r} has no "
+            f"capability-supported candidate"
+        )
 
 
 def test_cooperative_warp_cap_applies_to_a_supplied_implementation_model():
@@ -71,13 +81,17 @@ def test_cooperative_warp_cap_applies_to_a_supplied_implementation_model():
     grid barrier."""
     from triton.flagmega.targets.amd.machine import AmdGfx1100Machine
     from triton.flagmega.targets.portable_triton_implementations import (
-        portable_triton_implementation_model, )
+        portable_triton_implementation_model,
+    )
 
     cap = AmdGfx1100Machine._COOPERATIVE_MAX_WARPS
     supplied = portable_triton_implementation_model()
     # Sanity: the portable model carries kernels above the cap, so the cap is
     # actually exercised below.
-    assert any((dict(impl.parameters).get("compute_num_warps") or 0) > cap for impl in supplied.implementations)
+    assert any(
+        (dict(impl.parameters).get("compute_num_warps") or 0) > cap
+        for impl in supplied.implementations
+    )
 
     capped = AmdGfx1100Machine(implementation_model=supplied).triton_implementation_model()
     for impl in capped.implementations:
@@ -96,7 +110,8 @@ def test_amd_target_resolves_a_capped_model_from_a_supplied_one(target_cls_name)
     from triton.flagmega.targets.amd_gfx1100 import AmdGfx1100Target
     from triton.flagmega.targets.amd_gfx1201 import AmdGfx1201Target
     from triton.flagmega.targets.portable_triton_implementations import (
-        portable_triton_implementation_model, )
+        portable_triton_implementation_model,
+    )
 
     cap = AmdGfx1100Machine._COOPERATIVE_MAX_WARPS
     target_cls = {"AmdGfx1100Target": AmdGfx1100Target, "AmdGfx1201Target": AmdGfx1201Target}[target_cls_name]
@@ -117,7 +132,8 @@ def _model_with_injected_impl():
     from dataclasses import replace
 
     from triton.flagmega.targets.portable_triton_implementations import (
-        portable_triton_implementation_model, )
+        portable_triton_implementation_model,
+    )
 
     model = portable_triton_implementation_model()
     first = model.implementations[0]
@@ -125,7 +141,7 @@ def _model_with_injected_impl():
         first,
         parameters={**dict(first.parameters), "compute_num_warps": 16, "tile_n": 32},
     )
-    model = replace(model, implementations=(injected, ) + model.implementations[1:])
+    model = replace(model, implementations=(injected,) + model.implementations[1:])
     return model, injected.id
 
 
@@ -133,7 +149,7 @@ def _resolved_impl(target, candidate_id):
     resolved = target.triton_implementation_model
     if callable(resolved):
         resolved = resolved()
-    (impl, ) = [i for i in resolved.implementations if i.id == candidate_id]
+    (impl,) = [i for i in resolved.implementations if i.id == candidate_id]
     return dict(impl.parameters)
 
 
@@ -149,7 +165,7 @@ def test_pyntt_target_preserves_a_directly_supplied_model():
     target = PyNttTarget(NvidiaSm90Machine(), triton_implementation_model=model)
 
     params = _resolved_impl(target, cid)
-    assert params.get("tile_n") == 32  # explicit injection preserved
+    assert params.get("tile_n") == 32          # explicit injection preserved
     assert params.get("compute_num_warps") == 16  # no cap on this machine
 
 
@@ -165,5 +181,64 @@ def test_pyntt_target_caps_but_preserves_a_directly_supplied_model():
     target = PyNttTarget(AmdGfx1100Machine(), triton_implementation_model=model)
 
     params = _resolved_impl(target, cid)
-    assert params.get("tile_n") == 32  # explicit injection preserved
+    assert params.get("tile_n") == 32              # explicit injection preserved
     assert params.get("compute_num_warps") == cap  # invariant applied
+
+
+_AMD_RDNA_TUTORIAL = (Path(__file__).resolve().parents[4]
+                      / "python/tutorials/flagmega/01-qwen3-1.7b-bf16/amd-rdna")
+_GLU_TN64 = "tir.dense_matmul_glu.packed_k_major_gemv_tn64"
+
+
+@pytest.fixture(scope="module")
+def amd_rdna_tutorial():
+    """Load the amd-rdna recipe and run.py once; they import the sibling
+    nvidia-h800 ``local_optimizations`` package, which registers ops."""
+    saved = list(sys.path)
+    sys.path.insert(0, str(_AMD_RDNA_TUTORIAL))
+    try:
+        loaded = {name: runpy.run_path(str(_AMD_RDNA_TUTORIAL / name)) for name in ("recipe.py", "run.py")}
+    finally:
+        sys.path[:] = saved
+    return loaded.__getitem__
+
+
+@pytest.mark.parametrize("arch", ["gfx1100", "gfx1201"])
+def test_amd_rdna_recipe_retiles_only_the_gate_up_gemv(amd_rdna_tutorial, arch):
+    from triton.flagmega.targets.portable_triton_implementations import (
+        portable_triton_implementation_model,
+    )
+    recipe = amd_rdna_tutorial("recipe.py")
+    model = recipe["create_target"](arch=arch).triton_implementation_model
+    portable = portable_triton_implementation_model()
+    assert model.implementation(_GLU_TN64).parameters["block_k"] == 32
+    assert model.implementation(_GLU_TN64).parameters["tile_n"] == 64
+    # The shared catalog and the other GLU tiles keep their own K step.
+    assert portable.implementation(_GLU_TN64).parameters["block_k"] == 128
+    tn16 = "tir.dense_matmul_glu.packed_k_major_gemv_tn16"
+    assert model.implementation(tn16).parameters["block_k"] == portable.implementation(tn16).parameters["block_k"]
+    assert model.implementation(recipe["_ATTENTION_PARTIAL"]) is not None
+    with pytest.raises(ValueError, match="arch must be one of"):
+        recipe["create_target"](arch="gfx942")
+
+
+def test_amd_rdna_recipe_pins_only_points_that_offer_the_implementation(amd_rdna_tutorial):
+    recipe = amd_rdna_tutorial("recipe.py")
+    point = lambda point_id, *candidates: SimpleNamespace(
+        id=point_id, candidates=tuple(SimpleNamespace(id=value) for value in candidates))
+    module = SimpleNamespace(semantic_hash="module", selection_map={}, selection_points=(
+        point("tir.gate_up", "tir.dense_matmul_glu.packed_k_major_gemv_tn16", _GLU_TN64),
+        point("tir.down", "tir.dense_matmul.split_k_n_packed_k_major_gemv"),
+    ))
+    plan = recipe["_pin_implementation"](module, _GLU_TN64)
+    assert [(record.point_id, record.candidate_id) for record in plan.records] == [("tir.gate_up", _GLU_TN64)]
+    with pytest.raises(ValueError, match="not offered"):
+        recipe["_pin_implementation"](module, recipe["_ATTENTION_PARTIAL"])
+
+
+def test_amd_rdna_benchmark_context_lengths(amd_rdna_tutorial):
+    parse = amd_rdna_tutorial("run.py")["_context_lengths"]
+    assert parse("8192, 1,1024,1") == [1, 1024, 8192]
+    for text in ("", "0,1024", "1k"):
+        with pytest.raises(SystemExit):
+            parse(text)

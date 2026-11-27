@@ -14,6 +14,7 @@ from triton.flagmega.codegen.triton.runtime_binding import describe_function_run
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import emit_module, load_module
 
+
 BASE = "tir.dense_matmul.packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats_lhs8192"
 ASYNC = BASE + "_async"
 
@@ -45,8 +46,7 @@ def test_async_staging_is_explicit_and_completes_before_first_read(tmp_path, k):
     assert body.index("async_wait_group") < body.index("tl.debug_barrier") < body.index("__consumer_stage(")
 
 
-@pytest.mark.parametrize(
-    "mutation", ("mode", "bool_mode", "tail", "stride", "pool_offset", "scope_stride", "owner_stride", "external"))
+@pytest.mark.parametrize("mutation", ("mode", "bool_mode", "tail", "stride", "pool_offset", "scope_stride", "owner_stride", "external"))
 def test_async_staging_rejects_an_unproven_physical_row(sync_raw, mutation):
     raw = deepcopy(sync_raw)
     raw["parameters"]["lhs_copy_kind"] = "async"

@@ -9,22 +9,22 @@ from triton.flagmega.targets import NvidiaSm90Target
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.ir.ops.nn._paged_attention_state import PagedAttentionStateConfig
 
+
 CONFIG = PagedAttentionStateConfig(1, 1, 32, num_blocks=8)
 
 
 class Attention(fm.Module):
-
     def __init__(
-            self,
-            *,
-            mesh,
-            head_policy=None,
-            heads=8,
-            lanes=(2, 4),
-            traversal="compact",
-            query_changes=None,
-            topk_policy=None,
-            config=CONFIG,
+        self,
+        *,
+        mesh,
+        head_policy=None,
+        heads=8,
+        lanes=(2, 4),
+        traversal="compact",
+        query_changes=None,
+        topk_policy=None,
+        config=CONFIG,
     ):
         super().__init__(
             dialect="high_level",
@@ -60,7 +60,7 @@ class Attention(fm.Module):
             index_traversal=self.traversal,
         )
         result = fm.F.distributed.boxing(result, result.type.tensor)
-        self.function("main", (query, topk, state), (result, ))
+        self.function("main", (query, topk, state), (result,))
 
 
 def graph(**kwargs):
@@ -70,12 +70,17 @@ def graph(**kwargs):
 def compile_attention(path, *, schedule="bf16_mma", **kwargs):
     c = Compiler(CompileOptions(placement=kwargs["mesh"]))
     base = c.target.triton_implementation_model
-    c.target = NvidiaSm90Target(triton_implementation_model=replace(
-        base,
-        implementations=tuple(
-            replace(i, parameters={**i.parameters, "decode_schedule": schedule, "compute_num_warps": 8}) if i.id ==
-            "tir.dsa_paged_attention.decode" else i for i in base.implementations),
-    ))
+    c.target = NvidiaSm90Target(
+        triton_implementation_model=replace(
+            base,
+            implementations=tuple(
+                replace(i, parameters={**i.parameters, "decode_schedule": schedule, "compute_num_warps": 8})
+                if i.id == "tir.dsa_paged_attention.decode"
+                else i
+                for i in base.implementations
+            ),
+        )
+    )
     m = c.compile(graph(**kwargs)).module
     r = fm.load_module(fm.emit_module(m, path / "compiled.py"))
     assert r.semantic_hash == m.semantic_hash

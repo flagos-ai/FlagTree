@@ -20,28 +20,18 @@ def _options(scope: MemorySharingScope) -> BufferizationOptions:
     maximum = (1 << 31) - 1
     return BufferizationOptions((
         MemorySpace(
-            "workspace",
-            "device",
-            64,
-            maximum,
-            AllocationStrategy.SAT,
+            "workspace", "device", 64, maximum, AllocationStrategy.SAT,
             allocation_scope=MemoryAllocationScope.FUNCTION,
             sharing_scope=scope,
         ),
         MemorySpace(
-            "rdata",
-            "readonly_device",
-            64,
-            maximum,
+            "rdata", "readonly_device", 64, maximum,
             AllocationStrategy.LINEAR,
             allocation_scope=MemoryAllocationScope.MODULE,
             sharing_scope=MemorySharingScope.CHIP,
         ),
         MemorySpace(
-            "external",
-            "external",
-            1,
-            maximum,
+            "external", "external", 1, maximum,
             AllocationStrategy.EXTERNAL,
             allocation_scope=MemoryAllocationScope.EXTERNAL,
             sharing_scope=MemorySharingScope.CHIP,
@@ -51,11 +41,11 @@ def _options(scope: MemorySharingScope) -> BufferizationOptions:
 
 def _module():
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
-    value_type = fm.tensor_type("float32", (16, ))
+    value_type = fm.tensor_type("float32", (16,))
     source = builder.var("source", value_type, id="source")
-    produced = builder.call("tir.kernel", (source, ), value_type, id="produced")
-    result = builder.call("tir.kernel", (produced, ), value_type, id="result")
-    builder.function("main", (source, ), (result, ))
+    produced = builder.call("tir.kernel", (source,), value_type, id="produced")
+    result = builder.call("tir.kernel", (produced,), value_type, id="result")
+    builder.function("main", (source,), (result,))
     return builder.build(entry="main")
 
 

@@ -1,0 +1,5 @@
+// flagmega-kernel: paged_attention_partial/decode platform=generic
+{% set paged_attention_partial_variant = "decode" %}
+{% if render_calls is defined %}
+{% include "kernels/paged_attention_partial/_function.cpp.jinja" %}
+{% endif %}

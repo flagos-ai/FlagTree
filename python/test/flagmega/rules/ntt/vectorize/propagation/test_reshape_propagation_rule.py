@@ -21,23 +21,25 @@ def _assert_equivalent(original, rewritten, inputs):
 
 
 def test_vectorize_reshape_maps_equal_row_major_stride(materialize_rewrite):
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
-            value = self.input("value", fm.tensor_type("bfloat16", (2, 4, 8)), id="value")
+            value = self.input(
+                "value", fm.tensor_type("bfloat16", (2, 4, 8)), id="value"
+            )
             reshaped = fm.F.tensors.reshape(value, (2, 32), name="reshaped")
-            root = fm.F.tensors.pack(reshaped, (8, ), axes=(1, ), name="root")
-            self.function("main", (value, ), (root, ))
+            root = fm.F.tensors.pack(reshaped, (8,), axes=(1,), name="root")
+            self.function("main", (value,), (root,))
 
     module = Graph().build()
-    result = _rule("VectorizeReshapePropagation").apply(module.node_map["root"], module)
+    result = _rule("VectorizeReshapePropagation").apply(
+        module.node_map["root"], module
+    )
 
     assert result is not None
-    assert result.prefix_nodes[0].attrs["axes"] == (2, )
+    assert result.prefix_nodes[0].attrs["axes"] == (2,)
     assert result.replacement.op == "tensors.reshape"
     rewritten = materialize_rewrite(module, result)
     _assert_equivalent(
@@ -48,29 +50,29 @@ def test_vectorize_reshape_maps_equal_row_major_stride(materialize_rewrite):
 
 
 def test_reshape_devectorize_maps_equal_row_major_stride(materialize_rewrite):
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
             value = self.input(
                 "value",
-                fm.tensor_type(fm.vector_type("bfloat16", (8, )), (2, 4, 1)),
+                fm.tensor_type(fm.vector_type("bfloat16", (8,)), (2, 4, 1)),
                 id="value",
             )
-            unpacked = fm.F.tensors.unpack(value, axes=(2, ), name="unpacked")
+            unpacked = fm.F.tensors.unpack(value, axes=(2,), name="unpacked")
             root = fm.F.tensors.reshape(unpacked, (2, 32), name="root")
-            self.function("main", (value, ), (root, ))
+            self.function("main", (value,), (root,))
 
     module = Graph().build()
-    result = _rule("ReshapeDevectorizePropagation").apply(module.node_map["root"], module)
+    result = _rule("ReshapeDevectorizePropagation").apply(
+        module.node_map["root"], module
+    )
 
     assert result is not None
     assert result.prefix_nodes[0].attrs["shape"] == (2, 4)
     assert result.replacement.op == "tensors.unpack"
-    assert result.replacement.attrs["axes"] == (1, )
+    assert result.replacement.attrs["axes"] == (1,)
     rewritten = materialize_rewrite(module, result)
     _assert_equivalent(
         module,
@@ -80,40 +82,42 @@ def test_reshape_devectorize_maps_equal_row_major_stride(materialize_rewrite):
 
 
 def test_vectorize_reshape_rejects_lane_that_crosses_row_major_strides():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
-            value = self.input("value", fm.tensor_type("bfloat16", (4, 8)), id="value")
+            value = self.input(
+                "value", fm.tensor_type("bfloat16", (4, 8)), id="value"
+            )
             reshaped = fm.F.tensors.reshape(value, (8, 4), name="reshaped")
-            root = fm.F.tensors.pack(reshaped, (2, ), axes=(0, ), name="root")
-            self.function("main", (value, ), (root, ))
+            root = fm.F.tensors.pack(reshaped, (2,), axes=(0,), name="root")
+            self.function("main", (value,), (root,))
 
     module = Graph().build()
 
-    assert _rule("VectorizeReshapePropagation").apply(module.node_map["root"], module) is None
+    assert _rule("VectorizeReshapePropagation").apply(
+        module.node_map["root"], module
+    ) is None
 
 
 def test_reshape_devectorize_rejects_lane_that_crosses_row_major_strides():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
             value = self.input(
                 "value",
-                fm.tensor_type(fm.vector_type("bfloat16", (2, )), (2, 8)),
+                fm.tensor_type(fm.vector_type("bfloat16", (2,)), (2, 8)),
                 id="value",
             )
-            unpacked = fm.F.tensors.unpack(value, axes=(0, ), name="unpacked")
+            unpacked = fm.F.tensors.unpack(value, axes=(0,), name="unpacked")
             root = fm.F.tensors.reshape(unpacked, (8, 4), name="root")
-            self.function("main", (value, ), (root, ))
+            self.function("main", (value,), (root,))
 
     module = Graph().build()
 
-    assert _rule("ReshapeDevectorizePropagation").apply(module.node_map["root"], module) is None
+    assert _rule("ReshapeDevectorizePropagation").apply(
+        module.node_map["root"], module
+    ) is None

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from triton.flagmega.ir import IRModule, Node
 
+
 # These operations remain physical typed-vector compute after
 # LowerVectorizationContracts.  Other selected vector expressions are equality
 # witnesses used to choose a schedule and are reconstructed as their semantic
@@ -54,10 +55,8 @@ def retained_vectorization_roots(module: IRModule) -> frozenset[str]:
         # lifetimes. Taking only vectorization_root()'s first match would
         # misclassify the other aliases as transient at reusable boundaries.
         result.add(node.id)
-        result.update(
-            str(node.metadata[key])
-            for key in ("vectorization_semantic_id", "vectorization_root")
-            if node.metadata.get(key) is not None)
+        result.update(str(node.metadata[key]) for key in ("vectorization_semantic_id", "vectorization_root")
+                      if node.metadata.get(key) is not None)
     # Padding/cropping are executable tensor transforms. In particular a
     # packed RHS may already be a function parameter: scalar reconstruction
     # cannot recover its logical MatMul operands from that physical ABI.
@@ -77,7 +76,11 @@ def is_transient_vectorization_boundary(
     root = vectorization_root(node)
     if root is None:
         return False
-    retained = (retained_vectorization_roots(module) if retained_roots is None else retained_roots)
+    retained = (
+        retained_vectorization_roots(module)
+        if retained_roots is None
+        else retained_roots
+    )
     return root not in retained
 
 

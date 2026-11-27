@@ -15,24 +15,26 @@ def module(*, axis=1, raw_output=False, compute=False):
     kind = fm.tensor_type("float32", (16, 16))
 
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("worker_x", kind, id="worker_x", metadata={"function_parameter": "worker"})
-            small = fm.F.tensors.pack(x, lanes=(4, ), axes=(axis, ), name="small")
+            small = fm.F.tensors.pack(x, lanes=(4,), axes=(axis,), name="small")
             wide = fm.F.tensors.pack(x, lanes=(2, 4), axes=(axis, axis), name="wide")
-            computed = (fm.F.math.add(x, fm.F.builtin.splat_const(kind, 1.0)), ) if compute else ()
-            outputs = (small, wide, *computed, *((x, ) if raw_output else ()))
-            self.function("worker", (x, ), outputs, attrs={"reusable": True})
+            computed = (fm.F.math.add(x, fm.F.builtin.splat_const(kind, 1.0)),) if compute else ()
+            outputs = (small, wide, *computed, *((x,) if raw_output else ()))
+            self.function("worker", (x,), outputs, attrs={"reusable": True})
             actual = tuple(self.input(f"x{i}", kind, id=f"x{i}") for i in range(2))
             calls = tuple(
-                fm.F.builtin.call(value, callee="worker", result_type=fm.TupleType(tuple(
-                    v.type for v in outputs)), name=f"call{i}") for i, value in enumerate(actual))
+                fm.F.builtin.call(
+                    value, callee="worker", result_type=fm.TupleType(tuple(v.type for v in outputs)), name=f"call{i}"
+                )
+                for i, value in enumerate(actual)
+            )
             results = tuple(v for call in calls for v in fm.F.tensors.get_items(call, *range(len(outputs))))
             if compute:
                 exposed = []
                 for i, value in enumerate(results):
                     if isinstance(value.type.dtype, fm.VectorType):
-                        value = fm.F.tensors.unpack(value, axes=(1, ) * len(value.type.dtype.lanes))
+                        value = fm.F.tensors.unpack(value, axes=(1,) * len(value.type.dtype.lanes))
                     exposed.append(fm.F.math.add(value, fm.F.builtin.splat_const(kind, float(i * 11 + 3))))
                 results = (*exposed, fm.F.math.add(*actual))
             self.function("main", actual, results)
@@ -68,16 +70,16 @@ def test_repeated_logical_views_use_one_physical_result_binding():
     from triton.flagmega.compiler import Compiler
 
     class Repeated(fm.Module):
-
         def forward(self):
-            value = self.input("value", fm.tensor_type("float32", (16, )), id="value")
+            value = self.input("value", fm.tensor_type("float32", (16,)), id="value")
             result = fm.F.math.add(value, value)
-            self.function("main", (value, ), (result, result))
+            self.function("main", (value,), (result, result))
 
     compiled = Compiler().compile(Repeated(dialect="high_level", stage="imported", entry="main").build()).module
     worker = compiled.execution_function_map["main"]
-    logical = tuple(buffer for _, buffers in fm.verify_buffer_plan(compiled).function_map["main"].outputs
-                    for buffer in buffers)
+    logical = tuple(
+        buffer for _, buffers in fm.verify_buffer_plan(compiled).function_map["main"].outputs for buffer in buffers
+    )
     assert len(set(logical)) < len(logical)
     assert worker.results == tuple(dict.fromkeys(logical))
 
@@ -105,12 +107,12 @@ def test_compatible_input_views_execute_through_reusable_device_calls(tmp_path):
     compiled = Compiler().compile(source).module
 
     class Constants:
-
         def load_tensor(self, key, *, device="cpu"):
             raise AssertionError(f"unexpected checkpoint access: {key}")
 
-    artifact = write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", checkpoint=Constants(),
-                              emit_executable=True)
+    artifact = write_artifact(
+        compiled, tmp_path / "artifact", target="nvidia-sm90", checkpoint=Constants(), emit_executable=True
+    )
     runtime = load(artifact, device="cuda:0")
     try:
         values = {key: value.cuda() for key, value in inputs.items()}

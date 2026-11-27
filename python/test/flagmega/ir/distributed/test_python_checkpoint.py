@@ -6,16 +6,15 @@ from triton.flagmega import pattern_match as pm
 
 
 def _distributed_view_module():
-    placement = fm.Placement((8, ), "b", "b")
+    placement = fm.Placement((8,), "b", "b")
     tensor = fm.tensor_type("bfloat16", [1, 128])
     distributed = fm.DistributedType(
         tensor,
-        (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((0, ), 16)),
+        (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((0,), 16)),
         placement,
     )
 
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="distributed", entry="main")
 
@@ -23,7 +22,7 @@ def _distributed_view_module():
             source = self.input("source", tensor, id="source")
             view = fm.F.distributed.sharded_view(source, distributed, name="view")
             output = fm.F.distributed.boxing(view, tensor, name="output")
-            self.function("main", (source, ), (output, ))
+            self.function("main", (source,), (output,))
 
     return Graph().build()
 

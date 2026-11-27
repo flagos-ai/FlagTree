@@ -12,16 +12,16 @@ from triton.flagmega.errors import IRSchemaError
 def _dispatch() -> fm.KernelDispatch:
     return fm.T.kernel_dispatch(
         semantic_op="test.copy",
-        arguments=("input", ),
-        outputs=("output", ),
+        arguments=("input",),
+        outputs=("output",),
         semantic_facts={
             "flops": 7,
             "bytes_read": 16,
             "bytes_written": 16,
             "synchronizations": 0,
         },
-        reads=("input", ),
-        writes=("output", ),
+        reads=("input",),
+        writes=("output",),
     )
 
 
@@ -29,13 +29,13 @@ def _region(dispatch=None):
     dispatch = dispatch or _dispatch()
     stage = fm.T.pipeline_stage("copy_stage", dispatch)
     return fm.T.producer_consumer_region(
-        fm.T.sequential((stage, )),
-        fm.T.sequential((stage, )),
+        fm.T.sequential((stage,)),
+        fm.T.sequential((stage,)),
     )
 
 
 def _module(region) -> fm.IRModule:
-    tensor = fm.tensor_type("float32", (4, ))
+    tensor = fm.tensor_type("float32", (4,))
     function = fm.T.prim_function(
         "copy",
         "triton",
@@ -43,14 +43,18 @@ def _module(region) -> fm.IRModule:
             fm.T.prim_parameter("input", tensor, fm.T.PrimParameterRole.INPUT),
             fm.T.prim_parameter("output", tensor, fm.T.PrimParameterRole.OUTPUT),
         ),
-        fm.T.sequential((region, )),
-        fm.T.return_((fm.T.return_binding(fm.T.value_ref("output", tensor), "output"), )),
+        fm.T.sequential((region,)),
+        fm.T.return_((
+            fm.T.return_binding(fm.T.value_ref("output", tensor), "output"),
+        )),
     )
     builder = fm.IRBuilder(dialect="bufferized_tir", stage="bufferized_tir")
     source = builder.var("source", tensor, id="source")
     builder.prim_function(function)
-    result = builder.call("tir.call", (source, ), tensor, id="result", attrs={"callee": "copy"})
-    builder.function("main", (source, ), (result, ))
+    result = builder.call(
+        "tir.call", (source,), tensor, id="result", attrs={"callee": "copy"}
+    )
+    builder.function("main", (source,), (result,))
     return fm.verify_module(builder.build(entry="main"))
 
 
@@ -60,11 +64,13 @@ def test_region_requires_matching_stage_drain_and_handoff_structure():
     second = fm.T.pipeline_stage("second", dispatch)
 
     with pytest.raises(IRSchemaError, match="identical IDs and order"):
-        fm.T.producer_consumer_region(fm.T.sequential((first, )), fm.T.sequential((second, )))
+        fm.T.producer_consumer_region(
+            fm.T.sequential((first,)), fm.T.sequential((second,))
+        )
     with pytest.raises(IRSchemaError, match="before executing"):
         fm.T.producer_consumer_region(
             fm.T.sequential((fm.T.pipeline_drain("first"), first)),
-            fm.T.sequential((first, )),
+            fm.T.sequential((first,)),
         )
     with pytest.raises(IRSchemaError, match="duplicate pipeline handoff"):
         fm.T.producer_consumer_region(
@@ -73,7 +79,7 @@ def test_region_requires_matching_stage_drain_and_handoff_structure():
                 fm.T.pipeline_handoff("ready"),
                 fm.T.pipeline_handoff("ready"),
             )),
-            fm.T.sequential((first, )),
+            fm.T.sequential((first,)),
         )
 
 

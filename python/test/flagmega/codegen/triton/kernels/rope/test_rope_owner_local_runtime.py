@@ -18,15 +18,14 @@ def test_rope_preserves_head_dim_shards_without_cross_owner_reads(tmp_path, lane
         pytest.skip("SM90 CUDA required")
     mesh = fm.Placement((2, 4), "yx", "bb")
     broad = fm.SBP.broadcast()
-    dtype = fm.DType.BFLOAT16 if lanes == 1 else fm.vector_type("bfloat16", (lanes, ))
+    dtype = fm.DType.BFLOAT16 if lanes == 1 else fm.vector_type("bfloat16", (lanes,))
     table_dtype = fm.DType.FLOAT32 if lanes == 1 else fm.vector_type("float32", (2, lanes))
     value_type = fm.tensor_type(dtype, (1, 3, 128 // lanes))
     table_type = fm.tensor_type(table_dtype, (1, 1, rotary // (1 if lanes == 1 else 2 * lanes)))
-    distributed = fm.DistributedType(value_type, (broad, fm.SBP.split_block_cyclic(
-        (0, ), 1), fm.SBP.split_block_cyclic((1, ), 8 // lanes)), mesh)
+    distributed = fm.DistributedType(value_type, (broad, fm.SBP.split_block_cyclic((0,), 1),
+        fm.SBP.split_block_cyclic((1,), 8 // lanes)), mesh)
 
     class Graph(fm.Module):
-
         def forward(self):
             value = self.input("value", value_type)
             cos = self.input("cos", table_type)
@@ -34,17 +33,14 @@ def test_rope_preserves_head_dim_shards_without_cross_owner_reads(tmp_path, lane
             shard = fm.F.distributed.boxing(value, distributed)
             # The producer forces an ordinary owner-local temporary.
             shard = fm.F.math.silu(shard) if lanes == 1 else fm.F.math.vectorized_unary(
-                shard, unary_op="silu", metadata={
-                    "selected_vectorization": "vectorization.last_axis", "selected_vector_axes":
-                    (2, ), "selected_vector_lanes": (lanes, )
-                })
-            tables = tuple(
-                fm.F.distributed.boxing(table, fm.DistributedType(table_type, (broad, ) * 3, mesh))
-                for table in (cos, sin))
+                shard, unary_op="silu", metadata={"selected_vectorization": "vectorization.last_axis",
+                    "selected_vector_axes": (2,), "selected_vector_lanes": (lanes,)})
+            tables = tuple(fm.F.distributed.boxing(table, fm.DistributedType(table_type, (broad,) * 3, mesh))
+                           for table in (cos, sin))
             op = fm.F.nn.rope if lanes == 1 else fm.F.ntt.vectorized_rope
             output = op(shard, *tables, rotary_dim=rotary, name="rope")
             assert output.type == distributed
-            self.function("main", (value, cos, sin), (fm.F.distributed.boxing(output, value_type), ))
+            self.function("main", (value, cos, sin), (fm.F.distributed.boxing(output, value_type),))
 
     module = Graph(dialect="high_level", stage="distributed", entry="main",
                    metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()

@@ -18,23 +18,23 @@ def pass_module():
 
 def mixed_module(*, publication_range_unrelated=False, nested=False):
     dispatch = helpers.pipeline_dispatch('pipeline_kernel', 0, shared_start=0)
-    kernel = helpers.prim_function('pipeline_kernel', (dispatch, ))
+    kernel = helpers.prim_function('pipeline_kernel', (dispatch,))
     write_kv = interproc._call('write_kv', 'ordinary', 'update', 'kv', (), transfer=False)
     kv_stage = interproc._call('kv_stage', kernel.name, 'kv', 'kv_result',
-                               interproc._shared_for_call('main', 'kv_stage', dispatch))
+                              interproc._shared_for_call('main', 'kv_stage', dispatch))
     activation = interproc._call('activation', 'ordinary', 'kv_result', 'activation_result', (), transfer=False)
     weight_stage = interproc._call('weight_stage', kernel.name, 'weight', 'result',
-                                   interproc._shared_for_call('main', 'weight_stage', dispatch))
-    pub = fm.Barrier(
-        fm.BarrierScope.CHIP, ('write_kv', ), 'kv_stage', ranges=((fm.SynchronizationRange(
-            'workspace', 'unrelated_norm_stat', 0, 4, 'read'), ) if publication_range_unrelated else ()))
-    activation_barrier = fm.Barrier(fm.BarrierScope.BLOCK, ('activation', ), 'weight_stage')
-    done = fm.Barrier(fm.BarrierScope.CHIP, ('weight_stage', ), 'done')
+                                  interproc._shared_for_call('main', 'weight_stage', dispatch))
+    pub = fm.Barrier(fm.BarrierScope.CHIP, ('write_kv',), 'kv_stage', ranges=(
+        (fm.SynchronizationRange('workspace', 'unrelated_norm_stat', 0, 4, 'read'),)
+        if publication_range_unrelated else ()))
+    activation_barrier = fm.Barrier(fm.BarrierScope.BLOCK, ('activation',), 'weight_stage')
+    done = fm.Barrier(fm.BarrierScope.CHIP, ('weight_stage',), 'done')
     fields = (write_kv, pub, kv_stage, activation, activation_barrier, weight_stage, done)
     if nested:
-        fields = (fm.Sequential(fields[:3]), fm.Sequential((fm.Sequential(fields[3:]), )))
-    function = fm.T.execution_function('main', ('update', 'kv', 'weight'), ('result', ), fm.Sequential(fields))
-    graph = replace(helpers.module(kernel), execution_functions=(function, ))
+        fields = (fm.Sequential(fields[:3]), fm.Sequential((fm.Sequential(fields[3:]),)))
+    function = fm.T.execution_function('main', ('update', 'kv', 'weight'), ('result',), fm.Sequential(fields))
+    graph = replace(helpers.module(kernel), execution_functions=(function,))
     return graph, (pub, activation_barrier, done)
 
 
@@ -53,17 +53,16 @@ def test_mixed_sources_keep_exact_publication_cut(unrelated_range, nested):
     producer = list(walk(region.produce_body))
     consumer = list(walk(region.consume_body))
     got = [x for x in producer if isinstance(x, fm.Barrier)]
-    assert got == [original_barriers[0]
-                   ], ('mixed mutable KV must retain only its selected publication cut; '
-                       f'consumer-only activation/completion cuts leaked into producer: {[x.before for x in got]}')
+    assert got == [original_barriers[0]], (
+        'mixed mutable KV must retain only its selected publication cut; '
+        f'consumer-only activation/completion cuts leaked into producer: {[x.before for x in got]}'
+    )
     assert [x for x in consumer if isinstance(x, fm.Barrier)] == list(original_barriers)
-    for kind, attr in ((fm.PipelineStage, 'stage_id'), (fm.PipelineDrain, 'stage_id'), (fm.PipelineHandoff,
-                                                                                        'handoff_id')):
-        assert [getattr(x, attr)
-                for x in producer
-                if isinstance(x, kind)] == [getattr(x, attr) for x in consumer if isinstance(x, kind)]
+    for kind, attr in ((fm.PipelineStage, 'stage_id'), (fm.PipelineDrain, 'stage_id'), (fm.PipelineHandoff, 'handoff_id')):
+        assert [getattr(x, attr) for x in producer if isinstance(x, kind)] == [getattr(x, attr) for x in consumer if isinstance(x, kind)]
     assert len([x for x in producer if isinstance(x, fm.PipelineDrain)]) == 1
     assert len([x for x in producer if isinstance(x, fm.PipelineHandoff)]) == 1
+
 
 
 def test_equal_barriers_at_distinct_tree_positions_are_not_same_occurrence():
@@ -71,9 +70,8 @@ def test_equal_barriers_at_distinct_tree_positions_are_not_same_occurrence():
     original = graph.execution_function_map['main']
     duplicate = replace(barriers[0])
     assert duplicate == barriers[0] and duplicate is not barriers[0]
-    graph = replace(
-        graph, execution_functions=(replace(original, body=fm.Sequential(
-            (*original.body.fields, fm.Sequential((duplicate, ))))), ))
+    graph = replace(graph, execution_functions=(replace(original, body=fm.Sequential(
+        (*original.body.fields, fm.Sequential((duplicate,))))),))
     region = pass_module().lower_transfer_pipeline_regions(graph).execution_function_map['main'].body.fields[0]
     kept = [x for x in walk(region.produce_body) if isinstance(x, fm.Barrier)]
     assert len(kept) == 1 and kept[0] is barriers[0]
@@ -85,32 +83,31 @@ def test_joint_axis_scope_keeps_both_witnesses_but_not_redundant_block():
     placement = fm.Placement(hierarchy=(2, 4), name='yx', hierarchy_levels='bb')
     writer = interproc._call('writer', 'ordinary', 'update', 'source', (), transfer=False)
     reader = interproc._call('reader', 'pipeline', 'source', 'result', ())
-    block = fm.Barrier(fm.BarrierScope.BLOCK, ('writer', ), 'reader')
-    axis0 = fm.Barrier(fm.BarrierScope.CHIP, ('writer', ), 'reader', axis_group_axes=(0, ))
-    axis1 = fm.Barrier(fm.BarrierScope.CHIP, ('writer', ), 'reader', axis_group_axes=(1, ))
+    block = fm.Barrier(fm.BarrierScope.BLOCK, ('writer',), 'reader')
+    axis0 = fm.Barrier(fm.BarrierScope.CHIP, ('writer',), 'reader', axis_group_axes=(0,))
+    axis1 = fm.Barrier(fm.BarrierScope.CHIP, ('writer',), 'reader', axis_group_axes=(1,))
     order = (writer, block, axis0, axis1, reader)
     after, before = defaultdict(list), defaultdict(list)
-    selected = pass_module()._add_execution_source_handoffs(order,
-                                                            {id(reader): fm.PipelineStage('reader_stage', reader)},
-                                                            after, before, 'main', {},
-                                                            {'reader': (('writer', ('grid', (0, 1), placement)), )})
+    selected = pass_module()._add_execution_source_handoffs(
+        order, {id(reader): fm.PipelineStage('reader_stage', reader)}, after, before, 'main', {},
+        {'reader': (('writer', ('grid', (0, 1), placement)),)})
     assert selected == frozenset((2, 3))
     assert after[id(axis1)] == before[id(reader)] and not after[id(axis0)]
 
 
 def test_full_grid_scope_replaces_redundant_earlier_axis_witness():
     placement = fm.Placement(hierarchy=(2, 4), name='yx', hierarchy_levels='bb')
-    a = fm.Barrier(fm.BarrierScope.CHIP, ('writer', ), 'reader', axis_group_axes=(0, ))
-    b = fm.Barrier(fm.BarrierScope.CHIP, ('writer', ), 'reader')
-    assert pass_module()._publication_barrier_indices((a, b), 0, 2, ('grid', (0, 1), placement)) == (1, )
+    a = fm.Barrier(fm.BarrierScope.CHIP, ('writer',), 'reader', axis_group_axes=(0,))
+    b = fm.Barrier(fm.BarrierScope.CHIP, ('writer',), 'reader')
+    assert pass_module()._publication_barrier_indices((a, b), 0, 2, ('grid', (0, 1), placement)) == (1,)
 
 
 def test_pipeline_callee_does_not_reintroduce_unrelated_caller_barriers():
     graph = interproc._interprocedural_module()
     main = graph.execution_function_map['main']
     writer = interproc._call('writer', 'ordinary', 'update', 'main_source', (), transfer=False)
-    publication = fm.Barrier(fm.BarrierScope.CHIP, ('writer', ), 'first')
-    completion = fm.Barrier(fm.BarrierScope.CHIP, ('second', ), 'done')
+    publication = fm.Barrier(fm.BarrierScope.CHIP, ('writer',), 'first')
+    completion = fm.Barrier(fm.BarrierScope.CHIP, ('second',), 'done')
     main = replace(main, body=fm.Sequential((writer, publication, *main.body.fields, completion)))
     graph = replace(graph, execution_functions=(graph.execution_function_map['worker'], main))
     result = pass_module().lower_transfer_pipeline_regions(graph)
@@ -118,14 +115,13 @@ def test_pipeline_callee_does_not_reintroduce_unrelated_caller_barriers():
     assert [x for x in walk(region.produce_body) if isinstance(x, fm.Barrier)] == [publication]
     assert [x for x in walk(region.consume_body) if isinstance(x, fm.Barrier)] == [publication, completion]
     for kind in (fm.PipelineStage, fm.PipelineDrain, fm.PipelineHandoff):
-        assert [x for x in walk(region.produce_body)
-                if isinstance(x, kind)] == [x for x in walk(region.consume_body) if isinstance(x, kind)]
+        assert [x for x in walk(region.produce_body) if isinstance(x, kind)] == [x for x in walk(region.consume_body) if isinstance(x, kind)]
 
 
 def test_repeated_mutable_function_retains_existing_participation():
     graph, barriers = mixed_module()
     fn = graph.execution_function_map['main']
-    graph = replace(graph, execution_functions=(replace(fn, attrs={'region_kind': 'for'}), ))
+    graph = replace(graph, execution_functions=(replace(fn, attrs={'region_kind': 'for'}),))
     region = pass_module().lower_transfer_pipeline_regions(graph).execution_function_map['main'].body.fields[0]
     assert [x for x in walk(region.produce_body) if isinstance(x, fm.Barrier)] == list(barriers)
     assert [x for x in walk(region.consume_body) if isinstance(x, fm.Barrier)] == list(barriers)
@@ -142,8 +138,9 @@ def test_acyclic_tail_write_is_not_a_publication_predecessor():
 def test_counted_mutable_loop_preserves_existing_barriers_and_tree_paths():
     graph, barriers = mixed_module(nested=True)
     fn = graph.execution_function_map['main']
-    loop = fm.T.for_loop(fm.dim('i', minimum=0, maximum=1), fm.T.range(0, 2), fm.T.LoopMode.SERIAL, fn.body)
-    graph = replace(graph, execution_functions=(replace(fn, body=fm.Sequential((loop, ))), ))
+    loop = fm.T.for_loop(fm.dim('i', minimum=0, maximum=1), fm.T.range(0, 2),
+                         fm.T.LoopMode.SERIAL, fn.body)
+    graph = replace(graph, execution_functions=(replace(fn, body=fm.Sequential((loop,))),))
     region = pass_module().lower_transfer_pipeline_regions(graph).execution_function_map['main'].body.fields[0]
     assert isinstance(region.produce_body.fields[0], fm.For)
     assert [x for x in walk(region.produce_body) if isinstance(x, fm.Barrier)] == list(barriers)

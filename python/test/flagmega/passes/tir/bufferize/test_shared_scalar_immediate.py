@@ -6,7 +6,7 @@ from triton.flagmega.passes.tir.bufferize import plan_buffers
 
 
 def test_scalar_immediate_shared_by_callee_and_caller_has_one_binding():
-    tensor = fm.tensor_type("float32", (4, ))
+    tensor = fm.tensor_type("float32", (4,))
     scalar = fm.tensor_type("bool", ())
     placement = fm.Placement((2, 4), "yx", "bb")
     distributed_scalar = fm.DistributedType(scalar, (), placement)
@@ -22,7 +22,7 @@ def test_scalar_immediate_shared_by_callee_and_caller_has_one_binding():
     shared_view = fm.Node(
         "shared_view",
         "distributed.sharded_view",
-        ("shared", ),
+        ("shared",),
         distributed_scalar,
         attrs={"new_type": distributed_scalar},
     )
@@ -37,7 +37,7 @@ def test_scalar_immediate_shared_by_callee_and_caller_has_one_binding():
     call = fm.Node(
         "call",
         "tir.call",
-        ("main_arg", ),
+        ("main_arg",),
         layer_result_type,
         attrs={"callee": "layer"},
     )
@@ -60,8 +60,8 @@ def test_scalar_immediate_shared_by_callee_and_caller_has_one_binding():
             program_result,
         ),
         functions=(
-            fm.Function("layer", ("layer_arg", ), ("layer_result", )),
-            fm.Function("main", ("main_arg", ), ("program_result", )),
+            fm.Function("layer", ("layer_arg",), ("layer_result",)),
+            fm.Function("main", ("main_arg",), ("program_result",)),
         ),
         entry="main",
     )

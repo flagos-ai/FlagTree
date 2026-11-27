@@ -25,10 +25,14 @@ class TIRMicroKernelProposal:
     def __post_init__(self) -> None:
         candidate_ids = tuple(candidate.id for candidate in self.candidates)
         if not candidate_ids or len(set(candidate_ids)) != len(candidate_ids):
-            raise CodegenError("A TIR microkernel proposal requires non-empty unique candidates.")
+            raise CodegenError(
+                "A TIR microkernel proposal requires non-empty unique candidates."
+            )
         if self.default_candidate not in candidate_ids:
-            raise CodegenError(f"TIR microkernel default {self.default_candidate!r} is not in "
-                               f"the proposal {candidate_ids}.")
+            raise CodegenError(
+                f"TIR microkernel default {self.default_candidate!r} is not in "
+                f"the proposal {candidate_ids}."
+            )
 
 
 @dataclass(frozen=True)
@@ -40,7 +44,9 @@ class TIRMicroKernelContext:
     dispatch: KernelDispatch
     implementation_model: TritonImplementationModel
 
-    def implementations(self, family: str, **contract: object) -> tuple[TritonImplementation, ...]:
+    def implementations(
+        self, family: str, **contract: object
+    ) -> tuple[TritonImplementation, ...]:
         return self.implementation_model.find(family, **contract)
 
     def candidate(self, implementation: TritonImplementation) -> Candidate:
@@ -53,15 +59,20 @@ class TIRMicroKernelContext:
             facts,
         )
 
-    def choose_default(self, family: str, candidates: tuple[Candidate, ...]) -> str:
-        return self.implementation_model.choose_default(family, tuple(candidate.id for candidate in candidates))
+    def choose_default(
+        self, family: str, candidates: tuple[Candidate, ...]
+    ) -> str:
+        return self.implementation_model.choose_default(
+            family, tuple(candidate.id for candidate in candidates)
+        )
 
 
 class TIRMicroKernelProvider(Protocol):
     op_names: frozenset[str]
 
-    def propose(self, context: TIRMicroKernelContext) -> TIRMicroKernelProposal | None:
-        ...
+    def propose(
+        self, context: TIRMicroKernelContext
+    ) -> TIRMicroKernelProposal | None: ...
 
 
 class TIRMicroKernelProviderRegistry:
@@ -81,11 +92,15 @@ class TIRMicroKernelProviderRegistry:
 
     def add(self, provider: TIRMicroKernelProvider) -> None:
         if not provider.op_names:
-            raise CodegenError(f"TIR microkernel provider {type(provider).__name__} owns no ops.")
+            raise CodegenError(
+                f"TIR microkernel provider {type(provider).__name__} owns no ops."
+            )
         duplicates = tuple(sorted(provider.op_names & self._by_op.keys()))
         if duplicates:
-            raise CodegenError(f"TIR microkernel provider {type(provider).__name__} duplicates "
-                               f"semantic op ownership {duplicates}.")
+            raise CodegenError(
+                f"TIR microkernel provider {type(provider).__name__} duplicates "
+                f"semantic op ownership {duplicates}."
+            )
         self._providers.append(provider)
         for op_name in provider.op_names:
             self._by_op[op_name] = provider

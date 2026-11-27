@@ -17,17 +17,14 @@ from triton.flagmega.errors import ArtifactError, CodegenError
 
 
 def artifact(tmp_path):
-
     class Graph(fm.Module):
-
         def forward(self):
-            kind = fm.tensor_type("float32", (17, ))
+            kind = fm.tensor_type("float32", (17,))
             value = self.input("value", kind, id="value")
             weight = self.weight("weight", kind, source="checkpoint", key="weight")
-            self.function("main", (value, ), (fm.F.math.add(value, weight), ))
+            self.function("main", (value,), (fm.F.math.add(value, weight),))
 
     class Source:
-
         def load_tensor(self, key, *, device="cpu"):
             assert key == "weight"
             return torch.arange(17, dtype=torch.float32, device=device)
@@ -40,19 +37,16 @@ def artifact(tmp_path):
 def test_refresh_uses_normal_templates_without_repacking_or_rewriting_ir(tmp_path, monkeypatch):
     root = artifact(tmp_path)
     before, module = load_artifact(root)
-    preserved = {
-        path: (path.stat(), path.read_bytes())
-        for path in (*root.joinpath("assets").rglob("*"), *root.joinpath("ir").rglob("*"))
-        if path.is_file()
-    }
+    preserved = {path: (path.stat(), path.read_bytes()) for path in (*root.joinpath("assets").rglob("*"),
+                                                                  *root.joinpath("ir").rglob("*")) if path.is_file()}
     original = TritonTemplateRegistry.__init__
 
     def templates(self, *args, **kwargs):
         original(self, *args, **kwargs)
         loader = self.environment.loader
         source = loader.get_source(self.environment, "module.py.jinja")[0]
-        self.environment.loader = ChoiceLoader(
-            [DictLoader({"module.py.jinja": "# refreshed template\n" + source}), loader])
+        self.environment.loader = ChoiceLoader([DictLoader({"module.py.jinja": "# refreshed template\n" + source}),
+                                                loader])
 
     monkeypatch.setattr(TritonTemplateRegistry, "__init__", templates)
     monkeypatch.setattr(artifact_module, "pack_rdata", lambda *a, **k: pytest.fail("unchanged assets were repacked"))
@@ -100,7 +94,7 @@ def test_refresh_preserves_the_readonly_payload_verification_gate(tmp_path):
     with image.open("r+b") as stream:
         first = stream.read(1)
         stream.seek(0)
-        stream.write(bytes((first[0] ^ 1, )))
+        stream.write(bytes((first[0] ^ 1,)))
     artifact_module.refresh_artifact_codegen(root)
     with pytest.raises(ArtifactError, match="digest|hash"):
         load_artifact(root)
@@ -118,8 +112,8 @@ def test_kernel_schedule_edit_reuses_the_closed_readonly_snapshot(tmp_path):
         for definition in module.kernel_definitions:
             dispatch = definition.dispatch
             if dispatch.microkernel.family == "elementwise":
-                microkernel = replace(dispatch.microkernel,
-                                      parameters={**dispatch.microkernel.parameters, "elements_per_program": 128})
+                microkernel = replace(dispatch.microkernel, parameters={**dispatch.microkernel.parameters,
+                                                                        "elements_per_program": 128})
                 definition = replace(definition, dispatch=replace(dispatch, microkernel=microkernel))
             result.append(definition)
         return result

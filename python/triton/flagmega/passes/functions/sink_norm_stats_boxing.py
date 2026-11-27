@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: MIT
 """Sink materializing NormStats boxings into reusable functions.
 
-This is the flat-SSA counterpart of the reference ``SinkNormStatsBoxingAcrossFunctionBoundariesPass``.  AutoDistribution has
+This is the flat-SSA counterpart of nncase's
+``SinkNormStatsBoxingAcrossFunctionBoundariesPass``.  AutoDistribution has
 already chosen exact distributed types.  The pass relocates only a proven
 P(Sum)-to-B statistics boxing, preserving graph semantics while exposing the
 collective and ``NormApply`` to the same later TIR fusion boundary.
@@ -111,7 +112,9 @@ def sink_norm_stats_boxing_across_function_boundaries(module: IRModule) -> IRMod
             if not parameters:
                 continue
             key = tuple(
-                (index, plan.partial_type, plan.materialized_type) for index, plan in sorted(parameters.items()))
+                (index, plan.partial_type, plan.materialized_type)
+                for index, plan in sorted(parameters.items())
+            )
             grouped.setdefault(key, []).append((call, arguments))
 
         if not grouped:
@@ -121,10 +124,15 @@ def sink_norm_stats_boxing_across_function_boundaries(module: IRModule) -> IRMod
         suffix = 1
         for group_index, (key, planned) in enumerate(grouped.items()):
             primary = not keep_unspecialized_primary and group_index == 0
-            name = function.name if primary else (f"{function.name}_norm_stats_layout_{suffix}")
+            name = function.name if primary else (
+                f"{function.name}_norm_stats_layout_{suffix}"
+            )
             if not primary:
                 suffix += 1
-            parameter_plans = {index: _ParameterPlan(partial, materialized) for index, partial, materialized in key}
+            parameter_plans = {
+                index: _ParameterPlan(partial, materialized)
+                for index, partial, materialized in key
+            }
             variant = _Variant(
                 function,
                 name,
@@ -139,7 +147,11 @@ def sink_norm_stats_boxing_across_function_boundaries(module: IRModule) -> IRMod
     if not variants:
         return module
 
-    primary_by_function = {variant.source.name: variant for variant in variants if variant.primary}
+    primary_by_function = {
+        variant.source.name: variant
+        for variant in variants
+        if variant.primary
+    }
     occupied = {node.id for node in module.nodes}
     inserted_boxings: dict[tuple[str, int], Node] = {}
     for function_name, variant in primary_by_function.items():
@@ -150,7 +162,7 @@ def sink_norm_stats_boxing_across_function_boundaries(module: IRModule) -> IRMod
             inserted_boxings[(function_name, index)] = Node(
                 boxing_id,
                 "distributed.boxing",
-                (parameter_id, ),
+                (parameter_id,),
                 plan.materialized_type,
                 attrs={"new_type": plan.materialized_type},
                 metadata={
@@ -194,8 +206,12 @@ def sink_norm_stats_boxing_across_function_boundaries(module: IRModule) -> IRMod
                 call_plan,
                 module,
                 occupied,
-                input_map={original: replacement
-                           for original, replacement in (zip(node.inputs, rewritten.inputs))},
+                input_map={
+                    original: replacement
+                    for original, replacement in (
+                        zip(node.inputs, rewritten.inputs)
+                    )
+                },
             )
             original_nodes.extend(helpers)
             removable_arguments.update(removed)
@@ -231,11 +247,22 @@ def sink_norm_stats_boxing_across_function_boundaries(module: IRModule) -> IRMod
                 function,
                 attrs={
                     **dict(function.attrs),
-                    "norm_stats_boundary_specialization": tuple(sorted(primary.parameters)),
+                    "norm_stats_boundary_specialization": tuple(
+                        sorted(primary.parameters)
+                    ),
                 },
-            ) if primary is not None else function)
-        functions.extend(variant_function for variant_function in cloned_functions if next(
-            value.source.name for value in extra_variants if value.name == variant_function.name) == function.name)
+            )
+            if primary is not None else function
+        )
+        functions.extend(
+            variant_function
+            for variant_function in cloned_functions
+            if next(
+                value.source.name
+                for value in extra_variants
+                if value.name == variant_function.name
+            ) == function.name
+        )
 
     points = list(module.selection_points)
     selections = list(module.selections)
@@ -257,9 +284,9 @@ def sink_norm_stats_boxing_across_function_boundaries(module: IRModule) -> IRMod
     all_nodes = original_nodes + cloned_nodes
     remaining_users = _users_from_nodes(all_nodes)
     removed = {
-        node_id
-        for node_id in removable_arguments
-        if not remaining_users.get(node_id) and all(node_id not in (*fn.parameters, *fn.outputs) for fn in functions)
+        node_id for node_id in removable_arguments
+        if not remaining_users.get(node_id)
+        and all(node_id not in (*fn.parameters, *fn.outputs) for fn in functions)
     }
     if removed:
         all_nodes = [node for node in all_nodes if node.id not in removed]
@@ -297,37 +324,44 @@ def _parameter_candidates(module, function, users):
             continue
         first = body_users[0]
         if first.op == "nn.norm_apply" and first.inputs[1] == parameter_id:
-            result[index] = (materialized,
-                             _Consumer(
-                                 None,
-                                 None,
-                                 first.inputs[0],
-                                 int(first.attrs["axis"]),
-                                 bool(first.attrs["use_mean"]),
-                             ))
+            result[index] = (materialized, _Consumer(
+                None,
+                None,
+                first.inputs[0],
+                int(first.attrs["axis"]),
+                bool(first.attrs["use_mean"]),
+            ))
             continue
-        if (first.op != "nn.bind_norm_stats" or first.inputs[1] != parameter_id
-                or first.inputs[0] not in function.parameters):
+        if (
+            first.op != "nn.bind_norm_stats"
+            or first.inputs[1] != parameter_id
+            or first.inputs[0] not in function.parameters
+        ):
             continue
         binding_users = tuple(node for node in users.get(first.id, ()) if node.id in body)
-        if (len(binding_users) != 1 or binding_users[0].op != "nn.norm_apply" or binding_users[0].inputs[1] != first.id
-                or binding_users[0].inputs.count(first.id) != 1):
+        if (
+            len(binding_users) != 1
+            or binding_users[0].op != "nn.norm_apply"
+            or binding_users[0].inputs[1] != first.id
+            or binding_users[0].inputs.count(first.id) != 1
+        ):
             continue
         apply = binding_users[0]
-        if (int(first.attrs["axis"]) != int(apply.attrs["axis"])
-                or bool(first.attrs["use_mean"]) != bool(apply.attrs["use_mean"])):
+        if (
+            int(first.attrs["axis"]) != int(apply.attrs["axis"])
+            or bool(first.attrs["use_mean"]) != bool(apply.attrs["use_mean"])
+        ):
             continue
         source_id = first.inputs[0]
         if not _is_sharded_view_of(module, apply.inputs[0], source_id):
             continue
-        result[index] = (materialized,
-                         _Consumer(
-                             first.id,
-                             function.parameters.index(source_id),
-                             apply.inputs[0],
-                             int(first.attrs["axis"]),
-                             bool(first.attrs["use_mean"]),
-                         ))
+        result[index] = (materialized, _Consumer(
+            first.id,
+            function.parameters.index(source_id),
+            apply.inputs[0],
+            int(first.attrs["axis"]),
+            bool(first.attrs["use_mean"]),
+        ))
     return result
 
 
@@ -339,21 +373,30 @@ def _partial_call_argument(
     consumer,
 ):
     argument = module.node_map[call.inputs[parameter_index]]
-    if (argument.op == "distributed.boxing" and argument.type == materialized_type
-            and argument.attrs["new_type"] == materialized_type):
+    if (
+        argument.op == "distributed.boxing"
+        and argument.type == materialized_type
+        and argument.attrs["new_type"] == materialized_type
+    ):
         source = module.node_map[argument.inputs[0]]
         if _is_supported_partial_type(source.type, materialized_type):
             return _ArgumentPlan("existing_partial", source.id, source.type, consumer)
 
-    if (consumer.binding_id is None or consumer.source_parameter_index is None or argument.op != "nn.norm_stats"
-            or argument.type != materialized_type or int(argument.attrs["axis"]) != consumer.axis
-            or bool(argument.attrs["use_mean"]) != consumer.use_mean
-            or argument.inputs[0] != call.inputs[consumer.source_parameter_index]):
+    if (
+        consumer.binding_id is None
+        or consumer.source_parameter_index is None
+        or argument.op != "nn.norm_stats"
+        or argument.attrs.get("compute_profile", "default") != "default"
+        or argument.type != materialized_type
+        or int(argument.attrs["axis"]) != consumer.axis
+        or bool(argument.attrs["use_mean"]) != consumer.use_mean
+        or argument.inputs[0] != call.inputs[consumer.source_parameter_index]
+    ):
         return None
     local_type = _instantiated_local_type(module, consumer.local_input_id)
     local_node = Node("<local-input>", "builtin.var", (), local_type, attrs={"name": "local"})
     partial_type = NormStats.infer_type(
-        (local_node, ),
+        (local_node,),
         {"axis": consumer.axis, "use_mean": consumer.use_mean},
     )
     if not _is_supported_partial_type(partial_type, materialized_type):
@@ -386,18 +429,17 @@ def _rewrite_call(original, rewritten, plan, module, occupied, *, input_map):
         )
         stats_id = _fresh_id(f"{original.id}.partial_norm_stats", occupied)
         occupied.add(stats_id)
-        helpers.append(
-            Node(
-                stats_id,
-                "nn.norm_stats",
-                (local_id, ),
-                argument.partial_type,
-                attrs={"axis": argument.consumer.axis, "use_mean": argument.consumer.use_mean},
-                metadata={
-                    "introduced_by": "SinkNormStatsBoxingAcrossFunctionBoundaries",
-                    "role": "partial_seed",
-                },
-            ))
+        helpers.append(Node(
+            stats_id,
+            "nn.norm_stats",
+            (local_id,),
+            argument.partial_type,
+            attrs={"axis": argument.consumer.axis, "use_mean": argument.consumer.use_mean},
+            metadata={
+                "introduced_by": "SinkNormStatsBoxingAcrossFunctionBoundaries",
+                "role": "partial_seed",
+            },
+        ))
         inputs[index] = stats_id
     return replace(
         rewritten,
@@ -413,10 +455,13 @@ def _rewrite_call(original, rewritten, plan, module, occupied, *, input_map):
 def _clone_variant(module, variant, owners, call_plans, occupied):
     source_nodes = function_nodes(module, variant.source)
     private = {
-        node.id
-        for node in source_nodes
-        if owners.get(node.id) == {variant.source.name} and (
-            node.id in variant.source.parameters or node.inputs or node.op == "builtin.var")
+        node.id for node in source_nodes
+        if owners.get(node.id) == {variant.source.name}
+        and (
+            node.id in variant.source.parameters
+            or node.inputs
+            or node.op == "builtin.var"
+        )
     }
     mapping: dict[str, str] = {}
     result: list[Node] = []
@@ -448,7 +493,7 @@ def _clone_variant(module, variant, owners, call_plans, occupied):
             boxing = Node(
                 boxing_id,
                 "distributed.boxing",
-                (clone_id, ),
+                (clone_id,),
                 plan.materialized_type,
                 attrs={"new_type": plan.materialized_type},
                 metadata={
@@ -461,7 +506,10 @@ def _clone_variant(module, variant, owners, call_plans, occupied):
             materialized_by_parameter[node.id] = boxing_id
             continue
 
-        substitutions = {parameter_id: materialized for parameter_id, materialized in materialized_by_parameter.items()}
+        substitutions = {
+            parameter_id: materialized
+            for parameter_id, materialized in materialized_by_parameter.items()
+        }
         clone = replace(
             clone,
             inputs=tuple(substitutions.get(value, mapping.get(value, value)) for value in node.inputs),
@@ -474,8 +522,10 @@ def _clone_variant(module, variant, owners, call_plans, occupied):
                 call_plan,
                 module,
                 occupied,
-                input_map={value: substitutions.get(value, mapping.get(value, value))
-                           for value in module.node_map},
+                input_map={
+                    value: substitutions.get(value, mapping.get(value, value))
+                    for value in module.node_map
+                },
             )
             result.extend(helpers)
         result.append(clone)
@@ -510,7 +560,9 @@ def _clone_sharded_view_chain(
         return replacement_id
     node = module.node_map[value_id]
     if node.op != "distributed.sharded_view" or len(node.inputs) != 1:
-        raise ValueError(f"NormStats local input {value_id!r} is not a ShardedView chain.")
+        raise ValueError(
+            f"NormStats local input {value_id!r} is not a ShardedView chain."
+        )
     parent = _clone_sharded_view_chain(
         module,
         node.inputs[0],
@@ -523,17 +575,16 @@ def _clone_sharded_view_chain(
     )
     clone_id = _fresh_id(f"{prefix}.{node.id}", occupied)
     occupied.add(clone_id)
-    output.append(
-        replace(
-            node,
-            id=clone_id,
-            inputs=(input_map.get(parent, parent), ),
-            metadata={
-                **dict(node.metadata),
-                "introduced_by": "SinkNormStatsBoxingAcrossFunctionBoundaries",
-                "role": "partial_seed_view",
-            },
-        ))
+    output.append(replace(
+        node,
+        id=clone_id,
+        inputs=(input_map.get(parent, parent),),
+        metadata={
+            **dict(node.metadata),
+            "introduced_by": "SinkNormStatsBoxingAcrossFunctionBoundaries",
+            "role": "partial_seed_view",
+        },
+    ))
     return clone_id
 
 
@@ -555,13 +606,18 @@ def _is_sharded_view_of(module, value_id, source_id):
 
 
 def _is_supported_partial_type(partial, materialized):
-    return (isinstance(partial, DistributedType) and isinstance(materialized, DistributedType)
-            and isinstance(partial.partial, SBPPartial) and partial.partial.reduce_op is ReduceOp.SUM
-            and all(0 <= axis < partial.placement.rank for axis in partial.partial.axes)
-            and all(isinstance(policy, SBPBroadCast)
-                    for policy in partial.axis_policies) and materialized.partial is None
-            and all(isinstance(policy, SBPBroadCast) for policy in materialized.axis_policies)
-            and partial.tensor == materialized.tensor and partial.placement == materialized.placement)
+    return (
+        isinstance(partial, DistributedType)
+        and isinstance(materialized, DistributedType)
+        and isinstance(partial.partial, SBPPartial)
+        and partial.partial.reduce_op is ReduceOp.SUM
+        and all(0 <= axis < partial.placement.rank for axis in partial.partial.axes)
+        and all(isinstance(policy, SBPBroadCast) for policy in partial.axis_policies)
+        and materialized.partial is None
+        and all(isinstance(policy, SBPBroadCast) for policy in materialized.axis_policies)
+        and partial.tensor == materialized.tensor
+        and partial.placement == materialized.placement
+    )
 
 
 def _node_owners(module):
@@ -595,7 +651,11 @@ def _users_from_nodes(nodes):
 
 def _call_sites(module):
     result: dict[str, list[Node]] = defaultdict(list)
-    live = {node.id for function in module.functions for node in function_nodes(module, function)}
+    live = {
+        node.id
+        for function in module.functions
+        for node in function_nodes(module, function)
+    }
     for node in module.nodes:
         if node.id in live and node.op == "builtin.call":
             result[str(node.attrs["callee"])].append(node)

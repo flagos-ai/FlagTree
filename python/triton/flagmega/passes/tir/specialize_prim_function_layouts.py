@@ -52,8 +52,10 @@ def specialize_prim_functions_for_buffer_layouts(
             result_functions.append(function)
             continue
         if any(parameter.buffers for parameter in function.parameters):
-            raise IRVerificationError(f"PrimFunction @{function.name} must be layout-specialized before "
-                                      "formal buffers are bound.")
+            raise IRVerificationError(
+                f"PrimFunction @{function.name} must be layout-specialized before "
+                "formal buffers are bound."
+            )
 
         # Keep the most frequently used ABI on the original symbol.  Ties use
         # first call order, making dumps stable while preserving the dominant
@@ -87,8 +89,11 @@ def specialize_prim_functions_for_buffer_layouts(
     if not rewrites:
         return module
     nodes = tuple(
-        replace(node, attrs={**dict(node.attrs), "callee": rewrites[node.id]}) if node.id in rewrites else node
-        for node in module.nodes)
+        replace(node, attrs={**dict(node.attrs), "callee": rewrites[node.id]})
+        if node.id in rewrites
+        else node
+        for node in module.nodes
+    )
     return replace_kernel_callables(
         module,
         result_functions,
@@ -107,7 +112,9 @@ def _collect_call_layouts(module, plan):
     for graph_function in module.functions:
         function_plan = plan.function_map[graph_function.name]
         values = dict(function_plan.values)
-        kernel_calls = {value.call: value for value in function_plan.kernel_calls}
+        kernel_calls = {
+            value.call: value for value in function_plan.kernel_calls
+        }
         for node_id in values:
             node = module.node_map[node_id]
             if node.op != "tir.call":
@@ -117,10 +124,13 @@ def _collect_call_layouts(module, plan):
             if function is None or kernel_dispatch_of(function) is None:
                 continue
             bindings = _call_bindings(function, node, values, kernel_calls)
-            signature = tuple((
-                parameter.name,
-                tuple(_descriptor_layout_key(descriptor_map[value]) for value in bindings.get(parameter.name, ())),
-            ) for parameter in function.parameters)
+            signature = tuple(
+                (
+                    parameter.name,
+                    tuple(_descriptor_layout_key(descriptor_map[value]) for value in bindings.get(parameter.name, ())),
+                )
+                for parameter in function.parameters
+            )
             result.setdefault(callee, []).append((node.id, signature, order))
             order += 1
     return {name: tuple(values) for name, values in result.items()}
@@ -128,38 +138,56 @@ def _collect_call_layouts(module, plan):
 
 def _call_bindings(function, node, values, kernel_calls):
     if len(node.inputs) != len(function.runtime_parameters):
-        raise IRVerificationError(f"Kernel call {node.id!r} argument arity differs from @{function.name}.")
+        raise IRVerificationError(
+            f"Kernel call {node.id!r} argument arity differs from @{function.name}."
+        )
     bindings = {}
     for parameter, input_id in zip(function.runtime_parameters, node.inputs):
-        count = (0 if parameter.role.value == "metadata" else _leaf_count(parameter.type))
+        count = (
+            0
+            if parameter.role.value == "metadata"
+            else _leaf_count(parameter.type)
+        )
         if count:
             try:
                 actuals = tuple(values[input_id])
             except KeyError as error:
                 raise IRVerificationError(
-                    f"Kernel call {node.id!r} input {input_id!r} has no buffer binding.") from error
+                    f"Kernel call {node.id!r} input {input_id!r} has no buffer binding."
+                ) from error
             if len(actuals) != count:
-                raise IRVerificationError(f"Kernel call {node.id!r} input {parameter.name!r} has the wrong "
-                                          "buffer leaf arity.")
+                raise IRVerificationError(
+                    f"Kernel call {node.id!r} input {parameter.name!r} has the wrong "
+                    "buffer leaf arity."
+                )
             bindings[parameter.name] = actuals
 
     try:
         outputs = tuple(values[node.id])
     except KeyError as error:
-        raise IRVerificationError(f"Kernel call {node.id!r} has no result buffer binding.") from error
+        raise IRVerificationError(
+            f"Kernel call {node.id!r} has no result buffer binding."
+        ) from error
     cursor = 0
     for parameter in function.output_parameters:
         count = _leaf_count(parameter.type)
         bindings[parameter.name] = outputs[cursor:cursor + count]
         cursor += count
     if cursor != len(outputs):
-        raise IRVerificationError(f"Kernel call {node.id!r} result buffer leaf arity differs from @{function.name}.")
+        raise IRVerificationError(
+            f"Kernel call {node.id!r} result buffer leaf arity differs from @{function.name}."
+        )
 
     workspace_record = kernel_calls.get(node.id)
     if function.workspaces:
         if workspace_record is None:
-            raise IRVerificationError(f"Kernel call {node.id!r} has no workspace buffer binding.")
-        bindings.update((formal, (actual, )) for formal, actual in workspace_record.workspaces)
+            raise IRVerificationError(
+                f"Kernel call {node.id!r} has no workspace buffer binding."
+            )
+        bindings.update(
+            (formal, (actual,))
+            for formal, actual in workspace_record.workspaces
+        )
     return bindings
 
 
@@ -169,15 +197,22 @@ def _group_calls(calls):
     for call_id, signature, order in calls:
         groups.setdefault(signature, []).append(call_id)
         first_order.setdefault(signature, order)
-    return tuple((signature, tuple(call_ids), first_order[signature]) for signature, call_ids in groups.items())
+    return tuple(
+        (signature, tuple(call_ids), first_order[signature])
+        for signature, call_ids in groups.items()
+    )
 
 
 def _descriptor_layout_key(descriptor):
-    distributed = (None if descriptor.distributed_type is None else json.dumps(
-        descriptor.distributed_type.to_data(),
-        sort_keys=True,
-        separators=(",", ":"),
-    ))
+    distributed = (
+        None
+        if descriptor.distributed_type is None
+        else json.dumps(
+            descriptor.distributed_type.to_data(),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
     return (
         distributed,
         descriptor.distributed_storage_kind.value,
@@ -191,10 +226,8 @@ def _descriptor_layout_key(descriptor):
 
 def _signature_data(signature):
     return tuple({
-        "parameter":
-        parameter,
-        "leaves":
-        tuple({
+        "parameter": parameter,
+        "leaves": tuple({
             "distributed_type": distributed,
             "storage_kind": storage_kind,
             "distributed_backing_type": backing,
@@ -256,7 +289,9 @@ def _leaf_count(value_type):
         return sum(_leaf_count(field) for _, field in value_type.fields)
     if isinstance(value_type, TupleType):
         return sum(_leaf_count(field) for field in value_type.fields)
-    raise IRVerificationError(f"Cannot specialize buffer layout for {type(value_type).__name__}.")
+    raise IRVerificationError(
+        f"Cannot specialize buffer layout for {type(value_type).__name__}."
+    )
 
 
 __all__ = ["specialize_prim_functions_for_buffer_layouts"]

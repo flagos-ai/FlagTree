@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: block_fp8/simt platform=generic
+# flagmega-kernel: block_fp8/simt platform=generic
 {% set block_fp8_variant = "simt" %}
 {% include "kernels/_activation_quantization.py.jinja" %}
 @triton.jit

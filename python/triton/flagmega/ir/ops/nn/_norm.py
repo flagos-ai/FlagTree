@@ -12,6 +12,7 @@ from triton.flagmega.ir.ops.tensors.pack import pack_physical
 from triton.flagmega.ir.ops.tensors.unpack import unpack_physical
 from triton.flagmega.ir.types import DType, DataType, VectorType
 
+
 _FLOAT_DTYPES = frozenset({DType.BFLOAT16, DType.FLOAT32, DType.FLOAT8_E4M3FN})
 
 
@@ -46,14 +47,14 @@ def unpack_default_vector(value, value_type: TensorType):
         return value
     if value_type.rank == 0:
         raise IRSchemaError("Normalization does not support a vector scalar tensor.")
-    axes = (value_type.rank - 1, ) * len(value_type.dtype.lanes)
+    axes = (value_type.rank - 1,) * len(value_type.dtype.lanes)
     return unpack_physical(value, value_type.rank, value_type.dtype.lanes, axes)
 
 
 def repack_default_vector(value, value_type: TensorType):
     if not isinstance(value_type.dtype, VectorType):
         return value
-    axes = (value_type.rank - 1, ) * len(value_type.dtype.lanes)
+    axes = (value_type.rank - 1,) * len(value_type.dtype.lanes)
     return pack_physical(value, value_type.rank, value_type.dtype.lanes, axes)
 
 
@@ -119,13 +120,7 @@ def norm_apply_value(
     round_before_scale: bool = False,
 ):
     return norm_apply_wide(
-        value,
-        stats,
-        scale,
-        bias,
-        axis=axis,
-        epsilon=epsilon,
-        use_mean=use_mean,
+        value, stats, scale, bias, axis=axis, epsilon=epsilon, use_mean=use_mean,
         round_before_scale=round_before_scale,
     ).to(dtype=value.dtype)
 

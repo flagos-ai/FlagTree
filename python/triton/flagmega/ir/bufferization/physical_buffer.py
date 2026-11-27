@@ -94,4 +94,5 @@ def _dimension_from_data(value: Any) -> Dimension:
 # is a state of a PhysicalBuffer, not a second kind of storage object.
 PhysicalAllocation = PhysicalBuffer
 
+
 __all__ = ["PhysicalAllocation", "PhysicalBuffer"]

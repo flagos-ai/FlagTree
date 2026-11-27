@@ -50,7 +50,8 @@ def _node(name, value_type):
 
 
 def _attrs(**overrides):
-    return dict({"axis": -1, "epsilon": EPS, "use_mean": False, "activation": "sigmoid"}, **overrides)
+    return dict({"axis": -1, "epsilon": EPS, "use_mean": False, "activation": "sigmoid"},
+                **overrides)
 
 
 def _types(value=None, gate=None, stats=None):
@@ -70,7 +71,8 @@ def _distributed(value_type, policies):
 class _Module(fm.Module):
     """``norm_stats`` then the fused gated apply, as KDA's ``o_norm`` wires it."""
 
-    def __init__(self, *, activation="sigmoid", output_dtype="bfloat16", core_dtype="bfloat16", gate_dtype="bfloat16"):
+    def __init__(self, *, activation="sigmoid", output_dtype="bfloat16", core_dtype="bfloat16",
+                 gate_dtype="bfloat16"):
         super().__init__(dialect="nn", stage="imported", entry="main")
         self._activation = activation
         self._output_dtype = output_dtype
@@ -83,8 +85,9 @@ class _Module(fm.Module):
         gate = self.input("gate", fm.tensor_type(self._gate_dtype, (TOKENS, HEADS, DIM)))
         stats = fm.F.nn.norm_stats(core, axis=-1, use_mean=False, name="stats")
         zero = fm.F.builtin.splat_const(weight.type, 0.0)
-        output = fm.F.nn.gated_norm_apply(core, stats, weight, zero, gate, axis=-1, epsilon=EPS, use_mean=False,
-                                          activation=self._activation, output_dtype=self._output_dtype, name="gated")
+        output = fm.F.nn.gated_norm_apply(
+            core, stats, weight, zero, gate, axis=-1, epsilon=EPS, use_mean=False,
+            activation=self._activation, output_dtype=self._output_dtype, name="gated")
         self.function("main", (core, weight, gate), (output, ))
 
 
@@ -102,8 +105,8 @@ class _ExpandedModule(fm.Module):
         gate = self.input("gate", fm.tensor_type(self._gate_dtype, (TOKENS, HEADS, DIM)))
         stats = fm.F.nn.norm_stats(core, axis=-1, use_mean=False, name="stats")
         zero = fm.F.builtin.splat_const(weight.type, 0.0)
-        normalized = fm.F.nn.norm_apply(core, stats, weight, zero, axis=-1, epsilon=EPS, use_mean=False,
-                                        output_dtype="float32", name="o_norm")
+        normalized = fm.F.nn.norm_apply(core, stats, weight, zero, axis=-1, epsilon=EPS,
+                                        use_mean=False, output_dtype="float32", name="o_norm")
         # The gate's sigmoid rounds to the gate dtype here: that is the defect.
         activated = fm.F.math.sigmoid(gate, name="out_gate")
         wide = fm.F.tensors.cast(activated, "float32", name="out_gate_wide")
@@ -127,7 +130,8 @@ def _run(module, operands):
 
 def _reference_bf16(operands, activation="sigmoid"):
     """The reference, rounded once at the declared BF16 output boundary."""
-    return _reference(operands["core"], operands["gate"], operands["weight"], activation=activation).to(torch.bfloat16)
+    return _reference(operands["core"], operands["gate"], operands["weight"],
+                      activation=activation).to(torch.bfloat16)
 
 
 def test_the_result_keeps_the_input_shape_and_declared_output_dtype():
@@ -157,11 +161,13 @@ def test_a_gate_distributed_unlike_the_input_needs_boxing():
     inputs = list(_types())
     split = (B, fm.SBP.split_contiguous((0, )), B)
     inputs[0] = _node("value", _distributed(value, split))
-    inputs[1] = _node("stats", _distributed(fm.tensor_type("float32", (1, TOKENS, HEADS, 1)), (B, ) + split))
+    inputs[1] = _node("stats", _distributed(
+        fm.tensor_type("float32", (1, TOKENS, HEADS, 1)), (B, ) + split))
     for index in (2, 3):
         inputs[index] = _node(inputs[index].id, _distributed(inputs[index].type, (B, )))
     # The gate stays fully replicated while the value is head-split.
-    inputs[4] = _node("gate", _distributed(fm.tensor_type("bfloat16", (TOKENS, HEADS, DIM)), (B, B, B)))
+    inputs[4] = _node("gate", _distributed(
+        fm.tensor_type("bfloat16", (TOKENS, HEADS, DIM)), (B, B, B)))
     with pytest.raises(IRSchemaError, match="gate policies must match"):
         GatedNormApply.infer_type(tuple(inputs), _attrs())
 
@@ -171,10 +177,12 @@ def test_a_head_split_value_keeps_its_owner_map():
     split = (B, fm.SBP.split_contiguous((0, )), B)
     inputs = list(_types())
     inputs[0] = _node("value", _distributed(value, split))
-    inputs[1] = _node("stats", _distributed(fm.tensor_type("float32", (1, TOKENS, HEADS, 1)), (B, ) + split))
+    inputs[1] = _node("stats", _distributed(
+        fm.tensor_type("float32", (1, TOKENS, HEADS, 1)), (B, ) + split))
     for index in (2, 3):
         inputs[index] = _node(inputs[index].id, _distributed(inputs[index].type, (B, )))
-    inputs[4] = _node("gate", _distributed(fm.tensor_type("bfloat16", (TOKENS, HEADS, DIM)), split))
+    inputs[4] = _node("gate", _distributed(
+        fm.tensor_type("bfloat16", (TOKENS, HEADS, DIM)), split))
     result = GatedNormApply.infer_type(tuple(inputs), _attrs(output_dtype="bfloat16"))
     assert result == _distributed(fm.tensor_type("bfloat16", (TOKENS, HEADS, DIM)), split)
 
@@ -183,7 +191,8 @@ def test_a_head_split_value_keeps_its_owner_map():
 def test_it_matches_the_serving_runtime_reference(activation):
     operands = _operands()
     actual = _run(_Module(activation=activation), operands)
-    expected = _reference(operands["core"], operands["gate"], operands["weight"], activation=activation)
+    expected = _reference(operands["core"], operands["gate"], operands["weight"],
+                          activation=activation)
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
@@ -200,9 +209,9 @@ def test_the_gate_activation_does_not_round_to_the_gate_dtype():
     fused = _run(_Module(core_dtype="float32"), operands)
     expanded = _run(_ExpandedModule(core_dtype="float32"), operands)
     torch.testing.assert_close(fused, reference, rtol=0, atol=0)
-    assert not torch.equal(expanded,
-                           reference), ("the expansion is expected to drift; if it stopped drifting this test "
-                                        "no longer pins the FP32 gate interior")
+    assert not torch.equal(expanded, reference), (
+        "the expansion is expected to drift; if it stopped drifting this test "
+        "no longer pins the FP32 gate interior")
 
 
 def test_the_normalized_value_does_not_round_to_the_input_dtype():
@@ -219,9 +228,9 @@ def test_the_normalized_value_does_not_round_to_the_input_dtype():
     fused = _run(_Module(gate_dtype="float32"), operands)
     expanded = _run(_ExpandedModule(gate_dtype="float32"), operands)
     torch.testing.assert_close(fused, reference, rtol=0, atol=0)
-    assert not torch.equal(expanded,
-                           reference), ("the expansion is expected to drift; if it stopped drifting this test "
-                                        "no longer pins the FP32 normalized interior")
+    assert not torch.equal(expanded, reference), (
+        "the expansion is expected to drift; if it stopped drifting this test "
+        "no longer pins the FP32 normalized interior")
 
 
 def test_an_all_fp32_boundary_leaves_nothing_for_the_fusion_to_recover():

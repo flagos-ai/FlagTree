@@ -7,8 +7,8 @@ from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.distributed_type import local_tensor_type
 from triton.flagmega.ir.model import DistributedType, Node, TupleType
-from triton.flagmega.ir.ops.core import (OpDefinition, OpCost, OpCostFactors, attribute_parameter, input_parameter,
-                                         op_definition, tensor_elements, tensor_nbytes)
+from triton.flagmega.ir.ops.core import (OpDefinition, OpCost, OpCostFactors,
+    attribute_parameter, input_parameter, op_definition, tensor_elements, tensor_nbytes)
 from triton.flagmega.ir.ops.math.vectorized_binary import VectorizedBinary
 from triton.flagmega.ir.ops.nn._norm import normalize_axis
 from triton.flagmega.ir.ops.nn.norm_stats import NormStats
@@ -23,8 +23,8 @@ def binary_attrs(attrs):
     return {key: attrs[key] for key in _BINARY_KEYS if key in attrs}
 
 
-@op_definition("ntt.vectorized_add_norm_stats", namespace="ntt", functional_name="vectorized_add_norm_stats",
-               display_name="NTT.VectorizedAddNormStats")
+@op_definition("ntt.vectorized_add_norm_stats", namespace="ntt",
+               functional_name="vectorized_add_norm_stats", display_name="NTT.VectorizedAddNormStats")
 class VectorizedAddNormStats(OpDefinition):
     """Preserve the raw VectorizedBinary result and one local16 statistic.
 
@@ -68,7 +68,7 @@ class VectorizedAddNormStats(OpDefinition):
             raise IRSchemaError("VectorizedAddNormStats requires a last-axis FP32 raw result.")
         # NormStats owns the complete/raw-input and partial-axis contract.
         raw_node = Node("<raw>", "builtin.var", (), raw, attrs={"name": "<raw>"})
-        stats = NormStats.infer_type((raw_node, ), {"axis": axis, "use_mean": False})
+        stats = NormStats.infer_type((raw_node,), {"axis": axis, "use_mean": False})
         local = local_tensor_type(raw) if isinstance(raw, DistributedType) else tensor
         lanes = local.dtype.lane_count if isinstance(local.dtype, VectorType) else 1
         if not local.shape[axis].is_fixed or local.shape[axis].fixed_value * lanes != 16:
@@ -77,8 +77,7 @@ class VectorizedAddNormStats(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
-        raise EvaluationError(
-            "Exact local16 owner-partial evaluation requires the explicit owner ABI; generic dense sum is unsupported.")
+        raise EvaluationError("Exact local16 owner-partial evaluation requires the explicit owner ABI; generic dense sum is unsupported.")
 
     @classmethod
     def cost(cls, node):
@@ -89,9 +88,10 @@ class VectorizedAddNormStats(OpDefinition):
         elements = tensor_elements(raw_tensor)
         size = tensor_nbytes(raw_tensor)
         writes = (tensor_nbytes(raw_tensor), tensor_nbytes(stats_tensor))
-        return OpCost(flops=None if elements is None else 3 * elements, bytes_read=None if size is None else 2 * size,
+        return OpCost(flops=None if elements is None else 3 * elements,
+                      bytes_read=None if size is None else 2 * size,
                       bytes_written=None if None in writes else sum(writes),
-                      notes=("vectorized-add+ordered-local16-statistics", ))
+                      notes=("vectorized-add+ordered-local16-statistics",))
 
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
@@ -100,11 +100,10 @@ class VectorizedAddNormStats(OpDefinition):
         raw, stats = (local(ty) for ty in return_type.fields)
         if any(not d.is_fixed for t in (*tensors, raw, stats) for d in t.shape):
             return None
-        elements = prod(d.fixed_value
-                        for d in raw.shape) * (raw.dtype.lane_count if isinstance(raw.dtype, VectorType) else 1)
+        elements = prod(d.fixed_value for d in raw.shape) * (raw.dtype.lane_count if isinstance(raw.dtype, VectorType) else 1)
         return OpCostFactors(elementwise_operations=3 * elements,
-                             block_local_memory_load_bytes=sum(tensor_nbytes(t) for t in tensors),
-                             block_local_memory_store_bytes=tensor_nbytes(raw) + tensor_nbytes(stats))
+            block_local_memory_load_bytes=sum(tensor_nbytes(t) for t in tensors),
+            block_local_memory_store_bytes=tensor_nbytes(raw) + tensor_nbytes(stats))
 
 
 __all__ = ["VectorizedAddNormStats", "LOCAL16_ORDER", "binary_attrs"]

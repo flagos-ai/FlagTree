@@ -9,6 +9,7 @@ from enum import Enum
 
 from triton.flagmega.errors import CodegenError
 
+
 PACKAGE_PLAN_SCHEMA = "flagmega.triton-package-plan/v1"
 
 
@@ -35,7 +36,9 @@ def plain_package_value(value):
     if isinstance(value, Fusion):
         return {"$fusion": plain_package_value(value.to_data())}
     if isinstance(value, Mapping):
-        return {str(key): plain_package_value(item) for key, item in value.items()}
+        return {
+            str(key): plain_package_value(item) for key, item in value.items()
+        }
     if isinstance(value, (tuple, list)):
         return [plain_package_value(item) for item in value]
     if isinstance(value, (set, frozenset)):

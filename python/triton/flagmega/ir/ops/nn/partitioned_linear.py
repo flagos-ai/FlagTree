@@ -29,10 +29,11 @@ from triton.flagmega.ir.type_pattern import is_tensor
 
 
 def _chip_policy(policy, placement):
-    return isinstance(
-        policy, SBPBroadCast) or (isinstance(policy, SBPSplit) and policy.is_contiguous and len(policy.stages) == 1
-                                  and policy.stages[0].distribution.granularity is None
-                                  and all(not placement.is_physical_block_axis(axis) for axis in policy.hierarchy_axes))
+    return isinstance(policy, SBPBroadCast) or (
+        isinstance(policy, SBPSplit) and policy.is_contiguous and len(policy.stages) == 1
+        and policy.stages[0].distribution.granularity is None
+        and all(not placement.is_physical_block_axis(axis) for axis in policy.hierarchy_axes)
+    )
 
 
 @op_definition("nn.partitioned_linear", namespace="nn", functional_name="partitioned_linear",
@@ -74,17 +75,16 @@ class PartitionedLinear(OpDefinition):
         if isinstance(splits, bool) or not isinstance(splits, int) or splits <= 0:
             raise IRSchemaError("PartitionedLinear accumulation_splits must be a positive integer.")
         if not isinstance(lanes, (tuple, list)) or any(
-                isinstance(lane, bool) or not isinstance(lane, int) or lane <= 0 for lane in lanes):
+            isinstance(lane, bool) or not isinstance(lane, int) or lane <= 0 for lane in lanes
+        ):
             raise IRSchemaError("PartitionedLinear output_lanes must be positive integers.")
         return {"partitions": parts, "output_lanes": tuple(lanes), "accumulation_splits": splits}
 
     @classmethod
     def ir_attrs(cls, attrs):
-        return {
-            key: value
-            for key, value in attrs.items()
-            if (key != "output_lanes" or value) and (key != "accumulation_splits" or value != 1)
-        }
+        return {key: value for key, value in attrs.items()
+                if (key != "output_lanes" or value)
+                and (key != "accumulation_splits" or value != 1)}
 
     @classmethod
     def infer_type(cls, inputs, attrs):
@@ -100,10 +100,9 @@ class PartitionedLinear(OpDefinition):
             raise IRSchemaError("PartitionedLinear requires one BF16 token and scalar BF16 [N,K] weights.")
         k, n = w.shape[1].fixed_value, w.shape[0].fixed_value
         if x.shape[1].fixed_value * input_lanes != k or k % (parts * splits) or n % prod(lanes):
-            raise IRSchemaError(
-                "PartitionedLinear K must match and divide into complete parts and accumulation splits; N must divide by lanes."
-            )
-        output = tensor_type(VectorType(DType.BFLOAT16, lanes) if lanes else DType.BFLOAT16, (1, n // prod(lanes)))
+            raise IRSchemaError("PartitionedLinear K must match and divide into complete parts and accumulation splits; N must divide by lanes.")
+        output = tensor_type(VectorType(DType.BFLOAT16, lanes) if lanes else DType.BFLOAT16,
+                             (1, n // prod(lanes)))
         if not isinstance(x_kind, DistributedType) and not isinstance(w_kind, DistributedType):
             return output
         if not isinstance(x_kind, DistributedType) or not isinstance(w_kind, DistributedType):
@@ -115,7 +114,8 @@ class PartitionedLinear(OpDefinition):
                 or x_kind.axis_policies[0] != SBP.broadcast()
                 or not all(_chip_policy(policy, placement) for policy in (n_policy, k_policy))):
             raise IRSchemaError("PartitionedLinear requires complete contiguous chip ownership, no input partials.")
-        packed_k = (scale_split_units(k_policy, 1, input_lanes) if isinstance(k_policy, SBPSplit) else k_policy)
+        packed_k = (scale_split_units(k_policy, 1, input_lanes)
+                    if isinstance(k_policy, SBPSplit) else k_policy)
         if packed_k is None or x_kind.axis_policies[1] != packed_k:
             raise IRSchemaError("PartitionedLinear input and weight K owners must agree in scalar units.")
         partial = None
@@ -124,9 +124,9 @@ class PartitionedLinear(OpDefinition):
             if owners != parts or (k // parts) % input_lanes:
                 raise IRSchemaError("PartitionedLinear K sharding requires exactly one complete partition per owner.")
             partial = SBPPartial(k_policy.hierarchy_axes)
-        packed_n = (scale_split_units(n_policy, 1, prod(lanes)) if isinstance(n_policy, SBPSplit) else n_policy)
-        n_owners = prod(placement.hierarchy[axis]
-                        for axis in n_policy.hierarchy_axes) if isinstance(n_policy, SBPSplit) else 1
+        packed_n = (scale_split_units(n_policy, 1, prod(lanes))
+                    if isinstance(n_policy, SBPSplit) else n_policy)
+        n_owners = prod(placement.hierarchy[axis] for axis in n_policy.hierarchy_axes) if isinstance(n_policy, SBPSplit) else 1
         if packed_n is None or n % (n_owners * prod(lanes)):
             raise IRSchemaError("PartitionedLinear N owners must hold complete result lane groups.")
         return DistributedType(output, (SBP.broadcast(), packed_n), placement, partial=partial)
@@ -147,13 +147,12 @@ class PartitionedLinear(OpDefinition):
             n_policy = scale_split_units(n_policy, prod(attrs.get("output_lanes", ())), 1)
         if n_policy is None:
             return ()
-        return ((DistributedType(x, (SBP.broadcast(), k_policy),
-                                 placement), DistributedType(w, (n_policy, k_policy), placement)), )
+        return ((DistributedType(x, (SBP.broadcast(), k_policy), placement),
+                 DistributedType(w, (n_policy, k_policy), placement)),)
 
     @classmethod
     def distributed_input_type_tuples(cls, choices, attrs):
-        x_choices = {(kind.placement, kind.axis_policies[1]): kind
-                     for kind in choices[0]
+        x_choices = {(kind.placement, kind.axis_policies[1]): kind for kind in choices[0]
                      if isinstance(kind, DistributedType) and kind.axis_policies[0] == SBP.broadcast()
                      and kind.partial is None and kind.exclusive is None}
         for w in choices[1]:
@@ -172,20 +171,16 @@ class PartitionedLinear(OpDefinition):
     @classmethod
     def distributed_output_type_candidates(cls, choices, output_type, attrs):
         results = []
-        for placement in dict.fromkeys(kind.placement
-                                       for options in choices
-                                       for kind in options
+        for placement in dict.fromkeys(kind.placement for options in choices for kind in options
                                        if isinstance(kind, DistributedType)):
             axes = tuple(i for i in range(len(placement.hierarchy)) if not placement.is_physical_block_axis(i))
-            results.append(DistributedType(output_type, (SBP.broadcast(), ) * 2, placement))
+            results.append(DistributedType(output_type, (SBP.broadcast(),) * 2, placement))
             for count in range(1, len(axes) + 1):
                 for owner_axes in combinations(axes, count):
-                    results.append(
-                        DistributedType(output_type, (SBP.broadcast(), SBP.split_contiguous(owner_axes)), placement))
+                    results.append(DistributedType(output_type, (SBP.broadcast(), SBP.split_contiguous(owner_axes)), placement))
                     if prod(placement.hierarchy[axis] for axis in owner_axes) == attrs["partitions"]:
-                        results.append(
-                            DistributedType(output_type, (SBP.broadcast(), ) * 2, placement,
-                                            partial=SBPPartial(owner_axes)))
+                        results.append(DistributedType(output_type, (SBP.broadcast(),) * 2, placement,
+                                                       partial=SBPPartial(owner_axes)))
         return tuple(results)
 
     @classmethod
@@ -212,17 +207,16 @@ class PartitionedLinear(OpDefinition):
 
     @classmethod
     def cost(cls, node):
-        return OpCost(bytes_written=tensor_nbytes(node.type), notes=("fp32-dot-bf16-parts-fp32-sum-bf16", ))
+        return OpCost(bytes_written=tensor_nbytes(node.type), notes=("fp32-dot-bf16-parts-fp32-sum-bf16",))
 
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
-        x, w = tuple(
-            local_tensor_type(value.type) if isinstance(value.type, DistributedType) else value.type
-            for value in inputs)
+        x, w = tuple(local_tensor_type(value.type) if isinstance(value.type, DistributedType) else value.type
+                     for value in inputs)
         output = local_tensor_type(return_type) if isinstance(return_type, DistributedType) else return_type
         weight_kind = inputs[1].type
-        parts = (1 if isinstance(weight_kind, DistributedType) and isinstance(weight_kind.axis_policies[1], SBPSplit)
-                 else attrs["partitions"])
+        parts = (1 if isinstance(weight_kind, DistributedType)
+                 and isinstance(weight_kind.axis_policies[1], SBPSplit) else attrs["partitions"])
         split_additions = parts * (attrs.get("accumulation_splits", 1) - 1) * w.shape[0].fixed_value
         return OpCostFactors(cpu_cycles=2 * prod(d.fixed_value for d in w.shape) + split_additions,
                              chip_aggregate_memory_load_bytes=tensor_nbytes(x) + tensor_nbytes(w),

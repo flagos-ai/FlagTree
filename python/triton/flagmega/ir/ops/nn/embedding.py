@@ -34,6 +34,7 @@ class Embedding(OpDefinition):
     padding_idx = attribute_parameter(default=None)
     weight_encoding = attribute_parameter(default=None)
     output_lanes = attribute_parameter(default=())
+    output_data_type = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -48,6 +49,16 @@ class Embedding(OpDefinition):
         result = {"padding_idx": padding_idx, **({"output_lanes": lanes} if lanes else {})}
         if encoding is not None:
             result["weight_encoding"] = encoding
+        if attrs["output_data_type"] is not None:
+            try:
+                dtype = DType(attrs["output_data_type"])
+            except (TypeError, ValueError) as error:
+                raise IRSchemaError("Embedding output_data_type must be bfloat16 or float32.") from error
+            if dtype not in {DType.BFLOAT16, DType.FLOAT32}:
+                raise IRSchemaError("Embedding output_data_type must be bfloat16 or float32.")
+            if encoding is None:
+                raise IRSchemaError("Embedding output_data_type requires native decoded weights.")
+            result["output_data_type"] = dtype.value
         return result
 
     @classmethod
@@ -64,10 +75,11 @@ class Embedding(OpDefinition):
                 raise IRSchemaError(
                     f"F.nn.embedding padding_idx {padding_idx} is outside vocabulary size {vocabulary.fixed_value}.")
         output_dtype = DType.BFLOAT16 if attrs.get("weight_encoding") is not None else weight.dtype
+        if attrs.get("output_data_type") is not None:
+            output_dtype = DType(attrs["output_data_type"])
         lanes = tuple(attrs.get("output_lanes", ()))
         if lanes and attrs.get("weight_encoding") is None:
-            raise IRSchemaError(
-                "Embedding output_lanes requires native decoded weights; scalar tables use table packing.")
+            raise IRSchemaError("Embedding output_lanes requires native decoded weights; scalar tables use table packing.")
         hidden = try_div_exactly(matrix_width(weight, attrs.get("weight_encoding")), prod(lanes))
         if hidden is None:
             raise IRSchemaError("Embedding hidden features must be divisible by output_lanes.")
@@ -106,34 +118,40 @@ class Embedding(OpDefinition):
             cls.indices.read(arguments),
             cls.weight.read(arguments),
             padding_idx=cls.padding_idx.read(arguments, node.attrs),
-            weight_encoding=node.attrs.get("weight_encoding"),
-            output_lanes=node.attrs.get("output_lanes", ()),
+            weight_encoding=node.attrs.get("weight_encoding"), output_lanes=node.attrs.get("output_lanes", ()),
+            output_data_type=node.attrs.get("output_data_type"),
         )
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         output_bytes = tensor_nbytes(node.type) if isinstance(node.type, TensorType) else None
         elements = tensor_elements(node.type) if isinstance(node.type, TensorType) else None
-        notes = ("padding-mask", ) if node.attrs["padding_idx"] is not None else ()
+        notes = ("padding-mask",) if node.attrs["padding_idx"] is not None else ()
         if elements is None:
-            notes += ("dynamic-shape", )
+            notes += ("dynamic-shape",)
         return OpCost(flops=0, bytes_read=output_bytes, bytes_written=output_bytes, notes=notes)
 
 
-def embedding(indices, weight, *, padding_idx: int | None = None, weight_encoding=None, output_lanes=()):
-    """Gather embedding rows and apply reference/HuggingFace padding semantics."""
+def embedding(indices, weight, *, padding_idx: int | None = None, weight_encoding=None, output_lanes=(),
+              output_data_type=None):
+    """Gather embedding rows and apply nncase/HuggingFace padding semantics."""
 
+    if output_data_type is not None:
+        output_data_type = Embedding.normalize_attrs({
+            "weight_encoding": weight_encoding, "output_data_type": output_data_type,
+        })["output_data_type"]
     flat_indices = indices.to(dtype=_torch().int64).reshape(-1)
     # Vector element lanes are trailing physical dimensions of the table.
     # Gathering rows preserves them, just as it preserves scalar features.
     rows = weight.index_select(0, flat_indices)
     if weight_encoding is not None:
         from triton.flagmega.ir.ops.math._quantized import decode_native_rows
-        rows = decode_native_rows(rows, weight_encoding).bfloat16()
+        dtype = getattr(_torch(), DType(output_data_type or DType.BFLOAT16).value)
+        rows = decode_native_rows(rows, weight_encoding).to(dtype)
     result = rows.reshape((*indices.shape, *rows.shape[1:]))
     if padding_idx is not None:
         normalized = padding_idx + weight.shape[0] if padding_idx < 0 else padding_idx
-        mask = (indices == normalized).reshape((*indices.shape, *((1, ) * (weight.ndim - 1))))
+        mask = (indices == normalized).reshape((*indices.shape, *((1,) * (weight.ndim - 1))))
         result = result.masked_fill(mask, 0)
     if output_lanes:
         result = result.reshape(*indices.shape, result.shape[-1] // prod(output_lanes), *output_lanes)

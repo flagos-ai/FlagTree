@@ -22,12 +22,12 @@ def _packed_constant_output():
     packed_type = fm.tensor_type(fm.vector_type("float32", (2, 2)), (2, 2))
     packed = builder.call(
         "tensors.pack",
-        (weight, ),
+        (weight,),
         packed_type,
         id="packed",
         attrs={"lanes": (2, 2), "axes": (1, 1)},
     )
-    builder.function("main", (), (packed, ))
+    builder.function("main", (), (packed,))
     return freeze_constant_islands(builder.build(entry="main"))
 
 
@@ -37,7 +37,7 @@ def _numeric_constant_output():
     lhs = builder.weight("lhs", value_type, source="memory", key="lhs", id="lhs")
     rhs = builder.weight("rhs", value_type, source="memory", key="rhs", id="rhs")
     product = builder.call("math.mul", (lhs, rhs), value_type, id="product")
-    builder.function("main", (), (product, ))
+    builder.function("main", (), (product,))
     return freeze_constant_islands(builder.build(entry="main"))
 
 

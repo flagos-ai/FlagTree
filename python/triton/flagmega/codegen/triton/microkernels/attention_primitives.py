@@ -12,6 +12,7 @@ from triton.flagmega.ir import get_definition
 
 from .core import TIRMicroKernelContext, TIRMicroKernelProposal
 
+
 _FAMILY_BY_OP = {
     "nn.rotary_embedding": "rotary_embedding",
     "nn.rope": "rope",
@@ -40,7 +41,9 @@ class AttentionPrimitiveMicroKernelProvider:
 
     op_names = frozenset(_FAMILY_BY_OP)
 
-    def propose(self, context: TIRMicroKernelContext) -> TIRMicroKernelProposal | None:
+    def propose(
+        self, context: TIRMicroKernelContext
+    ) -> TIRMicroKernelProposal | None:
         dispatch = context.dispatch
         operation = dispatch.semantic_op
         family = _FAMILY_BY_OP.get(operation)
@@ -54,8 +57,10 @@ class AttentionPrimitiveMicroKernelProvider:
         _validate_semantic_contract(operation, dispatch.semantic_attrs)
         implementations = context.implementations(family, mode="decode")
         if not implementations:
-            raise CodegenError(f"Implementation model {context.implementation_model.name!r} has no "
-                               f"decode implementation for semantic op {operation!r}.")
+            raise CodegenError(
+                f"Implementation model {context.implementation_model.name!r} has no "
+                f"decode implementation for semantic op {operation!r}."
+            )
         candidates = tuple(context.candidate(value) for value in implementations)
         return TIRMicroKernelProposal(
             candidates,
@@ -73,11 +78,15 @@ def _validate_arity(
     if operation == "nn.rotary_embedding":
         argument_count_matches = len(arguments) in (2, 3)
     if not argument_count_matches or len(outputs) != expected_outputs:
-        raise CodegenError(f"Semantic op {operation!r} requires {expected_arguments} arguments and "
-                           f"{expected_outputs} outputs, got {len(arguments)} and {len(outputs)}.")
+        raise CodegenError(
+            f"Semantic op {operation!r} requires {expected_arguments} arguments and "
+            f"{expected_outputs} outputs, got {len(arguments)} and {len(outputs)}."
+        )
 
 
-def _validate_semantic_contract(operation: str, attrs: Mapping[str, object]) -> None:
+def _validate_semantic_contract(
+    operation: str, attrs: Mapping[str, object]
+) -> None:
     if operation == "nn.rotary_embedding":
         head_dim = _positive_int(attrs, "head_dim", operation)
         if head_dim % 2:
@@ -114,27 +123,39 @@ def _validate_semantic_contract(operation: str, attrs: Mapping[str, object]) -> 
     raise CodegenError(f"Unknown attention semantic op {operation!r}.")
 
 
-def _attention_layout(attrs: Mapping[str, object], operation: str) -> tuple[str, str, str]:
+def _attention_layout(
+    attrs: Mapping[str, object], operation: str
+) -> tuple[str, str, str]:
     value = attrs.get("layout")
     if not isinstance(value, (tuple, list)):
         raise CodegenError(f"Semantic op {operation!r} requires an attention layout.")
     layout = tuple(str(axis) for axis in value)
     if len(layout) != 3 or set(layout) != {"seq", "head", "dim"}:
-        raise CodegenError(f"Semantic op {operation!r} has invalid attention layout {layout!r}.")
+        raise CodegenError(
+            f"Semantic op {operation!r} has invalid attention layout {layout!r}."
+        )
     return layout
 
 
-def _positive_int(attrs: Mapping[str, object], name: str, operation: str) -> int:
+def _positive_int(
+    attrs: Mapping[str, object], name: str, operation: str
+) -> int:
     value = attrs.get(name)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise CodegenError(f"Semantic op {operation!r} requires positive integer {name}.")
+        raise CodegenError(
+            f"Semantic op {operation!r} requires positive integer {name}."
+        )
     return value
 
 
-def _positive_real(attrs: Mapping[str, object], name: str, operation: str) -> float:
+def _positive_real(
+    attrs: Mapping[str, object], name: str, operation: str
+) -> float:
     value = attrs.get(name)
     if isinstance(value, bool) or not isinstance(value, Real) or value <= 0:
-        raise CodegenError(f"Semantic op {operation!r} requires positive real {name}.")
+        raise CodegenError(
+            f"Semantic op {operation!r} requires positive real {name}."
+        )
     return float(value)
 
 

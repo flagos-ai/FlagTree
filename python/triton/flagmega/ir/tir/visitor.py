@@ -11,7 +11,6 @@ from triton.flagmega.ir.tir.base import TIRCost, TIRNode
 
 
 class TIRVisitor:
-
     def visit(self, node: TIRNode):
         method = getattr(self, f"visit_{_snake_name(type(node).__name__)}", None)
         return self.generic_visit(node) if method is None else method(node)
@@ -23,7 +22,6 @@ class TIRVisitor:
 
 
 class TIRRewriter(TIRVisitor):
-
     def __init__(self) -> None:
         self.is_mutated = False
 
@@ -44,7 +42,6 @@ class TIRRewriter(TIRVisitor):
 
 
 class _CostVisitor(TIRVisitor):
-
     def __init__(self) -> None:
         self.cost = TIRCost()
 

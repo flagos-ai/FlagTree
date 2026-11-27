@@ -32,15 +32,15 @@ from triton.flagmega.ir.ops.core import (
     tensor_nbytes,
 )
 from triton.flagmega.ir.ops.nn.qkv_rope_with_cache import (
-    QKVRoPEWithCache,
-    _logical_attention_value,
+    QKVRoPEWithCache, _logical_attention_value,
 )
 from triton.flagmega.ir.ops.nn.norm_stats import NormStats
 from triton.flagmega.ir.ops.nn._norm import norm_stats_value, normalize_axis
 from triton.flagmega.ir.ops.nn._paged_attention_state import paged_attention_state_config_from_type
 from triton.flagmega.ir.ops.tensors.reshape import Reshape
 from triton.flagmega.ir.ops.ntt.packed_qkv_parallel_linear_combine import (
-    can_materialize_packed_qkv, )
+    can_materialize_packed_qkv,
+)
 from triton.flagmega.ir.type_pattern import (
     has_dtype,
     has_rank,
@@ -81,7 +81,8 @@ class GatherReduceQKVRoPEWithCache(OpDefinition):
         # The selected logical heads can have different owners from the
         # projection. Publication must cover those source owners as well as
         # the Sum-partial group; partial-axis synchronization alone is unsafe.
-        is_tuple(), memory_effect=MemoryEffect.CHIP_READ.across_partial_owners())
+        is_tuple(), memory_effect=MemoryEffect.CHIP_READ.across_partial_owners()
+    )
     q_scale = input_parameter(is_tensor())
     k_scale = input_parameter(is_tensor())
     q_bias = input_parameter(is_tensor())
@@ -123,8 +124,10 @@ class GatherReduceQKVRoPEWithCache(OpDefinition):
         materialized = attrs["materialized_qkv_type"]
         logical = attrs["logical_qkv_type"]
         if not isinstance(materialized, TupleType) or not isinstance(logical, TupleType):
-            raise IRSchemaError("GatherReduceQKVRoPEWithCache materialized/logical QKV types "
-                                "must be TupleType values.")
+            raise IRSchemaError(
+                "GatherReduceQKVRoPEWithCache materialized/logical QKV types "
+                "must be TupleType values."
+            )
         normalized = QKVRoPEWithCache.normalize_attrs(_base_qkv_attrs(attrs))
         return {
             "materialized_qkv_type": materialized,
@@ -138,10 +141,14 @@ class GatherReduceQKVRoPEWithCache(OpDefinition):
         materialized_type = attrs["materialized_qkv_type"]
         logical_type = attrs["logical_qkv_type"]
         if not isinstance(partial_type, TupleType):
-            raise IRSchemaError("GatherReduceQKVRoPEWithCache requires a three-field partial tuple.")
+            raise IRSchemaError(
+                "GatherReduceQKVRoPEWithCache requires a three-field partial tuple."
+            )
         if not can_materialize_packed_qkv(partial_type, materialized_type):
-            raise IRSchemaError("GatherReduceQKVRoPEWithCache input cannot form its recorded "
-                                "materialized QKV type.")
+            raise IRSchemaError(
+                "GatherReduceQKVRoPEWithCache input cannot form its recorded "
+                "materialized QKV type."
+            )
         _validate_partial_and_view_types(partial_type, materialized_type, logical_type)
         stats = []
         for role, field in zip(("q", "k"), logical_type.fields[:2]):
@@ -149,10 +156,12 @@ class GatherReduceQKVRoPEWithCache(OpDefinition):
             if any(not isinstance(policy, SBPBroadCast) for policy in field.axis_policies[axis:]):
                 raise IRSchemaError("Fused QKV statistics require owner-local normalization axes.")
             value = Node(f"__{role}", "builtin.var", (), field)
-            stats_type = NormStats.infer_type((value, ), {"axis": axis, "use_mean": attrs[f"{role}_use_mean"]})
+            stats_type = NormStats.infer_type((value,), {"axis": axis, "use_mean": attrs[f"{role}_use_mean"]})
             stats.append(Node(f"__{role}_stats", "builtin.var", (), stats_type))
         logical_qkv = Node("__logical_qkv", "builtin.var", (), logical_type)
-        return QKVRoPEWithCache.infer_type((logical_qkv, *inputs[1:], *stats), _base_qkv_attrs(attrs))
+        return QKVRoPEWithCache.infer_type(
+            (logical_qkv, *inputs[1:], *stats), _base_qkv_attrs(attrs)
+        )
 
     @classmethod
     def infer_effect(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> Effect:
@@ -162,22 +171,27 @@ class GatherReduceQKVRoPEWithCache(OpDefinition):
     def evaluate(cls, node, arguments, context):
         values = cls.qkv.read(arguments)
         logical_type = node.attrs["logical_qkv_type"]
-        if (not isinstance(values, (tuple, list)) or len(values) != 3 or not isinstance(logical_type, TupleType)):
-            raise EvaluationError("GatherReduceQKVRoPEWithCache expects three partial Q/K/V values.")
+        if (
+            not isinstance(values, (tuple, list))
+            or len(values) != 3
+            or not isinstance(logical_type, TupleType)
+        ):
+            raise EvaluationError(
+                "GatherReduceQKVRoPEWithCache expects three partial Q/K/V values."
+            )
         logical_values = tuple(
             _reshape_physical_value(value.to(dtype=context.torch_dtype(tensor_of(value_type).dtype)), value_type)
-            for value, value_type in zip(values, logical_type.fields, strict=True))
+            for value, value_type in zip(values, logical_type.fields, strict=True)
+        )
         # Reference evaluation represents a distributed partial by its full
         # logical dense value.  Reshape that value through the recorded view
         # and reuse the semantic QKVRoPEWithCache evaluator; execution backends
         # perform the actual owner reduction described by this operation.
         config = paged_attention_state_config_from_type(context.types[node.inputs[7]])
-        stats = tuple(
-            norm_stats_value(
-                _logical_attention_value(value, field, config.lanes, tuple(node.attrs["qkv_layout"]), role),
-                axis=int(node.attrs[f"{role}_axis"]),
-                use_mean=bool(node.attrs[f"{role}_use_mean"]),
-            ) for role, value, field in zip(("q", "k"), logical_values[:2], logical_type.fields[:2]))
+        stats = tuple(norm_stats_value(
+            _logical_attention_value(value, field, config.lanes, tuple(node.attrs["qkv_layout"]), role),
+            axis=int(node.attrs[f"{role}_axis"]), use_mean=bool(node.attrs[f"{role}_use_mean"]),
+        ) for role, value, field in zip(("q", "k"), logical_values[:2], logical_type.fields[:2]))
         proxy = replace(
             node,
             op=QKVRoPEWithCache.op_name,
@@ -187,7 +201,9 @@ class GatherReduceQKVRoPEWithCache(OpDefinition):
         proxy_types = dict(context.types)
         proxy_types[node.inputs[0]] = logical_type
         proxy_context = SimpleNamespace(types=proxy_types, torch=context.torch)
-        return QKVRoPEWithCache.evaluate(proxy, (logical_values, *arguments[1:], *stats), proxy_context)
+        return QKVRoPEWithCache.evaluate(
+            proxy, (logical_values, *arguments[1:], *stats), proxy_context
+        )
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
@@ -200,7 +216,7 @@ class GatherReduceQKVRoPEWithCache(OpDefinition):
             bytes_written=size,
             communication_bytes=None,
             synchronizations=1,
-            notes=("fused-sum-partial-qkv-normalization-rope-cache-update", ),
+            notes=("fused-sum-partial-qkv-normalization-rope-cache-update",),
         )
 
 
@@ -208,22 +224,20 @@ def _base_qkv_attrs(attrs: Mapping[str, object]) -> dict[str, object]:
     return {
         **({"rotary_dim": attrs["rotary_dim"]} if attrs.get("rotary_dim") is not None else {}),
         **({"round_qk_intermediates": False} if not attrs.get("round_qk_intermediates", True) else {}),
-        "q_round_before_scale":
-        attrs.get("q_round_before_scale", False),
-        "k_round_before_scale":
-        attrs.get("k_round_before_scale", False),
+        "q_round_before_scale": attrs.get("q_round_before_scale", False),
+        "k_round_before_scale": attrs.get("k_round_before_scale", False),
         **{
-            name: attrs[name]
-            for name in (
-                "q_axis",
-                "q_epsilon",
-                "q_use_mean",
-                "k_axis",
-                "k_epsilon",
-                "k_use_mean",
-                "qkv_layout",
-                "attention_layout",
-            )
+        name: attrs[name]
+        for name in (
+            "q_axis",
+            "q_epsilon",
+            "q_use_mean",
+            "k_axis",
+            "k_epsilon",
+            "k_use_mean",
+            "qkv_layout",
+            "attention_layout",
+        )
         },
     }
 
@@ -234,57 +248,83 @@ def _validate_partial_and_view_types(
     logical: TupleType,
 ) -> None:
     if not (len(partial.fields) == len(materialized.fields) == len(logical.fields) == 3):
-        raise IRSchemaError("GatherReduceQKVRoPEWithCache requires exactly three Q/K/V fields.")
+        raise IRSchemaError(
+            "GatherReduceQKVRoPEWithCache requires exactly three Q/K/V fields."
+        )
     for label, source, combined, view in zip(
         ("Q", "K", "V"),
-            partial.fields,
-            materialized.fields,
-            logical.fields,
-            strict=True,
+        partial.fields,
+        materialized.fields,
+        logical.fields,
+        strict=True,
     ):
-        if not all(isinstance(value, DistributedType) for value in (source, combined, view)):
-            raise IRSchemaError(f"GatherReduceQKVRoPEWithCache {label} types must be distributed.")
+        if not all(
+            isinstance(value, DistributedType) for value in (source, combined, view)
+        ):
+            raise IRSchemaError(
+                f"GatherReduceQKVRoPEWithCache {label} types must be distributed."
+            )
         assert isinstance(source, DistributedType)
         assert isinstance(combined, DistributedType)
         assert isinstance(view, DistributedType)
         if any(level != "b" for level in source.placement.hierarchy_levels):
             raise IRSchemaError("Fused QKV owner reads require a block-only placement.")
-        if (source.partial is None or source.partial.reduce_op is not ReduceOp.SUM or not source.partial.axes
-                or combined.partial is not None or view.partial is not None
-                or any(isinstance(policy, SBPPartial) for policy in source.axis_policies)
-                or any(isinstance(policy, SBPPartial) for policy in combined.axis_policies)
-                or any(isinstance(policy, SBPPartial) for policy in view.axis_policies)):
-            raise IRSchemaError(f"GatherReduceQKVRoPEWithCache {label} requires a non-empty Sum "
-                                "partial input and materialized logical views.")
-        if not (source.placement == combined.placement == view.placement and tensor_of(combined).dtype
-                == tensor_of(view).dtype and tensor_elements(tensor_of(combined)) == tensor_elements(tensor_of(view))):
-            raise IRSchemaError(f"GatherReduceQKVRoPEWithCache {label} view changes placement, "
-                                "dtype, or scalar element count.")
+        if (
+            source.partial is None
+            or source.partial.reduce_op is not ReduceOp.SUM
+            or not source.partial.axes
+            or combined.partial is not None
+            or view.partial is not None
+            or any(isinstance(policy, SBPPartial) for policy in source.axis_policies)
+            or any(isinstance(policy, SBPPartial) for policy in combined.axis_policies)
+            or any(isinstance(policy, SBPPartial) for policy in view.axis_policies)
+        ):
+            raise IRSchemaError(
+                f"GatherReduceQKVRoPEWithCache {label} requires a non-empty Sum "
+                "partial input and materialized logical views."
+            )
+        if not (
+            source.placement == combined.placement == view.placement
+            and tensor_of(combined).dtype == tensor_of(view).dtype
+            and tensor_elements(tensor_of(combined)) == tensor_elements(tensor_of(view))
+        ):
+            raise IRSchemaError(
+                f"GatherReduceQKVRoPEWithCache {label} view changes placement, "
+                "dtype, or scalar element count."
+            )
         reshaped = Reshape.infer_type(
-            (Node("__combined", "builtin.var", (), combined), ),
+            (Node("__combined", "builtin.var", (), combined),),
             {"shape": tuple(d.fixed_value for d in view.tensor.shape)},
         )
         if reshaped != view:
             raise IRSchemaError("Fused QKV logical view must be the selected scalar-order-preserving reshape.")
         split_axes = {
             axis
-            for policy in source.axis_policies if hasattr(policy, "hierarchy_axes") for axis in policy.hierarchy_axes
+            for policy in source.axis_policies
+            if hasattr(policy, "hierarchy_axes")
+            for axis in policy.hierarchy_axes
         }
         if split_axes & set(source.partial.axes):
-            raise IRSchemaError(f"GatherReduceQKVRoPEWithCache {label} placement axes cannot be "
-                                "both split and partial.")
+            raise IRSchemaError(
+                f"GatherReduceQKVRoPEWithCache {label} placement axes cannot be "
+                "both split and partial."
+            )
 
 
 def _reshape_physical_value(value, value_type: IRType):
     tensor = tensor_of(value_type)
     dimensions = tuple(dimension.value for dimension in tensor.shape)
     if any(dimension is None for dimension in dimensions):
-        raise EvaluationError("GatherReduceQKVRoPEWithCache reference evaluation requires fixed views.")
+        raise EvaluationError(
+            "GatherReduceQKVRoPEWithCache reference evaluation requires fixed views."
+        )
     lanes = tensor.dtype.lanes if isinstance(tensor.dtype, VectorType) else ()
     shape = (*dimensions, *lanes)
     if int(value.numel()) != prod(shape, start=1):
-        raise EvaluationError("GatherReduceQKVRoPEWithCache partial value cannot be reshaped to "
-                              f"its logical view {shape}.")
+        raise EvaluationError(
+            "GatherReduceQKVRoPEWithCache partial value cannot be reshaped to "
+            f"its logical view {shape}."
+        )
     return value.reshape(shape)
 
 

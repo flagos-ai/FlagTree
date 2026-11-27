@@ -21,10 +21,10 @@ from .test_partial_reduce_local_abi import _prepare
 @pytest.mark.parametrize("cyclic", [False, True])
 def test_chip_gather_inverts_owner_and_local_coordinates_with_padded_stride(lanes, cyclic):
     mesh = fm.Placement((2, 4), "yx", "bb")
-    dtype = "bfloat16" if lanes == 1 else fm.vector_type("bfloat16", (lanes, ))
+    dtype = "bfloat16" if lanes == 1 else fm.vector_type("bfloat16", (lanes,))
     tensor = fm.tensor_type(dtype, (2, 20))
-    row = fm.SBP.split_block_cyclic((1, ), 3) if cyclic else fm.SBP.split_contiguous((1, ), 6)
-    source = fm.DistributedType(tensor, (fm.SBP.split_contiguous((0, ), 1), row), mesh)
+    row = fm.SBP.split_block_cyclic((1,), 3) if cyclic else fm.SBP.split_contiguous((1,), 6)
+    source = fm.DistributedType(tensor, (fm.SBP.split_contiguous((0,), 1), row), mesh)
     target = fm.DistributedType(tensor, (source.axis_policies[0], fm.SBP.broadcast()), mesh)
     source_abi = local_abi(source)
     stride = prod(source_abi["local_capacity_shape"]) * lanes + 16
@@ -37,7 +37,7 @@ def test_chip_gather_inverts_owner_and_local_coordinates_with_padded_stride(lane
         component_stride_scalar_elements=stride,
         pool_byte_offset=32,
     )
-    leaf = _prepare((source_abi, ), (local_abi(target), ), ("gather_reduce_scatter", ))["leaves"][0]
+    leaf = _prepare((source_abi,), (local_abi(target),), ("gather_reduce_scatter",))["leaves"][0]
     assert leaf["mode"] == "chip_gather"
     for owner in product(range(2), range(4)):
         dst = fm.local_shard_descriptor(target, owner)
@@ -63,26 +63,26 @@ def test_chip_gather_inverts_owner_and_local_coordinates_with_padded_stride(lane
                     "shard_coord_1": owner[1],
                     "tl": SimpleNamespace(minimum=min, maximum=max),
                 }
-                actual = eval(leaf["source"], {"__builtins__": {}}, env) + eval(leaf["source_offset"],
-                                                                                {"__builtins__": {}}, env)
+                actual = eval(leaf["source"], {"__builtins__": {}}, env) + eval(
+                    leaf["source_offset"], {"__builtins__": {}}, env
+                )
                 assert actual == 16 + source_owner * stride + local * lanes + lane
 
 
 def graph():
     mesh = fm.Placement((2, 4), "yx", "bb")
-    tensor = fm.tensor_type(fm.vector_type("bfloat16", (4, )), (1, 2, 16))
+    tensor = fm.tensor_type(fm.vector_type("bfloat16", (4,)), (1, 2, 16))
     b = fm.SBP.broadcast()
-    source = fm.DistributedType(tensor, (b, fm.SBP.split_contiguous((0, ), 1), fm.SBP.split_contiguous((1, ), 4)), mesh)
+    source = fm.DistributedType(tensor, (b, fm.SBP.split_contiguous((0,), 1), fm.SBP.split_contiguous((1,), 4)), mesh)
     target = fm.DistributedType(tensor, (b, source.axis_policies[1], b), mesh)
 
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("x", source, id="x")
             produced = fm.F.math.add(x, x, name="produced")
             gathered = fm.F.distributed.boxing(produced, target, name="gathered")
-            result = fm.F.math.reduce_sum(gathered, axes=(2, ), keep_dims=False, name="summed")
-            self.function("main", (x, ), (result, ))
+            result = fm.F.math.reduce_sum(gathered, axes=(2,), keep_dims=False, name="summed")
+            self.function("main", (x,), (result,))
 
     return Graph(
         dialect="distributed",
@@ -120,7 +120,7 @@ def test_chip_gather_rejects_unproved_shared_component_table(cause):
     else:
         source["distributed_backing_type"] = module.node_map["x"].type.to_data()
     with pytest.raises(CodegenError):
-        _prepare((source, ), (local_abi(module.node_map["gathered"].type), ), ("gather_reduce_scatter", ))
+        _prepare((source,), (local_abi(module.node_map["gathered"].type),), ("gather_reduce_scatter",))
 
 
 def test_compact_owner_reshard_compiles_with_chip_read_effect_and_publication(tmp_path):
@@ -152,7 +152,7 @@ def test_device_compact_owner_reshard_preserves_all_lanes(tmp_path):
         device="cuda:0",
     )
     x = torch.empty((1, 2, 16, 4), dtype=torch.bfloat16, device="cuda")
-    storage = torch.full((40, ), 128.0, dtype=torch.bfloat16, device="cuda")
+    storage = torch.full((40,), 128.0, dtype=torch.bfloat16, device="cuda")
     out = storage[16:-16].reshape(1, 2, 4)
     values = {"x": x, "summed": out}
     actuals = tuple(values[s["value"]] for s in rt.external_arguments)

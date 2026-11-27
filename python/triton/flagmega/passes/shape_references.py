@@ -23,22 +23,20 @@ def rebind_shape_only_view_users(module, *, view_id, replacement_id):
     verify_module(module)
     nodes = module.node_map
     view, replacement = nodes.get(view_id), nodes.get(replacement_id)
-    if (view is None or view.op != 'distributed.sharded_view' or not view.effect.is_pure or has_ops(view.attrs)
-            or replacement is None or not replacement.effect.is_pure or has_ops(replacement.attrs)
-            or view.id == replacement.id):
+    if (view is None or view.op != 'distributed.sharded_view' or not view.effect.is_pure
+            or has_ops(view.attrs) or replacement is None or not replacement.effect.is_pure
+            or has_ops(replacement.attrs) or view.id == replacement.id):
         raise IRSchemaError('Shape-reference rebinding requires distinct pure unfused views/values.')
     if any(view.id in (*f.parameters, *f.outputs) for f in module.functions):
         raise IRSchemaError('An exported view cannot be rebound as a private shape reference.')
-
     def geometry(ty):
         tensor = tensor_of(ty)
         lanes = tensor.dtype.lanes if isinstance(tensor.dtype, VectorType) else ()
-        return (tensor.shape, tensor.layout, lanes, (ty.placement,
-                                                     ty.axis_policies) if isinstance(ty, DistributedType) else None)
-
-    if (geometry(view.type) != geometry(replacement.type) or any(
-            getattr(t, 'partial', None) is not None or getattr(t, 'exclusive', None) is not None
-            for t in (view.type, replacement.type))):
+        return (tensor.shape, tensor.layout, lanes,
+                (ty.placement, ty.axis_policies) if isinstance(ty, DistributedType) else None)
+    if (geometry(view.type) != geometry(replacement.type)
+            or any(getattr(t, 'partial', None) is not None or getattr(t, 'exclusive', None) is not None
+                   for t in (view.type, replacement.type))):
         raise IRSchemaError('Shape-reference rebinding requires equal complete tensor coordinates.')
     users = tuple(n for n in module.nodes if view.id in n.inputs)
     if not users:
@@ -48,11 +46,8 @@ def rebind_shape_only_view_users(module, *, view_id, replacement_id):
         if has_ops(user.attrs):
             raise IRSchemaError('A shape reference with fused arithmetic cannot be rebound.')
         definition = get_definition(user.op)
-        positions = {
-            p.input_index
-            for p in definition.input_parameters
-            if not p.variadic and p.memory_effect == MemoryEffect.NONE
-        }
+        positions = {p.input_index for p in definition.input_parameters
+                     if not p.variadic and p.memory_effect == MemoryEffect.NONE}
         if any(i not in positions for i, key in enumerate(user.inputs) if key == view.id):
             raise IRSchemaError('Shared view has a real-value reader; shape rebinding is illegal.')
         inputs = tuple(replacement if key == view.id else nodes[key] for key in user.inputs)
@@ -64,7 +59,6 @@ def rebind_shape_only_view_users(module, *, view_id, replacement_id):
     anchor = min(users, key=lambda n: order[n.id]).id
     moving, active = set(), set()
     allowed = {'ntt.vectorized_cast', 'tensors.cast', 'distributed.sharded_view', 'tensors.bitcast'}
-
     def dependencies(key):
         if key == view.id:
             raise IRSchemaError('The replacement depends on the old shape view.')
@@ -80,7 +74,6 @@ def rebind_shape_only_view_users(module, *, view_id, replacement_id):
             dependencies(source)
         active.remove(key)
         moving.add(key)
-
     dependencies(replacement.id)
     moved = tuple(n for n in module.nodes if n.id in moving)
     result = []
@@ -92,9 +85,8 @@ def rebind_shape_only_view_users(module, *, view_id, replacement_id):
     invalidated = {view.id, *updated}
     points = tuple(p for p in module.selection_points if p.owner not in invalidated)
     point_ids = {p.id for p in points}
-    return verify_module(
-        replace(module, nodes=tuple(result), selection_points=points,
-                selections=tuple(s for s in module.selections if s.point_id in point_ids)))
+    return verify_module(replace(module, nodes=tuple(result), selection_points=points,
+                                 selections=tuple(s for s in module.selections if s.point_id in point_ids)))
 
 
 __all__ = ['rebind_shape_only_view_users']

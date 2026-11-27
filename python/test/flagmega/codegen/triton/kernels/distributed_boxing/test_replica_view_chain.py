@@ -8,7 +8,7 @@ import pytest
 from triton.flagmega import ir as fm
 
 
-@pytest.mark.parametrize("lanes", [(), (8, ), (2, 4)])
+@pytest.mark.parametrize("lanes", [(), (8,), (2, 4)])
 def test_private_concat_reshape_repartition_publishes_exact_bytes(tmp_path, lanes):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
@@ -21,26 +21,24 @@ def test_private_concat_reshape_repartition_publishes_exact_bytes(tmp_path, lane
     mesh = fm.Placement((8, 16), "yx", "bb")
     dtype = fm.vector_type("bfloat16", lanes) if lanes else "bfloat16"
     tensor = fm.tensor_type(dtype, (1, 64))
-    broadcast = fm.DistributedType(tensor, (fm.SBP.broadcast(), ) * 2, mesh)
+    broadcast = fm.DistributedType(tensor, (fm.SBP.broadcast(),) * 2, mesh)
 
     class Graph(fm.Module):
-
         def forward(self):
             value = self.input("value", tensor, id="value")
             local = fm.F.distributed.sharded_view(value, broadcast)
             pair = fm.F.tensors.concat(local, local, axis=1, name="pair")
-            first = fm.F.distributed.sharded_view(
-                pair, replace(pair.type, axis_policies=(fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 16))))
+            first = fm.F.distributed.sharded_view(pair, replace(pair.type,
+                axis_policies=(fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 16))))
             reshaped = fm.F.tensors.reshape(first, (1, 1, 128))
-            final = fm.F.distributed.sharded_view(
-                reshaped,
-                replace(reshaped.type,
-                        axis_policies=(fm.SBP.broadcast(), fm.SBP.broadcast(), fm.SBP.split_contiguous((0, 1), 1))))
+            final = fm.F.distributed.sharded_view(reshaped, replace(reshaped.type,
+                axis_policies=(fm.SBP.broadcast(), fm.SBP.broadcast(),
+                               fm.SBP.split_contiguous((0, 1), 1))))
             output = fm.F.distributed.force_boxing(final, final.type.tensor)
-            self.function("main", (value, ), (output, ))
+            self.function("main", (value,), (output,))
 
     graph = Graph(dialect="distributed", stage="frozen_constants", entry="main",
-                  metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()
+        metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()
     module = Compiler().compile(graph).module
     source = fm.verify_buffer_plan(module).buffer_map["pair"]
     assert source.storage == "block_local_data"
@@ -49,7 +47,7 @@ def test_private_concat_reshape_repartition_publishes_exact_bytes(tmp_path, lane
     try:
         value = torch.empty((1, 64, *lanes), dtype=torch.bfloat16, device="cuda")
         count = 128 * (8 if lanes else 1)
-        guarded = torch.full((count + 64, ), -123., dtype=torch.bfloat16, device="cuda")
+        guarded = torch.full((count + 64,), -123., dtype=torch.bfloat16, device="cuda")
         output = guarded[32:-32].reshape((1, 1, 128, *lanes))
         arguments = tuple(output if spec["role"] == "result" else value for spec in runtime.external_arguments)
         Runtime.prepare(runtime, *arguments)

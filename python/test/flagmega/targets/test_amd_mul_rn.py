@@ -10,11 +10,7 @@ import pytest
 import triton
 import triton.language as tl
 from triton.backends.compiler import GPUTarget
-from triton.backends import backends
-
-if "amd" not in backends:
-    pytest.skip("Requires the AMD compiler backend", allow_module_level=True)
-libdevice = pytest.importorskip("triton.language.extra.hip.libdevice")
+from triton.language.extra.hip import libdevice
 
 ARCHS = ("gfx1100", "gfx1201")
 

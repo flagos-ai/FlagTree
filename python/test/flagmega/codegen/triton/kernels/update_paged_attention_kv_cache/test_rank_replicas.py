@@ -65,26 +65,18 @@ def test_paged_cache_updates_each_rank_replica(tmp_path, hierarchy, levels):
     from triton.flagmega.compiler import Compiler
     from triton.flagmega.evaluator import PagedAttentionStateConfig
     from python.test.flagmega.codegen.triton.kernels.update_paged_attention_kv_cache.test_packed_slots_runtime import (
-        cache_update_module, )
+        cache_update_module,
+    )
     source = cache_update_module(
         PagedAttentionStateConfig(3, 4, 32, block_size=16, num_blocks=4),
-        True,
-        ("seq", "head", "dim"),
-        True,
-        True,
-        tokens=3,
+        True, ("seq", "head", "dim"), True, True, tokens=3,
         placement=fm.Placement(hierarchy, "abc", levels),
     )
     module = Compiler().compile(source).module
     artifact = write_artifact(module, tmp_path / "cache", target="nvidia-sm90", emit_executable=True)
     result = subprocess.run([
-        sys.executable,
-        "-m",
-        "torch.distributed.run",
-        "--standalone",
-        "--nproc_per_node=4",
-        str(Path(__file__).resolve()),
-        str(artifact),
+        sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc_per_node=4",
+        str(Path(__file__).resolve()), str(artifact),
     ], capture_output=True, text=True, timeout=180)
     assert result.returncode == 0, result.stdout + result.stderr
 

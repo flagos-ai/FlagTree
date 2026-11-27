@@ -6,13 +6,10 @@ from collections.abc import Mapping
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
-from triton.flagmega.ir.model import DistributedType, Node, SBP, effect, tensor_type
+from triton.flagmega.ir.model import DistributedType, Node, SBP, TupleType, effect, tensor_type
 from triton.flagmega.ir.ops.core import OpCost, OpDefinition, attribute_parameter, input_parameter, op_definition, tensor_nbytes
 from triton.flagmega.ir.ops.nn.delta_rule_block_update import (
-    DeltaRuleBlockUpdate,
-    delta_rule_block_update,
-    state_field_layout,
-    validate_block_tensors,
+    DeltaRuleBlockUpdate, delta_rule_block_update, state_field_layout, validate_block_tensors,
 )
 from triton.flagmega.ir.ops.tensors.pack import pack_physical
 from triton.flagmega.ir.ops.tensors.unpack import unpack_physical
@@ -49,11 +46,9 @@ class DeltaRuleChunkTransfer(OpDefinition):
         types = tuple(p.type_of(inputs) for p in cls.input_parameters)
         key, value, coefficients, _ = tuple(tensor_of(t) for t in types)
         validate_block_tensors((types[0], *types), attrs)
-        if key.shape[-1].fixed_value != 128 or value.shape[-1].fixed_value != 128 or coefficients.shape[
-                -1].fixed_value != 64:
+        if key.shape[-1].fixed_value != 128 or value.shape[-1].fixed_value != 128 or coefficients.shape[-1].fixed_value != 64:
             raise IRSchemaError("Chunk transfer requires 128-wide state and 64-token coefficient blocks.")
-        output = tensor_type(
-            "float32", ((key.shape[0] + attrs["chunk_size"] - 1) // attrs["chunk_size"], value.shape[1], 128, 128))
+        output = tensor_type("float32", ((key.shape[0] + attrs["chunk_size"] - 1) // attrs["chunk_size"], value.shape[1], 128, 128))
         if not isinstance(types[1], DistributedType):
             return output
         b = SBP.broadcast()
@@ -63,17 +58,17 @@ class DeltaRuleChunkTransfer(OpDefinition):
     def distributed_input_type_tuples(cls, choices, attrs):
         # Reuse the exact grouped-head relation without a state operand.
         sentinel = tensor_type("int32", ())
-        for values in DeltaRuleBlockUpdate.distributed_input_type_tuples((choices[0], *choices, (sentinel, )), attrs):
+        for values in DeltaRuleBlockUpdate.distributed_input_type_tuples((choices[0], *choices, (sentinel,)), attrs):
             yield values[1:-1]
 
     @classmethod
     def evaluate(cls, node, arguments, context):
-        return chunk_transfer(*arguments, chunk_size=node.attrs["chunk_size"], matrix_kind=node.attrs["matrix_kind"],
-                              torch=context.torch)
+        return chunk_transfer(*arguments, chunk_size=node.attrs["chunk_size"],
+                              matrix_kind=node.attrs["matrix_kind"], torch=context.torch)
 
     @classmethod
     def cost(cls, node):
-        return OpCost(bytes_written=tensor_nbytes(tensor_of(node.type)), notes=("ordered-bf16-chunk-transfer", ))
+        return OpCost(bytes_written=tensor_nbytes(tensor_of(node.type)), notes=("ordered-bf16-chunk-transfer",))
 
 
 def chunk_transfer(key, value, coefficients, log_prefix, *, chunk_size, matrix_kind, torch):
@@ -95,15 +90,13 @@ def chunk_transfer(key, value, coefficients, log_prefix, *, chunk_size, matrix_k
             end = p[:, valid - 1]
             gamma = torch.exp2(end)[:, None, None]
             if matrix_kind == "transfer":
-                z = k.transpose(
-                    -1, -2) if token == start else (acc.bfloat16().float() @ k.transpose(-1, -2).float()).bfloat16()
+                z = k.transpose(-1, -2) if token == start else (acc.bfloat16().float() @ k.transpose(-1, -2).float()).bfloat16()
                 acc = (acc + z.float() @ x.float()) * gamma
             else:
                 mask = torch.arange(64, device=key.device) < valid
                 decay = torch.exp2(torch.where(mask, end[:, None] - p, 0.))
                 negative = torch.where(mask[None, None, :], -v.float() * decay[:, None, :], 0.)
-                y = negative if token == start else torch.addcmul(negative, gamma,
-                                                                  acc.bfloat16().float() @ k.transpose(-1, -2).float())
+                y = negative if token == start else torch.addcmul(negative, gamma, acc.bfloat16().float() @ k.transpose(-1, -2).float())
                 acc = gamma * acc + y.bfloat16().float() @ x.float()
         outputs.append(acc)
     return torch.stack(outputs)
@@ -173,8 +166,7 @@ class DeltaRuleChunkFixup(OpDefinition):
 
     @classmethod
     def cost(cls, node):
-        return OpCost(bytes_written=tensor_nbytes(tensor_of(node.type)),
-                      notes=("ordered-tf32-chunk-state-composition", ))
+        return OpCost(bytes_written=tensor_nbytes(tensor_of(node.type)), notes=("ordered-tf32-chunk-state-composition",))
 
 
 def chunk_fixup(transfer, local_state, initial, *, torch):

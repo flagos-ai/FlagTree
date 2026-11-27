@@ -42,7 +42,7 @@ class KernelDefinition(TIRNode):
     @property
     def body(self):
         """A traversal view for the shared typed-buffer verifier, not IR state."""
-        return Sequential((self.dispatch, ))
+        return Sequential((self.dispatch,))
 
     @property
     def parameter_map(self):
@@ -51,9 +51,7 @@ class KernelDefinition(TIRNode):
     @property
     def runtime_parameters(self):
         return tuple(value for value in self.parameters if value.role in {
-            PrimParameterRole.INPUT,
-            PrimParameterRole.INOUT,
-            PrimParameterRole.METADATA,
+            PrimParameterRole.INPUT, PrimParameterRole.INOUT, PrimParameterRole.METADATA,
         })
 
     @property
@@ -78,12 +76,13 @@ def replace_kernel_dispatch(definition, dispatch, **changes):
     """Rewrite a contract or an explicitly loaded legacy one-op function."""
     if isinstance(definition, KernelDefinition):
         return replace(definition, dispatch=dispatch, **changes)
-    return replace(definition, body=Sequential((dispatch, )), **changes)
+    return replace(definition, body=Sequential((dispatch,)), **changes)
 
 
 def replace_kernel_callables(module, definitions, **changes):
     definitions = tuple(definitions)
-    return replace(module, prim_functions=tuple(value for value in definitions if isinstance(value, PrimFunction)),
+    return replace(module,
+                   prim_functions=tuple(value for value in definitions if isinstance(value, PrimFunction)),
                    kernel_definitions=tuple(value for value in definitions if isinstance(value, KernelDefinition)),
                    **changes)
 

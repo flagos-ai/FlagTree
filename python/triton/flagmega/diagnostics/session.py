@@ -50,7 +50,6 @@ class StageReport:
 
 
 class DiagnosticSession:
-
     def __init__(
         self,
         work_dir: str | Path | None = None,
@@ -68,14 +67,14 @@ class DiagnosticSession:
         return self.dumper.create_sub_dumper(name)
 
     def record(
-            self,
-            stage_name: str,
-            source: IRModule,
-            result: IRModule,
-            started: float,
-            *,
-            dump_name: str | None = None,
-            pass_executions: tuple[PassExecution, ...] = (),
+        self,
+        stage_name: str,
+        source: IRModule,
+        result: IRModule,
+        started: float,
+        *,
+        dump_name: str | None = None,
+        pass_executions: tuple[PassExecution, ...] = (),
     ) -> StageReport:
         checkpoint: str | None = None
         text_dump: str | None = None
@@ -121,11 +120,8 @@ def _write_manifest(destination: Path, reports: list[StageReport]) -> None:
         "stages": [value.to_data() for value in reports],
     }
     with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=destination.parent,
-            delete=False,
-            prefix=f".{destination.name}.",
+        "w", encoding="utf-8", dir=destination.parent, delete=False,
+        prefix=f".{destination.name}.",
     ) as stream:
         json.dump(payload, stream, indent=2, sort_keys=True)
         stream.write("\n")

@@ -49,7 +49,9 @@ def test_legacy_object_driver_uses_official_cuda_encoder(monkeypatch):
 
 def test_unsupported_driver_does_not_silently_change_descriptor_kind():
     with pytest.raises(RuntimeContractError, match="does not support tensor maps"):
-        encode_tma_descriptor_for_driver(object(), 0x1000, 0, 1, 0, (8, 16), (8, 16), (16, 1), 0)
+        encode_tma_descriptor_for_driver(
+            object(), 0x1000, 0, 1, 0, (8, 16), (8, 16), (16, 1), 0
+        )
 
 
 def test_cuda_encoder_matches_triton_dimension_and_stride_abi(monkeypatch):
@@ -77,7 +79,9 @@ def test_cuda_encoder_matches_triton_dimension_and_stride_abi(monkeypatch):
             shape=tuple(shape[index] for index in range(rank_value)),
             strides=tuple(strides[index] for index in range(rank_value)),
             block_shape=tuple(block_shape[index] for index in range(rank_value)),
-            element_strides=tuple(element_strides[index] for index in range(rank_value)),
+            element_strides=tuple(
+                element_strides[index] for index in range(rank_value)
+            ),
             interleave=int(interleave),
             swizzle=int(swizzle),
             l2_promotion=int(l2_promotion),
@@ -128,4 +132,6 @@ def test_cuda_encoder_reports_driver_failure(monkeypatch):
     )
 
     with pytest.raises(RuntimeContractError, match="CUDA error 1"):
-        encode_tma_descriptor(0x1000, 0, 2, 6, (8, 8), (16, 16), (16, 1), 0)
+        encode_tma_descriptor(
+            0x1000, 0, 2, 6, (8, 8), (16, 16), (16, 1), 0
+        )

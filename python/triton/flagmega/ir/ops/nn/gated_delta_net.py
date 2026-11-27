@@ -93,7 +93,7 @@ class GatedDeltaNet(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(flops=None, bytes_read=None, bytes_written=None, notes=("stateful-gdn", ))
+        return OpCost(flops=None, bytes_read=None, bytes_written=None, notes=("stateful-gdn",))
 
 
 def gated_delta_net(

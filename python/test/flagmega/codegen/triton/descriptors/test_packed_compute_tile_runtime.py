@@ -13,24 +13,19 @@ from python.test.flagmega.devices import require_nvidia_sm90
 @pytest.mark.parametrize("n,k", [(2048, 2048), (80, 320), (2056, 528)])
 @pytest.mark.parametrize("tile_n,block_k", [(16, 128), (32, 128), (64, 256)])
 def test_packed_compute_tile_matches_reference_with_local_and_reduction_tails(
-    tmp_path,
-    compile_packed_projection,
-    n,
-    k,
-    tile_n,
-    block_k,
+    tmp_path, compile_packed_projection, n, k, tile_n, block_k,
 ):
     torch = pytest.importorskip("torch")
     require_nvidia_sm90()
     implementation = f"tir.dense_matmul.packed_k_major_gemv_tn{tile_n}_bk{block_k}"
     module = compile_packed_projection(implementation, k=k, n=n)
     generator = torch.Generator().manual_seed(n + k)
-    weight = torch.randn((n, k), generator=generator, dtype=torch.bfloat16) / k**.5
+    weight = torch.randn((n, k), generator=generator, dtype=torch.bfloat16) / k ** .5
     checkpoint = MemoryCheckpoint({}, {
         "weight": TensorInfo("weight", DType.BFLOAT16, (n, k), "memory"),
     }, {"weight": weight})
-    artifact = write_artifact(module, tmp_path / "packed-tile", target="nvidia-sm90", checkpoint=checkpoint,
-                              emit_executable=True)
+    artifact = write_artifact(module, tmp_path / "packed-tile", target="nvidia-sm90",
+                              checkpoint=checkpoint, emit_executable=True)
     runtime = load(artifact, device="cuda:0")
     source = torch.randn((1, k), generator=generator, dtype=torch.bfloat16).cuda()
     output = torch.full((1, n), float("nan"), dtype=torch.bfloat16, device="cuda")

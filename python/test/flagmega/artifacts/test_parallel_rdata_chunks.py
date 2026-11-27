@@ -52,27 +52,28 @@ def test_chunk_table_is_validated_before_deferred_payload_check(tmp_path, tamper
 def test_independent_recipes_materialize_concurrently(tmp_path, monkeypatch):
     import numpy as np
     placement = fm.Placement((2, 2), "cx", "cb")
-    value_type = fm.DistributedType(fm.tensor_type("float32", (8, 4)), (fm.SBP.split_contiguous(
-        (0, )), fm.SBP.split_contiguous((1, ))), placement)
+    value_type = fm.DistributedType(fm.tensor_type("float32", (8, 4)),
+                                    (fm.SBP.split_contiguous((0,)), fm.SBP.split_contiguous((1,))), placement)
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir",
                            metadata={"launch_contract": {"grid_mesh": placement.to_data()}})
-    weights = tuple(builder.weight(key, value_type, source="memory", key=key, id=key) for key in ("w0", "w1"))
+    weights = tuple(builder.weight(key, value_type, source="memory", key=key, id=key)
+                    for key in ("w0", "w1"))
     builder.function("main", (), weights)
     frozen = freeze_constant_islands(builder.build(entry="main"))
     module = NttBufferizationPolicy(replace(BufferizationOptions.generic(alignment=4),
-                                            rdata_chip_sharding=True)).bufferize(frozen)
+                                           rdata_chip_sharding=True)).bufferize(frozen)
     assert len(module.constant_recipes) == 2
     rendezvous = Barrier(2)
 
     class ConcurrentCheckpoint(MemoryCheckpoint):
-
         def load_tensor(self, key, *, device="cpu"):
             rendezvous.wait(timeout=5)
             return super().load_tensor(key, device=device)
 
-    values = {key: np.arange(32, dtype=np.float32).reshape(8, 4) + i * 100 for i, key in enumerate(("w0", "w1"))}
-    checkpoint = ConcurrentCheckpoint({}, {key: TensorInfo(key, fm.DType.FLOAT32, (8, 4), "memory")
-                                           for key in values}, values)
+    values = {key:np.arange(32, dtype=np.float32).reshape(8, 4) + i * 100
+              for i, key in enumerate(("w0", "w1"))}
+    checkpoint = ConcurrentCheckpoint({}, {key:TensorInfo(key, fm.DType.FLOAT32, (8, 4), "memory")
+                                            for key in values}, values)
     monkeypatch.setattr(rdata.os, "cpu_count", lambda: 4)
     index = pack_rdata(module, checkpoint, tmp_path)
     image = (tmp_path / "rdata.bin").read_bytes()
@@ -83,8 +84,8 @@ def test_independent_recipes_materialize_concurrently(tmp_path, monkeypatch):
             for block in range(2):
                 offset = chip * index["segment_nbytes"] + buffer.offset + block * buffer.component_stride_bytes
                 actual = np.frombuffer(image, dtype=np.float32, count=8, offset=offset).reshape(4, 2)
-                np.testing.assert_array_equal(
-                    actual, values[buffer.weight_key][chip * 4:(chip + 1) * 4, block * 2:(block + 1) * 2])
+                np.testing.assert_array_equal(actual, values[buffer.weight_key][chip * 4:(chip + 1) * 4,
+                                                                              block * 2:(block + 1) * 2])
     verify_rdata(tmp_path, module=module)
 
 
@@ -104,10 +105,8 @@ def test_manifest_metadata_does_not_serialize_the_entire_graph(tmp_path, monkeyp
 def test_extent_assembly_preserves_cross_extent_writes_and_sparse_padding(tmp_path, monkeypatch, shared_extents):
     if not shared_extents:
         import errno
-
         def unsupported(*args, **kwargs):
             raise OSError(errno.EOPNOTSUPP, "filesystem has no shared extents")
-
         monkeypatch.setattr(rdata.fcntl, "ioctl", unsupported)
     path = tmp_path / "image.bin"
     expected = bytearray(10003)
@@ -133,7 +132,8 @@ def test_v3_segment_digest_artifacts_remain_readable(tmp_path):
     index["schema"] = rdata.RDATA_INDEX_SCHEMA_V3
     index["digest_kind"] = rdata.RDATA_SEGMENT_DIGEST_KIND
     index.pop("segment_chunks")
-    index["segment_sha256"] = [hashlib.sha256(payload[i:i + size]).hexdigest() for i in range(0, len(payload), size)]
+    index["segment_sha256"] = [hashlib.sha256(payload[i:i + size]).hexdigest()
+                               for i in range(0, len(payload), size)]
     index["sha256"] = rdata._segment_content_digest(index)
     (tmp_path / "rdata.index.json").write_text(json.dumps(index))
     verify_rdata(tmp_path, module=module)
@@ -141,8 +141,8 @@ def test_v3_segment_digest_artifacts_remain_readable(tmp_path):
 
 
 def test_recipe_budget_counts_tuple_intermediates():
-    value_type = fm.tensor_type("float32", (4, ))
+    value_type = fm.tensor_type("float32", (4,))
     value = fm.Node("value", "builtin.splat_const", (), value_type, attrs={"value": 1.0})
     pair = fm.Node("pair", "builtin.tuple", ("value", "value"), fm.TupleType((value_type, value_type)))
-    recipe = fm.ConstantRecipe("tuple-budget", (value, pair), ("pair", ))
+    recipe = fm.ConstantRecipe("tuple-budget", (value, pair), ("pair",))
     assert rdata._recipe_storage_budget(recipe, [], 1) == 2 * (16 + 32)

@@ -54,7 +54,8 @@ from triton.flagmega.ir.ops.nn.sparse_experts_down import SparseExpertsDown
 from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
 from triton.flagmega.ir.ops.nn.staged_routing import StagedRouting
 from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache import (
-    UpdatePagedAttentionKVCache, )
+    UpdatePagedAttentionKVCache,
+)
 from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache_pair import UpdatePagedAttentionKVCachePair
 from triton.flagmega.ir.ops.nn.vectorized_rms_norm import VectorizedRMSNorm
 
@@ -64,21 +65,11 @@ __all__ = [
     "DeltaRuleBlockUpdate",
     "DeltaRuleLogPrefix",
     "DeltaRuleCoefficients",
-    "Softmax",
-    "KdaConvolution",
-    "KdaRecurrentCore",
-    "KdaGatedRecurrentCore",
-    "KdaGatedStep",
-    "StagedRouting",
-    "MhcPre",
-    "MhcPost",
-    "MlaProjection",
-    "KdaInputProjection",
-    "PartitionedLinear",
-    "PartitionedBlockScaledLinear",
+    "Softmax", "KdaConvolution", "KdaRecurrentCore", "KdaGatedRecurrentCore", "KdaGatedStep", "StagedRouting",
+    "MhcPre", "MhcPost",
+    "MlaProjection", "KdaInputProjection", "PartitionedLinear", "PartitionedBlockScaledLinear",
     "RequantizeBlockScaledFP8",
-    "Embedding",
-    "InterleavedProjection",
+    "Embedding", "InterleavedProjection",
     "DenseMatMulGlu",
     "DsaIndexer",
     "DsaIndexerState",
@@ -116,3 +107,6 @@ __all__ = [
     "Qwen3PagedAttention",
     "VectorizedRMSNorm",
 ]
+
+from .iq4_xs_q8_1_glu import IQ4XSQ8_1Glu
+from .iq4_xs_q8_1_interleaved_projection import IQ4XSQ8_1InterleavedProjection

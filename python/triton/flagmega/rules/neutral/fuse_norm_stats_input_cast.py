@@ -12,8 +12,9 @@ from triton.flagmega.rules.neutral._utility import make_node
 
 
 def fuse_norm_stats_input_cast_rule():
-
     def rewrite(node, module):
+        if node.attrs.get("compute_profile", "default") != "default":
+            return None
         original = module.node_map[node.inputs[0]]
         converted = original
         # A packet Bitcast can factor lanes but must preserve dense scalar
@@ -30,12 +31,13 @@ def fuse_norm_stats_input_cast_rule():
         value = module.node_map[converted.inputs[0]]
         source, target, observed = map(lambda n: tensor_of(n.type), (value, converted, original))
         if (scalar_dtype(source.dtype) != DType.BFLOAT16 or scalar_dtype(target.dtype) != DType.FLOAT32
-                or scalar_dtype(observed.dtype) != DType.FLOAT32 or source.layout != TensorLayout()
-                or target.layout != TensorLayout() or source.rank != observed.rank or source.rank == 0):
+                or scalar_dtype(observed.dtype) != DType.FLOAT32
+                or source.layout != TensorLayout() or target.layout != TensorLayout()
+                or source.rank != observed.rank or source.rank == 0):
             return None
         if converted.op == "ntt.vectorized_cast":
-            ia, oa = cast_vector_axes(source.dtype.lanes, target.dtype.lanes, converted.attrs["vectorize_axes"],
-                                      source.rank)
+            ia, oa = cast_vector_axes(source.dtype.lanes, target.dtype.lanes,
+                                     converted.attrs["vectorize_axes"], source.rank)
             if any(axis != source.rank - 1 for axis in (*ia, *oa)):
                 return None
         elif source.shape != target.shape or getattr(source.dtype, "lanes", ()) != getattr(target.dtype, "lanes", ()):
@@ -56,17 +58,16 @@ def fuse_norm_stats_input_cast_rule():
         lanes = getattr(observed.dtype, "lanes", ())
         wanted = VectorType(DType.BFLOAT16, lanes) if lanes else DType.BFLOAT16
         if source.dtype != wanted:
-            value = make_node("tensors.bitcast", f"{node.id}.input_packet", (value, ), {"dtype": wanted},
+            value = make_node("tensors.bitcast", f"{node.id}.input_packet", (value,), {"dtype": wanted},
                               {"formed_by": "FuseNormStatsInputCast"})
-            helpers = (value, )
-        replacement = make_node(node.op, node.id, (value, ), node.attrs,
+            helpers = (value,)
+        replacement = make_node(node.op, node.id, (value,), node.attrs,
                                 {**node.metadata, "formed_by": "FuseNormStatsInputCast"})
         if replacement.type != node.type:
             return None
         return RewriteResult(replacement, helpers)
-
     return RewriteRule("FuseNormStatsInputCast", lambda node, _: node.op == "nn.norm_stats", rewrite,
-                       root_ops=("nn.norm_stats", ))
+                       root_ops=("nn.norm_stats",))
 
 
 __all__ = ["fuse_norm_stats_input_cast_rule"]

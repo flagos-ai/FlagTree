@@ -17,6 +17,7 @@ from triton.flagmega.errors import CodegenError
 from triton.flagmega.selection import override_plan
 from triton.flagmega.targets import NvidiaSm90Target
 
+
 BASE = "tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv"
 STAGED = BASE + "_lhs8192_async"
 DONOR = "tir.dense_matmul.packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats_lhs8192"
@@ -29,22 +30,20 @@ def test_plain_async_candidate_is_registered_without_changing_default():
     base = model.implementation(BASE)
     candidate = model.implementation(REGISTERED)
     assert candidate.variant == base.variant
-    assert candidate.parameters == {
-        **base.parameters, "lhs_stage_extent": 8192, "lhs_copy_tile": 1024, "lhs_copy_kind": "async"
-    }
-    assert candidate.contract == {
-        **base.contract, "required_input_dtype": "bfloat16", "required_output_dtype": "bfloat16"
-    }
+    assert candidate.parameters == {**base.parameters, "lhs_stage_extent": 8192,
+                                    "lhs_copy_tile": 1024, "lhs_copy_kind": "async"}
+    assert candidate.contract == {**base.contract, "required_input_dtype": "bfloat16",
+                                  "required_output_dtype": "bfloat16"}
     assert candidate.requires == (*base.requires, "async_copy")
-    assert candidate.shared_workspaces == (*base.shared_workspaces, model.implementation(DONOR).shared_workspaces[1])
-    assert candidate.transfer_pipeline == replace(base.transfer_pipeline, consumer_shared_workspace_indices=(1, ))
+    assert candidate.shared_workspaces == (*base.shared_workspaces,
+                                          model.implementation(DONOR).shared_workspaces[1])
+    assert candidate.transfer_pipeline == replace(
+        base.transfer_pipeline, consumer_shared_workspace_indices=(1,))
     assert REGISTERED not in model.preferences["dense_matmul"]
 
 
 def make_module(implementation=STAGED, *, k=6144):
-
     class ProducedRow(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
@@ -53,10 +52,10 @@ def make_module(implementation=STAGED, *, k=6144):
             # Materialize a real owned-pool row instead of assuming alignment
             # or lifetime for an external pointer passed by the test runner.
             prepared = fm.F.math.add(value, value, name="prepared")
-            weight = self.weight("weight", fm.tensor_type("bfloat16", (2048, k)), source="memory", key="weight",
-                                 id="weight")
+            weight = self.weight("weight", fm.tensor_type("bfloat16", (2048, k)),
+                                 source="memory", key="weight", id="weight")
             result = fm.F.math.matmul(prepared, weight, transpose_b=True, name="projection")
-            self.function("main", (value, ), (result, ))
+            self.function("main", (value,), (result,))
 
     compiler = Compiler()
     compiler.target = NvidiaSm90Target()
@@ -75,14 +74,13 @@ def make_module(implementation=STAGED, *, k=6144):
                         fm.SBP.broadcast(), fm.SBP.split_contiguous((0, 1), 2)))
     result = solve_search_graph(graph, fixed_selections={projection.node_id: full_row.id})
     _, records = distribution_selection_state(result, policy=compiler.target.distribution_policy.identity)
-    distributed = compiler.run_stage(
-        distribution, "auto-distributed",
-        plan=override_plan(distribution, tuple((record.point_id, record.candidate_id) for record in records))).module
+    distributed = compiler.run_stage(distribution, "auto-distributed", plan=override_plan(
+        distribution, tuple((record.point_id, record.candidate_id) for record in records))).module
     proposed = compiler.compile(distributed, stop_after="propose-tir").module
     point = next(point for point in proposed.selection_points if point.id == "tir.projection.vectorized.compute")
     assert implementation in {candidate.id for candidate in point.candidates}
-    selected = compiler.run_stage(proposed, "lower-tir", plan=override_plan(proposed,
-                                                                            ((point.id, implementation), ))).module
+    selected = compiler.run_stage(proposed, "lower-tir", plan=override_plan(
+        proposed, ((point.id, implementation),))).module
     return compiler.compile(selected).module
 
 
@@ -119,9 +117,7 @@ def test_plain_dense_stages_true_k_and_waits_before_shared_read(staged_module, t
     assert "dense_source +" not in stage
 
 
-@pytest.mark.parametrize("mutation",
-                         ("capacity", "copy_tile", "dtype", "input_dtype", "workspace_owner", "missing_workspace",
-                          "external", "stride", "copy_kind", "alignment", "pool_offset", "scope_stride"))
+@pytest.mark.parametrize("mutation", ("capacity", "copy_tile", "dtype", "input_dtype", "workspace_owner", "missing_workspace", "external", "stride", "copy_kind", "alignment", "pool_offset", "scope_stride"))
 def test_plain_dense_rejects_unproven_staging(staged_module, mutation):
     binding = describe_function_runtime_binding(staged_module)
     raw = deepcopy(next(call for call in binding["call_abi"]["kernel_calls"] if call.get("implementation") == STAGED))
@@ -191,10 +187,9 @@ def test_plain_async_requires_capability(staged_module):
     from triton.flagmega.targets.selection import CapabilitySelectionPolicy
 
     point = next(point for point in staged_module.selection_points if point.id == "tir.projection.vectorized.compute")
-    filtered = CapabilitySelectionPolicy().add_defaults(replace(staged_module, selection_points=(),
-                                                                selections=()), (point, ), "capability regression",
-                                                        capability=Sm90Capability(supports_async_copy=False),
-                                                        target_name="nvidia-sm90", policy_version="test")
+    filtered = CapabilitySelectionPolicy().add_defaults(
+        replace(staged_module, selection_points=(), selections=()), (point,), "capability regression",
+        capability=Sm90Capability(supports_async_copy=False), target_name="nvidia-sm90", policy_version="test")
     assert BASE in {candidate.id for candidate in filtered.selection_points[0].candidates}
     assert REGISTERED not in {candidate.id for candidate in filtered.selection_points[0].candidates}
 
@@ -206,23 +201,19 @@ def direct_norm_stats_staged_module():
     module = _module(reduction_extent=6144)
     # Keep only the semantic operation and its real operands. The original
     # candidate-only fixture also describes graph-discovery hint nodes.
-    nodes = tuple(
-        replace(
-            node, attrs=fm.get_definition(node.op).normalize_attrs({"name": node.id} if node.op ==
-                                                                   "builtin.var" else node.attrs))
-        for node in module.nodes
-        if node.id not in {"residual_add", "norm_consumer"})
-    module = fm.verify_module(
-        replace(
-            module,
-            stage="tuple_boxing_lowered",
-            nodes=nodes,
-            functions=(fm.Function("main", ("lhs", "rhs", "addend"), ("result", )), ),
-            metadata={"auto_distribution": {"placement": nodes[0].type.placement.to_data()}},
-        ))
+    nodes = tuple(replace(
+        node, attrs=fm.get_definition(node.op).normalize_attrs(
+            {"name": node.id} if node.op == "builtin.var" else node.attrs))
+        for node in module.nodes if node.id not in {"residual_add", "norm_consumer"})
+    module = fm.verify_module(replace(
+        module, stage="tuple_boxing_lowered", nodes=nodes,
+        functions=(fm.Function("main", ("lhs", "rhs", "addend"), ("result",)),),
+        metadata={"auto_distribution": {"placement": nodes[0].type.placement.to_data()}},
+    ))
     compiler = Compiler()
     proposed = compiler.run_stage(module, "propose-tir").module
-    selected = compiler.run_stage(proposed, "lower-tir", plan=override_plan(proposed, (("tir.result", DONOR), ))).module
+    selected = compiler.run_stage(proposed, "lower-tir", plan=override_plan(
+        proposed, (("tir.result", DONOR),))).module
     return compiler.compile(selected).module
 
 

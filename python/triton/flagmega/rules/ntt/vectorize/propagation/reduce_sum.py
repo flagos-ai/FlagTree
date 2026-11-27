@@ -9,7 +9,6 @@ from triton.flagmega.rules.ntt.vectorize.propagation.producer_demand import fina
 
 
 def reduce_sum_producer_rule():
-
     def rewrite(node, module):
         lanes = final_axis_pack_demand(module, {node.id})
         if lanes is None:
@@ -23,16 +22,17 @@ def reduce_sum_producer_rule():
             {**dict(node.attrs), "output_lanes": (*lanes, *current_lanes)},
             metadata,
         )
-        restored = make_node("tensors.unpack", node.id, (packed, ),
-                             {"axes": (tensor_of(node.type).rank - 1, ) * len(lanes)}, metadata)
+        restored = make_node(
+            "tensors.unpack", node.id, (packed,), {"axes": (tensor_of(node.type).rank - 1,) * len(lanes)}, metadata
+        )
         assert restored.type == node.type
-        return RewriteResult(restored, (packed, ))
+        return RewriteResult(restored, (packed,))
 
     return RewriteRule(
         "VectorizeReduceSumPropagation",
         lambda node, _: node.op == "math.reduce_sum",
         rewrite,
-        root_ops=("math.reduce_sum", ),
+        root_ops=("math.reduce_sum",),
     )
 
 

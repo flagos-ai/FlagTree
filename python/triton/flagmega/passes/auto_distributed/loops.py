@@ -18,22 +18,18 @@ def loop_candidates(module, node, placement, available, split_provider):
     for position, node_id in enumerate(node.inputs):
         original = module.node_map[node_id].type
         if position < 3:
-            values = (original, )
+            values = (original,)
         else:
             values = tuple(candidate.return_type for candidate in available[node_id])
             if position < 3 + count and isinstance(logical_type(original), TensorType):
-                values = (*values, broadcast_ir_type(original,
-                                                     placement), *context.leaf_candidate_types(logical_type(original)))
+                values = (*values, broadcast_ir_type(original, placement),
+                          *context.leaf_candidate_types(logical_type(original)))
         choices.append(tuple(dict.fromkeys(values)))
-    return tuple(
-        DistributedCandidate(
-            distributed_candidate_id(node.id, "for-interface", TupleType(tuple(types[3:3 + count])), tuple(types)),
-            TupleType(tuple(types[3:3 + count])),
-            tuple(types),
-            0,
-            "for-iter-argument-fixed-point",
-            objective_model="flagmega.loop-interface/v1",
-        ) for types in product(*choices))
+    return tuple(DistributedCandidate(
+        distributed_candidate_id(node.id, "for-interface", TupleType(tuple(types[3:3 + count])), tuple(types)),
+        TupleType(tuple(types[3:3 + count])), tuple(types), 0, "for-iter-argument-fixed-point",
+        objective_model="flagmega.loop-interface/v1",
+    ) for types in product(*choices))
 
 
 def add_binding_candidates(module, buckets):
@@ -49,10 +45,9 @@ def add_binding_candidates(module, buckets):
             for candidate in by_id[node.id].candidates:
                 target = module.node_map[parameter].type if position == 0 else candidate.input_types[position + 2]
                 if not any(value.return_type == target for value in values):
-                    values.append(
-                        DistributedCandidate(distributed_candidate_id(parameter, "for-bound-argument", target,
-                                                                      ()), target, (), 0, "for-bound-argument",
-                                             objective_model="flagmega.loop-interface/v1"))
+                    values.append(DistributedCandidate(
+                        distributed_candidate_id(parameter, "for-bound-argument", target, ()),
+                        target, (), 0, "for-bound-argument", objective_model="flagmega.loop-interface/v1"))
             by_id[parameter] = replace(bucket, candidates=tuple(values))
     return [by_id[bucket.node_id] for bucket in buckets]
 
@@ -80,8 +75,7 @@ def binding_relations(module, buckets):
             pairs = []
             for choice, candidate in enumerate(buckets[node.id].candidates):
                 target = module.node_map[parameter].type if position == 0 else candidate.input_types[position + 2]
-                pairs.extend((source, choice)
-                             for source, value in enumerate(buckets[parameter].candidates)
+                pairs.extend((source, choice) for source, value in enumerate(buckets[parameter].candidates)
                              if value.return_type == target)
             yield parameter, node.id, tuple(pairs)
 
@@ -97,11 +91,9 @@ def add_solver_constraints(model, candidate_model, graph, domains, variables, si
     for parameter, output, yield_index in loop_edges(graph.module):
         for choice in domains[parameter]:
             target = buckets[parameter].candidates[choice].return_type
-            supports = [
-                source for source in domains[output]
-                if buckets[output].candidates[source].return_type == target or (output, source, parameter, choice,
-                                                                                yield_index) in site_map
-            ]
+            supports = [source for source in domains[output]
+                        if buckets[output].candidates[source].return_type == target
+                        or (output, source, parameter, choice, yield_index) in site_map]
             condition = variables[parameter, choice] <= sum(variables[output, source] for source in supports)
             model.Add(condition)
             candidate_model.Add(condition)

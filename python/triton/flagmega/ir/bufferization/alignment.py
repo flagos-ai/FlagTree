@@ -22,11 +22,8 @@ def proven_buffer_alignments(plan):
                 physical = formal.mem_span.buffer
                 if physical.memory_space == 'external' and physical.function == call.callee:
                     roots.setdefault(physical.id, {}).setdefault(call.call, []).append((formal, actual_id))
-    external_entries = {
-        plan.buffer_map[buffer_id].physical_id
-        for _, ids in (*plan.entry_inputs, *plan.entry_outputs)
-        for buffer_id in ids
-    }
+    external_entries = {plan.buffer_map[buffer_id].physical_id
+                        for _, ids in (*plan.entry_inputs, *plan.entry_outputs) for buffer_id in ids}
     root_cache, visiting = {}, set()
 
     def view_alignment(buffer):
@@ -37,8 +34,8 @@ def proven_buffer_alignments(plan):
         if buffer.component_stride_bytes:
             alignment = gcd(alignment, buffer.component_stride_bytes)
         space = plan.memory_space_map.get(buffer.mem_span.buffer.memory_space)
-        if (space is not None and space.allocation_scope.value == 'function' and space.sharing_scope.value == 'block'
-                and space.kind != 'shared'):
+        if (space is not None and space.allocation_scope.value == 'function'
+                and space.sharing_scope.value == 'block' and space.kind != 'shared'):
             alignment = gcd(alignment, plan.function_memory_space_bytes(buffer.function, space.name))
         return alignment
 

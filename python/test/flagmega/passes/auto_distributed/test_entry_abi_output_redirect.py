@@ -24,22 +24,24 @@ from .helpers import packed_matmul_module
 
 def _module_with_abi() -> fm.IRModule:
     module = packed_matmul_module()
-    return replace(
-        module, metadata={
-            **module.metadata,
-            "composite_abi": {
-                "schema": "flagmega.composite-abi/v1",
-                "input_id": "value",
-                "logits_output": "output",
-                "token_output": "output",
-                "tensor_states": ({
-                    "state_id": 0,
-                    "input": ("value", "value"),
-                    "output": ("output", "output"),
-                }, ),
-                "paged_state": {"input": "value", "output": "output"},
+    return replace(module, metadata={
+        **module.metadata,
+        "composite_abi": {
+            "schema": "flagmega.composite-abi/v1",
+            "input_id": "value",
+            "logits_output": "output",
+            "token_output": "output",
+            "tensor_states": ({
+                "state_id": 0,
+                "input": ("value", "value"),
+                "output": ("output", "output"),
+            }, ),
+            "paged_state": {
+                "input": "value",
+                "output": "output"
             },
-        })
+        },
+    })
 
 
 def test_materialization_redirects_entry_abi_onto_the_reshard_output():
@@ -84,3 +86,23 @@ def test_redirect_preserves_structural_keys_and_nested_bindings():
     binding, = abi["tensor_states"]
     assert binding["state_id"] == 0, "a state_id is data, never a node id"
     assert binding["output"] == ("output.reshard1", "output.reshard1")
+
+
+def test_every_entry_boundary_rewriting_pass_redirects_the_contract():
+    """Each site that rebuilds ``function.outputs`` must apply the redirect.
+
+    A new pass that renames an entry output without redirecting the contract
+    reintroduces the same runtime-load failure, so pin the known set here.
+    """
+
+    import inspect
+
+    from triton.flagmega.codegen.triton import lowering
+    from triton.flagmega.passes.auto_distributed import materializer
+    from triton.flagmega.passes.functions import distributed_boundary_layout
+
+    for module in (materializer, lowering, distributed_boundary_layout):
+        source = inspect.getsource(module)
+        assert "outputs=tuple(" in source, f"{module.__name__} no longer rebuilds function outputs"
+        assert "redirect_entry_abi(" in source, (
+            f"{module.__name__} rewrites entry outputs without redirecting the published entry ABI")

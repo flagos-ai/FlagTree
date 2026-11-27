@@ -5,10 +5,8 @@
 import sys
 import torch
 from flashinfer.gdn_kernels.delta_rule_dsl.delta_rule_cp_sm90 import (
-    cp_delta_rule_t_precompute_dsl_sm90,
-    cp_delta_rule_mn_precompute_dsl_sm90,
-    cp_delta_rule_fixup_dsl_sm90,
-    cp_delta_rule_prefill_dsl_sm90,
+    cp_delta_rule_t_precompute_dsl_sm90, cp_delta_rule_mn_precompute_dsl_sm90,
+    cp_delta_rule_fixup_dsl_sm90, cp_delta_rule_prefill_dsl_sm90,
 )
 
 tokens, output_path = int(sys.argv[1]), sys.argv[2]
@@ -26,22 +24,10 @@ t = cp_delta_rule_t_precompute_dsl_sm90(key, beta, cu, tokens, max_seqlen=tokens
 m, n = cp_delta_rule_mn_precompute_dsl_sm90(key, value, t, alpha, cu, tokens, cp_chunk_len=512, max_seqlen=tokens)
 fixed = cp_delta_rule_fixup_dsl_sm90(m, n, cu, tokens, cp_chunk_len=512)
 output, state = torch.empty_like(value), torch.empty(1, heads, dimension, dimension, device="cuda")
-cp_delta_rule_prefill_dsl_sm90(output, state, query, key, value, t, fixed, alpha, dimension**-.5, cu, tokens,
-                               cp_chunk_len=512, max_seqlen=tokens)
+cp_delta_rule_prefill_dsl_sm90(output, state, query, key, value, t, fixed, alpha, dimension**-.5,
+                              cu, tokens, cp_chunk_len=512, max_seqlen=tokens)
 torch.cuda.synchronize()
-torch.save(
-    {
-        name: tensor.contiguous().cpu()
-        for name, tensor in dict(
-            query=query,
-            key=key,
-            value=value,
-            alpha=alpha,
-            coefficients=-t.transpose(-1, -2),
-            transfer=m,
-            local_state=n,
-            fixed_state=fixed,
-            output=output,
-            state=state[0],
-        ).items()
-    }, output_path)
+torch.save({name: tensor.contiguous().cpu() for name, tensor in dict(
+    query=query, key=key, value=value, alpha=alpha, coefficients=-t.transpose(-1, -2),
+    transfer=m, local_state=n, fixed_state=fixed, output=output, state=state[0],
+).items()}, output_path)

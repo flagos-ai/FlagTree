@@ -13,20 +13,15 @@ from triton.flagmega.targets import NvidiaSm90Target
 @pytest.mark.parametrize("large", [False, True])
 @pytest.mark.parametrize("accumulation_splits", [1, 2])
 def test_shared_projection_uses_packed_input_and_result_without_duplication(large, accumulation_splits):
-
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("x", fm.tensor_type(fm.vector_type("bfloat16", (2, 4)), (1, 16)), id="x")
             w = self.input("w", fm.tensor_type("bfloat16", (80, 128)), id="w")
             value = fm.F.tensors.unpack(x, axes=(-1, -1))
-            result = fm.F.nn.partitioned_linear(value, w, partitions=4, accumulation_splits=accumulation_splits,
-                                                name="projection")
-            outputs = [
-                result,
-                fm.F.tensors.pack(result, (2, 4), axes=(-1, -1)),
-                fm.F.tensors.pack(result, (4, ), axes=(-1, ))
-            ]
+            result = fm.F.nn.partitioned_linear(value, w, partitions=4,
+                                                accumulation_splits=accumulation_splits, name="projection")
+            outputs = [result, fm.F.tensors.pack(result, (2, 4), axes=(-1, -1)),
+                       fm.F.tensors.pack(result, (4,), axes=(-1,))]
             if large:
                 padding = w
                 for _ in range(20_001):
@@ -44,14 +39,8 @@ def test_shared_projection_uses_packed_input_and_result_without_duplication(larg
     assert post_function_boundary_pack_propagation(result, NvidiaSm90Target()).semantic_hash == result.semantic_hash
     if not large:
         generator = torch.Generator().manual_seed(18831)
-        values = {
-            node.id:
-            torch.randn(
-                tuple(d.fixed_value
-                      for d in node.type.shape) + tuple(getattr(node.type.dtype, "lanes", ())),
-                generator=generator).bfloat16()
-            for node in original.nodes
-            if node.op == "builtin.var"
-        }
+        values = {node.id: torch.randn(tuple(d.fixed_value for d in node.type.shape)
+                                      + tuple(getattr(node.type.dtype, "lanes", ())), generator=generator).bfloat16()
+                  for node in original.nodes if node.op == "builtin.var"}
         evaluator = TorchEvaluator(DictWeightResolver({}))
         torch.testing.assert_close(evaluator.run(original, values), evaluator.run(result, values), rtol=0, atol=0)

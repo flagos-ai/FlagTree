@@ -29,7 +29,8 @@ PLACEMENT = fm.Placement((4, ), "x", "b")
 def distributed():
     scale = dict(REDUCED, kda_num_heads=HEADS, kda_head_dim=HEAD_DIM)
     imported = Glm5MoeImporter(checkpoint(scale, kind="kda"), layer=4).import_module()
-    options = CompileOptions(target="nvidia-sm90", placement=PLACEMENT, bufferize_opt_level="fast")
+    options = CompileOptions(target="nvidia-sm90", placement=PLACEMENT,
+                             bufferize_opt_level="fast")
     return Compiler(options).compile(imported, stop_after="auto-distributed").module
 
 
@@ -61,9 +62,8 @@ def test_the_conv_weight_and_both_states_are_sharded_not_replicated(distributed)
     for node in _kda_nodes(distributed):
         operands = [distributed.node_map[value] for value in node.inputs]
         # The rank-4 operands are the conv weight / conv state / recurrent state.
-        heavy = [
-            value for value in operands if isinstance(value.type, fm.DistributedType) and value.type.tensor.rank == 4
-        ]
+        heavy = [value for value in operands
+                 if isinstance(value.type, fm.DistributedType) and value.type.tensor.rank == 4]
         assert heavy, f"{node.id} has no rank-4 weight or state operand"
         for value in heavy:
             assert isinstance(_head_policy(value.type), fm.SBPSplit), \
@@ -78,7 +78,8 @@ def test_every_kda_operand_agrees_on_one_head_owner(distributed):
         heads = {_head_policy(value) for value in values}
         assert len(heads) == 1, f"{node.id} mixes head owners: {heads}"
         for value in values:
-            assert all(policy == broadcast for axis, policy in enumerate(value.axis_policies) if axis != 1)
+            assert all(policy == broadcast
+                       for axis, policy in enumerate(value.axis_policies) if axis != 1)
             assert value.partial is None and value.exclusive is None
 
 
@@ -98,12 +99,12 @@ def test_the_split_shrinks_the_per_chip_kda_footprint(distributed):
 def test_the_out_projection_consumes_the_split_as_a_row_parallel_reduction(distributed):
     """``o_proj`` must use the existing partial-output matmul, not a gather."""
 
-    matmuls = [node for node in distributed.nodes if "o_proj" in node.id and node.op.endswith("matmul")]
+    matmuls = [node for node in distributed.nodes
+               if "o_proj" in node.id and node.op.endswith("matmul")]
     assert matmuls, "the KDA out projection did not survive as a matmul"
-    reshards = [
-        node for node in distributed.nodes
-        if node.op == "distributed.boxing" and any("o_norm" in value or "out_flat" in value for value in node.inputs)
-    ]
+    reshards = [node for node in distributed.nodes
+                if node.op == "distributed.boxing" and any(
+                    "o_norm" in value or "out_flat" in value for value in node.inputs)]
     # Either the matmul reduces a K-split itself, or exactly one reshard
     # gathers heads before it. Both are valid plans; an all-to-all per head is
     # not, so assert the reshard count stays bounded.

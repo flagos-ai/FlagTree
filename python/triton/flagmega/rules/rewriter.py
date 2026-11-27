@@ -26,7 +26,7 @@ class DataflowRewriter:
     """Apply ordered local rules to a fixed point over topological IR.
 
     Rules may replace one node or insert helper nodes immediately before it.
-    Root ids are intentionally stable, using expression rewrite
+    Root ids are intentionally stable, matching nncase's expression rewrite
     behavior while preserving external references in editable checkpoints.
     """
 
@@ -104,8 +104,7 @@ class DataflowRewriter:
                     offset += delta
         return current if changed else None
 
-    def _rewrite_node(self, module: IRModule, index: int, positions, rules,
-                      users) -> tuple[IRModule, int | None] | None:
+    def _rewrite_node(self, module: IRModule, index: int, positions, rules, users) -> tuple[IRModule, int | None] | None:
         node = module.nodes[index]
         rank = positions[node.id]
         if not self.rewrite_constants and node.op == "builtin.const_asset":
@@ -122,7 +121,10 @@ class DataflowRewriter:
                         stage=module.stage,
                         node_id=node.id,
                     )
-                if (not node.effect.is_pure and rule.effect_policy is not RewriteEffectPolicy.ALLOW):
+                if (
+                    not node.effect.is_pure
+                    and rule.effect_policy is not RewriteEffectPolicy.ALLOW
+                ):
                     raise IRVerificationError(
                         f"Rewrite rule {rule.name!r} cannot redirect effectful node without "
                         "effect_policy=ALLOW.",
@@ -155,7 +157,9 @@ class DataflowRewriter:
                         stage=module.stage,
                         node_id=node.id,
                     )
-                effectful_helpers = tuple(helper.id for helper in result.prefix_nodes if not helper.effect.is_pure)
+                effectful_helpers = tuple(
+                    helper.id for helper in result.prefix_nodes if not helper.effect.is_pure
+                )
                 if effectful_helpers:
                     raise IRVerificationError(
                         f"Rewrite rule {rule.name!r} inserted effectful helpers "
@@ -179,11 +183,8 @@ class DataflowRewriter:
             helpers = set()
 
             def missing_inputs(value, helpers=helpers):
-                return {
-                    input_id
-                    for input_id in value.inputs
-                    if input_id not in helpers and positions.get(input_id, rank) >= rank
-                }
+                return {input_id for input_id in value.inputs
+                        if input_id not in helpers and positions.get(input_id, rank) >= rank}
 
             for helper in result.prefix_nodes:
                 missing = missing_inputs(helper)
@@ -231,11 +232,12 @@ class DataflowRewriter:
 def _root_operators(pattern):
     """Necessary root names only; custom and predicate patterns stay generic."""
     if type(pattern) is OpPattern:
-        return frozenset((pattern.op_name, ))
+        return frozenset((pattern.op_name,))
     if type(pattern) is CallPattern and type(pattern.target) is OpPattern:
-        return frozenset((pattern.target.op_name, ))
+        return frozenset((pattern.target.op_name,))
     if type(pattern) in {OrPattern, UnaryChainPattern}:
-        branches = ((pattern.lhs, pattern.rhs) if type(pattern) is OrPattern else (pattern.step, pattern.terminal))
+        branches = ((pattern.lhs, pattern.rhs) if type(pattern) is OrPattern
+                    else (pattern.step, pattern.terminal))
         left, right = (_root_operators(branch) for branch in branches)
         return None if left is None or right is None else left | right
     return None
@@ -275,16 +277,23 @@ def _redirect(module: IRModule, source: str, target: str, index=None, positions=
             function,
             parameters=tuple(target if value == source else value for value in function.parameters),
             outputs=tuple(target if value == source else value for value in function.outputs),
-        ) if source in function.parameters or source in function.outputs else function for function in module.functions)
-    points = tuple(
-        replace(point, owner=target) if point.owner == source else point for point in module.selection_points)
+        )
+        if source in function.parameters or source in function.outputs
+        else function
+        for function in module.functions
+    )
+    points = tuple(replace(point, owner=target) if point.owner == source else point for point in module.selection_points)
     result = replace(module, nodes=tuple(nodes), functions=functions, selection_points=points)
     object.__setattr__(result, "node_map", MappingProxyType(node_map))
     return result
 
 
 def _remove_unused(module: IRModule) -> IRModule:
-    required = {node_id for function in module.functions for node_id in (*function.parameters, *function.outputs)}
+    required = {
+        node_id
+        for function in module.functions
+        for node_id in (*function.parameters, *function.outputs)
+    }
     required.update(node.id for node in module.nodes if not node.effect.is_pure)
     node_map = module.node_map
     pending = list(required)
@@ -309,9 +318,11 @@ def _remove_unused(module: IRModule) -> IRModule:
                 representatives[str(node.metadata[key])] = node.id
     points = tuple(
         replace(point, owner=representatives[point.owner])
-        if point.owner is not None and point.owner not in required and point.owner in representatives else point
+        if point.owner is not None and point.owner not in required and point.owner in representatives
+        else point
         for point in module.selection_points
-        if point.owner is None or point.owner in required or point.owner in representatives)
+        if point.owner is None or point.owner in required or point.owner in representatives
+    )
     point_ids = {point.id for point in points}
     return replace(
         module,

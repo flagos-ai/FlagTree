@@ -32,6 +32,5 @@ def test_dense_rows_can_reduce_one_proven_uniform_head():
     projection = next(node for node in tree.body
                       if isinstance(node, ast.FunctionDef) and node.name == "_flagmega_dense_rows")
     assert "UNIFORM_ROWS" in {argument.arg for argument in projection.args.args}
-    assert any(
-        isinstance(node, ast.If) and isinstance(node.test, ast.Name) and node.test.id == "UNIFORM_ROWS"
-        for node in ast.walk(projection))
+    assert any(isinstance(node, ast.If) and isinstance(node.test, ast.Name)
+               and node.test.id == "UNIFORM_ROWS" for node in ast.walk(projection))

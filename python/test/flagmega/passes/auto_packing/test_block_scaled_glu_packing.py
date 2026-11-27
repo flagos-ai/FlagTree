@@ -15,8 +15,12 @@ def _module(*, k: int = 128) -> fm.IRModule:
     weight_type = fm.tensor_type("float8_e4m3fn", (64, k))
     scale_type = fm.tensor_type("float32", (1, 1))
     value = builder.var("value", value_type, id="value")
-    gate = builder.weight("gate", weight_type, source="memory", key="gate", id="gate")
-    up = builder.weight("up", weight_type, source="memory", key="up", id="up")
+    gate = builder.weight(
+        "gate", weight_type, source="memory", key="gate", id="gate"
+    )
+    up = builder.weight(
+        "up", weight_type, source="memory", key="up", id="up"
+    )
     gate_scale = builder.weight(
         "gate_scale",
         scale_type,
@@ -32,8 +36,7 @@ def _module(*, k: int = 128) -> fm.IRModule:
         id="up_scale",
     )
     call = fm.get_definition("nn.matmul_glu").prepare(
-        (value, gate, up, gate_scale, up_scale),
-        {
+        (value, gate, up, gate_scale, up_scale), {
             "activation": "silu",
             "weight_block_n": 128,
             "weight_block_k": 128,
@@ -41,7 +44,7 @@ def _module(*, k: int = 128) -> fm.IRModule:
     )
     output = builder.call("nn.matmul_glu", call.inputs, call.result_type, id="output", attrs=call.attrs,
                           effect=call.effect)
-    builder.function("main", (value, ), (output, ))
+    builder.function("main", (value,), (output,))
     return fm.verify_module(builder.build(entry="main"))
 
 
@@ -57,18 +60,26 @@ def test_block_scaled_glu_packs_both_k_axes_and_preserves_evaluation():
     output = packed.node_map["output"]
 
     assert output.op == "nn.packed_matmul_glu"
-    assert packed.selection_map["packing.output"].candidate_id == ("packing.n_major_k_packed")
+    assert packed.selection_map["packing.output"].candidate_id == (
+        "packing.n_major_k_packed"
+    )
     for packed_id, source_id in zip(output.inputs[1:3], ("gate", "up")):
         weight = packed.node_map[packed_id]
         assert weight.op == "tensors.pack"
-        assert weight.inputs == (source_id, )
-        assert weight.type == fm.tensor_type(fm.vector_type("float8_e4m3fn", (2, 16)), (64, 4))
+        assert weight.inputs == (source_id,)
+        assert weight.type == fm.tensor_type(
+            fm.vector_type("float8_e4m3fn", (2, 16)), (64, 4)
+        )
 
     generator = torch.Generator().manual_seed(20260904)
     value = torch.randn((2, 128), generator=generator).to(torch.bfloat16)
     weights = {
-        "gate": torch.randn((64, 128), generator=generator).to(torch.float8_e4m3fn),
-        "up": torch.randn((64, 128), generator=generator).to(torch.float8_e4m3fn),
+        "gate": torch.randn((64, 128), generator=generator).to(
+            torch.float8_e4m3fn
+        ),
+        "up": torch.randn((64, 128), generator=generator).to(
+            torch.float8_e4m3fn
+        ),
         "gate_scale": torch.ones((1, 1), dtype=torch.float32),
         "up_scale": torch.ones((1, 1), dtype=torch.float32),
     }

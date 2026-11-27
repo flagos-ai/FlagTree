@@ -13,21 +13,23 @@ class _ConstantOnlyCheckpoint:
     """Resolver used only to materialize compiler-owned splat recipes."""
 
     def load_tensor(self, key, *, device="cpu"):
-        raise AssertionError(f"RMSNorm fixture unexpectedly requested checkpoint tensor {key!r}")
+        raise AssertionError(
+            f"RMSNorm fixture unexpectedly requested checkpoint tensor {key!r}"
+        )
 
 
 def _module():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
             value = self.input("value", fm.tensor_type("bfloat16", (2, 3, 5)))
-            weight = self.input("weight", fm.tensor_type("bfloat16", (5, )))
-            output = fm.F.nn.rms_norm(value, weight, epsilon=1e-6, weight_bias=0.25, name="output")
-            self.function("main", (value, weight), (output, ))
+            weight = self.input("weight", fm.tensor_type("bfloat16", (5,)))
+            output = fm.F.nn.rms_norm(
+                value, weight, epsilon=1e-6, weight_bias=0.25, name="output"
+            )
+            self.function("main", (value, weight), (output,))
 
     return Graph().build()
 
@@ -64,7 +66,7 @@ def test_generic_local_rms_norm_matches_torch_on_h800(tmp_path):
     )
     runtime = load(artifact, device="cuda:0")
     value = torch.randn((2, 3, 5), dtype=torch.bfloat16, device="cuda:0")
-    weight = torch.randn((5, ), dtype=torch.bfloat16, device="cuda:0")
+    weight = torch.randn((5,), dtype=torch.bfloat16, device="cuda:0")
     output = torch.empty_like(value)
 
     runtime.prepare(value, weight, output=output)
@@ -72,5 +74,8 @@ def test_generic_local_rms_norm_matches_torch_on_h800(tmp_path):
     torch.cuda.synchronize()
 
     variance = value.float().square().mean(dim=-1, keepdim=True)
-    expected = (value.float() * (variance + 1e-6).rsqrt() * (weight.float() + 0.25)).to(torch.bfloat16)
+    expected = (
+        value.float() * (variance + 1e-6).rsqrt()
+        * (weight.float() + 0.25)
+    ).to(torch.bfloat16)
     torch.testing.assert_close(output, expected, rtol=2e-2, atol=2e-2)

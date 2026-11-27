@@ -28,12 +28,18 @@ class NormStatsCandidateProvider:
                 implementation,
                 semantic_parameters={"axis": axis, "use_mean": use_mean},
                 facts={
-                    "additive_statistics": (("sum", "square_sum") if use_mean else ("square_sum", )),
+                    "additive_statistics": (
+                        ("sum", "square_sum") if use_mean else ("square_sum",)
+                    ),
                     "local_shard_reduction": True,
                 },
             )
-            for implementation in context.implementations("norm_stats", supports_mean=True, axis_kind="suffix")
-            if context.cooperative_grid or "cooperative_grid" not in implementation.requires)
+            for implementation in context.implementations(
+                "norm_stats", supports_mean=True, axis_kind="suffix"
+            )
+            if context.cooperative_grid
+            or "cooperative_grid" not in implementation.requires
+        )
         if not candidates:
             return None
         return TritonCandidateProposal(
@@ -57,18 +63,21 @@ class NormApplyCandidateProvider:
                     "axis": axis,
                     "use_mean": use_mean,
                     "bias_mode": "tensor",
-                    "vector_schedule": _vector_schedule(contract, implementation.parameters),
+                    "vector_schedule": _vector_schedule(
+                        contract, implementation.parameters),
                 },
                 facts={
                     "external_materialized_stats": True,
                     "local_shard_apply": True,
                 },
-            ) for implementation in context.implementations(
-                "norm_apply",
-                supports_mean=True,
-                axis_kind="suffix",
+            )
+            for implementation in context.implementations(
+                "norm_apply", supports_mean=True, axis_kind="suffix",
                 bias_mode="tensor",
-            ) if context.cooperative_grid or "cooperative_grid" not in implementation.requires)
+            )
+            if context.cooperative_grid
+            or "cooperative_grid" not in implementation.requires
+        )
         if not candidates:
             return None
         return TritonCandidateProposal(
@@ -94,19 +103,24 @@ class GatedNormApplyCandidateProvider:
                     "use_mean": use_mean,
                     "bias_mode": "tensor",
                     "activation": activation,
-                    "vector_schedule": _vector_schedule(contract, implementation.parameters),
+                    "vector_schedule": _vector_schedule(
+                        contract, implementation.parameters),
                 },
                 facts={
                     "external_materialized_stats": True,
                     "local_shard_apply": True,
                 },
-            ) for implementation in context.implementations(
-                "gated_norm_apply",
-                supports_mean=True,
-                axis_kind="suffix",
+            )
+            for implementation in context.implementations(
+                "gated_norm_apply", supports_mean=True, axis_kind="suffix",
                 bias_mode="tensor",
-            ) if activation in tuple(implementation.contract.get("activations", ())) and (
-                context.cooperative_grid or "cooperative_grid" not in implementation.requires))
+            )
+            if activation in tuple(implementation.contract.get("activations", ()))
+            and (
+                context.cooperative_grid
+                or "cooperative_grid" not in implementation.requires
+            )
+        )
         if not candidates:
             return None
         return TritonCandidateProposal(

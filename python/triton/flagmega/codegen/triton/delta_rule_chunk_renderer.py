@@ -24,36 +24,17 @@ def delta_rule_chunk_transfer_call(raw):
     if any(not isinstance(d, int) for d in (*kshape, *vshape)):
         raise CodegenError("Chunk transfer requires static local geometry.")
     return {
-        **{name: _pointer(b)
-           for name, b in zip(names, bindings)},
-        "result_pointers":
-        _replicated_result_pointers(result),
-        "tokens":
-        vshape[0],
-        "heads":
-        vshape[1],
-        "chunk_blocks":
-        attrs["chunk_size"] // 64,
-        "chunks":
-        result["abi"]["local_capacity_shape"][0],
-        "matrix_kind":
-        attrs["matrix_kind"],
-        "key_offset":
-        emit_local_scalar_offset(key["abi"],
-                                 ("_fm_token[:, None]", f"_fm_head // {vshape[1] // kshape[1]}", "_fm_dim[None, :]")),
-        "value_offset":
-        emit_local_scalar_offset(value["abi"], ("_fm_token[None, :]", "_fm_head", "_fm_dim[:, None]")),
-        "coefficients_offset":
-        emit_local_scalar_offset(coefficients["abi"],
-                                 ("_fm_block", "_fm_head", "_fm_row[:, None]", "_fm_row[None, :]")),
-        "prefix_offset":
-        emit_local_scalar_offset(prefix["abi"], ("_fm_block", "_fm_head", "_fm_row")),
-        "result_offset":
-        emit_local_scalar_offset(result["abi"], ("_fm_chunk", "_fm_head", "_fm_dim[:, None]", "_fm_dim[None, :]")),
-        "active_heads":
-        emit_active_extent(value["abi"], 1),
-        "writer_active":
-        _distributed_unique_writer_active(value["abi"]),
+        **{name: _pointer(b) for name, b in zip(names, bindings)},
+        "result_pointers": _replicated_result_pointers(result),
+        "tokens": vshape[0], "heads": vshape[1], "chunk_blocks": attrs["chunk_size"] // 64,
+        "chunks": result["abi"]["local_capacity_shape"][0], "matrix_kind": attrs["matrix_kind"],
+        "key_offset": emit_local_scalar_offset(key["abi"], ("_fm_token[:, None]", f"_fm_head // {vshape[1] // kshape[1]}", "_fm_dim[None, :]")),
+        "value_offset": emit_local_scalar_offset(value["abi"], ("_fm_token[None, :]", "_fm_head", "_fm_dim[:, None]")),
+        "coefficients_offset": emit_local_scalar_offset(coefficients["abi"], ("_fm_block", "_fm_head", "_fm_row[:, None]", "_fm_row[None, :]")),
+        "prefix_offset": emit_local_scalar_offset(prefix["abi"], ("_fm_block", "_fm_head", "_fm_row")),
+        "result_offset": emit_local_scalar_offset(result["abi"], ("_fm_chunk", "_fm_head", "_fm_dim[:, None]", "_fm_dim[None, :]")),
+        "active_heads": emit_active_extent(value["abi"], 1),
+        "writer_active": _distributed_unique_writer_active(value["abi"]),
     }
 
 
@@ -69,29 +50,11 @@ def delta_rule_chunk_fixup_call(raw):
     state, offset = state_matrix_access(raw, attrs, _tensor_type(result["abi"]), head=head,
                                         row="_fm_state_row[:, None]", column="_fm_dim[None, :]")
     return {
-        "transfer":
-        _pointer(transfer),
-        "local_state":
-        _pointer(local),
-        "state":
-        state,
-        "state_offset":
-        offset,
-        "result_pointers":
-        _replicated_result_pointers(result),
-        "chunks":
-        shape[0],
-        "heads":
-        shape[1],
-        "active_heads":
-        emit_active_extent(result["abi"], 1),
-        "transfer_offset":
-        emit_local_scalar_offset(transfer["abi"], ("_fm_chunk", "_fm_head", "_fm_dim[:, None]", "_fm_dim[None, :]")),
-        "local_offset":
-        emit_local_scalar_offset(local["abi"], ("_fm_chunk", "_fm_head", "_fm_state_row[:, None]", "_fm_dim[None, :]")),
-        "result_offset":
-        emit_local_scalar_offset(result["abi"],
-                                 ("_fm_chunk", "_fm_head", "_fm_state_row[:, None]", "_fm_dim[None, :]")),
-        "writer_active":
-        _distributed_unique_writer_active(result["abi"]),
+        "transfer": _pointer(transfer), "local_state": _pointer(local), "state": state,
+        "state_offset": offset, "result_pointers": _replicated_result_pointers(result),
+        "chunks": shape[0], "heads": shape[1], "active_heads": emit_active_extent(result["abi"], 1),
+        "transfer_offset": emit_local_scalar_offset(transfer["abi"], ("_fm_chunk", "_fm_head", "_fm_dim[:, None]", "_fm_dim[None, :]")),
+        "local_offset": emit_local_scalar_offset(local["abi"], ("_fm_chunk", "_fm_head", "_fm_state_row[:, None]", "_fm_dim[None, :]")),
+        "result_offset": emit_local_scalar_offset(result["abi"], ("_fm_chunk", "_fm_head", "_fm_state_row[:, None]", "_fm_dim[None, :]")),
+        "writer_active": _distributed_unique_writer_active(result["abi"]),
     }

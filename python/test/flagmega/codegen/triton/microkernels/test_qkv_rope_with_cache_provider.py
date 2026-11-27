@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 
 from dataclasses import replace
+import inspect
+from pathlib import Path
 
 import pytest
 
@@ -52,7 +54,9 @@ def _context(*, attrs=None, arguments=None, outputs=("result_0", "result_1")):
         outputs=outputs,
         semantic_attrs=attrs,
         reads=arguments,
-        writes=tuple(value for value in ("state", *outputs) if value in (*arguments, *outputs)),
+        writes=tuple(
+            value for value in ("state", *outputs) if value in (*arguments, *outputs)
+        ),
         effect_kind="read_write",
         effect_resource="paged_attention_kv_cache",
     )
@@ -60,9 +64,9 @@ def _context(*, attrs=None, arguments=None, outputs=("result_0", "result_1")):
         "qkv_rope_cache",
         "triton",
         (),
-        fm.T.sequential((dispatch, )),
+        fm.T.sequential((dispatch,)),
     )
-    module = replace(semantic_packed_qkv_module(), prim_functions=(function, ))
+    module = replace(semantic_packed_qkv_module(), prim_functions=(function,))
     implementations = tuple(
         TritonImplementation(
             f"test.qkv_rope_with_cache.{variant}",
@@ -71,13 +75,17 @@ def _context(*, attrs=None, arguments=None, outputs=("result_0", "result_1")):
             {"elements_per_program": elements},
             {"mode": "decode"},
             facts={"portable_reference": variant == "reference"},
-        ) for variant, elements in (("reference", 64), ("optimized", 128)))
+        )
+        for variant, elements in (("reference", 64), ("optimized", 128))
+    )
     model = TritonImplementationModel(
         implementations,
-        {"qkv_rope_with_cache": (
-            "test.qkv_rope_with_cache.optimized",
-            "test.qkv_rope_with_cache.reference",
-        )},
+        {
+            "qkv_rope_with_cache": (
+                "test.qkv_rope_with_cache.optimized",
+                "test.qkv_rope_with_cache.reference",
+            )
+        },
         "test-qkv-rope-machine/v1",
     )
     return TIRMicroKernelContext(module, function, dispatch, model)
@@ -95,7 +103,9 @@ def test_provider_selects_injected_generic_decode_implementation():
     )
     assert proposal.default_candidate == "test.qkv_rope_with_cache.optimized"
     assert isinstance(
-        default_triton_microkernel_registry().provider_for("nn.qkv_rope_with_cache"),
+        default_triton_microkernel_registry().provider_for(
+            "nn.qkv_rope_with_cache"
+        ),
         QKVRoPEWithCacheMicroKernelProvider,
     )
 
@@ -115,11 +125,30 @@ def test_provider_selects_injected_generic_decode_implementation():
         ),
         (
             None,
-            ("qkv", ),
+            ("qkv",),
             "requires 12 arguments",
         ),
     ),
 )
 def test_provider_rejects_malformed_semantic_contract(attrs, arguments, message):
     with pytest.raises(CodegenError, match=message):
-        QKVRoPEWithCacheMicroKernelProvider().propose(_context(attrs=attrs, arguments=arguments))
+        QKVRoPEWithCacheMicroKernelProvider().propose(
+            _context(attrs=attrs, arguments=arguments)
+        )
+
+
+def test_provider_has_no_model_machine_or_tile_policy():
+    source = Path(
+        inspect.getsourcefile(QKVRoPEWithCacheMicroKernelProvider) or ""
+    ).read_text(encoding="utf-8").lower()
+
+    for spelling in (
+        "qwen",
+        "nvidia",
+        "sm90",
+        "block_n =",
+        "block_k =",
+        "num_warps =",
+        "num_stages =",
+    ):
+        assert spelling not in source

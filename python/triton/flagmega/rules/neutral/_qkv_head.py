@@ -56,9 +56,8 @@ def qkv_head_from_match(result, prefix):
     if wide:
         if value_type.dtype != DType.BFLOAT16:
             return None
-        if any(
-                getattr(node.type, "tensor", node.type).dtype not in {DType.BFLOAT16, DType.FLOAT32}
-                for node in (cosine, sine)):
+        if any(getattr(node.type, "tensor", node.type).dtype not in {DType.BFLOAT16, DType.FLOAT32}
+               for node in (cosine, sine)):
             return None
     return QKVHead(norm, rope, value, cosine, sine, not wide)
 

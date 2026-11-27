@@ -16,13 +16,13 @@ from triton.flagmega import pattern_match as pm
 
 
 class _UpdateGraph(fm.Module):
-
     def __init__(self):
         super().__init__(dialect="high_level", stage="imported", entry="main")
 
     def forward(self):
         slots = self.input("slots", fm.tensor_type("bfloat16", (2, 1, 8)))
-        state = self.input("state", PagedAttentionStateConfig(1, 2, 8, block_size=4, num_blocks=2).ref_type)
+        state = self.input(
+            "state", PagedAttentionStateConfig(1, 2, 8, block_size=4, num_blocks=2).ref_type)
         layer = self.input("layer", fm.tensor_type("int32", ()))
         advance = self.input("advance", fm.tensor_type("bool", ()))
         result = fm.F.nn.update_paged_attention_kv_cache(
@@ -34,12 +34,13 @@ class _UpdateGraph(fm.Module):
             layout=("head", "seq", "dim"),
             name="update",
         )
-        self.function("main", (slots, state, layer, advance), (result, ))
+        self.function("main", (slots, state, layer, advance), (result,))
 
 
 def test_update_paged_attention_cache_obeys_layout_and_reference_identity():
     module = _UpdateGraph().build()
-    state = create_paged_attention_state(PagedAttentionStateConfig(1, 2, 8, block_size=4, num_blocks=2))
+    state = create_paged_attention_state(
+        PagedAttentionStateConfig(1, 2, 8, block_size=4, num_blocks=2))
     slots = torch.arange(16, dtype=torch.float32).reshape(2, 1, 8).to(torch.bfloat16)
 
     result = TorchEvaluator(DictWeightResolver({})).run(
@@ -55,13 +56,11 @@ def test_update_paged_attention_cache_obeys_layout_and_reference_identity():
     assert result is state
     assert state.sequence_length == 0
     assert int(state.slot_mapping[0]) == 0
-    torch.testing.assert_close(state.kv_caches[0, 0, 0, 0].reshape(2, 8), slots[:, 0, :])
+    torch.testing.assert_close(
+        state.kv_caches[0, 0, 0, 0].reshape(2, 8), slots[:, 0, :])
     definition = fm.get_definition("nn.update_paged_attention_kv_cache")
     assert [value.name for value in definition.input_parameters] == [
-        "slots",
-        "state",
-        "layer_id",
-        "advance_sequence",
+        "slots", "state", "layer_id", "advance_sequence",
     ]
     assert pm.try_match_root(
         module.node_map["update"],
@@ -75,13 +74,15 @@ def test_update_paged_attention_cache_obeys_layout_and_reference_identity():
 
 
 def test_cache_update_accepts_head_sharded_slots_and_keeps_reference_identity():
-    placement = fm.Placement((8, ), "b", "b")
+    placement = fm.Placement((8,), "b", "b")
     slots_type = fm.DistributedType(
         fm.tensor_type("bfloat16", (1, 8, 128)),
-        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 1), fm.SBP.broadcast()),
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 1), fm.SBP.broadcast()),
         placement,
     )
-    state_type = PagedAttentionStateConfig(1, 8, 128, block_size=4, num_blocks=2).ref_type
+    state_type = PagedAttentionStateConfig(
+        1, 8, 128, block_size=4, num_blocks=2
+    ).ref_type
 
     result = fm.get_definition("nn.update_paged_attention_kv_cache").infer_type(
         (
@@ -101,11 +102,13 @@ def test_cache_update_accepts_materialized_split_head_dimension(partial):
     placement = fm.Placement((8, 2), "yx", "bb")
     slots_type = fm.DistributedType(
         fm.tensor_type("bfloat16", (1, 8, 128)),
-        (fm.SBP.broadcast(), fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 16)),
+        (fm.SBP.broadcast(), fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 16)),
         placement,
-        partial=fm.SBP.partial((1, )) if partial else None,
+        partial=fm.SBP.partial((1,)) if partial else None,
     )
-    state_type = PagedAttentionStateConfig(1, 8, 128, block_size=4, num_blocks=2).ref_type
+    state_type = PagedAttentionStateConfig(
+        1, 8, 128, block_size=4, num_blocks=2
+    ).ref_type
 
     def infer():
         return fm.get_definition("nn.update_paged_attention_kv_cache").infer_type(

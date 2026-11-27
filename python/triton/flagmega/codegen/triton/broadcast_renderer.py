@@ -51,8 +51,8 @@ def broadcast_to_call(raw):
     if has_ops(attrs):
         _, base, _ = raw_semantics(raw)
         pre, value = emit_body(attrs.get("pre_ops", {}).get("value"), "_fm_value", "_fm_broadcast_pre")
-        post, value = emit_body(next(iter(attrs.get("post_ops", ())), None), f"({value}).to({triton_type(base.type)})",
-                                "_fm_broadcast_post")
+        post, value = emit_body(next(iter(attrs.get("post_ops", ())), None),
+                               f"({value}).to({triton_type(base.type)})", "_fm_broadcast_post")
         program = {"fusion_lines": (*pre, *post), "fusion_result": value}
     return {
         **program,

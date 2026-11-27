@@ -14,17 +14,15 @@ def _run(module):
 
 
 def test_pack_moves_before_lane_aligned_slice_to_shape():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="vectorized", entry="main")
 
         def forward(self):
             value = self.input("value", fm.tensor_type("bfloat16", (2, 24)), id="value")
             sliced = fm.F.tensors.slice_to_shape(value, (2, 16), name="sliced")
-            output = fm.F.tensors.pack(sliced, (8, ), axes=(1, ), name="output")
-            self.function("main", (value, ), (output, ))
+            output = fm.F.tensors.pack(sliced, (8,), axes=(1,), name="output")
+            self.function("main", (value,), (output,))
 
     original = Graph().build()
     result = _run(original)
@@ -40,18 +38,16 @@ def test_pack_moves_before_lane_aligned_slice_to_shape():
 
 
 def test_slice_moves_before_unpack_when_shape_is_lane_aligned():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="vectorized", entry="main")
 
         def forward(self):
-            value_type = fm.tensor_type(fm.vector_type("bfloat16", (8, )), (2, 3))
+            value_type = fm.tensor_type(fm.vector_type("bfloat16", (8,)), (2, 3))
             value = self.input("value", value_type, id="value")
-            scalar = fm.F.tensors.unpack(value, axes=(1, ), name="scalar")
+            scalar = fm.F.tensors.unpack(value, axes=(1,), name="scalar")
             output = fm.F.tensors.slice_to_shape(scalar, (2, 16), name="output")
-            self.function("main", (value, ), (output, ))
+            self.function("main", (value,), (output,))
 
     original = Graph().build()
     result = _run(original)

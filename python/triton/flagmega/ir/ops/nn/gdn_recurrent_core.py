@@ -55,6 +55,7 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
     b_weight_encoding = attribute_parameter(default=None)
     a_weight_encoding = attribute_parameter(default=None)
     value_head_order = attribute_parameter(default="grouped")
+    phase_plan = attribute_parameter(default=None)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -103,6 +104,9 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
             raise IRSchemaError("GatedDeltaNetRecurrentCore value_head_order must be grouped or tiled.")
         if head_order != "grouped":
             values["value_head_order"] = head_order
+        if attrs.get("phase_plan") is not None:
+            from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import validate_phase_plan
+            values["phase_plan"] = validate_phase_plan(attrs["phase_plan"])
         return values
 
     @classmethod
@@ -117,8 +121,7 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
             if encoding is not None:
                 weight = tensor_of(parameter.type_of(inputs))
                 if (matrix_width(weight, encoding) != projection.shape[1]
-                        or weight.shape[0] != tensor_type(projection.dtype,
-                                                          (int(attrs["num_value_heads"]), )).shape[0]):
+                        or weight.shape[0] != tensor_type(projection.dtype, (int(attrs["num_value_heads"]),)).shape[0]):
                     raise IRSchemaError("Native recurrent weights must match projection K and value heads.")
         output = tensor_type(
             z_tensor.dtype,
@@ -128,23 +131,25 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
         if placement is None:
             return TupleType((output, state_type))
         tensor_inputs = tuple(
-            parameter.type_of(inputs) for parameter in cls.input_parameters if parameter is not cls.state)
+            parameter.type_of(inputs)
+            for parameter in cls.input_parameters
+            if parameter is not cls.state
+        )
         if not all(isinstance(value, DistributedType) for value in tensor_inputs):
             raise IRSchemaError(
-                "Distributed GatedDeltaNetRecurrentCore requires every tensor input to name its placement.")
+                "Distributed GatedDeltaNetRecurrentCore requires every tensor input to name its placement."
+            )
         assert isinstance(qkv_type, DistributedType) and isinstance(z_type, DistributedType)
         if not all_broadcast(qkv_type):
             raise IRSchemaError("GatedDeltaNetRecurrentCore QKV must be replicated.")
         for parameter in (
-                cls.projection_input,
-                cls.b_weight,
-                cls.a_weight,
-                cls.a_log,
-                cls.dt_bias,
-                cls.norm_weight,
+            cls.projection_input, cls.b_weight, cls.a_weight,
+            cls.a_log, cls.dt_bias, cls.norm_weight,
         ):
             if not all_broadcast(parameter.type_of(inputs)):
-                raise IRSchemaError(f"GatedDeltaNetRecurrentCore {parameter.name} must be replicated.")
+                raise IRSchemaError(
+                    f"GatedDeltaNetRecurrentCore {parameter.name} must be replicated."
+                )
         head_axes = _materialized_or_partial_axes(z_type, 1)
         if z_type.partial is None:
             # State rows and the gated result share Z's existing owner map;
@@ -174,13 +179,55 @@ class GatedDeltaNetRecurrentCore(OpDefinition):
         )
 
     @classmethod
+    def phase_workspaces(cls, node: Node):
+        """Typed subviews of a single CHIP phase arena; no semantic decomposition."""
+        if node.attrs.get('phase_plan') is None:
+            return ()
+        from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import validate_phase_plan
+        from triton.flagmega.ir.tir import WorkspaceRequirement
+        plan = validate_phase_plan(node.attrs['phase_plan'])
+        # A static token bucket widens the leading row axis of every phase
+        # scratch view, so Bufferize sizes and keeps alive one slot per row.
+        # node.inputs holds value ids, not nodes; the node's own result type
+        # already carries the token extent, so read the row count from there.
+        rows = 1
+        result = node.type
+        fields = getattr(result, 'fields', None)
+        first = fields[0] if fields else result
+        shape = getattr(first, 'shape', ())
+        if shape and getattr(shape[0], 'is_fixed', False):
+            rows = max(1, int(shape[0].fixed_value))
+        return tuple(WorkspaceRequirement(
+                         v['name'],
+                         tensor_type(v['dtype'], tuple(v['shape']) if rows == 1
+                                     else (rows, *v['shape'])),
+                         memory_space='workspace', alignment=256)
+                     for v in plan['pool']['views'])
+
+    @classmethod
+    def phase_effects(cls, node: Node):
+        if node.attrs.get('phase_plan') is None:
+            return ()
+        from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import validate_phase_plan, phase_tensor_effects
+        plan = validate_phase_plan(node.attrs['phase_plan'])
+        return tuple(phase_tensor_effects(e['phase'],plan) for e in plan['entries'])
+
+    @classmethod
     def cost(cls, node: Node) -> OpCost:
-        del node
+        phase = node.attrs.get("phase_plan")
+        if phase is not None:
+            from triton.flagmega.rules.ntt.r004_gdn_phase_bindings import validate_phase_plan
+            plan = validate_phase_plan(phase)
+            if plan["module"] == "r004_T_full_p5_v4":
+                return OpCost(flops=None, bytes_read=None, bytes_written=None,
+                              notes=("stateful-rank1-update", plan["schema"], "3-entry-direct-parent", "phase-pool:41472", "new-nodes:96/token", "core-scratch:24576", "qk:16384", "gates:384"))
+            return OpCost(flops=None, bytes_read=None, bytes_written=None,
+                          notes=("stateful-rank1-update", "r004.gdn.column-register/v4", "12-registry-11-subsequent-12-initial", "phase-pool:3212800", "gather-bytes:6291456"))
         return OpCost(
             flops=None,
             bytes_read=None,
             bytes_written=None,
-            notes=("stateful-rank1-update", ),
+            notes=("stateful-rank1-update",),
         )
 
 
@@ -214,12 +261,10 @@ def gated_delta_net_recurrent_core(
         raise EvaluationError("GatedDeltaNet recurrent QKV/Z dimensions do not match attributes.")
     recurrent_state = state.recurrent_layer(0).float()
     from triton.flagmega.ir.ops.math._quantized import native_linear
-
     def project(weight, encoding):
         if encoding is not None:
             return native_linear(projection_input, weight, encoding, output_dtype=projection_input.dtype)
         return torch.matmul(projection_input, weight.to(projection_input.dtype).transpose(0, 1))
-
     b_projection = project(b_weight, attrs.get("b_weight_encoding"))
     a_projection = project(a_weight, attrs.get("a_weight_encoding"))
     outputs = []
@@ -280,17 +325,23 @@ def _materialized_or_partial_axes(value: DistributedType, tensor_axis: int) -> t
     placement_axes = set(range(value.placement.rank))
     split = value.axis_policies[tensor_axis]
     split_axes = set(split.hierarchy_axes) if isinstance(split, SBPSplit) else set()
-    if any(not isinstance(policy, SBPBroadCast)
-           for index, policy in enumerate(value.axis_policies)
-           if index != tensor_axis):
+    if any(
+        not isinstance(policy, SBPBroadCast)
+        for index, policy in enumerate(value.axis_policies)
+        if index != tensor_axis
+    ):
         raise IRSchemaError("GatedDeltaNetRecurrentCore supports only value distribution.")
     if value.partial is None:
         if not isinstance(split, SBPSplit) or split_axes != placement_axes:
-            raise IRSchemaError("GatedDeltaNetRecurrentCore materialized Z values must cover the placement.")
+            raise IRSchemaError(
+                "GatedDeltaNetRecurrentCore materialized Z values must cover the placement."
+            )
         return tuple(sorted(split_axes))
     partial_axes = set(value.partial.axes)
     if split_axes & partial_axes or split_axes | partial_axes != placement_axes:
-        raise IRSchemaError("GatedDeltaNetRecurrentCore partial Z must partition all placement axes.")
+        raise IRSchemaError(
+            "GatedDeltaNetRecurrentCore partial Z must partition all placement axes."
+        )
     return tuple(range(value.placement.rank))
 
 

@@ -13,12 +13,12 @@ from triton.flagmega.passes.auto_distributed.realization import (
 
 
 def test_distribution_context_reuses_nested_type_hashes(monkeypatch):
-    tensor = fm.tensor_type("float32", (128, ))
-    placement = fm.Placement((8, ), "x", "b")
-    source = fm.DistributedType(tensor, (fm.SBP.broadcast(), ), placement)
-    target = fm.DistributedType(tensor, (fm.SBP.split_contiguous((0, ), 16), ), placement)
-    context = DistributedReshardRealizationContext(source, target, DistributedReshardSourceKind.INTERNAL,
-                                                   DistributedReshardUsageKind.INTERNAL)
+    tensor = fm.tensor_type("float32", (128,))
+    placement = fm.Placement((8,), "x", "b")
+    source = fm.DistributedType(tensor, (fm.SBP.broadcast(),), placement)
+    target = fm.DistributedType(tensor, (fm.SBP.split_contiguous((0,), 16),), placement)
+    context = DistributedReshardRealizationContext(
+        source, target, DistributedReshardSourceKind.INTERNAL, DistributedReshardUsageKind.INTERNAL)
     calls = []
     original = fm.TensorType.__hash__
 
@@ -35,16 +35,15 @@ def test_distribution_context_reuses_nested_type_hashes(monkeypatch):
 
 
 def test_cached_hash_preserves_structural_equality_and_edited_type_keys():
-    tensor = fm.tensor_type("float32", (128, ))
-    placement = fm.Placement((8, ), "x", "b")
-    source = fm.DistributedType(tensor, (fm.SBP.broadcast(), ), placement)
+    tensor = fm.tensor_type("float32", (128,))
+    placement = fm.Placement((8,), "x", "b")
+    source = fm.DistributedType(tensor, (fm.SBP.broadcast(),), placement)
     values = fm.TupleType((source, tensor))
     serialized = values.to_data()
     assert hash(tensor) == hash((tensor.dtype, tensor.shape, tensor.layout))
-    assert hash(source) == hash(
-        (source.tensor, source.axis_policies, source.placement, source.partial, source.exclusive))
+    assert hash(source) == hash((source.tensor, source.axis_policies, source.placement, source.partial, source.exclusive))
     assert hash(values) == hash((values.fields, values.is_variadic))
-    edited = replace(source, axis_policies=(fm.SBP.split_contiguous((0, ), 16), ))
+    edited = replace(source, axis_policies=(fm.SBP.split_contiguous((0,), 16),))
     memo = {source: "broadcast", edited: "split"}
     assert memo[replace(source)] == "broadcast"
     assert memo[replace(edited)] == "split"

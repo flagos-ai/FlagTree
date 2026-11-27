@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""reference VectorizeSparseExpertsPropagation: absorb hidden-axis output Pack."""
+"""nncase VectorizeSparseExpertsPropagation: absorb hidden-axis output Pack."""
 
 from triton.flagmega.ir import TensorType, VectorType
 from triton.flagmega.ir.ops.nn.sparse_experts_combine import SparseExpertsCombine

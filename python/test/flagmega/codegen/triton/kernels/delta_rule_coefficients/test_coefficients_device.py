@@ -8,7 +8,7 @@ from python.test.flagmega.codegen.triton.kernels.delta_rule_coefficients.helpers
 
 
 @pytest.mark.parametrize("block_size,tokens,dimension", [(8, 3, 1), (16, 17, 7), (32, 33, 16), (64, 65, 16),
-                                                         (64, 1, 128), (64, 65, 128)])
+                                                       (64, 1, 128), (64, 65, 128)])
 @pytest.mark.parametrize("split_axes,local_inputs", [((), False), ((0, 1), False), ((0, ), True)])
 def test_coefficients_normal_compile_rounding_tail_and_storage(tmp_path, block_size, tokens, dimension, split_axes,
                                                                local_inputs):

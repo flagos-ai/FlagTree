@@ -38,7 +38,8 @@ PRE_INPUTS = ("streams", "projection", "base", "scale")
 POST_INPUTS = ("value", "residual", "post", "comb")
 
 
-def _pre_module(stream_dtype="float32", iterations=SINKHORN, *, output_lanes=(), pack_output=(), hidden=HIDDEN):
+def _pre_module(stream_dtype="float32", iterations=SINKHORN, *, output_lanes=(),
+                pack_output=(), hidden=HIDDEN):
     """Build a pre-stage graph; ``stream_dtype`` sets the collapse precision.
 
     The default is FP32 on purpose.  With bf16 streams the collapsed output has
@@ -46,21 +47,21 @@ def _pre_module(stream_dtype="float32", iterations=SINKHORN, *, output_lanes=(),
     the same vacuity that let the op-level suite pass while ``pre_mix`` added
     the RMS epsilon instead of the hyper-connection one.
     """
-    types = {
-        "streams": fm.tensor_type(stream_dtype, (TOKENS, HC, hidden)), "projection":
-        fm.tensor_type("float32", (COEFFICIENTS, HC * hidden)), "base": fm.tensor_type("float32", (COEFFICIENTS, )),
-        "scale": fm.tensor_type("float32", (3, ))
-    }
+    types = {"streams": fm.tensor_type(stream_dtype, (TOKENS, HC, hidden)),
+             "projection": fm.tensor_type("float32", (COEFFICIENTS, HC * hidden)),
+             "base": fm.tensor_type("float32", (COEFFICIENTS, )),
+             "scale": fm.tensor_type("float32", (3, ))}
 
     class Graph(fm.Module):
-
         def forward(self):
             operands = tuple(self.input(name, types[name], id=name) for name in PRE_INPUTS)
-            stage = fm.F.nn.mhc_pre(*operands, epsilon=RMS_EPS, sinkhorn_iterations=iterations, sinkhorn_epsilon=HC_EPS,
-                                    post_multiplier=POST_MULT, output_lanes=output_lanes, name="pre")
+            stage = fm.F.nn.mhc_pre(*operands, epsilon=RMS_EPS, sinkhorn_iterations=iterations,
+                                    sinkhorn_epsilon=HC_EPS, post_multiplier=POST_MULT,
+                                    output_lanes=output_lanes,
+                                    name="pre")
             post, comb, collapsed = fm.F.tensors.get_items(stage, 0, 1, 2, name_prefix="pre")
             if pack_output:
-                collapsed = fm.F.tensors.pack(collapsed, pack_output, axes=(-1, ) * len(pack_output),
+                collapsed = fm.F.tensors.pack(collapsed, pack_output, axes=(-1,) * len(pack_output),
                                               name="packed_collapsed")
             self.function("main", operands, (post, comb, collapsed))
 
@@ -68,14 +69,12 @@ def _pre_module(stream_dtype="float32", iterations=SINKHORN, *, output_lanes=(),
 
 
 def _post_module():
-    types = {
-        "value": fm.tensor_type("bfloat16",
-                                (TOKENS, HIDDEN)), "residual": fm.tensor_type("bfloat16", (TOKENS, HC, HIDDEN)), "post":
-        fm.tensor_type("float32", (TOKENS, HC)), "comb": fm.tensor_type("float32", (TOKENS, HC, HC))
-    }
+    types = {"value": fm.tensor_type("bfloat16", (TOKENS, HIDDEN)),
+             "residual": fm.tensor_type("bfloat16", (TOKENS, HC, HIDDEN)),
+             "post": fm.tensor_type("float32", (TOKENS, HC)),
+             "comb": fm.tensor_type("float32", (TOKENS, HC, HC))}
 
     class Graph(fm.Module):
-
         def forward(self):
             operands = tuple(self.input(name, types[name], id=name) for name in POST_INPUTS)
             self.function("main", operands, (fm.F.nn.mhc_post(*operands, name="mixed"), ))
@@ -84,8 +83,8 @@ def _post_module():
 
 
 def _artifact(tmp_path: pathlib.Path, name: str, module):
-    return write_artifact(Compiler().compile(module).module, tmp_path / name, target="nvidia-sm90",
-                          emit_executable=True)
+    return write_artifact(Compiler().compile(module).module, tmp_path / name,
+                          target="nvidia-sm90", emit_executable=True)
 
 
 def _skip_without_sm90(torch):
@@ -102,7 +101,8 @@ def _run(runtime, values, outputs, torch):
 
 
 def test_the_pre_kernel_walks_the_streams_once_for_all_three_groups(tmp_path):
-    source = (_artifact(tmp_path, "mhc-pre", _pre_module()) / "generated_kernels.py").read_text("utf-8")
+    source = (_artifact(tmp_path, "mhc-pre", _pre_module())
+              / "generated_kernels.py").read_text("utf-8")
 
     assert "# flagmega-kernel: mhc_pre/local platform=generic" in source
     body = source.split("# flagmega-kernel: mhc_pre/local")[1].split("@triton.jit")[1]
@@ -121,7 +121,8 @@ def test_the_pre_kernel_walks_the_streams_once_for_all_three_groups(tmp_path):
 
 
 def test_the_post_kernel_hoists_the_mixing_matrix_out_of_the_hidden_loop(tmp_path):
-    source = (_artifact(tmp_path, "mhc-post", _post_module()) / "generated_kernels.py").read_text("utf-8")
+    source = (_artifact(tmp_path, "mhc-post", _post_module())
+              / "generated_kernels.py").read_text("utf-8")
 
     assert "# flagmega-kernel: mhc_post/local platform=generic" in source
     body = source.split("# flagmega-kernel: mhc_post/local")[1].split("@triton.jit")[1]
@@ -137,15 +138,15 @@ def test_the_pre_kernel_matches_the_serving_runtime_reference(tmp_path):
     runtime = load(_artifact(tmp_path, "mhc-pre", _pre_module()), device="cuda:0")
     operands = _operands()
     streams = operands["streams"].float()
-    values = {name: (streams if name == "streams" else operands[name]).cuda() for name in PRE_INPUTS}
-    outputs = {
-        "pre_0": torch.empty((TOKENS, HC), dtype=torch.float32, device="cuda"), "pre_1": torch.empty(
-            (TOKENS, HC, HC), dtype=torch.float32, device="cuda"), "pre_2": torch.empty(
-                (TOKENS, HIDDEN), dtype=torch.float32, device="cuda")
-    }
+    values = {name: (streams if name == "streams" else operands[name]).cuda()
+              for name in PRE_INPUTS}
+    outputs = {"pre_0": torch.empty((TOKENS, HC), dtype=torch.float32, device="cuda"),
+               "pre_1": torch.empty((TOKENS, HC, HC), dtype=torch.float32, device="cuda"),
+               "pre_2": torch.empty((TOKENS, HIDDEN), dtype=torch.float32, device="cuda")}
     _run(runtime, values, outputs, torch)
 
-    post, comb, collapsed = _reference_pre(streams, operands["projection"], operands["scale"], operands["base"])
+    post, comb, collapsed = _reference_pre(streams, operands["projection"],
+                                           operands["scale"], operands["base"])
     # The kernel keeps FP32 registers where the reference keeps FP32 tensors, so
     # only the reduction order differs. The collapse tolerance is tight enough to
     # catch a wrong epsilon in pre_mix, which perturbs it by ~4e-5.
@@ -159,8 +160,10 @@ def test_the_post_kernel_matches_the_serving_runtime_reference(tmp_path):
     _skip_without_sm90(torch)
     runtime = load(_artifact(tmp_path, "mhc-post", _post_module()), device="cuda:0")
     operands = _operands()
-    post, comb, _ = _reference_pre(operands["streams"], operands["projection"], operands["scale"], operands["base"])
-    host = {"value": operands["value"], "residual": operands["streams"], "post": post, "comb": comb}
+    post, comb, _ = _reference_pre(operands["streams"], operands["projection"],
+                                   operands["scale"], operands["base"])
+    host = {"value": operands["value"], "residual": operands["streams"],
+            "post": post, "comb": comb}
     values = {name: host[name].cuda() for name in POST_INPUTS}
     outputs = {"mixed": torch.empty((TOKENS, HC, HIDDEN), dtype=torch.bfloat16, device="cuda")}
     _run(runtime, values, outputs, torch)
@@ -183,15 +186,15 @@ def test_the_pre_kernel_sweeps_sinkhorn_in_the_reference_order(tmp_path):
     runtime = load(_artifact(tmp_path, "mhc-pre-2", module), device="cuda:0")
     operands = _operands()
     streams = operands["streams"].float()
-    values = {name: (streams if name == "streams" else operands[name]).cuda() for name in PRE_INPUTS}
-    outputs = {
-        "pre_0": torch.empty((TOKENS, HC), dtype=torch.float32, device="cuda"), "pre_1": torch.empty(
-            (TOKENS, HC, HC), dtype=torch.float32, device="cuda"), "pre_2": torch.empty(
-                (TOKENS, HIDDEN), dtype=torch.float32, device="cuda")
-    }
+    values = {name: (streams if name == "streams" else operands[name]).cuda()
+              for name in PRE_INPUTS}
+    outputs = {"pre_0": torch.empty((TOKENS, HC), dtype=torch.float32, device="cuda"),
+               "pre_1": torch.empty((TOKENS, HC, HC), dtype=torch.float32, device="cuda"),
+               "pre_2": torch.empty((TOKENS, HIDDEN), dtype=torch.float32, device="cuda")}
     _run(runtime, values, outputs, torch)
 
-    _, comb, _ = _reference_pre(streams, operands["projection"], operands["scale"], operands["base"], iterations=2)
+    _, comb, _ = _reference_pre(streams, operands["projection"], operands["scale"],
+                                operands["base"], iterations=2)
     # Anti-vacuity: at two iterations the matrix must not already be converged,
     # or this test would pass for any sweep structure.
     assert (comb.sum(dim=-1) - 1.).abs().max() > 1e-4
@@ -202,12 +205,13 @@ def test_the_reference_comb_is_doubly_stochastic(tmp_path):
     """Guard against a vacuous pass: a constant matrix would satisfy any mix."""
     torch = pytest.importorskip("torch")
     operands = _operands()
-    _, comb, _ = _reference_pre(operands["streams"], operands["projection"], operands["scale"], operands["base"])
+    _, comb, _ = _reference_pre(operands["streams"], operands["projection"],
+                                operands["scale"], operands["base"])
     torch.testing.assert_close(comb.sum(dim=-2), torch.ones(TOKENS, HC), rtol=1e-4, atol=1e-4)
     assert comb.std() > 1e-3, "a near-constant mixing matrix would not test the sweeps"
 
 
-@pytest.mark.parametrize("lanes", [(8, ), (2, 4), (1, )])
+@pytest.mark.parametrize("lanes", [(8,), (2, 4), (1,)])
 @pytest.mark.parametrize("dtype", ["bfloat16", "float32"])
 def test_packed_pre_kernel_writes_the_same_scalars_without_a_pack_kernel(tmp_path, lanes, dtype):
     from math import prod
@@ -217,14 +221,14 @@ def test_packed_pre_kernel_writes_the_same_scalars_without_a_pack_kernel(tmp_pat
     # Nine packed groups exercise the masked tail of a power-of-two tile.
     hidden = 72
     generator = torch.Generator().manual_seed(19)
-    host = {
-        "streams": torch.randn(TOKENS, HC, hidden, generator=generator).to(getattr(torch, dtype)), "projection":
-        torch.randn(COEFFICIENTS, HC * hidden, generator=generator), "base":
-        torch.randn(COEFFICIENTS, generator=generator), "scale": torch.randn(3, generator=generator)
-    }
+    host = {"streams": torch.randn(TOKENS, HC, hidden, generator=generator).to(getattr(torch, dtype)),
+            "projection": torch.randn(COEFFICIENTS, HC * hidden, generator=generator),
+            "base": torch.randn(COEFFICIENTS, generator=generator),
+            "scale": torch.randn(3, generator=generator)}
     values = {name: value.cuda() for name, value in host.items()}
     results = []
-    for name, kwargs in (("scalar", {}), ("packed", {"pack_output": lanes}), ("direct", {"output_lanes": lanes})):
+    for name, kwargs in (("scalar", {}), ("packed", {"pack_output": lanes}),
+                         ("direct", {"output_lanes": lanes})):
         artifact = _artifact(tmp_path, name, _pre_module(dtype, hidden=hidden, **kwargs))
         source = (artifact / "generated_kernels.py").read_text()
         assert source.count("# flagmega-kernel: mhc_pre/local") == 1
@@ -233,15 +237,15 @@ def test_packed_pre_kernel_writes_the_same_scalars_without_a_pack_kernel(tmp_pat
         runtime = load(artifact, device="cuda:0")
         packed = name != "scalar"
         shape = (TOKENS, hidden // prod(lanes), *lanes) if packed else (TOKENS, hidden)
-        result_buffers = (torch.empty((TOKENS, HC), dtype=torch.float32,
-                                      device="cuda"), torch.empty((TOKENS, HC, HC), dtype=torch.float32, device="cuda"),
+        result_buffers = (torch.empty((TOKENS, HC), dtype=torch.float32, device="cuda"),
+                          torch.empty((TOKENS, HC, HC), dtype=torch.float32, device="cuda"),
                           torch.empty(shape, dtype=getattr(torch, dtype), device="cuda"))
         result_specs = [spec for spec in runtime.external_arguments if spec["role"] == "result"]
         assert len(result_specs) == len(result_buffers)
         outputs = {spec["value"]: buffer for spec, buffer in zip(result_specs, result_buffers)}
         _run(runtime, values, outputs, torch)
-        results.append(
-            (result_buffers[0].cpu(), result_buffers[1].cpu(), result_buffers[2].cpu().reshape(TOKENS, hidden)))
+        results.append((result_buffers[0].cpu(), result_buffers[1].cpu(),
+                        result_buffers[2].cpu().reshape(TOKENS, hidden)))
     torch.testing.assert_close(results[1], results[0], rtol=0, atol=0)
     torch.testing.assert_close(results[2], results[0], rtol=0, atol=0)
     reference = _reference_pre(host["streams"], host["projection"], host["scale"], host["base"])

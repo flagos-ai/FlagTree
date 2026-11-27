@@ -47,8 +47,8 @@ def test_eager_rotary_uses_declared_native_cache_coefficients():
     tokens, width = fixture["tokens"], fixture["head_dim"]
     config = PagedAttentionStateConfig(1, 2, width)
     module = primitive_module(RotaryEmbedding, (fm.tensor_type("bfloat16", (tokens, 17)), config.ref_type),
-                              head_dim=width, theta=fixture["theta"], output_dtype="bfloat16", math_mode="accurate",
-                              inverse_frequencies=fixture["inverse_frequencies"])
+                              head_dim=width, theta=fixture["theta"], output_dtype="bfloat16",
+                              math_mode="accurate", inverse_frequencies=fixture["inverse_frequencies"])
     state = create_paged_attention_state(config)
     (cosine, sine), = TorchEvaluator(DictWeightResolver({})).run(
         module, {"reference": torch.zeros(tokens, 17).bfloat16(), "state": state})
@@ -56,7 +56,8 @@ def test_eager_rotary_uses_declared_native_cache_coefficients():
     assert hashlib.sha256(packed.view(torch.uint8).numpy().tobytes()).hexdigest() == fixture["cache_sha256"]
 
 
-@pytest.mark.parametrize("frequencies", [(1.0, ), (1.0, ) * 15 + (float("nan"), ), (1.0, ) * 15 + (-1.0, ), None])
+@pytest.mark.parametrize("frequencies", [(1.0,), (1.0,) * 15 + (float("nan"),),
+                                         (1.0,) * 15 + (-1.0,), None])
 def test_rotary_rejects_invalid_frequency_coefficients(frequencies):
     with pytest.raises(IRSchemaError, match="inverse_frequencies"):
         RotaryEmbedding.normalize_attrs({"head_dim": 32, "theta": 10000., "inverse_frequencies": frequencies})

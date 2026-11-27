@@ -22,22 +22,30 @@ class VectorizeNormApply:
     op_names = frozenset({"nn.norm_apply"})
     # Value/output coordinates agree; scale/bias follow this choice during
     # rewriting, while scalar statistics do not belong to the layout region.
-    layout_input_indices = (0, )
+    layout_input_indices = (0,)
 
     def __init__(self, *, lane_bytes: int = 16) -> None:
         self.lane_bytes = lane_bytes
 
     def candidates(self, node: Node, module: IRModule) -> tuple[VectorizeCandidate, ...]:
+        if node.attrs.get("compute_profile", "default") != "default":
+            return ()
         if node.op != "nn.norm_apply" or not node.effect.is_pure:
             return ()
         value = module.node_map[node.inputs[0]].type
         scale = module.node_map[node.inputs[2]].type
         bias = module.node_map[node.inputs[3]].type
-        if (not isinstance(value, TensorType) or not isinstance(scale, TensorType) or not isinstance(bias, TensorType)
-                or value.rank == 0 or isinstance(value.dtype, VectorType) or not isinstance(value.dtype, DType)
-                or value.dtype not in {DType.BFLOAT16, DType.FLOAT32}
-                or scale.dtype not in {DType.BFLOAT16, DType.FLOAT32}
-                or bias.dtype not in {DType.BFLOAT16, DType.FLOAT32}):
+        if (
+            not isinstance(value, TensorType)
+            or not isinstance(scale, TensorType)
+            or not isinstance(bias, TensorType)
+            or value.rank == 0
+            or isinstance(value.dtype, VectorType)
+            or not isinstance(value.dtype, DType)
+            or value.dtype not in {DType.BFLOAT16, DType.FLOAT32}
+            or scale.dtype not in {DType.BFLOAT16, DType.FLOAT32}
+            or bias.dtype not in {DType.BFLOAT16, DType.FLOAT32}
+        ):
             return ()
         axis = normalize_axis(int(node.attrs["axis"]), value.rank)
         vector_axis = value.rank - 1
@@ -50,9 +58,9 @@ class VectorizeNormApply:
         # value/scale/bias dtypes, so pack each operand in its own element type.
         if lane <= 1:
             return ()
-        value_pads = padding_for(value, (vector_axis, ), (lane, ))
-        scale_pads = padding_for(scale, (parameter_axis, ), (lane, ))
-        bias_pads = padding_for(bias, (parameter_axis, ), (lane, ))
+        value_pads = padding_for(value, (vector_axis,), (lane,))
+        scale_pads = padding_for(scale, (parameter_axis,), (lane,))
+        bias_pads = padding_for(bias, (parameter_axis,), (lane,))
         if value_pads is None or scale_pads is None or bias_pads is None:
             return ()
         if any(value_pads[index] for index in range(axis, value.rank)):
@@ -62,8 +70,8 @@ class VectorizeNormApply:
         return (VectorizeCandidate(
             "vectorization.norm_apply.reduction_axis",
             self.name,
-            (vector_axis, ),
-            (lane, ),
+            (vector_axis,),
+            (lane,),
             {
                 "value_axis": vector_axis,
                 "parameter_axis": parameter_axis,
@@ -76,12 +84,12 @@ class VectorizeNormApply:
                 "bias_padding": list(bias_pads),
                 "egraph_equivalent": True,
             },
-        ), )
+        ),)
 
     def rewrite(self, node: Node, module: IRModule, candidate: VectorizeCandidate) -> RewriteResult:
         value_axes = candidate.axes
         lanes = candidate.lanes
-        parameter_axes = (int(candidate.parameters["parameter_axis"]), ) * len(lanes)
+        parameter_axes = (int(candidate.parameters["parameter_axis"]),) * len(lanes)
         prefix: list[Node] = []
         value_helpers, value = prepare_packed_input(
             module.node_map[node.inputs[0]],

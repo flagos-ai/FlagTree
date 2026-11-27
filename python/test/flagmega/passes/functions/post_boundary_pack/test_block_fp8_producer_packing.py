@@ -13,9 +13,9 @@ from triton.flagmega.targets import NvidiaSm90Target
 
 
 class Fp8Consumers(fm.Module):
-
-    def __init__(self, *, packed_weights=True, lanes=(8, ), output_lanes=(), scalar_users=False, mixed_users=False,
-                 large=False, n=40, k=128, dtype="bfloat16", quantization="dynamic_fp8", weight_dtype=None):
+    def __init__(self, *, packed_weights=True, lanes=(8,), output_lanes=(),
+                 scalar_users=False, mixed_users=False, large=False, n=40, k=128,
+                 dtype="bfloat16", quantization="dynamic_fp8", weight_dtype=None):
         super().__init__(dialect="high_level", stage="packed", entry="main")
         self.packed_weights, self.lanes, self.output_lanes = packed_weights, lanes, output_lanes
         self.scalar_users, self.mixed_users, self.large = scalar_users, mixed_users, large
@@ -37,20 +37,20 @@ class Fp8Consumers(fm.Module):
             projection = fm.F.math.packed_block_scaled_matmul(value, weight, scale, k_pack=2, k_vector=16, **kwargs)
         else:
             projection = fm.F.math.block_scaled_matmul(value, weight, scale, **kwargs)
-        outputs = [fm.F.tensors.pack(projection, self.lanes, axes=(-1, ) * len(self.lanes), name="norm_input")]
+        outputs = [fm.F.tensors.pack(projection, self.lanes, axes=(-1,) * len(self.lanes), name="norm_input")]
         # A second Pack represents a distinct norm consumer before folding.
-        stats_input = fm.F.tensors.pack(projection, self.lanes, axes=(-1, ) * len(self.lanes))
+        stats_input = fm.F.tensors.pack(projection, self.lanes, axes=(-1,) * len(self.lanes))
         outputs.append(fm.F.nn.norm_stats(stats_input, axis=-1, use_mean=False))
         if self.scalar_users:
             outputs.append(projection)
         if self.mixed_users:
-            outputs.append(fm.F.tensors.pack(projection, (4, ), axes=(-1, )))
+            outputs.append(fm.F.tensors.pack(projection, (4,), axes=(-1,)))
         if self.large:
             padding = value
             for _ in range(20_001):
                 padding = fm.F.math.add(padding, value)
             outputs.append(padding)
-        self.function("main", (value, ), tuple(outputs))
+        self.function("main", (value,), tuple(outputs))
 
 
 def operands(*, packed_weights=True, n=40, k=128, dtype="bfloat16"):
@@ -64,25 +64,24 @@ def operands(*, packed_weights=True, n=40, k=128, dtype="bfloat16"):
 
 
 @pytest.mark.parametrize("packed_weights", [False, True])
-@pytest.mark.parametrize("lanes", [(8, ), (2, 4)])
+@pytest.mark.parametrize("lanes", [(8,), (2, 4)])
 @pytest.mark.parametrize("scalar_users", [False, True])
 def test_fp8_matmul_produces_shared_packed_output_without_activation_pack(packed_weights, lanes, scalar_users):
     original = Fp8Consumers(packed_weights=packed_weights, lanes=lanes, scalar_users=scalar_users).build()
     rewritten = post_function_boundary_pack_propagation(original, NvidiaSm90Target())
-    projection, = (node for node in rewritten.nodes
-                   if node.op in {"math.block_scaled_matmul", "math.packed_block_scaled_matmul"})
+    projection, = (node for node in rewritten.nodes if node.op in
+                   {"math.block_scaled_matmul", "math.packed_block_scaled_matmul"})
     assert projection.attrs.get("output_lanes") == lanes
     assert projection.type == fm.tensor_type(fm.vector_type("bfloat16", lanes), (1, 40 // prod(lanes)))
     assert not any(node.op == "tensors.pack" for node in rewritten.nodes)
     values, weights = operands(packed_weights=packed_weights)
     evaluator = TorchEvaluator(DictWeightResolver(weights))
     torch.testing.assert_close(evaluator.run(rewritten, values), evaluator.run(original, values), rtol=0, atol=0)
-    assert post_function_boundary_pack_propagation(rewritten,
-                                                   NvidiaSm90Target()).semantic_hash == rewritten.semantic_hash
+    assert post_function_boundary_pack_propagation(rewritten, NvidiaSm90Target()).semantic_hash == rewritten.semantic_hash
 
 
 def test_fp8_packing_composes_with_existing_lanes_and_keeps_mixed_consumers():
-    original = Fp8Consumers(lanes=(4, ), output_lanes=(2, ), scalar_users=True).build()
+    original = Fp8Consumers(lanes=(4,), output_lanes=(2,), scalar_users=True).build()
     rewritten = post_function_boundary_pack_propagation(original, NvidiaSm90Target())
     projection, = (node for node in rewritten.nodes if node.op == "math.packed_block_scaled_matmul")
     assert projection.attrs["output_lanes"] == (4, 2)
@@ -96,7 +95,7 @@ def test_fp8_shared_projection_preserves_different_consumer_widths():
     original = Fp8Consumers(scalar_users=True, mixed_users=True).build()
     rewritten = post_function_boundary_pack_propagation(original, NvidiaSm90Target())
     projection, = (node for node in rewritten.nodes if node.op == "math.packed_block_scaled_matmul")
-    assert projection.attrs["output_lanes"] in {(4, ), (8, )}
+    assert projection.attrs["output_lanes"] in {(4,), (8,)}
     assert not any(node.op == "tensors.pack" for node in rewritten.nodes)
     values, weights = operands()
     evaluator = TorchEvaluator(DictWeightResolver(weights))
@@ -108,7 +107,7 @@ def test_fp8_output_packing_is_registered_on_the_large_graph_path():
     assert len(original.nodes) > 20_000
     rewritten = post_function_boundary_pack_propagation(original, NvidiaSm90Target())
     projection, = (node for node in rewritten.nodes if node.op == "math.packed_block_scaled_matmul")
-    assert projection.attrs.get("output_lanes") == (8, )
+    assert projection.attrs.get("output_lanes") == (8,)
     assert not any(node.op == "tensors.pack" for node in rewritten.nodes)
 
 
@@ -122,20 +121,17 @@ def test_dequantized_precision_survives_both_propagation_paths(packed_weights, l
     if large:
         assert len(original.nodes) > 20_000
     rewritten = post_function_boundary_pack_propagation(original, NvidiaSm90Target())
-    projection, = (node for node in rewritten.nodes
-                   if node.op in {"math.block_scaled_matmul", "math.packed_block_scaled_matmul"})
+    projection, = (node for node in rewritten.nodes if node.op in
+                   {"math.block_scaled_matmul", "math.packed_block_scaled_matmul"})
     assert projection.attrs["activation_quantization"] == "none"
     assert projection.attrs["weight_dequant_dtype"] == "bfloat16"
     assert not any(node.op == "tensors.pack" for node in rewritten.nodes)
-    assert post_function_boundary_pack_propagation(rewritten,
-                                                   NvidiaSm90Target()).semantic_hash == rewritten.semantic_hash
+    assert post_function_boundary_pack_propagation(rewritten, NvidiaSm90Target()).semantic_hash == rewritten.semantic_hash
     # Keep the actual large graph for rewriting; the unrelated deep padding
     # output is not part of the precision comparison or its recursive evaluator.
     if large:
-        original = replace(original, functions=(replace(original.functions[0],
-                                                        outputs=original.functions[0].outputs[:-1]), ))
-        rewritten = replace(rewritten, functions=(replace(rewritten.functions[0],
-                                                          outputs=rewritten.functions[0].outputs[:-1]), ))
+        original = replace(original, functions=(replace(original.functions[0], outputs=original.functions[0].outputs[:-1]),))
+        rewritten = replace(rewritten, functions=(replace(rewritten.functions[0], outputs=rewritten.functions[0].outputs[:-1]),))
     values, weights = operands(packed_weights=packed_weights)
     evaluator = TorchEvaluator(DictWeightResolver(weights))
     torch.testing.assert_close(evaluator.run(rewritten, values), evaluator.run(original, values), rtol=0, atol=0)

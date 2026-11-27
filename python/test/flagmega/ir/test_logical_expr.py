@@ -51,12 +51,8 @@ def test_substitution_decides_the_predicate():
 
 
 @pytest.mark.parametrize("compare,expected", [
-    ("equal", False),
-    ("not_equal", True),
-    ("less_than", True),
-    ("less_or_equal", True),
-    ("greater_than", False),
-    ("greater_or_equal", False),
+    ("equal", False), ("not_equal", True), ("less_than", True),
+    ("less_or_equal", True), ("greater_than", False), ("greater_or_equal", False),
 ])
 def test_every_comparison_operator_evaluates(compare, expected):
     assert dim_compare(iv(), 27, compare).evaluate({"iv": 3}) is expected
@@ -75,10 +71,10 @@ def test_connectives_short_circuit_on_known_operands():
 
 def test_round_trips_through_plain_data():
     for predicate in (
-            dim_equal(iv(), 27),
-            logical_not(dim_compare(iv(), 4, "less_than")),
-            logical_and(dim_equal(iv(), 1), dim_compare(iv(), 9, "less_or_equal")),
-            logical_const(True),
+        dim_equal(iv(), 27),
+        logical_not(dim_compare(iv(), 4, "less_than")),
+        logical_and(dim_equal(iv(), 1), dim_compare(iv(), 9, "less_or_equal")),
+        logical_const(True),
     ):
         assert logical_from_data(predicate.to_data()) == predicate
 
@@ -95,7 +91,7 @@ def test_emits_a_scalar_triton_predicate():
 
 def test_rejects_malformed_expressions():
     with pytest.raises(IRSchemaError, match="two operands"):
-        type(logical_and(dim_equal(iv(), 1), dim_equal(iv(), 2)))("and", (dim_equal(iv(), 1), ))
+        type(logical_and(dim_equal(iv(), 1), dim_equal(iv(), 2)))("and", (dim_equal(iv(), 1),))
     with pytest.raises(IRSchemaError, match="boolean expressions"):
         type(logical_and(dim_equal(iv(), 1), dim_equal(iv(), 2)))("and", (dim(1), dim(2)))
     with pytest.raises(IRSchemaError, match="Unknown logical expression"):
@@ -109,9 +105,11 @@ def test_a_predicate_is_a_rank_zero_bool_value(tmp_path):
     builder = IRBuilder(dialect="high_level", stage="imported")
     index = builder.var("layer", tensor_type("int64", ()), id="layer")
     with construction_scope(builder):
-        advance = F.shapes.dim_as_tensor(tensor_type("bool", ()), dim_equal(iv(), 27), name="advance")
-        layer_id = F.shapes.dim_as_tensor(tensor_type("int32", ()), iv(), name="layer_id")
-    builder.function("main", (index, ), (advance, layer_id))
+        advance = F.shapes.dim_as_tensor(
+            tensor_type("bool", ()), dim_equal(iv(), 27), name="advance")
+        layer_id = F.shapes.dim_as_tensor(
+            tensor_type("int32", ()), iv(), name="layer_id")
+    builder.function("main", (index,), (advance, layer_id))
     module = verify_module(builder.build(entry="main"))
 
     assert module.node_map["advance"].type.dtype.value == "bool"

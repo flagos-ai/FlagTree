@@ -22,14 +22,22 @@ def finalize_norm_stats_bindings(module: IRModule) -> IRModule:
     removed_points = {
         point.id
         for point in module.selection_points
-        if point.owner is not None and module.node_map[point.owner].op == "nn.bind_norm_stats"
+        if point.owner is not None
+        and module.node_map[point.owner].op == "nn.bind_norm_stats"
     }
-    result = DataflowPass("FoldBindNormStats", (fold_bind_norm_stats_rule(), )).run(module)
+    result = DataflowPass(
+        "FoldBindNormStats", (fold_bind_norm_stats_rule(),)).run(module)
     if removed_points:
         result = replace(
             result,
-            selection_points=tuple(value for value in result.selection_points if value.id not in removed_points),
-            selections=tuple(value for value in result.selections if value.point_id not in removed_points),
+            selection_points=tuple(
+                value for value in result.selection_points
+                if value.id not in removed_points
+            ),
+            selections=tuple(
+                value for value in result.selections
+                if value.point_id not in removed_points
+            ),
         )
     return merge_equivalent_function_variants(result)
 
@@ -37,7 +45,8 @@ def finalize_norm_stats_bindings(module: IRModule) -> IRModule:
 def fuse_norm_stats_apply(module: IRModule) -> IRModule:
     """Select the existing RMSNorm kernel ABI for a replicated explicit pair."""
 
-    return DataflowPass("FuseNormStatsApply", (fuse_norm_stats_apply_rule(), )).run(module)
+    return DataflowPass(
+        "FuseNormStatsApply", (fuse_norm_stats_apply_rule(),)).run(module)
 
 
 def lower_add_norm_stats(module: IRModule) -> IRModule:
@@ -45,7 +54,7 @@ def lower_add_norm_stats(module: IRModule) -> IRModule:
 
     return DataflowPass(
         "LowerAddNormStats",
-        (lower_add_norm_stats_rule(), ),
+        (lower_add_norm_stats_rule(),),
     ).run(module)
 
 

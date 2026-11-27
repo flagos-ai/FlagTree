@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{# Diagnostic BI-V150 layout experiment.  The launch still uses the global
+{# Diagnostic BI-V150 layout experiment.  The launch still uses the global
    num_warps contract; the shared [token, head_dim] values use four logical
    warps so each token row's 128-wide reduction stays within one warp. #}
 {% set paged_attention_partial_variant = "decode_layout4" %}

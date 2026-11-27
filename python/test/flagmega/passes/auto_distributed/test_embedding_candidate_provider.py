@@ -7,7 +7,7 @@ from triton.flagmega.passes.auto_distributed.providers import EmbeddingCandidate
 
 
 def _context(feature_extent: int = 2048) -> DistributedCandidateContext:
-    indices_type = fm.tensor_type("int32", (1, ))
+    indices_type = fm.tensor_type("int32", (1,))
     weight_type = fm.tensor_type("bfloat16", (151936, feature_extent))
     output_type = fm.tensor_type("bfloat16", (1, feature_extent))
     indices = fm.Node("indices", "builtin.var", (), indices_type, attrs={"name": "indices"})
@@ -23,14 +23,14 @@ def _context(feature_extent: int = 2048) -> DistributedCandidateContext:
         "high_level",
         "packed",
         (indices, weight, output),
-        (fm.Function("main", (indices.id, ), (output.id, )), ),
+        (fm.Function("main", (indices.id,), (output.id,)),),
         "main",
     )
     return DistributedCandidateContext(
         module,
         output,
         fm.Placement((8, 16), "yx", "bb"),
-        ((indices_type, ), (weight_type, )),
+        ((indices_type,), (weight_type,)),
     )
 
 
@@ -42,12 +42,15 @@ def test_embedding_provider_projects_output_feature_split_to_weight_column():
         if candidate.reason == "embedding-exact-output-sbp"
     }
 
-    assert set(split) == {(0, ), (1, ), (0, 1)}
+    assert set(split) == {(0,), (1,), (0, 1)}
     for axes, candidate in split.items():
         assert isinstance(candidate.return_type, fm.DistributedType)
         indices_type, weight_type = candidate.input_types
         assert isinstance(indices_type, fm.DistributedType)
-        assert all(isinstance(policy, fm.SBPBroadCast) for policy in indices_type.axis_policies)
+        assert all(
+            isinstance(policy, fm.SBPBroadCast)
+            for policy in indices_type.axis_policies
+        )
         assert isinstance(weight_type, fm.DistributedType)
         assert isinstance(weight_type.axis_policies[0], fm.SBPBroadCast)
         assert weight_type.axis_policies[1] == candidate.return_type.axis_policies[1]
@@ -57,9 +60,16 @@ def test_embedding_provider_projects_output_feature_split_to_weight_column():
 def test_embedding_provider_keeps_a_replicated_candidate_for_independent_compilation():
     candidates = EmbeddingCandidateProvider().get_candidates(_context())
 
-    replicated = [candidate for candidate in candidates if candidate.reason == "embedding-replicated"]
+    replicated = [
+        candidate
+        for candidate in candidates
+        if candidate.reason == "embedding-replicated"
+    ]
     assert len(replicated) == 1
-    assert all(isinstance(policy, fm.SBPBroadCast) for policy in replicated[0].return_type.axis_policies)
+    assert all(
+        isinstance(policy, fm.SBPBroadCast)
+        for policy in replicated[0].return_type.axis_policies
+    )
 
 
 def test_embedding_provider_rejects_only_nondividing_mesh_combinations():
@@ -70,4 +80,4 @@ def test_embedding_provider_rejects_only_nondividing_mesh_combinations():
         if candidate.reason == "embedding-exact-output-sbp"
     }
 
-    assert axes == {(0, ), (1, )}
+    assert axes == {(0,), (1,)}

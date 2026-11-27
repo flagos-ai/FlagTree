@@ -23,10 +23,11 @@ def _loop(source):
 
 def test_gfx1100_resolves_its_own_template():
     assert TritonTemplateRegistry().resolve(_GFX1100) == (
-        "kernels/paged_attention_partial/platforms/amd/gfx1100/decode_t16.py.jinja")
+        "kernels/paged_attention_partial/platforms/amd/gfx1100/decode_t16.py.jinja"
+    )
     assert TritonTemplateRegistry().resolve(
-        KernelTemplateSpec("paged_attention_partial", "decode_t16", "amd",
-                           "gfx1201")) == "kernels/paged_attention_partial/platforms/amd/decode_t16.py.jinja"
+        KernelTemplateSpec("paged_attention_partial", "decode_t16", "amd", "gfx1201")
+    ) == "kernels/paged_attention_partial/platforms/amd/decode_t16.py.jinja"
 
 
 def test_gfx1100_tile_loads_are_unmasked_and_block_ids_load_one_tile_ahead():
@@ -44,11 +45,8 @@ def test_gfx1100_tile_loads_are_unmasked_and_block_ids_load_one_tile_ahead():
 
 @pytest.mark.parametrize(
     "spec",
-    [
-        _AMD,
-        KernelTemplateSpec("paged_attention_partial", "decode_t16"),
-        KernelTemplateSpec("paged_attention_partial", "decode_t32")
-    ],
+    [_AMD, KernelTemplateSpec("paged_attention_partial", "decode_t16"),
+     KernelTemplateSpec("paged_attention_partial", "decode_t32")],
 )
 def test_other_templates_keep_masked_loads(spec):
     source = _render(spec)
@@ -84,8 +82,8 @@ def _run(tmp_path, source, name, query, kv_cache, slot_mapping, block_table):
 
     maxima, sums = torch.empty(4, device="cuda"), torch.empty(4, device="cuda")
     accumulators = torch.empty(4 * 128, device="cuda")
-    _module(tmp_path, source, name).run[(4, )](query, kv_cache, slot_mapping, block_table, maxima, sums, accumulators,
-                                               token_tile=16)
+    _module(tmp_path, source, name).run[(4,)](
+        query, kv_cache, slot_mapping, block_table, maxima, sums, accumulators, token_tile=16)
     torch.cuda.synchronize()
     return maxima, sums, accumulators
 
@@ -108,11 +106,12 @@ def test_gfx1100_partial_is_bitwise_equal_to_amd_per_row(tmp_path, context):
     cache = kv_cache.view(8, 2, 256, 128)[block_table.long()].double()
     keys = cache[:, 0].reshape(-1, 128)[:context]
     values = cache[:, 1].reshape(-1, 128)[:context]
-    reference = torch.softmax(keys @ query.double() * 128**-.5, 0) @ values
+    reference = torch.softmax(keys @ query.double() * 128 ** -.5, 0) @ values
     for name, source in sources.items():
         maxima, sums, accumulators = _run(tmp_path, source, name, *args)
         for got, want in zip((maxima, sums, accumulators), expected):
             assert torch.equal(got, want), name
         weights = torch.exp(maxima - maxima.max()).double()
-        combined = (weights[:, None] * accumulators.view(4, 128).double()).sum(0) / (weights * sums.double()).sum()
+        combined = (weights[:, None] * accumulators.view(4, 128).double()).sum(0) / (
+            weights * sums.double()).sum()
         torch.testing.assert_close(combined, reference, rtol=1e-4, atol=1e-4, msg=name)

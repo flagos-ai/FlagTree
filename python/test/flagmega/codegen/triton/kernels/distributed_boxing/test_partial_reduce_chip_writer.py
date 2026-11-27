@@ -17,14 +17,14 @@ def test_chip_replicated_destination_keeps_one_writer_per_chip():
         (1, 8),
         storage_kind="compact_per_owner",
         coordinate_space="local",
-        partial_axes=(1, ),
+        partial_axes=(1,),
         owner_stride=8,
         hierarchy=(4, 8),
         hierarchy_levels="cb",
     )
     result = _abi((1, 8), hierarchy=(4, 8), hierarchy_levels="cb")
 
-    leaf = _prepare((source, ), (result, ), ("gather_reduce_scatter", ))["leaves"][0]
+    leaf = _prepare((source,), (result,), ("gather_reduce_scatter",))["leaves"][0]
 
     # The chip axis is a redundant writer axis for one shared allocation, but
     # each chip holds its own destination instance, so it must stay a writer.
@@ -38,14 +38,14 @@ def test_chip_partial_axis_still_elects_one_writer_per_chip():
         (1, 4),
         storage_kind="compact_per_owner",
         coordinate_space="local",
-        partial_axes=(0, ),
+        partial_axes=(0,),
         owner_stride=4,
         hierarchy=(4, 8),
         hierarchy_levels="cb",
     )
     result = _abi((1, 4), hierarchy=(4, 8), hierarchy_levels="cb")
 
-    leaf = _prepare((source, ), (result, ), ("gather_reduce_scatter", ))["leaves"][0]
+    leaf = _prepare((source,), (result,), ("gather_reduce_scatter",))["leaves"][0]
 
     assert leaf["writer_active"] == "(shard_x == 0)"
 
@@ -62,6 +62,6 @@ def test_block_only_placement_is_unchanged():
     )
     result = _abi((1, 8), hierarchy=(8, 16), hierarchy_levels="bb")
 
-    leaf = _prepare((source, ), (result, ), ("gather_reduce_scatter", ))["leaves"][0]
+    leaf = _prepare((source,), (result,), ("gather_reduce_scatter",))["leaves"][0]
 
     assert leaf["writer_active"] == "(shard_y == 0) & (shard_x == 0)"
