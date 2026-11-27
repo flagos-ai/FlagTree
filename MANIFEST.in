@@ -21,3 +21,7 @@ prune python/triton/language/extra/*
 prune python/triton/profiler
 exclude python/triton/spec/*
 global-exclude *.py[cod]
+prune third_party/tsingmicro/backend/bin
+prune third_party/tsingmicro/backend/lib
+exclude python/triton/_C/libtriton.so
+exclude python/triton/_C/libproton.so
