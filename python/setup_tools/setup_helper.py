@@ -36,6 +36,7 @@ from importlib.machinery import PathFinder
 from setuptools import find_packages
 from urllib.parse import unquote, urlparse
 from .utils.tools import flagtree_configs as configs
+from .utils import DIST_DEV_MODE
 
 downloader = utils.tools.DownloadManager()
 configs = configs
@@ -929,9 +930,8 @@ if relocate_flagcx:
     relocate_flagcx()
 
 flagcx_wheel = PathFinder.find_spec("flagcx", sys.path)
-download_flagtree_third_party("flagcx", condition=not flagcx_wheel
-                              and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS, hook="handle_flagcx",
-                              required=True)
+is_download_flagcx = DIST_DEV_MODE and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS
+download_flagtree_third_party("flagcx", condition=is_download_flagcx, hook="handle_flagcx", required=True)
 
 download_flagtree_third_party("cuda-tile", condition=(flagtree_backend == "tileir"), required=True)
 
