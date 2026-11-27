@@ -71,24 +71,36 @@ prepare_src_value(memref_t<__ubuf__ T, 1> *src, memref_t<__ubuf__ T, 1> *dst,
     INTRINSIC(wait_flag, PIPE_S, PIPE_V, LIB_EVENT_ID0);
 
     // for ascend sort, we need reverse data, because vbs/vms only support
-    // descend.
-    src->sizes[0] = sort_num;
+    // descend. Flip the sign bit explicitly: VADDS with S32_MIN_VALUE relies
+    // on wrapping signed addition, which is undefined for negative bit
+    // patterns and mis-sorts negative inputs on c310.
     if constexpr (sizeof(T) == 4) {
       memref_t<__ubuf__ int32_t, 1> src_s32;
       view_as<T, int32_t, 1>(src, &src_s32);
       memref_t<__ubuf__ int32_t, 1> dst_s32;
       view_as<T, int32_t, 1>(dst, &dst_s32);
-      vector_eltwise_vs_1d<VectorOpTy::VADDS, int32_t>(&src_s32, S32_MIN_VALUE,
-                                                       &dst_s32);
+      auto *src_bits = src_s32.aligned + src_s32.offset;
+      auto *dst_bits = dst_s32.aligned + dst_s32.offset;
+      INTRINSIC(pipe_barrier, PIPE_ALL);
+      for (int64_t i = 0; i < sort_num; ++i) {
+        dst_bits[i] = static_cast<int32_t>(static_cast<uint32_t>(src_bits[i]) ^
+                                           0x80000000u);
+      }
+      INTRINSIC(pipe_barrier, PIPE_ALL);
     } else {
       memref_t<__ubuf__ int16_t, 1> src_s16;
       view_as<T, int16_t, 1>(src, &src_s16);
       memref_t<__ubuf__ int16_t, 1> dst_s16;
       view_as<T, int16_t, 1>(dst, &dst_s16);
-      vector_eltwise_vs_1d<VectorOpTy::VADDS, int16_t>(&src_s16, S16_MIN_VALUE,
-                                                       &dst_s16);
+      auto *src_bits = src_s16.aligned + src_s16.offset;
+      auto *dst_bits = dst_s16.aligned + dst_s16.offset;
+      INTRINSIC(pipe_barrier, PIPE_ALL);
+      for (int64_t i = 0; i < sort_num; ++i) {
+        dst_bits[i] =
+            static_cast<int16_t>(static_cast<uint16_t>(src_bits[i]) ^ 0x8000u);
+      }
+      INTRINSIC(pipe_barrier, PIPE_ALL);
     }
-    src->sizes[0] = real_num;
     return;
   }
   // In descending order, the minimum value needs to be filled to ensure that
@@ -438,14 +450,21 @@ move_out_result(memref_t<__ubuf__ T, 1> *src,
     if constexpr (sizeof(T) == 4) {
       memref_t<__ubuf__ int32_t, 1> dst_value_s32;
       view_as<T, int32_t, 1>(dst_value, &dst_value_s32);
-      vector_eltwise_vs_1d<VectorOpTy::VADDS, int32_t>(
-          &dst_value_s32, S32_MIN_VALUE, &dst_value_s32);
+      auto *dst_bits = dst_value_s32.aligned + dst_value_s32.offset;
+      for (int64_t i = 0; i < real_num; ++i) {
+        dst_bits[i] = static_cast<int32_t>(static_cast<uint32_t>(dst_bits[i]) ^
+                                           0x80000000u);
+      }
     } else {
       memref_t<__ubuf__ int16_t, 1> dst_value_s16;
       view_as<T, int16_t, 1>(dst_value, &dst_value_s16);
-      vector_eltwise_vs_1d<VectorOpTy::VADDS, int16_t>(
-          &dst_value_s16, S16_MIN_VALUE, &dst_value_s16);
+      auto *dst_bits = dst_value_s16.aligned + dst_value_s16.offset;
+      for (int64_t i = 0; i < real_num; ++i) {
+        dst_bits[i] =
+            static_cast<int16_t>(static_cast<uint16_t>(dst_bits[i]) ^ 0x8000u);
+      }
     }
+    TLE_PIPE_BARRIER_V();
   }
 }
 
