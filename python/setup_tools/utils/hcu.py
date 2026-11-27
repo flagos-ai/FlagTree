@@ -24,10 +24,13 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sysconfig
 
 from python.setup_tools.utils.default import FlagCXRegistrar, printinfo
 
 _LLVM_TOOLS = ("opt", "llvm-as", "llvm-dis")
+_SHCA_HEADER = "infiniband/shca_17b_types.h"
+_SHCA_PREFIXES = (Path("/opt/shca-userspace"), Path("/usr/local"), Path("/usr"))
 
 
 def relocate_flagcx():
@@ -155,6 +158,52 @@ def _toolchain():
     return sdk, tools
 
 
+def _shca_make_args(source):
+    if os.environ.get("USE_SHCA") != "1":
+        return []
+
+    include_override = os.environ.get("SHCA_INCLUDE")
+    lib_override = os.environ.get("SHCA_LIB")
+    if include_override and lib_override:
+        return [f"SHCA_INCLUDE={include_override}", f"SHCA_LIB={lib_override}"]
+
+    source = source.absolute()
+    include = source / Path(include_override).expanduser() if include_override else None
+    home_override = os.environ.get("SHCA_HOME")
+    if home_override:
+        prefixes = (source / Path(home_override).expanduser(), )
+    elif include is not None:
+        prefixes = (include.parent, )
+    elif lib_override:
+        directory = source / Path(lib_override).expanduser()
+        prefixes = (directory, directory.parent, directory.parent.parent, *_SHCA_PREFIXES)
+    else:
+        prefixes = _SHCA_PREFIXES
+
+    multiarch = sysconfig.get_config_var("MULTIARCH") or ""
+    for prefix in dict.fromkeys(prefixes):
+        include_dir = include or prefix / "include"
+        if not (include_dir / _SHCA_HEADER).is_file():
+            continue
+        include_arg = f"SHCA_INCLUDE={include_dir}"
+        if lib_override:
+            return [include_arg, f"SHCA_LIB={lib_override}"]
+
+        lib_dirs = (prefix / "lib" / multiarch, prefix / "lib64", prefix / "lib", prefix)
+        lib_dir = next((directory for directory in lib_dirs
+                        if (directory / "libibverbs.so").is_file() or (directory / "libibverbs.a").is_file()), None)
+        if lib_dir is not None:
+            return [include_arg, f"SHCA_LIB={lib_dir}"]
+        if include_override or home_override:
+            # Explicit header configurations can use an existing linker search path.
+            return [include_arg]
+
+    checked = ", ".join(map(str, dict.fromkeys(prefixes)))
+    raise RuntimeError(f"USE_SHCA=1 requires {_SHCA_HEADER} and the matching libibverbs development library. "
+                       f"Checked {checked}. Install the SHCA userspace development package, set SHCA_HOME, "
+                       "or specify SHCA_INCLUDE and SHCA_LIB.")
+
+
 class HCUFlagCXRegistrar(FlagCXRegistrar):
     """HCU-specific FlagCX build and installation using the shared runtime layout."""
 
@@ -195,6 +244,7 @@ class HCUFlagCXRegistrar(FlagCXRegistrar):
                                "or set FLAGCX_SOURCE_DIR to a compatible checkout.")
         sdk, llvm_tools = _toolchain()
         self.arch = _device_arch(sdk)
+        shca_args = _shca_make_args(source)
         json_dir = self._json_include_dir()
         build_dir = source / "build/hcu" / self.arch
         self.src_lib_dir = build_dir / "lib"
@@ -214,9 +264,10 @@ class HCUFlagCXRegistrar(FlagCXRegistrar):
             f"BUILDDIR={build_dir}",
             f"JSON_INCLUDE_DIR={json_dir}",
         ]
-        for key in ("HOST_COMPILER", "USE_UCX", "UCX_HOME", "USE_IBUC", "USE_MPI", "MPI_HOME"):
+        for key in ("HOST_COMPILER", "USE_SHCA", "USE_UCX", "UCX_HOME", "USE_IBUC", "USE_MPI", "MPI_HOME"):
             if os.environ.get(key):
                 cmd.append(f"{key}={os.environ[key]}")
+        cmd.extend(shca_args)
         cmd.append("device_bitcode")
         # Both artifacts are built together; the HCU build hook runs this target once.
         return {self.shared_lib_name: cmd, self.bitcode_name: cmd}
