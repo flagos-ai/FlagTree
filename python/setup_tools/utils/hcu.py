@@ -27,7 +27,6 @@ import subprocess
 
 from python.setup_tools.utils.default import FlagCXRegistrar, printinfo
 
-
 _LLVM_TOOLS = ("opt", "llvm-as", "llvm-dis")
 
 
@@ -134,7 +133,7 @@ def _toolchain():
     override = os.environ.get("FLAGCX_HCU_LLVM_BIN")
     if override:
         directory = Path(override).expanduser().resolve()
-        tools = _find_llvm_tools((directory,), compiler_major)
+        tools = _find_llvm_tools((directory, ), compiler_major)
         searched = f"FLAGCX_HCU_LLVM_BIN={directory}"
     else:
         dtk_dirs = (sdk / "llvm/bin", sdk / "aillvm/bin", sdk / "bin")
