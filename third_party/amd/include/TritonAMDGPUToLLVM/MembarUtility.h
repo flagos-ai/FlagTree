@@ -2,6 +2,10 @@
 #define TRITON_THIRD_PARTY_AMD_INCLUDE_TRITONAMDGPUTOLLVM_MEMBARUTILITY_H_
 
 #include "mlir/IR/Operation.h"
+#ifdef __TLE__
+#include "mlir/IR/SymbolTable.h"
+#include "triton/Analysis/Membar.h"
+#endif
 
 namespace mlir::triton::AMD {
 
@@ -26,6 +30,10 @@ namespace mlir::triton::AMD {
 //     %4 = AsyncCopyGlobalToLocal %ptr_2 %tile_a
 //     scf.yield
 bool membarFilter(Operation *op1, Operation *op2);
+#ifdef __TLE__
+MembarFilterFn makeMembarFilter(const SymbolUserMap &users,
+                                ModuleAllocation &allocation);
+#endif
 } // namespace mlir::triton::AMD
 
 #endif

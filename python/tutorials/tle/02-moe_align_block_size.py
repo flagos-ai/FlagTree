@@ -14,6 +14,7 @@ This tutorial benchmarks multiple MoE align implementations:
 import argparse
 import hashlib
 import importlib
+from importlib.metadata import PackageNotFoundError, distribution
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
@@ -140,6 +141,28 @@ def ceil_div(a: int, b: int) -> int:
 
 def round_up(x: int, y: int) -> int:
     return ((x + y - 1) // y) * y
+
+
+def _nvidia_cuda_include_paths() -> List[str]:
+    package_headers = (
+        ("nvidia-cusparse-cu12", "nvidia/cusparse/include/cusparse.h"),
+        ("nvidia-cusparse-cu13", "nvidia/cu13/include/cusparse.h"),
+        ("nvidia-cusparse", "nvidia/cu13/include/cusparse.h"),
+        ("nvidia-cusolver-cu12", "nvidia/cusolver/include/cusolverDn.h"),
+        ("nvidia-cusolver-cu13", "nvidia/cu13/include/cusolverDn.h"),
+        ("nvidia-cusolver", "nvidia/cu13/include/cusolverDn.h"),
+    )
+    include_paths = []
+    for package, header in package_headers:
+        try:
+            header_path = Path(distribution(package).locate_file(header))
+        except PackageNotFoundError:
+            continue
+        if header_path.is_file():
+            include_path = str(header_path.parent)
+            if include_path not in include_paths:
+                include_paths.append(include_path)
+    return include_paths
 
 
 @triton.jit(do_not_specialize=["numel"])
@@ -983,6 +1006,7 @@ inline uint32_t next_pow2(uint32_t x) noexcept {
             cuda_sources=[kernel_src],
             functions=None,
             extra_cuda_cflags=["-O3"],
+            extra_include_paths=_nvidia_cuda_include_paths(),
             with_cuda=True,
             verbose=False,
         )
@@ -1050,6 +1074,7 @@ def _load_embedded_yiakwy_cuda_moe_align() -> Optional[Callable]:
             cuda_sources=[kernel_src],
             functions=None,
             extra_cuda_cflags=["-O3"],
+            extra_include_paths=_nvidia_cuda_include_paths(),
             with_cuda=True,
             verbose=False,
         )
@@ -1295,19 +1320,21 @@ def run_correctness(
     print(f"Correctness check passed ({', '.join(outputs.keys())}).")
 
 
-def _moe_realistic_shapes(num_experts: int) -> List[Tuple[int, int]]:
-    return [
-        (256, num_experts),
-        (512, num_experts),
-        (1024, num_experts),
-        (2048, num_experts),
-        (4096, num_experts),
-        (8192, num_experts),
-        (16384, num_experts),
-        (32768, num_experts),
-        (65536, num_experts),
-        (163840, num_experts),
-    ]
+def _moe_realistic_shapes(num_experts: int, only_unit_test: bool = False) -> List[Tuple[int, int]]:
+    shapes = [(256, num_experts)]
+    if not only_unit_test:
+        shapes.extend([
+            (512, num_experts),
+            (1024, num_experts),
+            (2048, num_experts),
+            (4096, num_experts),
+            (8192, num_experts),
+            (16384, num_experts),
+            (32768, num_experts),
+            (65536, num_experts),
+        ])
+    shapes.append((163840, num_experts))
+    return shapes
 
 
 def _zipf_probs(num_experts: int, alpha: float) -> torch.Tensor:
@@ -1321,7 +1348,7 @@ def _sample_topk_ids(num_tokens: int, num_experts: int, probs: torch.Tensor) -> 
     return ids.to(torch.int32)
 
 
-def run_realistic_benchmark(block_size: int, num_experts: int) -> None:
+def run_realistic_benchmark(block_size: int, num_experts: int, only_unit_test: bool = False) -> None:
     print("num_tokens,num_experts,source,triton_ms,triton_atomic_ms,triton_atomic_fused_ms,"
           "tle_cluster_fused_ms,sglang_cuda_ms,yiakwy_cuda_ms")
     sglang_available = _resolve_sglang_cuda_moe_align() is not None
@@ -1334,7 +1361,7 @@ def run_realistic_benchmark(block_size: int, num_experts: int) -> None:
     triton_atomic_fused_warned = False
     tle_cluster_fused_warned = False
     probs = _zipf_probs(num_experts, alpha=1.2)
-    for num_tokens, _ in _moe_realistic_shapes(num_experts):
+    for num_tokens, _ in _moe_realistic_shapes(num_experts, only_unit_test):
         topk_ids = _sample_topk_ids(num_tokens, num_experts, probs)
         sorted_ids_t, expert_ids_t, num_tokens_post_pad_t = _allocate_outputs(topk_ids, num_experts, block_size, False)
         init_fn_t, kernel_fn_t = _make_bench_runner(
@@ -1648,6 +1675,7 @@ def main(argv=None):
     parser.add_argument("--num_tokens", type=int, default=8192, help="num tokens")
     parser.add_argument("--num_experts", type=int, default=64, help="num experts")
     parser.add_argument("--skip_correctness", action="store_true", help="skip correctness checks")
+    parser.add_argument("--only_unit_test", action="store_true", help="skip intermediate benchmark shapes")
     parser.add_argument("--real_data", type=str, default="", help="path to topk_ids.pt")
     args = parser.parse_args(argv)
 
@@ -1664,6 +1692,7 @@ def main(argv=None):
         run_realistic_benchmark(
             args.block_size,
             args.num_experts,
+            args.only_unit_test,
         )
 
 

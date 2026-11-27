@@ -22,10 +22,12 @@ Notes
 
 import argparse
 import hashlib
+from importlib.metadata import PackageNotFoundError, distribution
 import math
+from pathlib import Path
 import urllib.request
 from functools import lru_cache
-from typing import Optional
+from typing import List, Optional
 
 import torch
 import triton
@@ -55,6 +57,29 @@ TLE_SMEM_NUM_STAGES = 1
 TLE_SMEM_INPUT_SIZE = 4096
 TLE_SMEM_CLUSTER_SIZE = 8
 BLOCK_CLUSTER_MESH_8 = tle.device_mesh({"block_cluster": [("cluster_x", TLE_SMEM_CLUSTER_SIZE)]})
+
+
+def _nvidia_cuda_include_paths() -> List[str]:
+    package_headers = (
+        ("nvidia-cusparse-cu12", "nvidia/cusparse/include/cusparse.h"),
+        ("nvidia-cusparse-cu13", "nvidia/cu13/include/cusparse.h"),
+        ("nvidia-cusparse", "nvidia/cu13/include/cusparse.h"),
+        ("nvidia-cusolver-cu12", "nvidia/cusolver/include/cusolverDn.h"),
+        ("nvidia-cusolver-cu13", "nvidia/cu13/include/cusolverDn.h"),
+        ("nvidia-cusolver", "nvidia/cu13/include/cusolverDn.h"),
+    )
+    include_paths = []
+    for package, header in package_headers:
+        try:
+            header_path = Path(distribution(package).locate_file(header))
+        except PackageNotFoundError:
+            continue
+        if header_path.is_file():
+            include_path = str(header_path.parent)
+            if include_path not in include_paths:
+                include_paths.append(include_path)
+    return include_paths
+
 
 # %%
 # Key conversions
@@ -3589,6 +3614,7 @@ def _load_embedded_trtllm_indexer_topk(prefill_threads: int = 512):
             cuda_sources=[cuda_src],
             functions=None,
             extra_cuda_cflags=["-O3"],
+            extra_include_paths=_nvidia_cuda_include_paths(),
             with_cuda=True,
             verbose=False,
         )
@@ -3802,7 +3828,7 @@ def _load_embedded_flashinfer_topk():
                 "-U__CUDA_NO_HALF2_OPERATORS__",
             ],
             with_cuda=True,
-            extra_include_paths=[include_dir],
+            extra_include_paths=[include_dir, *_nvidia_cuda_include_paths()],
             verbose=False,
         )
     except Exception as ex:
@@ -3896,6 +3922,7 @@ def _load_embedded_sglang_topk():
             cuda_sources=[cuda_src],
             functions=None,
             extra_cuda_cflags=["-O3"],
+            extra_include_paths=_nvidia_cuda_include_paths(),
             with_cuda=True,
             verbose=False,
         )
@@ -3975,6 +4002,15 @@ _BENCH_XVALS = [
     (64, 131072, 2048),
     (64, 524288, 2048),
 ]
+_ONLY_UNIT_TEST_SKIPPED_XVALS = {
+    (1, 262144, 2048),
+    (1, 524288, 2048),
+    (64, 4096, 128),
+    (64, 8192, 256),
+    (64, 32768, 1024),
+    (64, 32768, 2048),
+    (64, 524288, 2048),
+}
 _PERF_TOPK2048_XVALS = [(batch, seq_len, 2048) for batch in (1, 132, 4096) for seq_len in (2048, 4096, 16384, 65536)]
 _TILELANG_SKIP_SEQ_LEN_MIN = 262144
 
@@ -4301,7 +4337,7 @@ def _parse_providers(raw):
 
 
 def run_bench(block_size, warmup, rep, show_plots, providers=None, bench_x_vals=None, quick_bench=False,
-              max_seq_len=None, perf_topk2048_cases=False):
+              max_seq_len=None, perf_topk2048_cases=False, only_unit_test=False):
     bench = benchmark.benchmarks
 
     x_vals = list(_PERF_TOPK2048_XVALS) if perf_topk2048_cases else list(_BENCH_XVALS)
@@ -4311,6 +4347,8 @@ def run_bench(block_size, warmup, rep, show_plots, providers=None, bench_x_vals=
         x_vals = [v for v in x_vals if v[1] <= max_seq_len]
     if bench_x_vals is not None:
         x_vals = list(bench_x_vals)
+    if only_unit_test:
+        x_vals = [v for v in x_vals if v not in _ONLY_UNIT_TEST_SKIPPED_XVALS]
     if not x_vals:
         raise ValueError("no benchmark x_vals left after filtering")
 
@@ -4360,6 +4398,7 @@ def main(argv=None):
     parser.add_argument("--show_plots", action="store_true", help="show plots in benchmark")
     parser.add_argument("--skip_correctness", action="store_true", help="skip correctness check")
     parser.add_argument("--skip_bench", action="store_true", help="skip benchmark")
+    parser.add_argument("--only_unit_test", action="store_true", help="skip selected benchmark cases")
     parser.add_argument(
         "--providers",
         type=str,
@@ -4416,6 +4455,7 @@ def main(argv=None):
             quick_bench=args.quick_bench,
             max_seq_len=args.max_seq_len,
             perf_topk2048_cases=args.perf_topk2048_cases,
+            only_unit_test=args.only_unit_test,
         )
 
 
