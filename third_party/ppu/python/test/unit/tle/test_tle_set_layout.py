@@ -52,7 +52,7 @@ def ppu_backend():
     assert hasattr(libtriton, "ppu"), "PPU build is missing native PPU bindings"
     assert hasattr(libtriton, "tle"), "PPU build is missing native TLE bindings"
     assert hasattr(libtriton.ir.builder, "create_tle_gpu_set_layout")
-    assert "gpu.set_layout" in get_supported_primitives("ppu")
+    assert "gpu.set_layout" in get_supported_primitives()
     backend = make_backend(TARGET)
     assert type(backend).__name__ == "PPUBackend"
     assert backend.binary_ext == "hgbin"
