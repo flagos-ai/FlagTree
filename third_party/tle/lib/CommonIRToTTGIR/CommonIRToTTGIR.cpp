@@ -59,6 +59,42 @@ static FailureOr<ttg::MemDescType> getMemDescType(Operation *op,
                                /*mutableMemory=*/true);
 }
 
+static FailureOr<ttg::MemDescType>
+getSubviewMemDescType(tile::SubViewOp op, ttg::MemDescType sourceType) {
+  auto resultType =
+      getMemDescType(op, cast<tile::BufType>(op.getResult().getType()));
+  if (failed(resultType))
+    return failure();
+  // A subslice and a slot of a subslice use the backing allocation's
+  // strides. A slot of an unsliced buffer uses its compact shape.
+  if (sourceType.getRank() == resultType->getRank() ||
+      sourceType.getAllocShape() != sourceType.getShape()) {
+    return ttg::MemDescType::get(
+        resultType->getShape(), resultType->getElementType(),
+        resultType->getEncoding(), resultType->getMemorySpace(),
+        resultType->getMutableMemory(), sourceType.getAllocShape());
+  }
+  return *resultType;
+}
+
+static FailureOr<ttg::MemDescType>
+inferCallOperandMemDescType(Value operand,
+                            const llvm::DenseMap<Value, Value> &mapped) {
+  if (auto it = mapped.find(operand); it != mapped.end())
+    return dyn_cast<ttg::MemDescType>(it->second.getType());
+  if (auto type = dyn_cast<ttg::MemDescType>(operand.getType()))
+    return type;
+
+  // Calls can pass a view before the pass has lowered tile.subview.
+  auto subview = operand.getDefiningOp<tile::SubViewOp>();
+  if (!subview)
+    return ttg::MemDescType{};
+  auto sourceType = inferCallOperandMemDescType(subview.getSource(), mapped);
+  if (failed(sourceType) || !*sourceType)
+    return sourceType;
+  return getSubviewMemDescType(subview, *sourceType);
+}
+
 static FailureOr<Value>
 lookupBuffer(Operation *op, Value buffer,
              const llvm::DenseMap<Value, Value> &mapped) {
@@ -91,17 +127,20 @@ inferMemDescType(ModuleOp module, triton::FuncOp func, BlockArgument argument,
   }
   if (!inferred) {
     unsigned argumentNumber = argument.getArgNumber();
-    module.walk([&](triton::CallOp call) {
+    WalkResult result = module.walk([&](triton::CallOp call) {
       if (inferred ||
           module.lookupSymbol<triton::FuncOp>(call.getCallee()) != func ||
           argumentNumber >= call.getNumOperands())
-        return;
-      Value operand = call.getOperand(argumentNumber);
-      auto it = mapped.find(operand);
-      if (it != mapped.end())
-        operand = it->second;
-      inferred = dyn_cast<ttg::MemDescType>(operand.getType());
+        return WalkResult::advance();
+      auto type =
+          inferCallOperandMemDescType(call.getOperand(argumentNumber), mapped);
+      if (failed(type))
+        return WalkResult::interrupt();
+      inferred = *type;
+      return WalkResult::advance();
     });
+    if (result.wasInterrupted())
+      return failure();
   }
   if (!inferred) {
     emitError(argument.getLoc())
@@ -409,22 +448,14 @@ static LogicalResult convertBufferViewsAndRegions(
         if (!op)
           return WalkResult::advance();
         auto source = lookupBuffer(op, op.getSource(), mapped);
-        auto resultType =
-            getMemDescType(op, cast<tile::BufType>(op.getResult().getType()));
-        if (failed(source) || failed(resultType))
+        if (failed(source))
+          return WalkResult::interrupt();
+        auto sourceType = cast<ttg::MemDescType>((*source).getType());
+        auto resultType = getSubviewMemDescType(op, sourceType);
+        if (failed(resultType))
           return WalkResult::interrupt();
 
         OpBuilder builder(op);
-        auto sourceType = cast<ttg::MemDescType>((*source).getType());
-        // A subslice and a slot of a subslice use the backing allocation's
-        // strides. A slot of an unsliced buffer uses its compact shape.
-        if (sourceType.getRank() == resultType->getRank() ||
-            sourceType.getAllocShape() != sourceType.getShape()) {
-          *resultType = ttg::MemDescType::get(
-              resultType->getShape(), resultType->getElementType(),
-              resultType->getEncoding(), resultType->getMemorySpace(),
-              resultType->getMutableMemory(), sourceType.getAllocShape());
-        }
         if (op.getOffsets().size() != sourceType.getRank() ||
             op.getSizes().size() != resultType->getRank() ||
             op.getStrides().size() != resultType->getRank()) {
