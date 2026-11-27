@@ -240,6 +240,12 @@ if(ASCEND_CCEC_EXECUTABLE AND ASCEND_LLVM_LINK_EXECUTABLE AND EXISTS "${_ASCEND_
       list(GET entry_parts 0 op_src)
       list(GET entry_parts 1 op_arch)
 
+      # gather_gm_to_l1 writes L1 directly; c310 does not mark custom-op L1
+      # outputs as tightly coupled, so it is c220-only.
+      if(family STREQUAL "c310" AND op_src STREQUAL "mem_ops/gather_gm_to_l1.cpp")
+        continue()
+      endif()
+
       # Include order matters: the RegBase headers must win over the mem-based
       # Template headers on c310.
       set(_op_includes -I "${_ASCEND_TEMPLATE_INCLUDE}")
@@ -293,7 +299,11 @@ if(ASCEND_CCEC_EXECUTABLE AND ASCEND_LLVM_LINK_EXECUTABLE AND EXISTS "${_ASCEND_
     if(family STREQUAL "c310")
       set(_family_templates
         "lib/RegBase/Vector/Sort1D.cpp"
-        "lib/RegBase/Vector/Copy1D.cpp")
+        "lib/RegBase/Vector/Copy1D.cpp"
+        "lib/RegBase/Vector/VecOpI64.cpp"
+        # The mem-based arange_1d / scalar-eltwise helpers cannot build for
+        # c310; provide the two symbols sort_base.h needs.
+        "${ASCEND_CUSTOM_OPS_DIR}/sort_ops/regbase_compat.cpp")
       set(_template_includes
         -I "${_ASCEND_TEMPLATE_ROOT}/lib/RegBase/Vector/include"
         -I "${_ASCEND_TEMPLATE_INCLUDE}")
@@ -308,6 +318,11 @@ if(ASCEND_CCEC_EXECUTABLE AND ASCEND_LLVM_LINK_EXECUTABLE AND EXISTS "${_ASCEND_
 
     set(TEMPLATE_BITCODES "")
     foreach(template_src IN LISTS _family_templates)
+      if(IS_ABSOLUTE "${template_src}")
+        set(_template_src "${template_src}")
+      else()
+        set(_template_src "${_ASCEND_TEMPLATE_ROOT}/${template_src}")
+      endif()
       get_filename_component(name_we "${template_src}" NAME_WE)
       set(template_bc "${ASCEND_CUSTOM_OPS_BC_DIR}/${family}/template_${name_we}.bc")
       set(template_mix_bc "${ASCEND_CUSTOM_OPS_BC_DIR}/${family}/template_${name_we}.mix.bc")
@@ -317,9 +332,9 @@ if(ASCEND_CCEC_EXECUTABLE AND ASCEND_LLVM_LINK_EXECUTABLE AND EXISTS "${_ASCEND_
         COMMAND "${ASCEND_CCEC_EXECUTABLE}" ${_family_flags}
           --cce-aicore-arch=dav-${family}-vec
           ${_template_includes}
-          "${_ASCEND_TEMPLATE_ROOT}/${template_src}"
+          "${_template_src}"
           -emit-llvm -c -o "${template_bc}"
-        DEPENDS "${_ASCEND_TEMPLATE_ROOT}/${template_src}"
+        DEPENDS "${_template_src}"
         COMMENT "ccec ${family} Template ${template_src}"
         VERBATIM)
       add_custom_command(
@@ -328,9 +343,9 @@ if(ASCEND_CCEC_EXECUTABLE AND ASCEND_LLVM_LINK_EXECUTABLE AND EXISTS "${_ASCEND_
           --cce-aicore-arch=dav-${family}-vec
           -cce-enable-mix -mllvm -enable-mix=true
           ${_template_includes}
-          "${_ASCEND_TEMPLATE_ROOT}/${template_src}"
+          "${_template_src}"
           -emit-llvm -c -o "${template_mix_bc}"
-        DEPENDS "${_ASCEND_TEMPLATE_ROOT}/${template_src}"
+        DEPENDS "${_template_src}"
         COMMENT "ccec ${family} Template ${template_src} (mix)"
         VERBATIM)
     endforeach()

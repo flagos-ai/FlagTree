@@ -16,6 +16,51 @@
 #define TLE_PIPE_BARRIER_V() INTRINSIC(pipe_barrier, PIPE_V)
 #endif
 
+// The sort instructions only sort descending. Ascending order is obtained by
+// flipping the float sign bit (x -> -x bit pattern), sorting descending and
+// flipping the proposal value slots back afterwards.
+static __aiv__ __attribute__((always_inline)) void
+flip_values_inplace(memref_t<__ubuf__ float, 1> *values, int64_t count) {
+  memref_t<__ubuf__ int32_t, 1> values_s32;
+  view_as<float, int32_t, 1>(values, &values_s32);
+  auto *bits = values_s32.aligned + values_s32.offset;
+  INTRINSIC(pipe_barrier, PIPE_ALL);
+  for (int64_t i = 0; i < count; ++i) {
+    bits[i] =
+        static_cast<int32_t>(static_cast<uint32_t>(bits[i]) ^ 0x80000000u);
+  }
+  INTRINSIC(pipe_barrier, PIPE_ALL);
+}
+
+// Prepare an ascending sort input in place: pad with the ascending sentinel and
+// flip the value bit patterns so the descending-only sort yields ascending
+// order.
+static __aiv__ __attribute__((always_inline)) void
+prepare_asc_value_inplace(memref_t<__ubuf__ float, 1> *values, int64_t real_num,
+                          int64_t sort_num) {
+  auto *ptr = values->aligned + values->offset;
+  for (int64_t i = real_num; i < sort_num; ++i) {
+    ptr[i] = static_cast<float>(FLOAT_NAN);
+  }
+  flip_values_inplace(values, sort_num);
+}
+
+// Undo the bit flip on the packed proposal value slots; index slots (odd) are
+// stored as integers and must not be touched.
+static __aiv__ __attribute__((always_inline)) void
+unflip_ascending_proposals(memref_t<__ubuf__ float, 1> *dst, int64_t topk) {
+  memref_t<__ubuf__ int32_t, 1> dst_s32;
+  view_as<float, int32_t, 1>(dst, &dst_s32);
+  auto *bits = dst_s32.aligned + dst_s32.offset;
+  INTRINSIC(pipe_barrier, PIPE_ALL);
+  for (int64_t i = 0; i < topk; ++i) {
+    const int64_t slot = i * 2;
+    bits[slot] =
+        static_cast<int32_t>(static_cast<uint32_t>(bits[slot]) ^ 0x80000000u);
+  }
+  INTRINSIC(pipe_barrier, PIPE_ALL);
+}
+
 // Exhaustion mode: config[12] = isAllStored = 1
 constexpr uint64_t VMRG4_EXHAUST_BIT = (uint64_t)1 << 12;
 
@@ -90,7 +135,9 @@ __simd_vf__ inline void unpack_proposals_c310(__ubuf__ float *src,
     AscendC::Reg::LoadAlign(idx_src0, src_u32 + base);
     AscendC::Reg::LoadAlign(idx_src1, src_u32 + base + elems);
     AscendC::Reg::DeInterleave(idx0, idx1, idx_src0, idx_src1);
-    AscendC::Reg::StoreAlign(dst_index_u32 + i, idx0, mask);
+    // vdintlv puts the even (value) lanes in dst0 and the odd (index) lanes in
+    // dst1, so the decoded indices come from idx1.
+    AscendC::Reg::StoreAlign(dst_index_u32 + i, idx1, mask);
   }
 }
 #endif

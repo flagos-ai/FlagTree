@@ -1,4 +1,5 @@
 # Copyright 2026- Xcoresigma Technology Co., Ltd
+import functools
 from pathlib import Path
 
 import triton.language as tl
@@ -29,6 +30,48 @@ def custom_ops_arch_family() -> str:
     return "c220"
 
 
+def _check_arch_supported(op_class):
+    supported = getattr(op_class, "supported_arches", None)
+    if not supported:
+        return
+    arch = custom_ops_arch_family()
+    if arch in supported:
+        return
+    name = getattr(op_class, "name", op_class.__name__)
+    reason = getattr(op_class, "unsupported_arch_reasons", {}).get(arch)
+    detail = f": {reason}" if reason else "."
+    raise NotImplementedError(f"custom op '{name}' does not support architecture family '{arch}' "
+                              f"(supported: {', '.join(sorted(supported))}){detail}")
+
+
+def supports_arches(*arches, reasons=None):
+    """Declare the ccec arch families a custom op is built for.
+
+    The active family is resolved when the op is instantiated (that is, when
+    the kernel is compiled), so the check uses the same target as the bitcode.
+    """
+    supported = tuple(arches)
+    assert supported and all(isinstance(arch, str) and arch
+                             for arch in supported), ("'supports_arches' requires non-empty string arch family names")
+    assert reasons is None or isinstance(reasons, dict), "'reasons' must be a dict"
+
+    def decorate(op_class):
+        op_class.supported_arches = supported
+        if reasons is not None:
+            op_class.unsupported_arch_reasons = dict(reasons)
+        original_init = op_class.__init__
+
+        @functools.wraps(original_init)
+        def __init__(self, *args, **kwargs):
+            _check_arch_supported(op_class)
+            original_init(self, *args, **kwargs)
+
+        op_class.__init__ = __init__
+        return op_class
+
+    return decorate
+
+
 def custom_ops_bitcode() -> str:
     """Resolve the custom-op bitcode for the active arch family."""
     return str((_CUSTOM_OPS_DIR / f"custom_ops.{custom_ops_arch_family()}.bc").resolve())
@@ -54,6 +97,7 @@ def _gather_dtype_suffix(value, op_name):
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class duplicate_bitwise_mask:
     """
     /*
@@ -95,6 +139,14 @@ class duplicate_bitwise_mask:
 
 
 @al.register_custom_op
+@supports_arches(
+    "c220",
+    reasons={
+        "c310":
+        "custom-op-written L1 tiles are not marked tightly coupled, so "
+        "the AIC/AIV split leaves tl.dot reading uninitialized L1",
+    },
+)
 class gather_gm_to_l1:
     """
     /*
@@ -138,6 +190,7 @@ class gather_gm_to_l1:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class gather_gm_to_ub:
     """
     /*
@@ -182,6 +235,7 @@ class gather_gm_to_ub:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class gather_mask_builtin_pattern:
     """
     /*
@@ -239,6 +293,7 @@ class gather_mask_builtin_pattern:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class gather_mask_custom_pattern:
     """
     /*
@@ -304,6 +359,7 @@ class gather_mask_custom_pattern:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class pair_reduce_sum_continuous_mask:
     """
     /*
@@ -343,6 +399,7 @@ class pair_reduce_sum_continuous_mask:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class sort32:
     """
     /*
@@ -374,6 +431,7 @@ class sort32:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class sort_1d_pack:
     """
     /*
@@ -416,6 +474,7 @@ class sort_1d_pack:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class merge_exhaust_sort4:
     """
     /*
@@ -470,6 +529,7 @@ class merge_exhaust_sort4:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class mrgsort:
     """
     /*
@@ -508,6 +568,7 @@ class mrgsort:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class unpack_sort:
     """
     /*
@@ -570,6 +631,7 @@ def _check_mask_buffer(mask, size, op_name):
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class compare_scalar:
     """Packed scalar comparison of contiguous FP16/FP32 UB values.
 
@@ -612,6 +674,7 @@ class compare_scalar:
 
 
 @al.register_custom_op
+@supports_arches("c220", "c310")
 class cast_int4_to_fp16:
     """Unpack signed INT4 values from a 1D uint8 UB tensor into FP16.
 

@@ -21,7 +21,6 @@ import numpy as np
 import torch
 import torch_npu
 import triton
-import triton.experimental.tle as tle
 import triton.experimental.tle.language.raw as tle_raw
 import triton.language as tl
 from triton.experimental.tle.language.dsa.ascend.custom_ops import (
@@ -42,22 +41,16 @@ SMALLK_SORT_WAYS = 4
 
 
 @triton.jit
-def duplicate_bitwise_mask_kernel(src, dst):
-    ONE_REPEAT_SORT_NUM: tl.constexpr = 32
-    DEFAULT_BLOCK_SIZE: tl.constexpr = 256
-    BUFFER_SIZE: tl.constexpr = DEFAULT_BLOCK_SIZE // 4
-    NUM_GROUPS: tl.constexpr = 8
-    src_offs = tl.arange(0, NUM_GROUPS)
+def duplicate_bitwise_mask_kernel(dst, MASK0: tl.constexpr, SCALAR: tl.constexpr, INIT: tl.constexpr,
+                                  DTYPE: tl.constexpr):
+    BUFFER_SIZE: tl.constexpr = 32
     dst_offs = tl.arange(0, BUFFER_SIZE)
-    src_ub = tle.dsa.alloc([BUFFER_SIZE], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
-    tle.dsa.copy(src + src_offs, tle.dsa.subview(src_ub, offsets=[0], sizes=[NUM_GROUPS], strides=[1]), [NUM_GROUPS])
-    src_tensor = tle.dsa.to_tensor(src_ub, writable=True)
-    neg_inf = tl.full([1], float("-inf"), dtype=tl.float32)
     mask = tl.zeros([2], dtype=tl.int64)
-    mask = tl.where(tl.arange(0, 2) == 0, (-1) << NUM_GROUPS, mask)
-    src_tensor = tle_raw.call("ascend_duplicate_bitwise_mask", neg_inf, mask, 1, 1, 8, out=src_tensor)
-    #out_tensor = tle.dsa.to_tensor(tle.dsa.subview(src_ub, offsets=[0], sizes=[ONE_REPEAT_SORT_NUM], strides=[1]))
-    tl.store(dst + dst_offs, src_tensor, mask=dst_offs < ONE_REPEAT_SORT_NUM)
+    mask = tl.where(tl.arange(0, 2) == 0, MASK0, mask)
+    out = tl.full([BUFFER_SIZE], INIT, dtype=DTYPE)
+    tl.debug_barrier()
+    out = tle_raw.call("ascend_duplicate_bitwise_mask", tl.full([1], SCALAR, dtype=DTYPE), mask, 1, 1, 8, out=out)
+    tl.store(dst + dst_offs, out)
 
 
 @triton.jit
@@ -171,8 +164,7 @@ def gather_mask_builtin_pattern_kernel(src, dst, rsvd_cnt):
     ONE_REPEAT_SORT_NUM: tl.constexpr = 32
     src_offs = tl.arange(0, ONE_REPEAT_SORT_NUM * 2)
     dst_offs = tl.arange(0, ONE_REPEAT_SORT_NUM)
-    src_ub = tle.dsa.alloc([ONE_REPEAT_SORT_NUM * 2], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
-    tle.dsa.copy(src + src_offs, src_ub, [ONE_REPEAT_SORT_NUM * 2])
+    src_t = tl.load(src + src_offs)
     # src1_pattern for indices
     src1_pattern = 2  # 10101010...101010
     reduce_mode = False
@@ -183,9 +175,8 @@ def gather_mask_builtin_pattern_kernel(src, dst, rsvd_cnt):
     src1_repeat_stride = 0
     out0 = tl.zeros([ONE_REPEAT_SORT_NUM], dtype=tl.float32)
     out1 = tl.zeros([1], dtype=tl.int64)
-    out0, out1 = tle_raw.call("ascend_gather_mask_builtin_pattern", tle.dsa.to_tensor(src_ub), src1_pattern,
-                              reduce_mode, mask, src0_block_stride, repeat_times, src0_repeat_stride,
-                              src1_repeat_stride, out=[out0, out1])
+    out0, out1 = tle_raw.call("ascend_gather_mask_builtin_pattern", src_t, src1_pattern, reduce_mode, mask,
+                              src0_block_stride, repeat_times, src0_repeat_stride, src1_repeat_stride, out=[out0, out1])
     tl.store(dst + dst_offs, out0)
     tl.store(rsvd_cnt + tl.arange(0, 1), out1)
 
@@ -196,8 +187,7 @@ def gather_mask_custom_pattern_kernel(src, dst, rsvd_cnt):
     NUM_GROUPS: tl.constexpr = 8
     src_offs = tl.arange(0, NUM_EXPERTS * 2)
     dst_offs = tl.arange(0, NUM_GROUPS * 2)
-    src_ub = tle.dsa.alloc([NUM_EXPERTS * 2], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
-    tle.dsa.copy(src + src_offs, src_ub, [NUM_EXPERTS * 2])
+    src_t = tl.load(src + src_offs)
     src1 = tl.zeros([2], dtype=tl.uint32)
     # src1_pattern for top2
     src1 = tl.where(tl.arange(0, 2) == 0, 5, src1)  # [0b0101, 0]
@@ -209,8 +199,8 @@ def gather_mask_custom_pattern_kernel(src, dst, rsvd_cnt):
     src1_repeat_stride = 0
     out0 = tl.zeros([NUM_GROUPS * 2], dtype=tl.float32)
     out1 = tl.zeros([1], dtype=tl.int64)
-    out0, out1 = tle_raw.call("ascend_gather_mask_custom_pattern", tle.dsa.to_tensor(src_ub), src1, reduce_mode, mask,
-                              src0_block_stride, repeat_times, src0_repeat_stride, src1_repeat_stride, out=[out0, out1])
+    out0, out1 = tle_raw.call("ascend_gather_mask_custom_pattern", src_t, src1, reduce_mode, mask, src0_block_stride,
+                              repeat_times, src0_repeat_stride, src1_repeat_stride, out=[out0, out1])
     tl.store(dst + dst_offs, out0)
     tl.store(rsvd_cnt + tl.arange(0, 1), out1)
 
@@ -220,11 +210,9 @@ def pair_reduce_sum_continuous_mask_kernel(src, dst):
     NUM_GROUPS: tl.constexpr = 8
     src_offs = tl.arange(0, NUM_GROUPS * 2)
     dst_offs = tl.arange(0, NUM_GROUPS)
-    src_ub = tle.dsa.alloc([NUM_GROUPS * 2], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
-    tle.dsa.copy(src + src_offs, src_ub, [NUM_GROUPS * 2])
+    src_t = tl.load(src + src_offs)
     out = tl.zeros([NUM_GROUPS], dtype=tl.float32)
-    out = tle_raw.call("ascend_pair_reduce_sum_continuous_mask", tle.dsa.to_tensor(src_ub), 1, NUM_GROUPS * 2, 1, 1, 1,
-                       out=out)
+    out = tle_raw.call("ascend_pair_reduce_sum_continuous_mask", src_t, 1, NUM_GROUPS * 2, 1, 1, 1, out=out)
     tl.store(dst + dst_offs, out)
 
 
@@ -235,28 +223,23 @@ def sort32_kernel(src0, src1, repeat_times: tl.constexpr, dst, BLOCK_SIZE: tl.co
 
     src_offs = tl.arange(0, BLOCK_SIZE)
     dst_offs = tl.arange(0, DST_SIZE)
-    src0_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
-    src1_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.uint32, mem_addr_space=tle.dsa.ascend.UB)
-    tle.dsa.copy(src0 + src_offs, src0_ub, [BLOCK_SIZE])
-    tle.dsa.copy(src1 + src_offs, src1_ub, [BLOCK_SIZE])
+    src0_t = tl.load(src0 + src_offs)
+    src1_t = tl.load(src1 + src_offs)
     pair = tl.zeros([DST_SIZE], dtype=tl.float32)
-    pair = tle_raw.call("ascend_sort32", tle.dsa.to_tensor(src0_ub), tle.dsa.to_tensor(src1_ub), repeat_times, out=pair)
+    pair = tle_raw.call("ascend_sort32", src0_t, src1_t, repeat_times, out=pair)
     tl.store(dst + dst_offs, pair)
 
 
 @triton.jit
 def sort_pack_kernel(X, OutGM, N: tl.constexpr, K: tl.constexpr, INDEX_OFFSET: tl.constexpr, SORT_IMPL: tl.constexpr,
-                     TMP_SIZE: tl.constexpr):
+                     TMP_SIZE: tl.constexpr, DESCENDING: tl.constexpr):
     """Single-segment sort_1d_pack: load N f32 values from GM into UB, sort,
     then write the K proposals (2K f32) back to OutGM."""
-    NP2: tl.constexpr = triton.next_power_of_2(N)
     KP2: tl.constexpr = triton.next_power_of_2(K * 2)
     tmp = tl.zeros([TMP_SIZE], dtype=tl.float32)
-    src_ub = tle.dsa.alloc([N], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
-    tle.dsa.copy(X + tl.arange(0, NP2), src_ub, [N])
+    src_t = tl.load(X + tl.arange(0, N))
     props = tl.zeros([KP2], dtype=tl.float32)
-    props = tle_raw.call("ascend_sort_1d_pack", tle.dsa.to_tensor(src_ub), tmp, True, K, INDEX_OFFSET, SORT_IMPL,
-                         out=props)
+    props = tle_raw.call("ascend_sort_1d_pack", src_t, tmp, DESCENDING, K, INDEX_OFFSET, SORT_IMPL, out=props)
     tl.store(OutGM + tl.arange(0, KP2), props)
 
 
@@ -267,49 +250,43 @@ def merge_exhaust_kernel(SrcGM, OutGM, ConsGM, WAY_CAP: tl.constexpr, WAYS: tl.c
     UB buffer at fixed offsets 0/1/2/3 * WAY_CAP; merge once, then write the
     safe prefix and the per-way consumed counts back to GM."""
     IN_LEN: tl.constexpr = 4 * WAY_CAP * 2
-    IN_P2: tl.constexpr = triton.next_power_of_2(IN_LEN)
     OUT_P2: tl.constexpr = triton.next_power_of_2(OUT_CAP * 2)
-    in_ub = tle.dsa.alloc([IN_LEN], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
+    in_t = tl.load(SrcGM + tl.arange(0, IN_LEN))
     out_t = tl.zeros([OUT_P2], dtype=tl.float32)
     cons = tl.zeros([4], dtype=tl.int32)
 
-    tle.dsa.copy(SrcGM + tl.arange(0, IN_P2), in_ub, [IN_LEN])
-    out_t, cons = tle_raw.call("ascend_merge_exhaust_sort4", tle.dsa.to_tensor(in_ub), WAYS, 0 * WAY_CAP, 1 * WAY_CAP,
-                               2 * WAY_CAP, 3 * WAY_CAP, L0, L1, L2, L3, out=[out_t, cons])
+    out_t, cons = tle_raw.call("ascend_merge_exhaust_sort4", in_t, WAYS, 0 * WAY_CAP, 1 * WAY_CAP, 2 * WAY_CAP,
+                               3 * WAY_CAP, L0, L1, L2, L3, out=[out_t, cons])
 
     tl.store(OutGM + tl.arange(0, OUT_P2), out_t)
     tl.store(ConsGM + tl.arange(0, 4), cons)
 
 
 @triton.jit
-def mrgsort_kernel(src, dst, TOP_K: tl.constexpr):
+def mrgsort_kernel(src, dst, L0: tl.constexpr, L1: tl.constexpr, L2: tl.constexpr, L3: tl.constexpr,
+                   OUT_K: tl.constexpr, VALID_BIT: tl.constexpr, IF_EXHAUSTED: tl.constexpr,
+                   REPEAT_TIMES: tl.constexpr):
     GROUP_SIZE: tl.constexpr = 32
     PROPOSALS_BYTES: tl.constexpr = 2
     BLOCK_SIZE: tl.constexpr = GROUP_SIZE * 4 * PROPOSALS_BYTES
-    IF_EXHAUSTED_SUSPENSION: tl.constexpr = 1
-    VALID_BIT: tl.constexpr = 15
-    REPEAT_TIMES: tl.constexpr = 1
 
     offs = tl.arange(0, BLOCK_SIZE)
-    src_ub = tle.dsa.alloc([BLOCK_SIZE], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
-    tle.dsa.copy(src + offs, src_ub, [BLOCK_SIZE])
+    src_t = tl.load(src + offs)
     pair = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
-    pair = tle_raw.call("ascend_mrgsort", tle.dsa.to_tensor(src_ub), 0, GROUP_SIZE, GROUP_SIZE * 2, GROUP_SIZE * 3,
-                        TOP_K, TOP_K, TOP_K, TOP_K, IF_EXHAUSTED_SUSPENSION, VALID_BIT, REPEAT_TIMES, out=pair)
-    tl.store(dst + offs, pair, mask=offs < TOP_K * 2)
+    pair = tle_raw.call("ascend_mrgsort", src_t, 0, GROUP_SIZE, GROUP_SIZE * 2, GROUP_SIZE * 3, L0, L1, L2, L3,
+                        IF_EXHAUSTED, VALID_BIT, REPEAT_TIMES, out=pair)
+    tl.store(dst + offs, pair, mask=offs < OUT_K * 2)
 
 
 @triton.jit
 def unpack_sort_kernel(SrcGM, Yv, Yi, K: tl.constexpr):
     """unpack_sort: split K proposals into two GM outputs, value (f32) and
     index (i32)."""
-    KP2: tl.constexpr = triton.next_power_of_2(K * 2)
-    s_ub = tle.dsa.alloc([K * 2], dtype=tl.float32, mem_addr_space=tle.dsa.ascend.UB)
     dval = tl.zeros([K], dtype=tl.float32)
     didx = tl.zeros([K], dtype=tl.int32)
     offs = tl.arange(0, K)
-    tle.dsa.copy(SrcGM + tl.arange(0, KP2), s_ub, [K * 2])
-    dval, didx = tle_raw.call("ascend_unpack_sort", tle.dsa.to_tensor(s_ub), K, out=[dval, didx])
+    src_t = tl.load(SrcGM + tl.arange(0, K * 2))
+    dval, didx = tle_raw.call("ascend_unpack_sort", src_t, K, out=[dval, didx])
     tl.store(Yv + offs, dval)
     tl.store(Yi + offs, didx)
 
@@ -430,11 +407,12 @@ def test_gather_gm_to_l1(torch_dtype, tol):
     print(f"[PASS] gather_gm_to_l1 dot correctness ({torch_dtype})")
 
 
-def test_gather_gm_to_ub(torch_dtype):
+def _run_gather_ub_case(torch_dtype, index, d, label):
     torch.manual_seed(0)
-    src = torch.randn((NUM_ROWS, D), dtype=torch_dtype, device=DEVICE)
-    output = torch.empty((TILE_SIZE, D), dtype=torch_dtype, device=DEVICE)
-    src_index = torch.tensor(UB_INDEX, dtype=torch.int32, device=DEVICE)
+    tile = len(index)
+    src = torch.randn((NUM_ROWS, d), dtype=torch_dtype, device=DEVICE)
+    output = torch.empty((tile, d), dtype=torch_dtype, device=DEVICE)
+    src_index = torch.tensor(index, dtype=torch.int32, device=DEVICE)
 
     try:
         gather_gm_to_ub_store_kernel[(1, )](
@@ -442,8 +420,8 @@ def test_gather_gm_to_ub(torch_dtype):
             src_index,
             output,
             NUM_ROWS=NUM_ROWS,
-            TILE_SIZE=TILE_SIZE,
-            D=D,
+            TILE_SIZE=tile,
+            D=d,
             DTYPE=_TL_DTYPE[torch_dtype],
             **_legacy_mix_cv_kwargs(),
         )
@@ -454,7 +432,15 @@ def test_gather_gm_to_ub(torch_dtype):
 
     expected = src[src_index.long(), :]
     torch.testing.assert_close(output.cpu(), expected.cpu(), rtol=0, atol=0)
-    print(f"[PASS] gather_gm_to_ub store correctness ({torch_dtype})")
+    print(f"[PASS] gather_gm_to_ub {label} ({torch_dtype}, tile={tile}, D={d})")
+
+
+def test_gather_gm_to_ub(torch_dtype):
+    _run_gather_ub_case(torch_dtype, UB_INDEX, D, "permutation")
+    _run_gather_ub_case(torch_dtype, [0] * 4 + [NUM_ROWS - 1] * 4 + [15] * 4 + [16] * 4, D, "repeated/boundary")
+    _run_gather_ub_case(torch_dtype, list(range(TILE_SIZE))[::-1], D, "reversed")
+    _run_gather_ub_case(torch_dtype, [7, 0, 31, 16, 3, 20, 10, 1], D, "tile=8")
+    _run_gather_ub_case(torch_dtype, [31, 0, 15, 16, 8, 24, 4, 12, 30, 1, 14, 17, 9, 25, 5, 13], 32, "D=32")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -462,9 +448,19 @@ def test_gather_gm_to_ub(torch_dtype):
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def _run_sort_case(n, k, index_offset, sort_impl, label):
+def _make_sort_input(n, kind):
+    if kind == "uniform":
+        return torch.rand((n, ), dtype=torch.float32, device=DEVICE)
+    if kind == "negative":
+        return torch.empty((n, ), dtype=torch.float32, device=DEVICE).uniform_(-1.0, 1.0)
+    if kind == "duplicate":
+        return (torch.randint(0, 8, (n, ), dtype=torch.int32, device=DEVICE).float() - 4.0) / 4.0
+    raise ValueError(f"unknown sort input kind: {kind}")
+
+
+def _run_sort_case(n, k, index_offset, sort_impl, label, descending=True, kind="uniform"):
     torch.manual_seed(0)
-    x = torch.rand((n, ), dtype=torch.float32, device=DEVICE)
+    x = _make_sort_input(n, kind)
     out = torch.zeros((triton.next_power_of_2(k * 2), ), dtype=torch.float32, device=DEVICE)
 
     sort_pack_kernel[(1, )](
@@ -475,32 +471,100 @@ def _run_sort_case(n, k, index_offset, sort_impl, label):
         INDEX_OFFSET=index_offset,
         SORT_IMPL=sort_impl,
         TMP_SIZE=_sort_tmp_size(n, k, sort_impl),
+        DESCENDING=descending,
     )
     torch_npu.npu.synchronize()
 
     values, indices = _decode_props(out.cpu().numpy()[:k * 2])
     x_np = x.cpu().numpy()
-    ref = np.sort(x_np)[::-1][:k]
+    ref = np.sort(x_np)
+    if descending:
+        ref = ref[::-1]
+    ref = ref[:k]
+    order = "descending" if descending else "ascending"
 
     assert indices.min() >= index_offset and indices.max() < index_offset + n, (
         f"{label}: index out of range [{indices.min()}, {indices.max()}]")
     np.testing.assert_allclose(values, ref, rtol=1e-5, atol=1e-5,
-                               err_msg=f"{label}: values are not the descending top-{k}")
+                               err_msg=f"{label}: values are not the {order} top-{k}")
     np.testing.assert_allclose(x_np[indices.astype(np.int64) - index_offset], values, rtol=1e-5, atol=1e-5,
                                err_msg=f"{label}: index does not match value")
-    print(f"[PASS] sort_1d_pack {label} (N={n}, K={k}, offset={index_offset})")
+    print(f"[PASS] sort_1d_pack {label} (N={n}, K={k}, offset={index_offset}, {order}, {kind})")
 
 
 def test_sort_1d_pack():
-    # BASE generic path + a non-zero index_offset case
     _run_sort_case(2048, 100, 0, SORT_IMPL_BASE, "BASE")
     _run_sort_case(2048, 100, 500, SORT_IMPL_BASE, "BASE index_offset")
-    # 4x1024 small-K path: 4096 inputs, 128 < K <= 512
+    _run_sort_case(2048, 100, 0, SORT_IMPL_BASE, "BASE ascending", descending=False)
+    _run_sort_case(2048, 100, 500, SORT_IMPL_BASE, "BASE ascending index_offset", descending=False)
+    _run_sort_case(2048, 100, 0, SORT_IMPL_BASE, "BASE negative", kind="negative")
+    _run_sort_case(2048, 100, 0, SORT_IMPL_BASE, "BASE negative ascending", descending=False, kind="negative")
+    _run_sort_case(2048, 100, 0, SORT_IMPL_BASE, "BASE duplicate", kind="duplicate")
+    _run_sort_case(2048, 100, 0, SORT_IMPL_BASE, "BASE duplicate ascending", descending=False, kind="duplicate")
+    _run_sort_case(2048, 1, 0, SORT_IMPL_BASE, "BASE K=1")
+    _run_sort_case(2048, 2048, 0, SORT_IMPL_BASE, "BASE K=N")
+    _run_sort_case(4096, 129, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 K=129")
     _run_sort_case(4096, 256, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512")
-    # Layered path: 4096 inputs; K <= 128 can early-stop, K == 2048 uses the
-    # fixed merge tree
+    _run_sort_case(4096, 256, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 ascending", descending=False)
+    _run_sort_case(4096, 256, 1000, SORT_IMPL_S4096_K129_512, "S4096_K129_512 index_offset")
+    _run_sort_case(4096, 256, 1000, SORT_IMPL_S4096_K129_512, "S4096_K129_512 ascending index_offset", descending=False)
+    _run_sort_case(4096, 256, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 negative", kind="negative")
+    _run_sort_case(4096, 256, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 negative ascending", descending=False,
+                   kind="negative")
+    _run_sort_case(4096, 256, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 duplicate", kind="duplicate")
+    _run_sort_case(4096, 256, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 duplicate ascending", descending=False,
+                   kind="duplicate")
+    _run_sort_case(4096, 512, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 K=512")
+    _run_sort_case(4096, 1, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 K=1")
+    _run_sort_case(4096, 32, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 ascending K=32", descending=False)
     _run_sort_case(4096, 64, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 early-stop")
+    _run_sort_case(4096, 64, 1000, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 index_offset")
+    _run_sort_case(4096, 64, 1000, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 ascending index_offset",
+                   descending=False)
+    _run_sort_case(4096, 64, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 negative", kind="negative")
+    _run_sort_case(4096, 64, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 negative ascending", descending=False,
+                   kind="negative")
+    _run_sort_case(4096, 64, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 duplicate", kind="duplicate")
+    _run_sort_case(4096, 64, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 duplicate ascending",
+                   descending=False, kind="duplicate")
+    _run_sort_case(4096, 128, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 early-stop K=128")
+    _run_sort_case(4096, 128, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 ascending K=128", descending=False)
+    _run_sort_case(4096, 512, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 ascending K=512", descending=False)
     _run_sort_case(4096, 2048, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 fixed-tree")
+    _run_sort_case(4096, 2048, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 ascending K=2048", descending=False)
+
+
+def test_sort_repeatability():
+    cases = [
+        (2048, 100, 0, SORT_IMPL_BASE, True),
+        (2048, 100, 0, SORT_IMPL_BASE, False),
+        (4096, 256, 0, SORT_IMPL_S4096_K129_512, True),
+        (4096, 256, 0, SORT_IMPL_S4096_K129_512, False),
+        (4096, 64, 0, SORT_IMPL_S4096_K1_128_K2048, True),
+        (4096, 64, 0, SORT_IMPL_S4096_K1_128_K2048, False),
+    ]
+    for n, k, index_offset, sort_impl, descending in cases:
+        torch.manual_seed(0)
+        base = torch.rand((n, ), dtype=torch.float32, device=DEVICE)
+        outs = []
+        for _ in range(3):
+            x = base.clone()
+            out = torch.zeros((triton.next_power_of_2(k * 2), ), dtype=torch.float32, device=DEVICE)
+            sort_pack_kernel[(1, )](
+                x,
+                out,
+                N=n,
+                K=k,
+                INDEX_OFFSET=index_offset,
+                SORT_IMPL=sort_impl,
+                TMP_SIZE=_sort_tmp_size(n, k, sort_impl),
+                DESCENDING=descending,
+            )
+            torch_npu.npu.synchronize()
+            outs.append(out.cpu().numpy())
+        for out in outs[1:]:
+            np.testing.assert_array_equal(outs[0], out)
+        print(f"[PASS] sort_1d_pack repeatability (N={n}, K={k}, impl={sort_impl}, desc={descending})")
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -508,22 +572,25 @@ def test_sort_1d_pack():
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def _make_way(rng, length, tag):
-    """Generate one descending proposal way: globally unique values with a
-    one-to-one value/index mapping."""
-    values = np.sort(rng.random(length))[::-1].astype(np.float32)
+def _make_way(rng, length, tag, ties=False):
+    """Generate one descending proposal way: a one-to-one value/index mapping."""
+    if ties:
+        values = (rng.integers(0, 8, size=length).astype(np.float32) - 4.0) / 4.0
+        values = np.sort(values)[::-1]
+    else:
+        values = np.sort(rng.random(length))[::-1].astype(np.float32)
     indices = np.arange(length, dtype=np.int32) + tag * 100000
     return list(zip(values.tolist(), indices.astype(np.int64).tolist()))
 
 
-def _run_merge_case(lengths, label, seed=0):
+def _run_merge_case(lengths, label, seed=0, ties=False):
     rng = np.random.default_rng(seed)
     way_cap = max(lengths)
     src = np.zeros(4 * way_cap * 2, dtype=np.float32)
     ways = []
     for tag, ln in enumerate(lengths):
         if ln > 0:
-            way = _make_way(rng, ln, tag)
+            way = _make_way(rng, ln, tag, ties=ties)
             ways.append((tag, way))
             src[tag * way_cap * 2:tag * way_cap * 2 + ln * 2] = _encode_props(*zip(*way))
 
@@ -548,6 +615,7 @@ def _run_merge_case(lengths, label, seed=0):
     cons = cons_gm.cpu().numpy()
     total = int(cons[:len(lengths)].sum())
     assert total > 0, f"{label}: merge produced no output"
+    assert total <= sum(lengths), f"{label}: consumed more proposals than available"
     for tag, ln in enumerate(lengths):
         assert 0 <= cons[tag] <= ln, (f"{label}: way{tag} consumed count {cons[tag]} exceeds length {ln}")
 
@@ -555,14 +623,18 @@ def _run_merge_case(lengths, label, seed=0):
     assert np.all(out_v[:-1] >= out_v[1:]), f"{label}: output prefix is not descending"
 
     out_pairs = list(zip(out_v.tolist(), out_i.tolist()))
-    full_merge = sorted((p for _, way in ways for p in way), key=lambda p: -p[0])
-    assert out_pairs == full_merge[:total], (f"{label}: output is not a safe prefix of the full merge")
-
-    value_to_way = {p[0]: tag for tag, way in ways for p in way}
-    for tag, way in ways:
-        used = [p for p in out_pairs if value_to_way[p[0]] == tag]
-        assert used == way[:cons[tag]], (
-            f"{label}: way{tag} proposals actually consumed do not match the reported consumed count")
+    all_pairs = [p for _, way in ways for p in way]
+    full_merge = sorted(all_pairs, key=lambda p: -p[0])
+    if ties:
+        ref_values = np.array([p[0] for p in full_merge[:total]], dtype=np.float32)
+        np.testing.assert_array_equal(out_v, ref_values)
+    else:
+        assert out_pairs == full_merge[:total], (f"{label}: output is not a safe prefix of the full merge")
+        value_to_way = {p[0]: tag for tag, way in ways for p in way}
+        for tag, way in ways:
+            used = [p for p in out_pairs if value_to_way[p[0]] == tag]
+            assert used == way[:cons[tag]], (
+                f"{label}: way{tag} proposals actually consumed do not match the reported consumed count")
     print(f"[PASS] merge_exhaust_sort4 {label} "
           f"(lens={lengths}, consumed={cons[:len(lengths)].tolist()}, total={total})")
 
@@ -571,6 +643,13 @@ def test_merge_exhaust_sort4():
     _run_merge_case((64, 64, 64, 64), "4-way")
     _run_merge_case((64, 64, 0, 0), "2-way")
     _run_merge_case((64, 0, 64, 32), "3-way with hole")
+    _run_merge_case((64, 0, 0, 0), "1-way")
+    _run_merge_case((0, 64, 0, 0), "1-way middle")
+    _run_merge_case((32, 16, 8, 4), "asymmetric")
+    _run_merge_case((7, 3, 0, 1), "small asymmetric with hole")
+    _run_merge_case((1, 0, 0, 0), "single proposal")
+    _run_merge_case((64, 64, 64, 64), "4-way ties", ties=True)
+    _run_merge_case((32, 16, 8, 4), "asymmetric ties", ties=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -596,33 +675,39 @@ def test_unpack_sort():
 
 
 def test_sort32():
-    torch.manual_seed(0)
-    n_experts = 256
-    n_groups = 256 // 32
-    val = torch.rand([n_experts], dtype=torch.float32, device=DEVICE)
-    idx = torch.arange(0, n_experts, dtype=torch.int32, device=DEVICE).view(torch.uint32)
-    out = torch.zeros([n_experts * 2], dtype=torch.float32, device=DEVICE)
+    for repeat_times in (1, 2, 8, 16):
+        torch.manual_seed(0)
+        n_experts = 32 * repeat_times
+        n_groups = repeat_times
+        val = torch.rand([n_experts], dtype=torch.float32, device=DEVICE)
+        idx = torch.arange(0, n_experts, dtype=torch.int32, device=DEVICE).view(torch.uint32)
+        out = torch.zeros([n_experts * 2], dtype=torch.float32, device=DEVICE)
 
-    sort32_kernel[(1, )](val, idx, n_groups, out, BLOCK_SIZE=n_experts)
-    torch_npu.npu.synchronize()
+        sort32_kernel[(1, )](val, idx, n_groups, out, BLOCK_SIZE=n_experts)
+        torch_npu.npu.synchronize()
 
-    out_v, out_i = _decode_props(out.cpu().numpy()[:n_experts * 2])
-    val_2d = val.cpu().numpy().reshape(n_groups, 32)
-    idx_2d = idx.cpu().numpy().reshape(n_groups, 32)
-    local_idx_2d = np.argsort(-val_2d, axis=1, kind="stable")
-    global_val = np.take_along_axis(val_2d, local_idx_2d, axis=1).reshape(n_experts)
-    global_idx = np.take_along_axis(idx_2d, local_idx_2d, axis=1).reshape(n_experts)
+        out_v, out_i = _decode_props(out.cpu().numpy()[:n_experts * 2])
+        val_2d = val.cpu().numpy().reshape(n_groups, 32)
+        idx_2d = idx.cpu().numpy().reshape(n_groups, 32)
+        local_idx_2d = np.argsort(-val_2d, axis=1, kind="stable")
+        global_val = np.take_along_axis(val_2d, local_idx_2d, axis=1).reshape(n_experts)
+        global_idx = np.take_along_axis(idx_2d, local_idx_2d, axis=1).reshape(n_experts)
 
-    np.testing.assert_array_equal(global_val, out_v, err_msg="sort32 values mismatch")
-    np.testing.assert_array_equal(global_idx, out_i, err_msg="sort32 indices mismatch")
-    print("[PASS] sort32 correctness")
+        np.testing.assert_array_equal(global_val, out_v, err_msg=f"sort32 values mismatch (repeat={repeat_times})")
+        np.testing.assert_array_equal(global_idx, out_i, err_msg=f"sort32 indices mismatch (repeat={repeat_times})")
+        print(f"[PASS] sort32 correctness (repeat_times={repeat_times})")
 
 
-def test_mrgsort():
+def _run_mrgsort_case(lengths, top_k, label, if_exhausted=1, repeat_times=1):
+    num_valid = sum(1 for ln in lengths if ln > 0)
+    assert all(ln > 0 for ln in lengths[:num_valid]) and all(
+        ln == 0 for ln in lengths[num_valid:]), (f"{label}: mrgsort valid ways must be a prefix, got {lengths}")
+    valid_mask = (1 << num_valid) - 1
+    assert valid_mask in (3, 7, 15), f"{label}: mrgsort supports 2-4 valid ways, got {num_valid}"
+
     torch.manual_seed(0)
     n_experts = 128
     n_groups = 4
-    top_k = 8
 
     val = torch.rand([n_experts], dtype=torch.float32, device="cpu")
     idx = torch.arange(0, n_experts, dtype=torch.int32, device="cpu")
@@ -631,20 +716,43 @@ def test_mrgsort():
     local_idx_2d = np.argsort(-val_2d, axis=1, kind="stable")
     global_val = np.take_along_axis(val_2d, local_idx_2d, axis=1).reshape(n_experts)
     global_idx = np.take_along_axis(idx_2d, local_idx_2d, axis=1).reshape(n_experts)
-    pair = torch.from_numpy(_encode_props(global_val, global_idx)).to(DEVICE)
-    out = torch.zeros([top_k * 2], dtype=torch.float32, device=DEVICE)
 
-    mrgsort_kernel[(1, )](pair, out, TOP_K=top_k)
+    pair = np.zeros(4 * 32 * 2, dtype=np.float32)
+    prefix_val = []
+    prefix_idx = []
+    for tag, ln in enumerate(lengths):
+        if ln > 0:
+            gv = global_val[tag * 32:tag * 32 + ln]
+            gi = global_idx[tag * 32:tag * 32 + ln]
+            pair[tag * 32 * 2:tag * 32 * 2 + ln * 2] = _encode_props(gv, gi)
+            prefix_val.append(gv)
+            prefix_idx.append(gi)
+
+    out_k = min(top_k, sum(lengths))
+    out = torch.zeros([out_k * 2], dtype=torch.float32, device=DEVICE)
+
+    mrgsort_kernel[(1, )](torch.from_numpy(pair).to(DEVICE), out, L0=lengths[0], L1=lengths[1], L2=lengths[2],
+                          L3=lengths[3], OUT_K=out_k, VALID_BIT=valid_mask, IF_EXHAUSTED=if_exhausted,
+                          REPEAT_TIMES=repeat_times)
     torch_npu.npu.synchronize()
 
-    out_v, out_i = _decode_props(out.cpu().numpy()[:top_k * 2])
-    local_idx = np.argsort(-val.numpy(), axis=0, kind="stable")
-    ref_val = np.take_along_axis(val.numpy(), local_idx[:top_k], axis=0)
-    ref_idx = np.take_along_axis(idx.numpy(), local_idx[:top_k], axis=0)
+    out_v, out_i = _decode_props(out.cpu().numpy()[:out_k * 2])
+    ref_v = np.concatenate(prefix_val)
+    ref_i = np.concatenate(prefix_idx)
+    order = np.argsort(-ref_v, kind="stable")
 
-    np.testing.assert_array_equal(ref_val, out_v, err_msg="mrgsort values mismatch")
-    np.testing.assert_array_equal(ref_idx, out_i, err_msg="mrgsort indices mismatch")
-    print("[PASS] mrgsort correctness")
+    np.testing.assert_array_equal(ref_v[order[:out_k]], out_v, err_msg=f"mrgsort values mismatch ({label})")
+    np.testing.assert_array_equal(ref_i[order[:out_k]], out_i, err_msg=f"mrgsort indices mismatch ({label})")
+    print(f"[PASS] mrgsort correctness ({label})")
+
+
+def test_mrgsort():
+    for top_k in (1, 8, 16, 32):
+        _run_mrgsort_case((top_k, top_k, top_k, top_k), top_k, f"top_k={top_k}")
+    _run_mrgsort_case((32, 16, 8, 4), 32, "asymmetric", if_exhausted=0)
+    _run_mrgsort_case((32, 16, 8, 0), 32, "3-way", if_exhausted=0)
+    _run_mrgsort_case((32, 16, 0, 0), 32, "2-way", if_exhausted=0)
+    _run_mrgsort_case((1, 1, 1, 1), 4, "four maxima", if_exhausted=0)
 
 
 def test_gather_mask():
@@ -713,18 +821,78 @@ def test_pair_reduce_sum():
 
 def test_duplicate():
     ONE_REPEAT_SORT_NUM = 32
-    torch.manual_seed(0)
     n_groups = 8
-    top2_sum = torch.rand([n_groups], dtype=torch.float32, device=DEVICE)
-    out = torch.zeros([ONE_REPEAT_SORT_NUM], dtype=torch.float32, device=DEVICE)
+    sentinel = 7.0
+    fill = float("-inf")
 
-    duplicate_bitwise_mask_kernel[(1, )](top2_sum, out)
-    torch_npu.npu.synchronize()
+    for torch_dtype, tld in ((torch.float16, tl.float16), (torch.bfloat16, tl.bfloat16), (torch.float32, tl.float32)):
+        out = torch.zeros([ONE_REPEAT_SORT_NUM], dtype=torch_dtype, device=DEVICE)
 
-    top2_sum_pad = np.pad(top2_sum.cpu().numpy(), pad_width=(0, ONE_REPEAT_SORT_NUM - n_groups), mode='constant',
-                          constant_values=-np.inf)
-    np.testing.assert_array_equal(top2_sum_pad, out.cpu().numpy(), err_msg="duplicate_bitwise_mask dst mismatch")
-    print("[PASS] duplicate correctness")
+        duplicate_bitwise_mask_kernel[(1, )](out, MASK0=((1 << ONE_REPEAT_SORT_NUM) - 1) ^ ((1 << n_groups) - 1),
+                                             SCALAR=fill, INIT=sentinel, DTYPE=tld)
+        torch_npu.npu.synchronize()
+
+        expected = torch.cat([
+            torch.full((n_groups, ), sentinel, dtype=torch_dtype),
+            torch.full((ONE_REPEAT_SORT_NUM - n_groups, ), fill, dtype=torch_dtype),
+        ])
+        torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0,
+                                   msg=f"duplicate_bitwise_mask dst mismatch (tail fill, {torch_dtype})")
+
+        duplicate_bitwise_mask_kernel[(1, )](out, MASK0=(1 << n_groups) - 1, SCALAR=fill, INIT=sentinel, DTYPE=tld)
+        torch_npu.npu.synchronize()
+
+        expected = torch.cat([
+            torch.full((n_groups, ), fill, dtype=torch_dtype),
+            torch.full((ONE_REPEAT_SORT_NUM - n_groups, ), sentinel, dtype=torch_dtype),
+        ])
+        torch.testing.assert_close(out.cpu(), expected, rtol=0, atol=0,
+                                   msg=f"duplicate_bitwise_mask dst mismatch (head fill, {torch_dtype})")
+        print(f"[PASS] duplicate correctness ({torch_dtype})")
+
+
+def test_duplicate_repeatability():
+    for torch_dtype, tld in ((torch.float16, tl.float16), (torch.bfloat16, tl.bfloat16), (torch.float32, tl.float32)):
+        outs = []
+        for _ in range(4):
+            out = torch.zeros([32], dtype=torch_dtype, device=DEVICE)
+            duplicate_bitwise_mask_kernel[(1, )](out, MASK0=0xFFFFFF00, SCALAR=float("-inf"), INIT=7.0, DTYPE=tld)
+            torch_npu.npu.synchronize()
+            outs.append(out.cpu())
+        for out in outs[1:]:
+            assert torch.equal(outs[0], out), f"duplicate_bitwise_mask is not repeatable ({torch_dtype})"
+        print(f"[PASS] duplicate repeatability ({torch_dtype})")
+
+
+def test_arch_gating():
+    from triton.experimental.tle.language.dsa.ascend.custom_ops import registry as R
+
+    op_names = ("duplicate_bitwise_mask", "gather_gm_to_l1", "gather_gm_to_ub", "gather_mask_builtin_pattern",
+                "gather_mask_custom_pattern", "pair_reduce_sum_continuous_mask", "sort32", "sort_1d_pack",
+                "merge_exhaust_sort4", "mrgsort", "unpack_sort", "compare_scalar", "cast_int4_to_fp16")
+    for name in op_names:
+        arches = getattr(getattr(R, name), "supported_arches", None)
+        assert arches and all(isinstance(arch, str) and arch
+                              for arch in arches), (f"{name} does not declare supported_arches")
+
+    original = R.custom_ops_arch_family
+    try:
+        R.custom_ops_arch_family = lambda: "c310"
+        try:
+            R._check_arch_supported(R.gather_gm_to_l1)
+        except NotImplementedError as exc:
+            assert "gather_gm_to_l1" in str(exc) and "c310" in str(exc)
+        else:
+            raise AssertionError("gather_gm_to_l1 should be gated on c310")
+        for name in op_names:
+            if name != "gather_gm_to_l1":
+                R._check_arch_supported(getattr(R, name))
+
+        R.custom_ops_arch_family = lambda: "c220"
+        R._check_arch_supported(R.gather_gm_to_l1)
+    finally:
+        R.custom_ops_arch_family = original
+    print("[PASS] arch gating")
 
 
 def main():
@@ -756,6 +924,9 @@ def main():
     run("gather_mask", test_gather_mask)
     run("pair_reduce_sum", test_pair_reduce_sum)
     run("duplicate", test_duplicate)
+    run("sort_repeatability", test_sort_repeatability)
+    run("duplicate_repeatability", test_duplicate_repeatability)
+    run("arch_gating", test_arch_gating)
 
     if failures:
         print(f"\n{len(failures)} custom op test group(s) failed:")

@@ -81,6 +81,10 @@ if [[ "${ARCH_FAMILY}" == "c310" ]]; then
   TEMPLATE_SOURCES=(
     "${TEMPLATE_ROOT}/lib/RegBase/Vector/Sort1D.cpp"
     "${TEMPLATE_ROOT}/lib/RegBase/Vector/Copy1D.cpp"
+    "${TEMPLATE_ROOT}/lib/RegBase/Vector/VecOpI64.cpp"
+    # The mem-based arange_1d / scalar-eltwise helpers cannot build for c310;
+    # provide the two symbols sort_base.h needs.
+    "${SCRIPT_DIR}/sort_ops/regbase_compat.cpp"
   )
 else
   TEMPLATE_SOURCES=(
@@ -121,6 +125,12 @@ ALLOW_PARTIAL="${ALLOW_PARTIAL:-0}"
 for entry in "${CUSTOM_OPS[@]}"; do
   src="${entry%%:*}"
   arch="${entry##*:}"
+  # gather_gm_to_l1 writes L1 directly; c310 does not mark custom-op L1
+  # outputs as tightly coupled, so it is c220-only.
+  if [[ "${ARCH_FAMILY}" == "c310" && "${src}" == "mem_ops/gather_gm_to_l1.cpp" ]]; then
+    echo "== skip ${src} (c220-only)"
+    continue
+  fi
   if [[ ! -f "${SCRIPT_DIR}/${src}" ]]; then
     echo "error: custom-op source not found: ${SCRIPT_DIR}/${src}" >&2
     exit 1

@@ -167,8 +167,6 @@ sort_s4096_k129_512_impl(memref_t<__ubuf__ float, 1> *src,
                          memref_t<__ubuf__ float, 1> *tmp_buf, bool descending,
                          int64_t topk, int64_t index_offset,
                          memref_t<__ubuf__ float, 1> *dst_proposals) {
-  (void)descending;
-
   int64_t candidates_f32 = WAYS * topk * SMALLK_NPP;
   int64_t sort_tmp_f32 = CHUNK * SMALLK_NPP * 2;
   int64_t sort_tmp_base = tmp_buf->offset + candidates_f32;
@@ -177,6 +175,9 @@ sort_s4096_k129_512_impl(memref_t<__ubuf__ float, 1> *src,
   for (int64_t lane = 0; lane < WAYS; ++lane) {
     memref_t<__ubuf__ float, 1> src_chunk{
         src->aligned, src->allocated, src->offset + lane * CHUNK, {CHUNK}, {1}};
+    if (!descending) {
+      prepare_asc_value_inplace(&src_chunk, CHUNK, CHUNK);
+    }
     memref_t<__ubuf__ float, 1> sort_tmp{tmp_buf->aligned,
                                          tmp_buf->allocated,
                                          sort_tmp_base,
@@ -230,6 +231,9 @@ sort_s4096_k129_512_impl(memref_t<__ubuf__ float, 1> *src,
                                  {topk * SMALLK_NPP},
                                  {1}};
   vector_eltwise_vs_1d<VectorOpTy::VADDS, float>(&from, 0.0f, &to);
+  if (!descending) {
+    unflip_ascending_proposals(dst_proposals, topk);
+  }
 }
 
 } // extern "C"
