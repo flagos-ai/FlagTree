@@ -1,4 +1,4 @@
-"""Intra-node reduce-scatter with TMA reduction.
+"""Function-level autotuning for intra-node reduce-scatter with TMA reduction.
 
 Run from the repository root on one node with at least two GPUs:
 
@@ -11,14 +11,34 @@ M/N default to 2048/2048; DTYPE accepts bf16 or fp16 (default: bf16).
 NPROC_PER_NODE defaults to 4; use CUDA_VISIBLE_DEVICES to select GPUs.
 Requires SM90 or newer and matching FlagTree/FlagCX runtime and device bitcode.
 Set FLAGCX_IB_HCA to the interfaces on your machine when needed.
+
+The complete scatter -> device barrier -> TMA reduction is decorated with
+flagtree.tune.autotune. It jointly tunes both kernels' tiles and warp counts,
+plus scatter concurrency. All ranks call with autotune_pg=dist.group.WORLD
+so they benchmark the same candidates and minimize the maximum rank latency.
+An entry barrier makes repeated calls safe for buffer reuse.
+
+CONFIG_SPACE generates independent tile, warp and grid choices. prune_fn
+filters shapes, TMA alignment, resources and redundant grids, then compiles
+locally without launching. The distributed tuner intersects the surviving
+candidates before any rank executes communication kernels.
+
+The first decorated call tunes on a cache miss; a second call with changed
+data verifies cache reuse. Autotune owns result persistence, controlled by
+FLAGTREE_AUTOTUNE_CACHE_DIR. Local compile checks are memoized in the context;
+a new process still preflights candidates before consulting the tuning cache.
+TLE_CLEAR_L2 controls only the final TLE/Torch benchmark printed to stdout.
+That benchmark measures scatter -> device barrier -> TMA reduction without
+the entry barrier: each sample first synchronizes the local GPU and then
+all ranks, so the scratch buffer is safe to reuse. Autotuning, warmup and
+normal calls retain the entry barrier for consecutive invocations.
 """
 
-import json
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 import os
-import random
 import statistics
-from pathlib import Path
-from typing import Optional
 
 import torch
 import torch.distributed as dist
@@ -27,6 +47,8 @@ import triton
 import triton.language as tl
 import triton.runtime
 import triton.experimental.tle.language as tle
+
+from flagtree.tune import autotune, to_hashable
 
 
 @triton.jit
@@ -156,14 +178,16 @@ def device_barrier_kernel(
         group_kind="block",
         barrier_kind="sync",
         order="acqrel",
+        memory_scope="system",
         index=0,
+        context_id=0,
     )
 
 
 def _get_problem():
     """Parse input dimensions and dtype."""
-    M = int(os.environ.get("M", "2048"))
-    N = int(os.environ.get("N", "2048"))
+    M = int(os.environ.get("M", "8192"))
+    N = int(os.environ.get("N", "8192"))
     if M <= 0 or N <= 0:
         raise ValueError("M and N must be positive integers")
     dtype_name = os.environ.get("DTYPE", "bf16").strip().lower()
@@ -178,46 +202,30 @@ def _get_problem():
     return M, N, dtypes[dtype_name]
 
 
-def _kernel_config(
-    scatter_tile,
-    reduce_tile,
-    scatter_warps=4,
-    reduce_warps=4,
-    scatter_grid_factor=2,
-):
-    return {
-        "SCATTER_BLOCK_M": scatter_tile[0],
-        "SCATTER_BLOCK_N": scatter_tile[1],
-        "REDUCE_BLOCK_M": reduce_tile[0],
-        "REDUCE_BLOCK_N": reduce_tile[1],
+# Generate the search space independently; all workload-dependent and
+# search-budget constraints live in _prune_reduce_scatter_config.
+CONFIG_SPACE = [{
+    "config": {
+        "SCATTER_BLOCK_M": sm,
+        "SCATTER_BLOCK_N": sn,
+        "REDUCE_BLOCK_M": rm,
+        "REDUCE_BLOCK_N": rn,
         "scatter_num_warps": scatter_warps,
         "reduce_num_warps": reduce_warps,
-        "scatter_grid_factor": scatter_grid_factor,
+        "scatter_grid_factor": grid_factor,
     }
+}
+                for sm in (64, 128, 256)
+                for sn in (64, 128, 256)
+                for rm in (64, 128, 256)
+                for rn in (64, 128, 256)
+                for scatter_warps in (4, 8)
+                for reduce_warps in (4, 8)
+                for grid_factor in (1, 2, 4)]
 
-
-# Sample joint tile/warp configurations without an exhaustive Cartesian search.
-_BASE_KERNEL_CONFIGS = [
-    _kernel_config((64, 128), (64, 128)),
-    _kernel_config((64, 256), (64, 256)),
-    _kernel_config((64, 256), (128, 128)),
-    _kernel_config((128, 64), (128, 64)),
-    _kernel_config((128, 128), (128, 128)),
-    _kernel_config((128, 256), (128, 256)),
-    _kernel_config((128, 256), (128, 256), reduce_warps=8),
-    _kernel_config((64, 256), (256, 128)),
-    _kernel_config((128, 256), (256, 128)),
-    _kernel_config((128, 256), (256, 128), reduce_warps=8),
-    _kernel_config((256, 128), (256, 64)),
-    _kernel_config((256, 128), (256, 128)),
-    _kernel_config((256, 128), (256, 128), scatter_warps=8),
-]
-
-# Tune scatter concurrency independently. Reduce stays capped at 1x num_sms.
-SCATTER_GRID_FACTORS = (1, 2, 4)
-KERNEL_CONFIGS = [{**config, "scatter_grid_factor": grid_factor}
-                  for config in _BASE_KERNEL_CONFIGS
-                  for grid_factor in SCATTER_GRID_FACTORS]
+INPUT_SEED = 0
+WARMUP_ITERS = 10
+BENCH_ITERS = 200
 
 
 def _grid_ctas(M_per_rank, N, block_m, block_n, num_sms, grid_factor=1):
@@ -227,131 +235,164 @@ def _grid_ctas(M_per_rank, N, block_m, block_n, num_sms, grid_factor=1):
     if grid_factor < 1:
         raise ValueError("grid_factor must be positive")
     tiles = triton.cdiv(M_per_rank, block_m) * triton.cdiv(N, block_n)
-    if num_sms == -1:
-        return tiles
-    return min(tiles, grid_factor * num_sms)
+    return tiles if num_sms == -1 else min(tiles, grid_factor * num_sms)
 
 
-def _valid_configs(M_per_rank, N, dtype_nbytes, max_shared_memory):
-    """Filter configurations by alignment and shared-memory requirements."""
-    valid = []
-    for config in KERNEL_CONFIGS:
-        sm, sn = config["SCATTER_BLOCK_M"], config["SCATTER_BLOCK_N"]
-        rm, rn = config["REDUCE_BLOCK_M"], config["REDUCE_BLOCK_N"]
-        if sm > M_per_rank or sn > N or rm > M_per_rank or rn > N:
-            continue
-        # TMA loads must not cross a source-rank row boundary.
-        if M_per_rank % rm:
-            continue
-        # Estimate the two reduction tiles and barrier state in shared memory.
-        if 2 * rm * rn * dtype_nbytes + 8 > max_shared_memory:
-            continue
-        valid.append(config)
-    return valid
+@dataclass
+class ReduceScatterContext:
+    scatter_buf: torch.Tensor
+    scatter_ctx: object
+    output: torch.Tensor
+    M_per_rank: int
+    N: int
+    local_rank: int
+    world_size: int
+    num_sms: int
+    max_shared_memory: int
+    calls: int = 0
+    last_config: dict | None = None
+    preflight_results: dict = field(default_factory=dict, repr=False)
 
 
-AUTOTUNE_WARMUP = 10
-AUTOTUNE_ITERS = 50
-AUTOTUNE_TOP_K = 5
-AUTOTUNE_RECHECK_ITERS = 100
-AUTOTUNE_RECHECK_ROUNDS = 2
-AUTOTUNE_SEED = 0
-WARMUP_ITERS = 10
-BENCH_ITERS = 200
-
-
-def _save_autotune_result(
-    *,
-    M: int,
-    N: int,
-    world_size: int,
-    local_world_size: int,
-    dtype: torch.dtype,
-    num_sms: int,
-    best_config: dict,
-    best_results: dict,
-    tle_stats: dict,
-    torch_stats: dict,
-    speedup: float,
-    valid_config_count: int,
-    tuning_summary: dict,
-    hardware: list,
-    rank: int,
-) -> None:
-    """Save tuning results and measurements for the current shape."""
-    if rank != 0:
-        return
-
-    output_value = os.environ.get(
-        "TLE_AUTOTUNE_OUTPUT",
-        "tle_intra_node_rs_autotune_results.json",
-    ).strip()
-    if not output_value:
-        return
-
-    output_path = Path(output_value)
-    if output_path.exists():
-        data = json.loads(output_path.read_text(encoding="utf-8"))
-    else:
-        data = {"version": 1, "results": {}}
-    if not isinstance(data, dict) or not isinstance(data.get("results"), dict):
-        raise ValueError(f"invalid autotune result file: {output_path}")
-
-    dtype_name = str(dtype).removeprefix("torch.")
-    hardware_key = json.dumps(hardware, sort_keys=True, separators=(",", ":"))
-    key = (f"op=intra_node_reduce_scatter/hardware={hardware_key}/shape={M}x{N}/"
-           f"world={world_size}/local_world={local_world_size}/dtype={dtype_name}/"
-           f"clear_l2={int(best_results['clear_l2'])}/stat=max_rank_median")
-    data["results"][key] = {
-        "op": "intra_node_reduce_scatter",
-        "shape": [M, N],
-        "output_shape": [M // world_size, N],
-        "world_size": world_size,
-        "local_world_size": local_world_size,
-        "dtype": dtype_name,
-        "num_sms": num_sms,
-        "hardware": hardware,
-        "torch_version": str(torch.__version__),
-        "triton_version": triton.__version__,
-        "best_config": dict(best_config),
-        "autotune": {
-            "candidate_count": valid_config_count,
-            "warmup": AUTOTUNE_WARMUP,
-            "iters": AUTOTUNE_ITERS,
-            "seed": AUTOTUNE_SEED,
-            "top_k": AUTOTUNE_TOP_K,
-            "recheck_iters": AUTOTUNE_RECHECK_ITERS,
-            "recheck_rounds": AUTOTUNE_RECHECK_ROUNDS,
-            **tuning_summary,
-        },
-        "benchmark": {
-            "warmup": WARMUP_ITERS,
-            "iters": BENCH_ITERS,
-            "input_bytes": best_results["input_bytes"],
-            "clear_l2": best_results["clear_l2"],
-            "latency_statistic": best_results["latency_statistic"],
-            "tle": {
-                "median_ms": tle_stats["median_ms"],
-                "median_gbps": tle_stats["median_gbps"],
-                "rank0_all_times_ms": tle_stats["local_all_times_ms"],
-            },
-            "torch": {
-                "median_ms": torch_stats["median_ms"],
-                "median_gbps": torch_stats["median_gbps"],
-                "rank0_all_times_ms": torch_stats["local_all_times_ms"],
-            },
-            "speedup": speedup,
-        },
-    }
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = output_path.with_name(output_path.name + ".tmp")
-    temporary_path.write_text(
-        json.dumps(data, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+def _launch_entry_barrier(ctx, *, compile_only=False):
+    """Wait for all ranks to finish reading scratch from the preceding call."""
+    mesh = tle.device_mesh(tle.MeshConfig(device=ctx.world_size))
+    return device_barrier_kernel.run(
+        grid=(1, ),
+        warmup=compile_only,
+        scatter_ctx=ctx.scatter_ctx,
+        mesh=mesh,
     )
-    os.replace(temporary_path, output_path)
-    print(f"Saved autotune result to {output_path}", flush=True)
+
+
+def _launch_reduce_scatter_core(input_tensor, ctx, *, config, compile_only=False):
+    """Scatter -> barrier -> TMA reduction on the current stream.
+
+    The caller must ensure that every rank has finished reading the scratch
+    buffer from its preceding call before any rank enters this function.
+    """
+    scatter = scatter_kernel_opt.run(
+        input_tensor,
+        ctx.scatter_buf,
+        grid=(_grid_ctas(ctx.M_per_rank, ctx.N, config["SCATTER_BLOCK_M"], config["SCATTER_BLOCK_N"], ctx.num_sms,
+                         config["scatter_grid_factor"]), ),
+        warmup=compile_only,
+        scatter_ctx=ctx.scatter_ctx,
+        M_per_rank=ctx.M_per_rank,
+        N=ctx.N,
+        LOCAL_RANK=ctx.local_rank,
+        WORLD_SIZE=ctx.world_size,
+        SCATTER_BLOCK_M=config["SCATTER_BLOCK_M"],
+        SCATTER_BLOCK_N=config["SCATTER_BLOCK_N"],
+        num_warps=config["scatter_num_warps"],
+    )
+    barrier = device_barrier_kernel.run(
+        grid=(1, ),
+        warmup=compile_only,
+        scatter_ctx=ctx.scatter_ctx,
+        mesh=tle.device_mesh(tle.MeshConfig(device=ctx.world_size)),
+    )
+    reduce = ring_reduce_kernel_tma.run(
+        ctx.scatter_buf,
+        ctx.output,
+        ctx.M_per_rank,
+        ctx.N,
+        grid=(_grid_ctas(ctx.M_per_rank, ctx.N, config["REDUCE_BLOCK_M"], config["REDUCE_BLOCK_N"], ctx.num_sms), ),
+        warmup=compile_only,
+        LOCAL_RANK=ctx.local_rank,
+        WORLD_SIZE=ctx.world_size,
+        REDUCE_BLOCK_M=config["REDUCE_BLOCK_M"],
+        REDUCE_BLOCK_N=config["REDUCE_BLOCK_N"],
+        num_warps=config["reduce_num_warps"],
+    )
+    return scatter, barrier, reduce
+
+
+def _launch_reduce_scatter(input_tensor, ctx, *, config, compile_only=False):
+    """Entry barrier -> scatter -> barrier -> TMA reduction on the current stream."""
+    # A fast rank must not overwrite slots that a peer is still reducing
+    # from the preceding call. The tuner enqueues calls back-to-back.
+    entry = _launch_entry_barrier(ctx, compile_only=compile_only)
+    kernels = _launch_reduce_scatter_core(input_tensor, ctx, config=config, compile_only=compile_only)
+    if compile_only:
+        # Resolve asynchronous compilation and check actual resource limits
+        # by loading binaries. warmup=True never executes the kernels.
+        for kernel in (entry, *kernels):
+            if hasattr(kernel, "result"):
+                kernel = kernel.result()
+            kernel._init_handles()
+
+
+def _reduce_scatter_key(input_tensor, ctx):
+    # Values, addresses, rank IDs and mutable state do not affect the workload.
+    return (
+        to_hashable(input_tensor),
+        to_hashable(ctx.scatter_buf),
+        to_hashable(ctx.output),
+        ctx.world_size,
+    )
+
+
+def _prune_reduce_scatter_config(config, input_tensor, ctx):
+    """Keep locally feasible candidates; autotune intersects them across ranks."""
+    cfg = config["config"]
+    sm, sn = cfg["SCATTER_BLOCK_M"], cfg["SCATTER_BLOCK_N"]
+    rm, rn = cfg["REDUCE_BLOCK_M"], cfg["REDUCE_BLOCK_N"]
+    if not (min(ctx.M_per_rank, ctx.N) > 0 and tuple(input_tensor.shape) == tuple(ctx.scatter_buf.shape) ==
+            (ctx.M_per_rank * ctx.world_size, ctx.N) and tuple(ctx.output.shape) == (ctx.M_per_rank, ctx.N)
+            and input_tensor.dtype == ctx.scatter_buf.dtype == ctx.output.dtype and input_tensor.dtype
+            in (torch.float16, torch.bfloat16) and input_tensor.device == ctx.scatter_buf.device == ctx.output.device
+            and all(t.is_contiguous() and t.data_ptr() % 16 == 0 for t in (input_tensor, ctx.scatter_buf, ctx.output))
+            and max(sm, rm) <= ctx.M_per_rank and max(sn, rn) <= ctx.N
+            # A TMA tile must not cross a source rank's row boundary.
+            and ctx.M_per_rank % rm == 0 and (ctx.N * input_tensor.element_size()) % 16 == 0):
+        return False
+
+    # Tutorial search-budget heuristics, not hardware validity requirements:
+    # explore 8K..32K-element tiles, with 8 warps only for the largest tiles.
+    for elements, warps in ((sm * sn, cfg["scatter_num_warps"]), (rm * rn, cfg["reduce_num_warps"])):
+        if not 8192 <= elements <= 32768 or (warps == 8 and elements < 32768):
+            return False
+
+    factor = cfg["scatter_grid_factor"]
+    if factor > 1 and _grid_ctas(ctx.M_per_rank, ctx.N, sm, sn, ctx.num_sms, factor) == _grid_ctas(
+            ctx.M_per_rank, ctx.N, sm, sn, ctx.num_sms, factor // 2):
+        return False  # The tile count already caps both grids at the same size.
+
+    # Pruning runs even on a tuning-cache hit. Memoize compile/load verdicts
+    # for this context and workload. Grid size is not a JIT specialization.
+    preflight_key = (
+        _reduce_scatter_key(input_tensor, ctx),
+        ctx.local_rank,
+        str(input_tensor.device),
+        id(ctx.scatter_ctx),
+        tuple(sorted((name, value) for name, value in cfg.items() if name != "scatter_grid_factor")),
+    )
+    if preflight_key not in ctx.preflight_results:
+        try:
+            _launch_reduce_scatter(input_tensor, ctx, config=cfg, compile_only=True)
+        except Exception as exc:
+            ctx.preflight_results[preflight_key] = False
+            print(f"[Rank {ctx.local_rank}] Pruned {cfg}: {type(exc).__name__}: {exc}", flush=True)
+        else:
+            ctx.preflight_results[preflight_key] = True
+    # No collectives or execution here: ranks can prune different candidates.
+    # The tuner's intersection excludes any candidate that failed on a peer.
+    return ctx.preflight_results[preflight_key]
+
+
+@autotune(config_space=CONFIG_SPACE, key_fn=_reduce_scatter_key, cache_version="tle-intra-node-rs-pruned-space-v1",
+          prune_fn=_prune_reduce_scatter_config)
+def reduce_scatter(input_tensor: torch.Tensor, ctx: ReduceScatterContext, *, config: dict) -> torch.Tensor:
+    """Tune and execute on the current stream; all ranks pass autotune_pg=dist.group.WORLD.
+
+    Buffers must be separate, contiguous and 16-byte aligned. The context
+    owns the registered scratch buffer; main() installs the TMA allocator.
+    """
+    _launch_reduce_scatter(input_tensor, ctx, config=config)
+    ctx.calls += 1
+    ctx.last_config = dict(config)
+    return ctx.output
 
 
 def torch_reduce_scatter(input_tensor, group):
@@ -360,100 +401,6 @@ def torch_reduce_scatter(input_tensor, group):
     output = torch.empty((M // world_size, N), dtype=input_tensor.dtype, device=input_tensor.device)
     dist.reduce_scatter_tensor(output, input_tensor, group=group)
     return output
-
-
-# Scatter -> device barrier -> TMA reduction.
-def tle_reduce_scatter_device_barrier(
-    input_tensor,
-    scatter_buf,
-    scatter_ctx,
-    output,
-    M_per_rank,
-    N,
-    local_rank,
-    world_size,
-    stream,
-    num_sms: int = -1,
-    config: Optional[dict] = None,
-    compile_only: bool = False,
-):
-    if config is None:
-        config = _BASE_KERNEL_CONFIGS[0]
-
-    SCATTER_BLOCK_M = config["SCATTER_BLOCK_M"]
-    SCATTER_BLOCK_N = config["SCATTER_BLOCK_N"]
-    REDUCE_BLOCK_M = config["REDUCE_BLOCK_M"]
-    REDUCE_BLOCK_N = config["REDUCE_BLOCK_N"]
-    scatter_num_warps = config["scatter_num_warps"]
-    reduce_num_warps = config["reduce_num_warps"]
-    scatter_grid_factor = config["scatter_grid_factor"]
-
-    grid_scatter = (_grid_ctas(
-        M_per_rank,
-        N,
-        SCATTER_BLOCK_M,
-        SCATTER_BLOCK_N,
-        num_sms,
-        grid_factor=scatter_grid_factor,
-    ), )
-    with torch.cuda.stream(stream):
-        scatter_kernel = scatter_kernel_opt.run(
-            input_tensor,
-            scatter_buf,
-            grid=grid_scatter,
-            warmup=compile_only,
-            scatter_ctx=scatter_ctx,
-            M_per_rank=M_per_rank,
-            N=N,
-            LOCAL_RANK=local_rank,
-            WORLD_SIZE=world_size,
-            SCATTER_BLOCK_M=SCATTER_BLOCK_M,
-            SCATTER_BLOCK_N=SCATTER_BLOCK_N,
-            num_warps=scatter_num_warps,
-        )
-
-    def alloc_fn(size: int, alignment: int, stream: Optional[int]):
-        return torch.empty(size, device="cuda", dtype=torch.int8)
-
-    triton.set_allocator(alloc_fn)
-
-    grid_reduce = (_grid_ctas(
-        M_per_rank,
-        N,
-        REDUCE_BLOCK_M,
-        REDUCE_BLOCK_N,
-        num_sms,
-        grid_factor=1,
-    ), )
-
-    with torch.cuda.stream(stream):
-
-        barrier_kernel = device_barrier_kernel.run(
-            grid=(1, ),
-            warmup=compile_only,
-            scatter_ctx=scatter_ctx,
-            mesh=tle.device_mesh(tle.MeshConfig(device=world_size)),
-        )
-        reduce_kernel = ring_reduce_kernel_tma.run(
-            scatter_buf,
-            output,
-            M_per_rank,
-            N,
-            grid=grid_reduce,
-            warmup=compile_only,
-            LOCAL_RANK=local_rank,
-            WORLD_SIZE=world_size,
-            REDUCE_BLOCK_M=REDUCE_BLOCK_M,
-            REDUCE_BLOCK_N=REDUCE_BLOCK_N,
-            num_warps=reduce_num_warps,
-        )
-
-    if compile_only:
-        # Loading binaries checks actual resources without executing any kernel.
-        for kernel in (scatter_kernel, barrier_kernel, reduce_kernel):
-            if hasattr(kernel, "result"):
-                kernel = kernel.result()
-            kernel._init_handles()
 
 
 def _assert_close_on_all_ranks(actual, expected, *, shape, stage, atol=6e-2, rtol=6e-2):
@@ -466,177 +413,66 @@ def _assert_close_on_all_ranks(actual, expected, *, shape, stage, atol=6e-2, rto
             max_error = (actual.float() - expected.float()).abs().max().item()
             print(f"[Rank {dist.get_rank()}] shape={shape} stage={stage} "
                   f"FAILED max_abs_error={max_error}", flush=True)
-        dist.barrier()
         raise AssertionError(f"shape={shape} stage={stage}: distributed correctness failed")
 
 
-def benchmark_tle_vs_torch(
-    input_tensor,
-    scatter_buf,
-    scatter_ctx,
-    torch_output_bench,
-    M_per_rank,
-    N,
-    local_rank,
-    world_size,
-    stream,
-    num_sms: int = -1,
-    config: Optional[dict] = None,
-    warmup: int = WARMUP_ITERS,
-    iters: int = BENCH_ITERS,
-    benchmark_torch: bool = True,
-    clear_l2: bool = True,
-):
-    """Return the maximum of per-rank median latencies.
+def benchmark_tle_vs_torch(input_tensor, ctx, config, *, warmup=WARMUP_ITERS, iters=BENCH_ITERS, clear_l2=True):
+    """Measure TLE core (excluding entry barrier) and torch with max(per-rank median).
 
-    Each invocation is synchronized; clear_l2 optionally clears the cache.
+    Every timed invocation has external synchronization on all ranks, so
+    scratch reuse is safe without an entry device barrier. Warmup still
+    uses the complete operation, as do autotuning and normal calls.
     """
     if warmup < 0 or iters < 1:
         raise ValueError("warmup must be nonnegative and iters must be positive")
-    elem_size = input_tensor.element_size()
-    input_bytes = input_tensor.numel() * elem_size
-
     driver = triton.runtime.driver.active
     cache = driver.get_empty_cache_for_benchmark() if clear_l2 else None
+    torch_output = torch.empty_like(ctx.output)
 
-    def run_tle():
-        tle_reduce_scatter_device_barrier(
-            input_tensor,
-            scatter_buf,
-            scatter_ctx,
-            torch_output_bench,
-            M_per_rank,
-            N,
-            local_rank,
-            world_size,
-            stream,
-            num_sms=num_sms,
-            config=config,
-        )
+    def run_tle_full():
+        reduce_scatter.fn(input_tensor, ctx, config=config)
+
+    def run_tle_core():
+        # Only time_one's per-sample synchronization makes this safe.
+        _launch_reduce_scatter_core(input_tensor, ctx, config=config)
 
     def run_torch():
-        with torch.cuda.stream(stream):
-            dist.reduce_scatter_tensor(torch_output_bench, input_tensor, group=None)
+        dist.reduce_scatter_tensor(torch_output, input_tensor, group=dist.group.WORLD)
 
-    def _time_one(fn):
+    def time_one(fn):
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
+        # Each rank finishes its previous reduce before joining the barrier.
+        # Once all ranks arrive, no peer can still be reading the scratch buffer.
         torch.cuda.synchronize()
         dist.barrier()
-        with torch.cuda.stream(stream):
-            if clear_l2:
-                driver.clear_cache(cache)
-            start.record(stream)
-            fn()
-            end.record(stream)
+        if clear_l2:
+            driver.clear_cache(cache)
+        start.record()
+        fn()
+        end.record()
         torch.cuda.synchronize()
         return start.elapsed_time(end)
 
     for i in range(warmup):
         dist.barrier()
-        if benchmark_torch and i % 2:
-            run_torch()
-            run_tle()
-        else:
-            run_tle()
-            if benchmark_torch:
-                run_torch()
+        for fn in ((run_torch, run_tle_full) if i % 2 else (run_tle_full, run_torch)):
+            fn()
     torch.cuda.synchronize()
 
-    tle_times = []
-    torch_times = []
+    tle_times, torch_times = [], []
     for i in range(iters):
         # Alternate execution order to reduce measurement bias.
-        if benchmark_torch and i % 2:
-            torch_times.append(_time_one(run_torch))
-            tle_times.append(_time_one(run_tle))
-        else:
-            tle_times.append(_time_one(run_tle))
-            if benchmark_torch:
-                torch_times.append(_time_one(run_torch))
-
-    # Take each rank's median first, then the maximum across ranks.
-    # Keep raw samples local; aggregation stays outside the timed regions.
-    local_medians = [float(statistics.median(tle_times))]
-    if benchmark_torch:
-        local_medians.append(float(statistics.median(torch_times)))
+        order = ((run_tle_core, tle_times), (run_torch, torch_times))
+        for fn, samples in (reversed(order) if i % 2 else order):
+            samples.append(time_one(fn))
     medians = torch.tensor(
-        local_medians,
+        [statistics.median(tle_times), statistics.median(torch_times)],
         dtype=torch.float64,
         device=input_tensor.device,
     )
     dist.all_reduce(medians, op=dist.ReduceOp.MAX)
-    global_medians = medians.tolist()
-
-    def _gbps(bytes_moved, ms):
-        return (bytes_moved / (ms * 1e-3)) / 1e9
-
-    tle_median_ms = global_medians[0]
-    torch_median_ms = global_medians[1] if benchmark_torch else None
-
-    return {
-        "tle": {
-            "median_ms": tle_median_ms,
-            "median_gbps": _gbps(input_bytes, tle_median_ms),
-            "local_all_times_ms": tle_times,
-        },
-        "torch": None if not benchmark_torch else {
-            "median_ms": torch_median_ms,
-            "median_gbps": _gbps(input_bytes, torch_median_ms),
-            "local_all_times_ms": torch_times,
-        },
-        "input_bytes": input_bytes,
-        "world_size": world_size,
-        "clear_l2": clear_l2,
-        "latency_statistic": "max_of_per_rank_median",
-    }
-
-
-def _select_best_config(configs, benchmark, *, warmup, iters):
-    """Screen candidates, then remeasure finalists in alternating order.
-
-    benchmark returns globally aggregated scores, or None when all ranks
-    agreed to skip a candidate during compilation preflight.
-    """
-    if not configs:
-        raise ValueError("autotuning requires at least one candidate")
-    order = list(range(len(configs)))
-    random.Random(AUTOTUNE_SEED).shuffle(order)
-    screening = []
-    skipped = []
-    for index in order:
-        result = benchmark(configs[index], warmup, iters)
-        if result is None:
-            skipped.append(index)
-            continue
-        screening.append((result["tle"]["median_ms"], index))
-    if not screening:
-        raise RuntimeError("all autotuning candidates failed compilation/resource checks")
-
-    finalists = [index for _, index in sorted(screening)[:AUTOTUNE_TOP_K]]
-    repeated_scores = {index: [] for index in finalists}
-    for round_index in range(AUTOTUNE_RECHECK_ROUNDS):
-        if dist.get_rank() == 0:
-            print(
-                f"Recheck round {round_index + 1}/{AUTOTUNE_RECHECK_ROUNDS}: "
-                f"{len(finalists)} finalists, {AUTOTUNE_RECHECK_ITERS} iterations", flush=True)
-        round_order = finalists if round_index % 2 == 0 else list(reversed(finalists))
-        for index in round_order:
-            result = benchmark(configs[index], warmup, AUTOTUNE_RECHECK_ITERS)
-            if result is None:
-                raise RuntimeError("a previously compiled finalist became unavailable")
-            repeated_scores[index].append(result["tle"]["median_ms"])
-    # Each round uses max(per-rank median); summarize independent rechecks.
-    best_index = min(finalists, key=lambda index: (statistics.median(repeated_scores[index]), index))
-    summary = {
-        "skipped_configs": [configs[index] for index in skipped],
-        "screening": [{"config": configs[index], "median_ms": score} for score, index in screening],
-        "finalists": [{
-            "config": configs[index], "round_scores_ms": repeated_scores[index], "selection_score_ms":
-            statistics.median(repeated_scores[index])
-        } for index in finalists],
-    }
-    return configs[best_index], summary
+    return medians.tolist()
 
 
 def main():
@@ -645,237 +481,107 @@ def main():
     if clear_l2_value not in ("1", "true", "yes", "on", "0", "false", "no", "off"):
         raise ValueError("TLE_CLEAR_L2 must be boolean (0 or 1)")
     clear_l2 = clear_l2_value in ("1", "true", "yes", "on")
-    mem_pool = tle.get_mem_pool()
-
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
-    local_rank = int(os.environ.get("LOCAL_RANK", rank))
-    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", world_size))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     torch.cuda.set_device(local_rank)
+    mem_pool = tle.get_mem_pool()
+    if mem_pool is None:
+        raise RuntimeError("FlagCX memory pool is unavailable; check FlagCX build and environment variables.")
 
-    print(f"[Rank {rank}/{world_size}] Starting TLE reduce-scatter (TMA reduce, optimized scatter, device barrier)")
-
-    if world_size < 2 or world_size != local_world_size:
-        raise ValueError("This intra-node test requires one node with at least two GPUs")
+    rank, world_size = dist.get_rank(), dist.get_world_size()
+    local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", world_size))
+    if world_size < 2 or world_size != local_world_size or rank != local_rank:
+        raise ValueError("This intra-node test requires one node with at least two GPUs and rank == LOCAL_RANK")
+    group = dist.group.WORLD
     if torch.cuda.get_device_capability(local_rank)[0] < 9:
         raise ValueError("The TMA reduction requires sm90 or newer")
     if M % world_size:
         raise ValueError(f"M={M} must be divisible by world_size={world_size}")
-    dtype_nbytes = torch.empty((), dtype=dtype).element_size()
-    if (N * dtype_nbytes) % 16:
-        raise ValueError(f"N={N} must give a 16-byte-aligned row stride for {dtype}")
 
-    device_props = torch.cuda.get_device_properties(local_rank)
-    num_sms = device_props.multi_processor_count
-    max_shared_memory = triton.runtime.driver.active.utils.get_device_properties(local_rank)["max_shared_mem"]
-    hardware = [None] * world_size
-    dist.all_gather_object(
-        hardware, {
-            "name": device_props.name,
-            "capability": list(torch.cuda.get_device_capability(local_rank)),
-            "num_sms": num_sms,
-            "total_memory": device_props.total_memory,
-        })
-    # Every rank must enumerate the same candidate list.
-    shared_limit = torch.tensor(max_shared_memory, dtype=torch.int64, device="cuda")
-    dist.all_reduce(shared_limit, op=dist.ReduceOp.MIN)
-    max_shared_memory = int(shared_limit.item())
+    def alloc_fn(size, alignment, stream):
+        return torch.empty(size, device="cuda", dtype=torch.int8)
+
+    triton.set_allocator(alloc_fn)
     M_per_rank = M // world_size
-    valid_configs = _valid_configs(M_per_rank, N, dtype_nbytes, max_shared_memory)
-    if not valid_configs:
-        raise ValueError(f"no config fits shape {(M, N)}, dtype={dtype}, world_size={world_size}")
-    if rank == 0:
-        print(
-            f"shape={(M, N)} dtype={dtype}: {len(valid_configs)}/{len(KERNEL_CONFIGS)} "
-            "candidates after shape/resource filtering", flush=True)
-
     with torch.cuda.use_mem_pool(mem_pool):
         scatter_buf = torch.empty((M, N), dtype=dtype, device="cuda")
-    scatter_ctx = tle.create_dist_tensor(scatter_buf)
-
-    # Exercise cancellation with distinct inputs across ranks.
+    ctx = ReduceScatterContext(
+        scatter_buf=scatter_buf,
+        scatter_ctx=tle.create_dist_tensor(scatter_buf),
+        output=torch.empty((M_per_rank, N), dtype=dtype, device="cuda"),
+        M_per_rank=M_per_rank,
+        N=N,
+        local_rank=local_rank,
+        world_size=world_size,
+        num_sms=torch.cuda.get_device_properties(local_rank).multi_processor_count,
+        max_shared_memory=triton.runtime.driver.active.utils.get_device_properties(local_rank)["max_shared_mem"],
+    )
     input_tensor = torch.empty((M, N), dtype=dtype, device="cuda")
-    generator = torch.Generator(device="cuda").manual_seed(AUTOTUNE_SEED + rank)
+    generator = torch.Generator(device="cuda").manual_seed(INPUT_SEED + rank)
     input_tensor.uniform_(-1, 1, generator=generator).mul_((rank + 1) / world_size)
 
-    output = torch.empty((M_per_rank, N), dtype=dtype, device="cuda")
+    if rank == 0:
+        print(
+            f"shape={(M, N)} dtype={dtype} world_size={world_size}; "
+            f"{len(CONFIG_SPACE)} raw candidates, filtered by prune_fn", flush=True)
 
-    stream = torch.cuda.current_stream()
+    # The decorator handles pruning, rank intersection, tuning, persistence
+    # and the final execution. Changed values must reuse the cached config.
+    for iteration in range(2):
+        if iteration:
+            input_tensor.mul_(0.5)
+        expected = torch_reduce_scatter(input_tensor, group)
+        ctx.scatter_buf.fill_(float("nan"))
+        ctx.output.fill_(float("nan"))
+        previous_calls = ctx.calls
+        actual = reduce_scatter(input_tensor, ctx, autotune_pg=group)
+        _assert_close_on_all_ranks(actual, expected, shape=(M, N), stage=f"decorated_call_{iteration + 1}")
+        calls = torch.tensor(ctx.calls - previous_calls, dtype=torch.int32, device="cuda")
+        dist.all_reduce(calls, op=dist.ReduceOp.MAX, group=group)
+        if iteration and calls.item() != 1:
+            raise AssertionError("The second decorated call should execute the cached winner exactly once")
+        if rank == 0:
+            print(f"Pass {iteration + 1}: correct; operator invocations={calls.item()}; "
+                  f"selected={ctx.last_config}", flush=True)
 
-    torch_output = torch_reduce_scatter(input_tensor, group=None)
-    torch.cuda.synchronize()
-
-    # Small integer sums are exact for the supported low-precision dtypes
-    # at normal intra-node rank counts. Different ranks and rows carry patterns.
+    selected = dict(ctx.last_config)
+    # Validate exact integer sums with changed inputs and local consumers,
+    # without host collectives between consecutive launches of the winner.
     rows = torch.arange(M, device="cuda", dtype=torch.int32)[:, None]
     cols = torch.arange(N, device="cuda", dtype=torch.int32)[None, :]
     exact_input = ((rows + 3 * cols + rank) % 5 - 2).to(dtype)
     exact_expected = exact_input.float()
     dist.all_reduce(exact_expected)
     exact_expected = exact_expected[rank * M_per_rank:(rank + 1) * M_per_rank].contiguous()
-    del rows, cols
-
-    def check_config(cfg, stage):
-        for label, check_input, expected, atol, rtol in (
-            ("integer", exact_input, exact_expected, 0.0, 0.0),
-            ("random", input_tensor, torch_output, 6e-2, 6e-2),
-        ):
-            # Poison both buffers. Finish poisoning on ALL ranks before remote writes.
-            scatter_buf.fill_(float("nan"))
-            output.fill_(float("nan"))
-            torch.cuda.synchronize()
-            dist.barrier()
-            tle_reduce_scatter_device_barrier(
-                check_input,
-                scatter_buf,
-                scatter_ctx,
-                output,
-                M_per_rank,
-                N,
-                local_rank,
-                world_size,
-                stream,
-                num_sms=num_sms,
-                config=cfg,
-            )
-            torch.cuda.synchronize()
-            _assert_close_on_all_ranks(
-                output,
-                expected,
-                shape=(M, N),
-                stage=f"{stage}/{label}",
-                atol=atol,
-                rtol=rtol,
-            )
-
-    compiled_configs = set()
-
-    def preflight_config(cfg):
-        index = valid_configs.index(cfg)
-        if index in compiled_configs:
-            return True
-        error = None
-        try:
-            tle_reduce_scatter_device_barrier(
-                input_tensor,
-                scatter_buf,
-                scatter_ctx,
-                output,
-                M_per_rank,
-                N,
-                local_rank,
-                world_size,
-                stream,
-                num_sms=num_sms,
-                config=cfg,
-                compile_only=True,
-            )
-        except Exception as exc:
-            # Only compilation/loading is caught; execution/correctness failures remain fatal.
-            error = f"{type(exc).__name__}: {exc}"
-        ok = torch.tensor(int(error is None), dtype=torch.int32, device="cuda")
-        dist.all_reduce(ok, op=dist.ReduceOp.MIN)
-        if not ok.item():
-            if error is not None:
-                print(f"[Rank {rank}] Candidate {index + 1} preflight failed: {error}", flush=True)
-            if rank == 0:
-                print(f"Skipping candidate {index + 1} on all ranks", flush=True)
-            return False
-        compiled_configs.add(index)
-        return True
-
-    torch_output_bench = torch.empty_like(output)
-
-    def _benchmark_with_config(cfg, warmup, iters):
-        if rank == 0:
-            print(f"Candidate {valid_configs.index(cfg) + 1}/{len(valid_configs)}: {cfg}", flush=True)
-        if not preflight_config(cfg):
-            return None
-        check_config(cfg, stage=f"candidate {valid_configs.index(cfg) + 1}/{len(valid_configs)}")
-        return benchmark_tle_vs_torch(
-            input_tensor,
-            scatter_buf,
-            scatter_ctx,
-            torch_output_bench,
-            M_per_rank,
-            N,
-            local_rank,
-            world_size,
-            stream,
-            num_sms=num_sms,
-            config=cfg,
-            warmup=warmup,
-            iters=iters,
-            benchmark_torch=False,
-            clear_l2=clear_l2,
+    snapshots = [torch.empty_like(ctx.output) for _ in range(2)]
+    for snapshot in snapshots:
+        exact_input.neg_()
+        reduce_scatter.fn(exact_input, ctx, config=selected)
+        snapshot.copy_(ctx.output)
+    for iteration, snapshot in enumerate(snapshots):
+        integer_expected = -exact_expected if iteration == 0 else exact_expected
+        _assert_close_on_all_ranks(
+            snapshot,
+            integer_expected,
+            shape=(M, N),
+            stage=f"back_to_back_{iteration + 1}",
+            atol=0.0,
+            rtol=0.0,
         )
 
-    best_cfg, tuning_summary = _select_best_config(
-        valid_configs,
-        _benchmark_with_config,
-        warmup=AUTOTUNE_WARMUP,
-        iters=AUTOTUNE_ITERS,
-    )
-
-    check_config(best_cfg, stage="selected")
-
-    best_results = benchmark_tle_vs_torch(
-        input_tensor,
-        scatter_buf,
-        scatter_ctx,
-        torch_output_bench,
-        M_per_rank,
-        N,
-        local_rank,
-        world_size,
-        stream,
-        num_sms=num_sms,
-        config=best_cfg,
-        warmup=WARMUP_ITERS,
-        iters=BENCH_ITERS,
-        benchmark_torch=True,
-        clear_l2=clear_l2,
-    )
-
-    # Rerun TLE because benchmarking shares the output buffer with PyTorch.
-    check_config(best_cfg, stage="post_benchmark")
-    tle_stats = best_results["tle"]
-    torch_stats = best_results["torch"]
-
-    log = print if rank == 0 else lambda *args, **kwargs: None
-    log(f"[Rank {rank}] shape={input_tensor.shape} dtype={input_tensor.dtype} "
-        f"world_size={world_size} iters={BENCH_ITERS} (warmup={WARMUP_ITERS}) "
-        f"num_sms={num_sms} clear_l2={clear_l2} "
-        "stat=max(per-rank median)")
-    log(f"[Rank {rank}] best_config={best_cfg} "
-        f"TLE    median={tle_stats['median_ms']:.3f}ms "
-        f"alg_bw={tle_stats['median_gbps']:.2f}GB/s")
-    log(f"[Rank {rank}] Torch  median={torch_stats['median_ms']:.3f}ms "
-        f"alg_bw={torch_stats['median_gbps']:.2f}GB/s")
-    speedup = torch_stats["median_ms"] / tle_stats["median_ms"]
-    log(f"[Rank {rank}] TLE/Torch = {speedup:.2f}x")
-
-    _save_autotune_result(
-        M=M,
-        N=N,
-        world_size=world_size,
-        local_world_size=local_world_size,
-        dtype=dtype,
-        num_sms=num_sms,
-        best_config=best_cfg,
-        best_results=best_results,
-        tle_stats=tle_stats,
-        torch_stats=torch_stats,
-        speedup=speedup,
-        valid_config_count=len(valid_configs),
-        tuning_summary=tuning_summary,
-        hardware=hardware,
-        rank=rank,
-    )
+    tle_ms, torch_ms = benchmark_tle_vs_torch(input_tensor, ctx, selected, clear_l2=clear_l2)
+    _assert_close_on_all_ranks(ctx.output, expected, shape=(M, N), stage="post_benchmark")
+    if rank == 0:
+        input_bytes = input_tensor.numel() * input_tensor.element_size()
+        print(
+            f"Benchmark: iters={BENCH_ITERS} warmup={WARMUP_ITERS} clear_l2={clear_l2}; "
+            "stat=max(per-rank median); TLE scope=core (entry barrier excluded)", flush=True)
+        print(
+            f"TLE: {tle_ms:.3f} ms, {input_bytes / (tle_ms * 1e6):.2f} GB/s; "
+            f"Torch: {torch_ms:.3f} ms, {input_bytes / (torch_ms * 1e6):.2f} GB/s; "
+            f"speedup={torch_ms / tle_ms:.2f}x", flush=True)
 
     torch.cuda.synchronize()
     dist.barrier()
-
     tle.cleanup_communicator()
 
 

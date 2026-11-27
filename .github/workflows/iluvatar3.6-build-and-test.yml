@@ -102,6 +102,7 @@ jobs:
             fi
           fi
 
+          _FLAGTREE_TEST_DEVICE_AUTOTUNE=1 pytest -s python/test/unit/test_function_autotune.py
           # triton operators unit test
           pytest third_party/iluvatar/python/test/unit/operators/test_blocksparse.py
           pytest third_party/iluvatar/python/test/unit/operators/test_cross_entropy.py
