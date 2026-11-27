@@ -82,7 +82,7 @@ unsigned defaultAllocationAnalysisScratchSizeFn(Operation *op) {
   if (auto histogram = dyn_cast<HistogramOp>(op)) {
     auto dstTy = histogram.getType();
     int threadsPerWarp = gpu::TritonGPUDialect::getThreadsPerWarp(
-        op->getParentOfType<ModuleOp>());
+        op->template getParentOfType<ModuleOp>());
     return std::max<int>(dstTy.getNumElements(), threadsPerWarp) *
            getBitwidth(dstTy) / 8;
   }
@@ -303,6 +303,16 @@ private:
           continue;
         }
 
+        // Independently progressing software waves cannot reuse scratch across
+        // conversions with different wave/address partitions. The structural
+        // verifier clears and recomputes this marker before allocation.
+        auto mod=op->template getParentOfType<ModuleOp>();
+        if (op->hasAttr("tle.hcu.wave_local_scratch") && mod &&
+            mod->hasAttr("tle.hcu.wave_local_scratch_proven") &&
+            mod->hasAttr("tle.hcu.static_pipe_verified")) {
+          bufferRange.insert({buffer,Interval(size_t(),std::numeric_limits<size_t>::max())});
+          continue;
+        }
         // Any scratch memory's live range is the current operation's live
         // range.
         bufferRange.insert(

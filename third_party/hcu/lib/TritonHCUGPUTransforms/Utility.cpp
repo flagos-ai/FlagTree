@@ -119,6 +119,41 @@ int deduceMinCountOnDefChain(Value defValue, Operation *consumerOp,
 
 FailureOr<std::pair<triton::DotOp, unsigned>>
 getDotOpIdxFromMatrixLoad(triton::MatrixLoadOp matrixOp) {
+  // A topological slice can select a later dot reached through QK/softmax
+  // instead of the actual nearest dot operand. Prefer exact SSA use edges,
+  // traversing region yields and loop-carried values with a visited set.
+  SmallVector<Value> pending{matrixOp.getResult()};
+  llvm::DenseSet<Value> visited;
+  for (size_t head = 0; head < pending.size(); ++head) {
+    Value value = pending[head];
+    if (!visited.insert(value).second) continue;
+    for (OpOperand &use : value.getUses()) {
+      Operation *user = use.getOwner();
+      unsigned operand = use.getOperandNumber();
+      if (auto dot = dyn_cast<triton::DotOp>(user)) {
+        if (operand < 2) return success(std::make_pair(dot, operand));
+        continue;
+      }
+      if (auto yield = dyn_cast<scf::YieldOp>(user)) {
+        Operation *parent = yield->getParentOp();
+        if (operand < parent->getNumResults()) pending.push_back(parent->getResult(operand));
+        if (auto loop = dyn_cast<scf::ForOp>(parent))
+          if (operand < loop.getNumRegionIterArgs()) pending.push_back(loop.getRegionIterArgs()[operand]);
+        continue;
+      }
+      if (auto loop = dyn_cast<scf::ForOp>(user)) {
+        if (operand >= 3 && operand - 3 < loop.getNumRegionIterArgs()) {
+          pending.push_back(loop.getRegionIterArgs()[operand - 3]);
+          pending.push_back(loop.getResult(operand - 3));
+        }
+        continue;
+      }
+      // Descriptor views, casts, explicit-layout identities and elementwise
+      // transforms forward tensor values. Do not enter unrelated regions.
+      if (user->getNumRegions() == 0)
+        llvm::append_range(pending, user->getResults());
+    }
+  }
   SetVector<Operation *> slices;
   mlir::getForwardSlice(matrixOp.getResult(), &slices);
 

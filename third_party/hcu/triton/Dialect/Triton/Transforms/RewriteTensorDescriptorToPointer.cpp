@@ -4,6 +4,11 @@
 
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/Triton/IR/Types.h"
+#ifdef __TLE__
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "Dialect/TritonHCUGPU/IR/Dialect.h"
+#include "TritonHCUGPUToLLVM/StaticPipe.h"
+#endif
 
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/IR/Attributes.h"
@@ -283,6 +288,99 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
     auto descTy = op.getDesc().getType();
     auto desc = unpackDescriptor(descTy, adaptor.getDesc());
     auto offsets = castToI64(rewriter, op.getIndices());
+#ifdef __TLE__
+    auto mod = op->getParentOfType<ModuleOp>();
+    auto enable = mod->getAttrOfType<IntegerAttr>("hcu.descriptor_mls_load");
+    auto arch = mod->getAttrOfType<StringAttr>("tle.hcu.descriptor_mls_arch");
+    triton::TransOp transpose;
+    if (op->hasOneUse()) transpose = dyn_cast<triton::TransOp>(*op->getUsers().begin());
+    auto elem = descTy.getBlockType().getElementType();
+    bool isTranspose = transpose &&
+        transpose.getOrder() == ArrayRef<int32_t>({1, 0});
+    bool directDotB = false;
+    if (!transpose && op->hasOneUse()) {
+      auto *user = *op->getUsers().begin();
+      directDotB = isa<triton::DotOp>(user) && user->getOperand(1) == op.getResult();
+    }
+    bool b16Tile = (elem.isF16() || elem.isBF16()) && blockShape.size() == 2 &&
+        llvm::is_contained(ArrayRef<int64_t>({32,64,128}), blockShape[0]) &&
+        llvm::is_contained(ArrayRef<int64_t>({32,64,128}), blockShape[1]);
+    bool b8Transpose = isTranspose && blockShape == ArrayRef<int64_t>({128,128}) &&
+        (elem.isInteger(8) || isa<Float8E4M3FNType>(elem));
+    // Direct BF16/F16 B operands keep their descriptor dimensions/strides.
+    // The MatrixLoad pipeline chooses both producer and consumer encodings.
+    // Runtime eligibility and ordinary masked fallback remain mandatory.
+    if (enable && enable.getInt() == 1 && arch && arch.getValue() == "gfx938" &&
+        (b8Transpose || (b16Tile && (isTranspose || directDotB)))) {
+      auto c64 = [&](int64_t x)->Value { return arith::ConstantIntOp::create(rewriter,loc,x,64); };
+      auto cmp = [&](arith::CmpIPredicate pred,Value a,Value b)->Value { return arith::CmpIOp::create(rewriter,loc,pred,a,b); };
+      Value zero=c64(0),one=c64(1);
+      Value eligible=cmp(arith::CmpIPredicate::eq,desc.strides[1],one);
+      auto require=[&](Value c){eligible=arith::AndIOp::create(rewriter,loc,eligible,c);};
+      require(cmp(arith::CmpIPredicate::sgt,desc.strides[0],zero));
+      require(cmp(arith::CmpIPredicate::sle,desc.strides[0],c64(2147483647LL/(std::max(blockShape[0],blockShape[1])*(elem.getIntOrFloatBitWidth()/8)))));
+      require(cmp(arith::CmpIPredicate::eq,arith::AndIOp::create(rewriter,loc,desc.strides[0],c64(15)),zero));
+      auto address=triton::PtrToIntOp::create(rewriter,loc,rewriter.getI64Type(),desc.base);
+      require(cmp(arith::CmpIPredicate::eq,arith::AndIOp::create(rewriter,loc,address,c64(15)),zero));
+      Value elementOffset=arith::AddIOp::create(rewriter,loc,
+          arith::MulIOp::create(rewriter,loc,offsets[0],desc.strides[0]),offsets[1]);
+      Value origin=arith::AddIOp::create(rewriter,loc,address,
+          arith::MulIOp::create(rewriter,loc,elementOffset,c64(elem.getIntOrFloatBitWidth()/8)));
+      require(cmp(arith::CmpIPredicate::eq,arith::ShRUIOp::create(rewriter,loc,origin,c64(48)),zero));
+      require(cmp(arith::CmpIPredicate::eq,arith::ShRUIOp::create(rewriter,loc,address,c64(48)),zero));
+      Value tileLast=arith::AddIOp::create(rewriter,loc,origin,
+          arith::AddIOp::create(rewriter,loc,arith::MulIOp::create(rewriter,loc,desc.strides[0],c64((blockShape[0]-1)*(elem.getIntOrFloatBitWidth()/8))),c64(blockShape[1]*(elem.getIntOrFloatBitWidth()/8)-1)));
+      require(cmp(arith::CmpIPredicate::eq,arith::ShRUIOp::create(rewriter,loc,tileLast,c64(48)),zero));
+      require(cmp(arith::CmpIPredicate::eq,arith::AndIOp::create(rewriter,loc,offsets[1],c64(15)),zero));
+      SmallVector<Value> shapeI32;
+      for (unsigned d=0;d<2;++d) {
+        require(cmp(arith::CmpIPredicate::sge,offsets[d],zero));
+        require(cmp(arith::CmpIPredicate::sle,desc.shape[d],c64(2147483647LL)));
+        require(cmp(arith::CmpIPredicate::sge,desc.shape[d],c64(blockShape[d])));
+        auto last=arith::SubIOp::create(rewriter,loc,desc.shape[d],c64(blockShape[d]));
+        require(cmp(arith::CmpIPredicate::sle,offsets[d],last));
+        shapeI32.push_back(arith::TruncIOp::create(rewriter,loc,rewriter.getI32Type(),desc.shape[d]));
+      }
+      auto resultTy = isTranspose ? transpose.getType() : op.getResult().getType();
+      auto branch=rewriter.create<scf::IfOp>(loc,resultTy,eligible,true);
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(&branch.getThenRegion().front());
+        SmallVector<Value> mlsShape(shapeI32.begin(), shapeI32.end());
+        SmallVector<Value> mlsStrides(desc.strides.begin(), desc.strides.end());
+        SmallVector<Value> mlsIndices(op.getIndices().begin(), op.getIndices().end());
+        SmallVector<int32_t> mlsTile(blockShape.begin(), blockShape.end());
+        if (isTranspose) {
+          std::swap(mlsShape[0], mlsShape[1]);
+          std::swap(mlsStrides[0], mlsStrides[1]);
+          std::swap(mlsIndices[0], mlsIndices[1]);
+          std::swap(mlsTile[0], mlsTile[1]);
+        }
+        Value value=rewriter.create<triton::MatrixLoadOp>(loc,resultTy,desc.base,
+            mlsShape,mlsStrides,mlsTile,mlsIndices,
+            ArrayRef<int32_t>{},triton::CacheModifier::NONE,triton::EvictionPolicy::NORMAL,false);
+        rewriter.create<scf::YieldOp>(loc,value);
+        rewriter.setInsertionPointToStart(&branch.getElseRegion().front());
+        Value loaded=triton::LoadOp::create(rewriter,loc,
+            generatePtr(rewriter,loc,blockShape,desc,offsets),
+            generateMask(rewriter,loc,blockShape,desc,offsets),
+            generateOther(rewriter,loc,descTy,desc.paddingOption),
+            triton::CacheModifier::NONE,triton::EvictionPolicy::NORMAL,false);
+        Value result = loaded;
+        if (isTranspose)
+          result = rewriter.create<triton::TransOp>(loc,loaded,ArrayRef<int32_t>{1,0}).getResult();
+        rewriter.create<scf::YieldOp>(loc,result);
+      }
+      if (isTranspose) {
+        rewriter.replaceOp(transpose,branch.getResult(0));
+        rewriter.eraseOp(op);
+      } else {
+        rewriter.replaceOp(op,branch.getResult(0));
+      }
+      return success();
+    }
+#endif
+
     auto other = generateOther(rewriter, loc, descTy, desc.paddingOption);
     auto newLoad = rewriter.replaceOpWithNewOp<triton::LoadOp>(
         op, generatePtr(rewriter, loc, blockShape, desc, offsets),
@@ -293,6 +391,185 @@ struct RewriteLoadPattern : OpConversionPattern<triton::DescriptorLoadOp> {
     return llvm::success();
   }
 };
+
+
+#ifdef __TLE__
+// The HCU TMA copy op here has no completion-barrier operand. A barrier=None
+// descriptor copy is blocking. Matching physical layouts use direct MLS with
+// wait(0) and workgroup barriers; other supported layouts convert through an
+// MLS temporary. Never reinterpret the user's requested physical layout.
+struct RewriteTMACopyPattern : OpConversionPattern<triton::gpu::TMACopyOp> {
+  using OpConversionPattern<triton::gpu::TMACopyOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::gpu::TMACopyOp op, OneToNOpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto descTy = dyn_cast<TensorDescType>(op.getSrc().getType());
+    auto dstTy = dyn_cast<triton::gpu::MemDescType>(op.getDst().getType());
+    if (!descTy || !dstTy ||
+        !isa<triton::gpu::SharedMemorySpaceAttr>(dstTy.getMemorySpace()))
+      return rewriter.notifyMatchFailure(
+          op, "HCU descriptor copy supports global descriptor to shared only");
+    auto blockTy = descTy.getSignlessBlockType();
+    auto shape = blockTy.getShape();
+    if (shape != dstTy.getShape() ||
+        blockTy.getElementType() != dstTy.getElementType())
+      return rewriter.notifyMatchFailure(
+          op, "descriptor block and shared destination must have identical types");
+    auto desc = unpackDescriptor(descTy, adaptor.getSrc());
+    auto loc = op.getLoc();
+    auto offsets = castToI64(rewriter, op.getIndices());
+    if (op->hasAttr(triton::HCU::static_pipe::iterationAttr)) {
+      SmallVector<Value> shapeI32;
+      for (Value dim:desc.shape) shapeI32.push_back(arith::TruncIOp::create(rewriter,loc,rewriter.getI32Type(),dim));
+      SmallVector<int32_t> tensorShape(shape.begin(),shape.end());
+      auto issue=rewriter.create<triton::hcugpu::MatrixLoadToLocalOp>(loc,desc.base,shapeI32,desc.strides,tensorShape,
+          op.getIndices(),ArrayRef<int32_t>{},triton::CacheModifier::NONE,triton::EvictionPolicy::NORMAL,false,adaptor.getDst().front());
+      issue->setAttr("tle.hcu.issuer_only_copy",rewriter.getUnitAttr());
+      issue->setAttr(triton::HCU::static_pipe::iterationAttr,op->getAttr(triton::HCU::static_pipe::iterationAttr));
+      auto commit=rewriter.create<triton::gpu::AsyncCommitGroupOp>(loc,issue.getResult());
+      rewriter.create<triton::gpu::AsyncWaitOp>(loc,commit.getResult(),0);
+      rewriter.eraseOp(op);
+      return success();
+    }
+    auto maskedLoad = [&]() -> Value {
+      return triton::LoadOp::create(
+          rewriter, loc, generatePtr(rewriter, loc, shape, desc, offsets),
+          generateMask(rewriter, loc, shape, desc, offsets),
+          generateOther(rewriter, loc, descTy, desc.paddingOption),
+          triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL, false);
+    };
+
+    // The standalone MLS encoding path supports 8/16-bit rank-two tiles.
+    // Restrict shapes to full four-wave tiles.  Other descriptor copies retain
+    // ordinary masked-load semantics.  In particular, never rely on full-tile
+    // hardware filtering: a completely filtered MLS tile can retain old LDS.
+    auto elemTy = blockTy.getElementType();
+    unsigned bits = elemTy.getIntOrFloatBitWidth();
+    bool supportedElem = elemTy.isF16() || elemTy.isBF16() || elemTy.isInteger(8) ||
+                         isa<Float8E4M3FNType>(elemTy);
+    auto module = op->getParentOfType<ModuleOp>();
+    auto arch = module->getAttrOfType<StringAttr>("tle.hcu.descriptor_mls_arch");
+    auto warps = module->getAttrOfType<IntegerAttr>("tle.hcu.descriptor_mls_warps");
+    bool enabled = arch && arch.getValue() == "gfx938" && warps &&
+                   warps.getInt() == 4;
+    bool mlsShape = enabled && supportedElem &&
+                    ((bits == 16 && shape == ArrayRef<int64_t>{64, 32}) ||
+                     (bits == 8 && shape == ArrayRef<int64_t>{64, 64}));
+    Value loaded;
+    if (!mlsShape) {
+      loaded = maskedLoad();
+    } else {
+      auto c64 = [&](int64_t v) -> Value {
+        return arith::ConstantIntOp::create(rewriter, loc, v, 64);
+      };
+      Value zero = c64(0), one = c64(1);
+      Value eligible = arith::CmpIOp::create(
+          rewriter, loc, arith::CmpIPredicate::eq, desc.strides[1], one);
+      auto require = [&](Value condition) {
+        eligible = arith::AndIOp::create(rewriter, loc, eligible, condition);
+      };
+      auto cmp = [&](arith::CmpIPredicate pred, Value a, Value b) -> Value {
+        return arith::CmpIOp::create(rewriter, loc, pred, a, b);
+      };
+      require(cmp(arith::CmpIPredicate::sgt, desc.strides[0], zero));
+      // Conservative limit for byte offsets used inside an MLS tile.
+      require(cmp(arith::CmpIPredicate::sle, desc.strides[0],
+                  c64(2147483647LL / shape[0] / (bits / 8))));
+      SmallVector<Value> shapeI32;
+      for (unsigned dim = 0; dim < 2; ++dim) {
+        require(cmp(arith::CmpIPredicate::sge, offsets[dim], zero));
+        Value end = arith::AddIOp::create(rewriter, loc, offsets[dim],
+                                         c64(shape[dim]));
+        require(cmp(arith::CmpIPredicate::sle, end, desc.shape[dim]));
+        require(cmp(arith::CmpIPredicate::sle, desc.shape[dim],
+                    c64(2147483647)));
+        shapeI32.push_back(arith::TruncIOp::create(
+            rewriter, loc, rewriter.getI32Type(), desc.shape[dim]));
+      }
+      Value ptrInt = triton::PtrToIntOp::create(
+          rewriter, loc, rewriter.getI64Type(), desc.base);
+      Value elementOffset = arith::AddIOp::create(
+          rewriter, loc,
+          arith::MulIOp::create(rewriter, loc, offsets[0], desc.strides[0]),
+          offsets[1]);
+      Value byteOffset = arith::MulIOp::create(
+          rewriter, loc, elementOffset, c64(bits / 8));
+      Value origin = arith::AddIOp::create(rewriter, loc, ptrInt, byteOffset);
+      Value alignment = arith::AndIOp::create(rewriter, loc, origin, c64(15));
+      require(cmp(arith::CmpIPredicate::eq, alignment, zero));
+      // MLS resource descriptors carry only 48 address bits.
+      Value high = arith::ShRUIOp::create(rewriter, loc, origin, c64(48));
+      require(cmp(arith::CmpIPredicate::eq, high, zero));
+
+      auto shared = dyn_cast<triton::gpu::SwizzledSharedEncodingAttr>(
+          dstTy.getEncoding());
+      auto allocation = op.getDst().getDefiningOp<triton::gpu::LocalAllocOp>();
+      bool rowOrder = shared && shared.getOrder() == ArrayRef<unsigned>{1, 0};
+      bool linear16 = bits == 16 && shape == ArrayRef<int64_t>{64, 32} &&
+                      rowOrder && shared.getVec() == 1 &&
+                      shared.getPerPhase() == 1 && shared.getMaxPhase() == 1;
+      bool swizzled8 = bits == 8 && shape == ArrayRef<int64_t>{64, 64} &&
+                       rowOrder && shared.getVec() == 32 &&
+                       shared.getPerPhase() == 2 && shared.getMaxPhase() == 2;
+      // Reuse the independently tested non-transpose physical modes only when
+      // they exactly match the requested shared layout.  Other layouts retain
+      // the conversion path, with no reinterpretation of their storage.
+      if ((linear16 || swizzled8) && allocation &&
+          dstTy.getAllocShape() == shape) {
+        if (allocation.getAlignmentOrDefault() < 256)
+          allocation->setAttr("alignment", rewriter.getI32IntegerAttr(256));
+        auto direct = rewriter.create<scf::IfOp>(loc, eligible, true);
+        {
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(&direct.getThenRegion().front());
+          // Keep WAR ordering explicit even if an earlier local-pointer pass
+          // does not yet classify the HCU-specific memory operation.
+          rewriter.create<triton::gpu::LocalBarrierOp>(loc);
+          SmallVector<int32_t> tensorShape(shape.begin(), shape.end());
+          auto issue = rewriter.create<triton::hcugpu::MatrixLoadToLocalOp>(
+              loc, desc.base, shapeI32, ValueRange{desc.strides[0], one},
+              tensorShape, op.getIndices(), ArrayRef<int32_t>{},
+              triton::CacheModifier::NONE, triton::EvictionPolicy::NORMAL,
+              false, adaptor.getDst().front());
+          issue->setAttr("tle.hcu.direct_copy", rewriter.getUnitAttr());
+          auto commit = rewriter.create<triton::gpu::AsyncCommitGroupOp>(
+              loc, issue.getResult());
+          rewriter.create<triton::gpu::AsyncWaitOp>(loc, commit.getResult(), 0);
+          rewriter.create<triton::gpu::LocalBarrierOp>(loc);
+          rewriter.setInsertionPointToStart(&direct.getElseRegion().front());
+          rewriter.create<triton::gpu::LocalStoreOp>(
+              loc, maskedLoad(), adaptor.getDst().front());
+        }
+        rewriter.eraseOp(op);
+        return success();
+      }
+
+      auto branch = rewriter.create<scf::IfOp>(loc, blockTy, eligible, true);
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(&branch.getThenRegion().front());
+        SmallVector<int32_t> tensorShape(shape.begin(), shape.end());
+        // The order selector needs a constant unit inner stride, established
+        // by the uniform guard above.  No boundary filtering is requested.
+        Value value = rewriter.create<triton::MatrixLoadOp>(
+            loc, blockTy, desc.base, shapeI32,
+            ValueRange{desc.strides[0], one}, tensorShape, op.getIndices(),
+            ArrayRef<int32_t>{}, triton::CacheModifier::NONE,
+            triton::EvictionPolicy::NORMAL, false);
+        rewriter.create<scf::YieldOp>(loc, value);
+        rewriter.setInsertionPointToStart(&branch.getElseRegion().front());
+        rewriter.create<scf::YieldOp>(loc, maskedLoad());
+      }
+      loaded = branch.getResult(0);
+    }
+    rewriter.create<triton::gpu::LocalStoreOp>(loc, loaded,
+                                              adaptor.getDst().front());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+#endif
 
 struct RewriteStorePattern : OpConversionPattern<triton::DescriptorStoreOp> {
   using OpConversionPattern<triton::DescriptorStoreOp>::OpConversionPattern;
@@ -472,6 +749,9 @@ class TritonRewriteTensorDescriptorToPointerPass
           TritonRewriteTensorDescriptorToPointerPass> {
   void runOnOperation() override {
     auto op = getOperation();
+#ifdef __TLE__
+    if (failed(triton::HCU::static_pipe::prepare(op))) return signalPassFailure();
+#endif
 
     mlir::ConversionTarget target(getContext());
     target.addDynamicallyLegalDialect<mlir::arith::ArithDialect,
@@ -485,6 +765,18 @@ class TritonRewriteTensorDescriptorToPointerPass
       return !hasATensorDescriptorType(funcOp.getFunctionType().getInputs()) &&
              !hasATensorDescriptorType(funcOp.getFunctionType().getResults());
     });
+
+#ifdef __TLE__
+    target.addLegalOp<triton::gpu::LocalStoreOp,
+                      triton::gpu::LocalBarrierOp,
+                      triton::gpu::AsyncCommitGroupOp,
+                      triton::gpu::AsyncWaitOp,
+                      triton::hcugpu::MatrixLoadToLocalOp>();
+    target.addDynamicallyLegalOp<triton::gpu::TMACopyOp>(
+        [](triton::gpu::TMACopyOp copy) {
+          return !hasATensorDescriptorType(copy->getOperandTypes());
+        });
+#endif
 
     mlir::TypeConverter converter;
 
@@ -518,6 +810,10 @@ class TritonRewriteTensorDescriptorToPointerPass
         .add<RewriteMakeTensorDesc, RewriteLoadPattern, RewriteStorePattern,
              RewriteGatherPattern, RewriteScatterPattern, RewriteReducePattern>(
             converter, &getContext());
+
+#ifdef __TLE__
+    patterns.add<RewriteTMACopyPattern>(converter, &getContext());
+#endif
 
     ConversionConfig config;
     config.buildMaterializations = false;

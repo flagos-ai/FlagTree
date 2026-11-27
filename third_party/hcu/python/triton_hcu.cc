@@ -42,6 +42,8 @@
 #ifdef __TLE__
 #include "hcu/tle_raw/include/DeferredRawSourceRegistry.h"
 #include "hcu/tle_raw/include/Passes.h"
+#include "HcuPanelPipelineLLVM.h"
+#include "HcuMmacPriorityLLVM.h"
 #endif
 
 namespace py = pybind11;
@@ -380,6 +382,31 @@ void init_triton_hcu(py::module &&m) {
 
 #ifdef __TLE__
   init_hcu_tle_raw_passes(passes.def_submodule("tle_raw"));
+#endif
+
+#ifdef __TLE__
+  m.def("scope_mmac_priority", [](llvm::Module *module,const std::string &arch,unsigned waves,unsigned mode) {
+    auto r=hcu_tle_priority::run(*module,arch,waves,mode);
+    py::dict d;d["groups"]=r.groups;d["mmas"]=r.mmas;d["reason"]=r.reason;return d;
+  });
+  m.def("fold_equivalent_loop_state", [](llvm::Module *module) { return hcu_tle_panel::foldEquivalentState(*module); });
+  m.def("optimize_panel_pipeline", [](llvm::Module *module,
+        const std::string &arch, unsigned waves, unsigned shared, bool stream, bool identity, bool cross, bool compact, bool unroll, bool nativeWar) {
+    auto r = hcu_tle_panel::run(*module, arch, waves, shared, stream, identity, cross, compact, unroll, nativeWar);
+    py::dict d; d["loops"] = r.loops; d["panels"] = r.panels;
+    d["shared"] = r.shared; d["reason"] = r.reason;
+    d["cross_iteration_loops"] = r.crossed; d["compacted_K_panels"] = r.compacted; d["unroll2_loops"] = r.unrolled;
+    d["streamed_V_panels"] = r.streamed; d["identity_rescale_vectors"] = r.rescaled;
+    return d;
+  });  m.def("optimize_panel_pipeline_deferred", [](llvm::Module *module,
+        const std::string &arch, unsigned waves, unsigned shared, bool stream, bool identity, bool cross, bool compact, bool unroll, bool nativeWar, unsigned after) {
+    auto r = hcu_tle_panel::run(*module, arch, waves, shared, stream, identity, cross, compact, unroll, nativeWar, after);
+    py::dict d; d["loops"] = r.loops; d["panels"] = r.panels;
+    d["deferred_WAR_panels"] = r.deferred;d["shared"] = r.shared; d["reason"] = r.reason;
+    d["cross_iteration_loops"] = r.crossed; d["compacted_K_panels"] = r.compacted; d["unroll2_loops"] = r.unrolled;
+    d["streamed_V_panels"] = r.streamed; d["identity_rescale_vectors"] = r.rescaled;
+    return d;
+  });
 #endif
 
   m.attr("TARGET_TRIPLE") = hcuTargetTriple;

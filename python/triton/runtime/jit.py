@@ -418,6 +418,43 @@ def serialize_specialization_data(name, signature, constants, attrs, options, ke
     return serialized_obj
 
 
+class _SignedZeroSpecializationKey(float):
+    """Memo-key-only scalar; bound constexpr arguments retain their originals."""
+    def __new__(cls, value):
+        result = float.__new__(cls, value)
+        result._negative = value.hex().startswith("-")
+        result._memo_hash = hash((cls, result._negative))
+        return result
+
+    def __hash__(self):
+        return self._memo_hash
+
+    def __eq__(self, other):
+        return type(other) is type(self) and self._negative == other._negative
+
+
+def _constexpr_specialization_key(value):
+    # Keep the common integral case and all bound argument values unchanged.
+    if isinstance(value, float):
+        return _SignedZeroSpecializationKey(value) if value == 0.0 else value
+    if isinstance(value, tuple):
+        values = tuple(_constexpr_specialization_key(x) for x in value)
+        if all(a is b for a, b in zip(value, values)):
+            return value
+        return type(value)(*values) if is_namedtuple(value) else values
+    if type(value).__name__ == "constexpr" and type(value).__module__ == "triton.language.core":
+        new_value = _constexpr_specialization_key(value.value)
+        return value if new_value is value.value else type(value)(new_value)
+    return value
+
+
+def _specialize_preserving_signed_zero(backend, arg, is_const, specialize, align):
+    result = native_specialize_impl(backend, arg, is_const, specialize, align)
+    if result[0] == "constexpr":
+        return result[0], _constexpr_specialization_key(result[1])
+    return result
+
+
 def create_function_from_signature(sig, kparams, backend):
     """
     Equivalent to sig.bind followed by apply_defaults. This generates a
@@ -431,12 +468,14 @@ def create_function_from_signature(sig, kparams, backend):
     # signature
     for name, kp in zip(sig.parameters.keys(), kparams):
         if kp.is_constexpr:
-            specialization.append(f'("constexpr", {name})')
+            specialization.append(f'("constexpr", {name} if isinstance({name}, int) else constexpr_key({name}))')
         else:
             is_const = 'True' if kp.is_const else 'False'
             specialize = 'False' if kp.do_not_specialize else 'True'
             align = 'False' if kp.do_not_specialize_on_alignment else 'True'
-            ret = f"specialize_impl(backend, {name}, {is_const}, {specialize}, {align})"
+            native_ret = f"specialize_impl(backend, {name}, {is_const}, {specialize}, {align})"
+            ret = (f"(specialize_constexpr(backend, {name}, {is_const}, {specialize}, {align}) "
+                   f"if isinstance({name}, constexpr_type) else {native_ret})")
             if kp.annotation_type:
                 if isinstance(kp.annotation_type, str):
                     if kp.annotation_type == "u1" or kp.annotation_type[:2] in ["fp", "bf"]:
@@ -469,8 +508,11 @@ def dynamic_func({", ".join(list(map(arg, sig.parameters.items())) + ["**options
         if param.default is not inspect.Parameter.empty
     }
 
-    specialize_impl = native_specialize_impl
-    func_namespace["specialize_impl"] = specialize_impl
+    func_namespace["constexpr_key"] = _constexpr_specialization_key
+    from ..language.core import constexpr
+    func_namespace["constexpr_type"] = constexpr
+    func_namespace["specialize_constexpr"] = _specialize_preserving_signed_zero
+    func_namespace["specialize_impl"] = native_specialize_impl
     func_namespace["backend"] = backend
     func_namespace["JITCallable"] = JITCallable
 

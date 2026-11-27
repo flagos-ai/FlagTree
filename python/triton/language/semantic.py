@@ -22,6 +22,7 @@
 
 from __future__ import annotations  # remove after python 3.11
 import warnings
+import math
 
 from typing import List, Optional, Sequence, Tuple, TypeVar, Generic, Type
 import numbers
@@ -613,7 +614,11 @@ class TritonSemantic(Generic[TensorTy]):
         # scalar
         if dtype is None:
             raise ValueError("dtype must be specified when value is not a tensor")
-        if value == 0:
+        # The null-value fast path erases the sign of floating-point -0.0.
+        # Standard floating types have literal builders that preserve that sign.
+        negative_zero = (value == 0 and dtype.is_standard_floating()
+                         and math.copysign(1.0, value) < 0)
+        if value == 0 and not negative_zero:
             value = self.builder.get_null_value(dtype.to_ir(self.builder))
         else:
             get_value_fn = getattr(self.builder, f"get_{dtype.name}")
@@ -835,6 +840,13 @@ class TritonSemantic(Generic[TensorTy]):
                 raise ValueError("fp_downcast_rounding should be set only for truncating fp conversions. "
                                  "Source scalar type is " + str(src_sca_ty) + " and destination type is " +
                                  str(dst_sca_ty))
+
+        # Integer-to-fp8 is not a standard LLVM int-to-fp conversion. Route it
+        # through fp32 so backend fp8 capability checks, custom conversions,
+        # and default RTNE downcasting apply just as for floating inputs.
+        # This also handles integer `other` values in masked fp8 loads.
+        if src_sca_ty.is_int() and dst_sca_ty.is_fp8():
+            return self.cast(self.cast(input, tl.float32), dst_sca_ty)
 
         # flagtree fp8 cast declaration routing
         if src_sca_ty.is_fp8() or dst_sca_ty.is_fp8():
