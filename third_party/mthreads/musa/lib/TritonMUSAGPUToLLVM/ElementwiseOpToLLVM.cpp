@@ -93,11 +93,12 @@ struct FpToFpOpConversion
 
   explicit FpToFpOpConversion(LLVMTypeConverter &typeConverter,
                               ModuleAxisInfoAnalysis &axisAnalysisPass,
-                              bool enableFp8Burst2,
+                              bool enableFp8Burst2, bool enableVectorArithmetic,
                               PatternBenefit benefit = patternBenefitDefault,
                               bool nativeBf16Cvt = false)
       : Base(typeConverter, axisAnalysisPass, benefit),
-        nativeBf16Cvt(nativeBf16Cvt), enableFp8Burst2(enableFp8Burst2) {}
+        nativeBf16Cvt(nativeBf16Cvt), enableFp8Burst2(enableFp8Burst2),
+        enableVectorArithmetic(enableVectorArithmetic) {}
 
   const bool nativeBf16Cvt;
 
@@ -372,8 +373,8 @@ struct FpToFpOpConversion
           module
               ? module->getAttrOfType<IntegerAttr>("musa.fp8_downcast_burst4")
               : IntegerAttr();
-      if (burst4 && burst4.getInt() && srcElemTy.isF32() &&
-          isa<Float8E4M3FNType>(dstElemTy) &&
+      if ((enableVectorArithmetic || (burst4 && burst4.getInt())) &&
+          srcElemTy.isF32() && isa<Float8E4M3FNType>(dstElemTy) &&
           roundingMode == RoundingMode::RTNE && operands.size() >= 4) {
         // MP31 packs four independent RTNE E4M3 conversions in one register.
         // This is target lowering of an ordinary fp_to_fp op, without changing
@@ -455,6 +456,7 @@ struct FpToFpOpConversion
 
 private:
   bool enableFp8Burst2 = false;
+  bool enableVectorArithmetic;
 };
 
 // Lower triton.precise_sqrt through f64 for better f32 precision.
@@ -568,11 +570,14 @@ struct SIToFPOpConversion
 
   explicit SIToFPOpConversion(LLVMTypeConverter &typeConverter,
                               ModuleAxisInfoAnalysis &axisAnalysisPass,
-                              PatternBenefit benefit, bool nativeBf16Cvt)
+                              PatternBenefit benefit, bool nativeBf16Cvt,
+                              bool enableVectorArithmetic)
       : Base(typeConverter, axisAnalysisPass, benefit),
-        nativeBf16Cvt(nativeBf16Cvt) {}
+        nativeBf16Cvt(nativeBf16Cvt),
+        enableVectorArithmetic(enableVectorArithmetic) {}
 
   const bool nativeBf16Cvt;
+  const bool enableVectorArithmetic;
 
   SmallVector<Value> createDestOps(arith::SIToFPOp op, OpAdaptor adaptor,
                                    ConversionPatternRewriter &rewriter,
@@ -580,6 +585,19 @@ struct SIToFPOpConversion
                                    Location loc) const {
     // Pre-PH1 cannot select a bare bf16 cvt; detour through f32 explicitly.
     Type outElemTy = getElementType(op.getOut());
+    if (enableVectorArithmetic && operands.size() >= 4 && outElemTy.isF32() &&
+        operands[0][0].getType().isInteger(32)) {
+      TritonLLVMOpBuilder b(loc, rewriter);
+      auto intsTy = vec_ty(i32_ty, 4);
+      Value ints = b.undef(intsTy);
+      for (unsigned i = 0; i < 4; ++i)
+        ints = b.insert_element(intsTy, ints, operands[i][0], b.i32_val(i));
+      Value fp = LLVM::SIToFPOp::create(rewriter, loc, vec_ty(f32_ty, 4), ints);
+      SmallVector<Value> result;
+      for (unsigned i = 0; i < 4; ++i)
+        result.push_back(b.extract_element(f32_ty, fp, b.i32_val(i)));
+      return result;
+    }
     if (outElemTy.isBF16() && !nativeBf16Cvt) {
       Value f32Val =
           LLVM::SIToFPOp::create(rewriter, loc, f32_ty, operands[0][0]);
@@ -836,8 +854,8 @@ struct ExpOpConversionApprox
 void mlir::triton::MUSA::populateElementwiseOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     ModuleAxisInfoAnalysis &axisInfoAnalysis, int computeCapability,
-    bool enableFp8Burst2, const TargetInfo &targetInfo,
-    PatternBenefit benefit) {
+    bool enableFp8Burst2, bool enableVectorArithmetic,
+    const TargetInfo &targetInfo, PatternBenefit benefit) {
   PatternBenefit priorityBenefit(benefit.getBenefit() + 1);
   // Pre-PH1 cannot select plain bf16 cvt ops and uses intrinsics instead.
   const bool nativeBf16Cvt = computeCapability >= 31;
@@ -861,10 +879,13 @@ void mlir::triton::MUSA::populateElementwiseOpToLLVMPatterns(
                                    nativeBf16Cvt);
   patterns.add<FPToSIOpConversion>(typeConverter, axisInfoAnalysis, benefit,
                                    nativeBf16Cvt);
-  patterns.add<SIToFPOpConversion>(typeConverter, axisInfoAnalysis, benefit,
-                                   nativeBf16Cvt);
+  patterns.add<SIToFPOpConversion>(typeConverter, axisInfoAnalysis,
+                                   enableVectorArithmetic ? priorityBenefit
+                                                          : benefit,
+                                   nativeBf16Cvt, enableVectorArithmetic);
   patterns.add<FpToFpOpConversion>(typeConverter, axisInfoAnalysis,
-                                   enableFp8Burst2, benefit, nativeBf16Cvt);
+                                   enableFp8Burst2, enableVectorArithmetic,
+                                   benefit, nativeBf16Cvt);
   patterns.add<PreciseSqrtOpConversion>(typeConverter, axisInfoAnalysis,
                                         priorityBenefit);
   patterns.add<PreciseDivOpConversion>(typeConverter, axisInfoAnalysis,

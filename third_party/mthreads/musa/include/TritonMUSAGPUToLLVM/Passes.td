@@ -22,6 +22,9 @@ def ConvertTritonMUSAGPUToLLVM : Pass<"convert-triton-musagpu-to-llvm", "mlir::M
         Option<"enableFp8Burst2", "enable-fp8-burst2",
                "bool", /*default*/"false",
                "use burst2 (vector) fp8 conversion intrinsics">,
+        Option<"enableVectorArithmetic", "enable-mp31-vector-arithmetic",
+               "bool", /*default*/"false",
+               "use typed MP31 vector arithmetic for groups of four elements">,
     ];
 }
 
