@@ -229,8 +229,24 @@ class HGGCOptions:
     sanitize_overflow: bool = True
     arch: str = None
     instrumentation_mode: str = ""
+    # flagtree pipeline enhance: per-kernel switches of the pipelining fixes
+    # (both subject to FLAGTREE_PIPELINE_ENHANCE); they can be set from a
+    # triton.Config like num_stages.
+    # Prefetch the index loads of indirect loads too (the upstream rule). With
+    # False the index loads (page table, token ids) stay synchronous and the
+    # data loads get the whole prefetch depth num_stages - 1.
+    pipeline_index_prefetch: bool = True
+    # Merge the loads a loop reads in several layouts: "all" merges a group
+    # only when every copy is prefetched, "any" also when some copies are
+    # synchronous, "off" disables the merge.
+    pipeline_merge_loads: str = "all"
 
     def __post_init__(self):
+        # begin flagtree pipeline enhance
+        if self.pipeline_merge_loads not in ("off", "all", "any"):
+            raise ValueError(f"pipeline_merge_loads must be 'off', 'all' or 'any', "
+                             f"got {self.pipeline_merge_loads!r}")
+        # end flagtree pipeline enhance
         default_libdir = Path(__file__).parent / 'lib'
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
         if not extern_libs.get('libdevice', None):
@@ -406,9 +422,10 @@ class PPUBackend(BaseBackend):
             passes.ttir.add_triton_licm(pm)
             passes.common.add_canonicalizer(pm)
             passes.ttgpuir.add_combine_tensor_select_and_if(pm)
-            passes.ttgpuir.add_assign_latencies(pm, opt.num_stages)
+            PPUBackend._add_assign_latencies(pm, opt)  # flagtree pipeline enhance
             passes.ttgpuir.add_schedule_loops(pm)
-            passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled)
+            # flagtree pipeline enhance
+            passes.ttgpuir.add_pipeline(pm, opt.num_stages, dump_enabled, knobs.ppu.pipeline_enhance)
         else:
             passes.ttir.add_triton_licm(pm)
         passes.common.add_canonicalizer(pm)
@@ -433,6 +450,32 @@ class PPUBackend(BaseBackend):
         pm.run(mod, 'make_ttgir')
         metadata["tensordesc_meta"] = mod.get_tensordesc_metadata()
         return mod
+
+    # begin flagtree pipeline enhance
+    @staticmethod
+    def _add_assign_latencies(pm, opt):
+        """assign_latencies, then the merge of the duplicate loads, with the FlagTree switches.
+
+        FLAGTREE_PIPELINE_ENHANCE=0 restores the upstream TTGIR pipelining (the
+        index prefetch and the load merge); otherwise each switch follows its
+        HGGCOptions field. The two fields keep the defaults of the NVIDIA
+        backend, so the index prefetch stays the upstream one unless a kernel
+        asks for False, while the merge runs by default.
+
+        A build without __FLAGTREE_PIPELINE_ENHANCE__ only has the upstream
+        passes, so the merge is skipped and the per-kernel fields have no
+        effect there. add_pipeline() needs no such branch: it takes the same
+        arguments with and without the macro.
+        """
+        if not hasattr(passes.ttgpuir, "add_merge_duplicate_loads"):
+            passes.ttgpuir.add_assign_latencies(pm, opt.num_stages)
+            return
+        enhance = knobs.ppu.pipeline_enhance
+        passes.ttgpuir.add_assign_latencies(pm, opt.num_stages, (not enhance) or opt.pipeline_index_prefetch)
+        if enhance and opt.pipeline_merge_loads != "off":
+            passes.ttgpuir.add_merge_duplicate_loads(pm, opt.pipeline_merge_loads)
+
+    # end flagtree pipeline enhance
 
     def gluon_to_ttgir(self, src, metadata, options, capability):
         mod = src
