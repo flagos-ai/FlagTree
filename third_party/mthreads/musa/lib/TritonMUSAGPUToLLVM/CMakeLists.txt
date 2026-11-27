@@ -1,5 +1,9 @@
 if(FLAGTREE_MTHREADS_TLE)
   set(_TLE_LIBS MUSATLEToLLVM)
+  if(FLAGCX_ENABLED)
+    # Slim mthreads FlagCX lowering (not the full shared TleToLLVM).
+    list(APPEND _TLE_LIBS FlagCxToLLVM)
+  endif()
 else()
   set(_TLE_LIBS "")
 endif()

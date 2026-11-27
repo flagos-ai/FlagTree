@@ -5,12 +5,16 @@ import triton
 import triton.language as tl
 import torch.distributed as dist
 
+DEVICE = tle.device_type
+
 DEVICE_MESH = tle.device_mesh(tle.MeshConfig(device=2))
 N = 8
 
 
-@triton.jit()
-def _barrier_d2d_kernel(out_ptr, device_dptr: tl.constexpr, mesh: tl.constexpr):
+@triton.jit(do_not_specialize=["mem_ptr", "comm_ptr"])
+def _barrier_d2d_kernel(out_ptr, mem_ptr, comm_ptr, mesh: tl.constexpr):
+    # MUSA: runtime i64 mem/comm — constexpr absolute addrs illegally fault.
+    device_dptr = (mem_ptr, comm_ptr)
     pid = tl.program_id(0)
     local_rank = tle.shard_id(mesh, 'device', device_dptr=device_dptr)
     n_rank = mesh.shape[0]
@@ -28,9 +32,10 @@ def _barrier_d2d_kernel(out_ptr, device_dptr: tl.constexpr, mesh: tl.constexpr):
     tle.distributed_barrier(mesh, device_dptr=device_dptr, space="device")
 
 
-def _ir_verify(output, device_dptr, grid):
+def _ir_verify(output, mem_ptr, comm_ptr, grid):
     compiled = _barrier_d2d_kernel.warmup(
-        device_dptr=device_dptr,
+        mem_ptr=mem_ptr,
+        comm_ptr=comm_ptr,
         out_ptr=output,
         mesh=DEVICE_MESH,
         grid=(grid, ),
@@ -39,20 +44,23 @@ def _ir_verify(output, device_dptr, grid):
     )
     assert "distributed_barrier" in compiled.asm["ttgir"]
     assert "remote_pointer" in compiled.asm["ttgir"]
-    assert "flagcxDevBarrierSync" in compiled.asm['ptx']
-    assert "flagcxGetIntraPointerC" in compiled.asm['ptx']
-    assert "flagcxDevCommGetIntraRank" in compiled.asm['ptx']
+    llir = compiled.asm.get("ptx", compiled.asm["llir"])
+    assert "flagcxDevBarrierSync" in llir
+    assert "flagcxGetIntraPointerC" in llir
+    # MUSA always-inlines FlagCX helpers, so GetIntraRank may only survive as
+    # folded arithmetic; accept either the call symbol or barrier inline body.
+    assert ("flagcxDevCommGetIntraRank" in llir) or ("flagcxTeamTagIntra" in llir)
 
 
-def _runtime_verify(output, device_dptr, grid, rank, world_size):
+def _runtime_verify(output, mem_ptr, comm_ptr, grid, rank, world_size):
     dist.barrier()
-    _barrier_d2d_kernel[grid](device_dptr=device_dptr, out_ptr=output, mesh=DEVICE_MESH)
+    _barrier_d2d_kernel[grid](mem_ptr=mem_ptr, comm_ptr=comm_ptr, out_ptr=output, mesh=DEVICE_MESH)
 
-    torch.cuda.synchronize()
+    torch.get_device_module(DEVICE).synchronize()
 
     import sys
     peer_rank = (rank + 1) % world_size
-    expected = torch.arange(N, dtype=torch.float32, device="cuda") + peer_rank * 1000
+    expected = torch.arange(N, dtype=torch.float32, device=DEVICE) + peer_rank * 1000
     if torch.allclose(output, expected):
         print(f"[Rank {rank}] [PASSED] read peer rank {peer_rank}")
         print(f"[Rank {rank}] sample output[:4] = {output[:4].tolist()}")
@@ -74,15 +82,16 @@ class TestD2DBarrier:
         mem_pool = tle.get_mem_pool()
         world_size = dist.get_world_size()
         rank = dist.get_rank()
-        with torch.cuda.use_mem_pool(mem_pool):
-            x = (torch.arange(N, dtype=torch.float32, device="cuda") + rank * 1000).clone()
+        with torch.get_device_module(DEVICE).use_mem_pool(mem_pool):
+            x = (torch.arange(N, dtype=torch.float32, device=DEVICE) + rank * 1000).clone()
 
         device_dptr = tle.create_dist_tensor(x)
-        output = torch.zeros(N, dtype=torch.float32, device="cuda")
+        mem_ptr, comm_ptr = tle.runtime_device_dptr(device_dptr)
+        output = torch.zeros(N, dtype=torch.float32, device=DEVICE)
 
-        _ir_verify(output, device_dptr, grid)
+        _ir_verify(output, mem_ptr, comm_ptr, grid)
 
-        _runtime_verify(output, device_dptr, grid, rank, world_size)
+        _runtime_verify(output, mem_ptr, comm_ptr, grid, rank, world_size)
 
 
 if __name__ == "__main__":

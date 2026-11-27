@@ -27,11 +27,15 @@
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#ifndef TRITON_MTHREADS_BACKEND
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
 #include "third_party/nvidia/include/TritonNVIDIAGPUToLLVM/PTXAsmFormat.h"
+#endif
 #include "tle/dialect/include/IR/Dialect.h"
+#include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "llvm/Support/MathExtras.h"
 #include <algorithm>
@@ -104,11 +108,25 @@ FailureOr<int32_t> getOrCreateSubmeshScratchOffset(ModuleOp mod) {
 
 struct DistributedBarrierOpConversion
     : public ConvertOpToLLVMPattern<tle::DistributedBarrierOp> {
-  using ConvertOpToLLVMPattern<
-      tle::DistributedBarrierOp>::ConvertOpToLLVMPattern;
+  DistributedBarrierOpConversion(LLVMTypeConverter &typeConverter,
+                                 PatternBenefit benefit,
+                                 const TargetInfoBase *targetInfo)
+      : ConvertOpToLLVMPattern(typeConverter, benefit), targetInfo(targetInfo) {
+  }
+
+  const TargetInfoBase *targetInfo;
+
+  bool isHCU() const { return targetInfo && targetInfo->isHCU(); }
+  bool isMusa() const { return targetInfo && targetInfo->isMusa(); }
+  // HCU and MUSA lower grid barriers with LLVM atomics instead of PTX.
+  bool usesLlvmAtomics() const { return isHCU() || isMusa(); }
 
   LogicalResult lowerClusterBarrier(tle::DistributedBarrierOp op,
                                     ConversionPatternRewriter &rewriter) const {
+#ifdef TRITON_MTHREADS_BACKEND
+    (void)rewriter;
+    return op.emitOpError("cluster barriers are not supported on MUSA");
+#else
     auto *ctx = rewriter.getContext();
     auto unit = UnitAttr::get(ctx);
     // Cluster arrive/wait does not provide CTA-wide synchronization semantics
@@ -120,6 +138,7 @@ struct DistributedBarrierOpConversion
     rewriter.create<mlir::gpu::BarrierOp>(op.getLoc());
     rewriter.eraseOp(op);
     return success();
+#endif
   }
 
   LogicalResult lowerGridBarrier(tle::DistributedBarrierOp op,
@@ -192,11 +211,42 @@ struct DistributedBarrierOpConversion
 
     auto globalI32PtrTy =
         LLVM::LLVMPointerType::get(ctx, globalPtrTy.getAddressSpace());
-    Value linearBlockId = rewriter.create<NVVM::BlockIdZOp>(loc, i32Ty);
-    Value gridDimX = rewriter.create<NVVM::GridDimXOp>(loc, i32Ty);
-    Value gridDimY = rewriter.create<NVVM::GridDimYOp>(loc, i32Ty);
-    Value blockIdX = rewriter.create<NVVM::BlockIdXOp>(loc, i32Ty);
-    Value blockIdY = rewriter.create<NVVM::BlockIdYOp>(loc, i32Ty);
+    Value blockIdX, blockIdY, blockIdZ, gridDimX, gridDimY, gridDimZ;
+    if (isHCU()) {
+      blockIdX = rewriter.create<ROCDL::BlockIdXOp>(loc, i32Ty);
+      blockIdY = rewriter.create<ROCDL::BlockIdYOp>(loc, i32Ty);
+      blockIdZ = rewriter.create<ROCDL::BlockIdZOp>(loc, i32Ty);
+      // OCKL's dimension getters return size_t, even though the launch counts
+      // and the barrier protocol use 32-bit integers.
+      auto i64Ty = IntegerType::get(ctx, 64);
+      gridDimX = b.trunc(i32Ty, rewriter.create<ROCDL::GridDimXOp>(loc, i64Ty));
+      gridDimY = b.trunc(i32Ty, rewriter.create<ROCDL::GridDimYOp>(loc, i64Ty));
+      gridDimZ = b.trunc(i32Ty, rewriter.create<ROCDL::GridDimZOp>(loc, i64Ty));
+    } else if (isMusa()) {
+      auto musaSreg = [&](StringRef name) -> Value {
+        return LLVM::createLLVMIntrinsicCallOp(rewriter, loc, name, i32Ty, {})
+            .getResult(0);
+      };
+      blockIdX = musaSreg("llvm.musa.read.ptx.sreg.ctaid.x");
+      blockIdY = musaSreg("llvm.musa.read.ptx.sreg.ctaid.y");
+      blockIdZ = musaSreg("llvm.musa.read.ptx.sreg.ctaid.z");
+      gridDimX = musaSreg("llvm.musa.read.ptx.sreg.nctaid.x");
+      gridDimY = musaSreg("llvm.musa.read.ptx.sreg.nctaid.y");
+      gridDimZ = musaSreg("llvm.musa.read.ptx.sreg.nctaid.z");
+    } else {
+#ifdef TRITON_MTHREADS_BACKEND
+      return op.emitOpError(
+          "CUDA NVVM grid ids are unavailable in the MUSA FlagCX build");
+#else
+      blockIdX = rewriter.create<NVVM::BlockIdXOp>(loc, i32Ty);
+      blockIdY = rewriter.create<NVVM::BlockIdYOp>(loc, i32Ty);
+      blockIdZ = rewriter.create<NVVM::BlockIdZOp>(loc, i32Ty);
+      gridDimX = rewriter.create<NVVM::GridDimXOp>(loc, i32Ty);
+      gridDimY = rewriter.create<NVVM::GridDimYOp>(loc, i32Ty);
+      gridDimZ = rewriter.create<NVVM::GridDimZOp>(loc, i32Ty);
+#endif
+    }
+    Value linearBlockId = blockIdZ;
     linearBlockId = b.add(b.mul(linearBlockId, gridDimY), blockIdY);
     linearBlockId = b.add(b.mul(linearBlockId, gridDimX), blockIdX);
 
@@ -242,7 +292,6 @@ struct DistributedBarrierOpConversion
 
     Value threadId = getThreadId(rewriter, loc);
     Value isThread0 = b.icmp_eq(threadId, b.i32_val(0));
-    Value blockIdZ = rewriter.create<NVVM::BlockIdZOp>(loc, i32Ty);
     Value isBlock0;
     if (isAxisGroup) {
       isBlock0 = b.icmp_eq(localRank, b.i32_val(0));
@@ -253,7 +302,6 @@ struct DistributedBarrierOpConversion
     }
     Value workerPred = isThread0;
 
-    Value gridDimZ = rewriter.create<NVVM::GridDimZOp>(loc, i32Ty);
     Value totalCTAs = b.mul(gridDimX, gridDimY);
     totalCTAs = b.mul(totalCTAs, gridDimZ);
     Value expectedCTAs = isAxisGroup ? b.i32_val(participantCount) : totalCTAs;
@@ -267,6 +315,14 @@ struct DistributedBarrierOpConversion
     Block *workerDoneBlock = rewriter.createBlock(endBlock);
 
     rewriter.setInsertionPointToEnd(curBlock);
+    // Every workitem must publish its global writes before the workgroup's
+    // representative announces arrival, including writes from other waves.
+    if (usesLlvmAtomics()) {
+      // LLVM FenceOp requires an explicit syncscope attr in this MLIR revision.
+      auto syncscope = rewriter.getStringAttr(isHCU() ? "agent" : "");
+      rewriter.create<LLVM::FenceOp>(loc, TypeRange{},
+                                     LLVM::AtomicOrdering::release, syncscope);
+    }
     rewriter.create<mlir::gpu::BarrierOp>(loc);
     rewriter.create<LLVM::CondBrOp>(loc, workerPred, workBlock, ValueRange{},
                                     doneBlock, ValueRange{});
@@ -277,6 +333,20 @@ struct DistributedBarrierOpConversion
     Value nb = b.select(isBlock0, gpuMasterAdd, b.i32_val(1));
 
     auto emitAtomAddReleaseGpu = [&](Value ptr, Value addVal) -> Value {
+      if (usesLlvmAtomics()) {
+        if (isHCU())
+          return rewriter.create<LLVM::AtomicRMWOp>(
+              loc, LLVM::AtomicBinOp::add, ptr, addVal,
+              LLVM::AtomicOrdering::release, StringRef("agent"));
+        return rewriter.create<LLVM::AtomicRMWOp>(
+            loc, LLVM::AtomicBinOp::add, ptr, addVal,
+            LLVM::AtomicOrdering::release);
+      }
+#ifdef TRITON_MTHREADS_BACKEND
+      (void)ptr;
+      (void)addVal;
+      llvm_unreachable("PTX atomics unavailable in MUSA FlagCX build");
+#else
       ::mlir::triton::PTXBuilder ptxBuilder;
       auto &atom = *ptxBuilder.create<>("atom.add.release.gpu.u32");
       auto *dstOpr = ptxBuilder.newOperand("=r", /*init=*/true);
@@ -284,14 +354,28 @@ struct DistributedBarrierOpConversion
       auto *addOpr = ptxBuilder.newOperand(addVal, "r");
       atom(dstOpr, ptrOpr, addOpr);
       return ptxBuilder.launch(rewriter, loc, i32Ty);
+#endif
     };
     auto emitLoadAcquireGpu = [&](Value ptr) -> Value {
+      if (usesLlvmAtomics()) {
+        auto load = rewriter.create<LLVM::LoadOp>(loc, i32Ty, ptr);
+        load.setOrdering(LLVM::AtomicOrdering::acquire);
+        if (isHCU())
+          load.setSyncscope("agent");
+        load.setAlignment(4);
+        return load;
+      }
+#ifdef TRITON_MTHREADS_BACKEND
+      (void)ptr;
+      llvm_unreachable("PTX atomics unavailable in MUSA FlagCX build");
+#else
       ::mlir::triton::PTXBuilder ptxBuilder;
       auto &ld = *ptxBuilder.create<>("ld.acquire.gpu.u32");
       auto *dstOpr = ptxBuilder.newOperand("=r", /*init=*/true);
       auto *ptrOpr = ptxBuilder.newAddrOperand(ptr, "l");
       ld(dstOpr, ptrOpr);
       return ptxBuilder.launch(rewriter, loc, i32Ty);
+#endif
     };
 
     Value oldArrive = emitAtomAddReleaseGpu(arrivedPtr, nb);
@@ -315,12 +399,21 @@ struct DistributedBarrierOpConversion
 
     rewriter.setInsertionPointToStart(endBlock);
     rewriter.create<mlir::gpu::BarrierOp>(loc);
+    if (usesLlvmAtomics()) {
+      auto syncscope = rewriter.getStringAttr(isHCU() ? "agent" : "");
+      rewriter.create<LLVM::FenceOp>(loc, TypeRange{},
+                                     LLVM::AtomicOrdering::acquire, syncscope);
+    }
     rewriter.eraseOp(op);
     return success();
   }
 
   LogicalResult lowerSubmeshBarrier(tle::DistributedBarrierOp op,
                                     ConversionPatternRewriter &rewriter) const {
+#ifdef TRITON_MTHREADS_BACKEND
+    (void)rewriter;
+    return op.emitOpError("cluster submesh barriers are not supported on MUSA");
+#else
     auto maskAttr = op->getAttrOfType<DenseI32ArrayAttr>(kGroupMaskAttr);
     if (!maskAttr) {
       return op.emitOpError("submesh lowering requires static group_mask attr");
@@ -488,6 +581,7 @@ struct DistributedBarrierOpConversion
     rewriter.create<mlir::gpu::BarrierOp>(loc);
     rewriter.eraseOp(op);
     return success();
+#endif
   }
 
   LogicalResult
@@ -550,6 +644,19 @@ struct DistributedBarrierOpConversion
     if (op->getAttrOfType<StringAttr>(kSpaceAttr))
       return lowerFlagCxSpaceBarrier(op, adaptor, rewriter);
 
+    if (isHCU() || isMusa()) {
+      auto kind = op.getGroupKindAttr();
+      if (!kind || kind.getValue() != "grid")
+        return op.emitOpError(
+            "cluster and cluster submesh barriers are not supported on this "
+            "backend");
+      auto mod = op->getParentOfType<ModuleOp>();
+      if (auto numCTAs = mod->getAttrOfType<IntegerAttr>("ttg.num-ctas"))
+        if (numCTAs.getInt() != 1)
+          return op.emitOpError("grid barrier requires num_ctas=1");
+      return lowerGridBarrier(op, rewriter);
+    }
+
     if (auto kindAttr = op->getAttrOfType<StringAttr>(kGroupKindAttr)) {
       if (kindAttr.getValue() == "grid" || kindAttr.getValue() == "grid_axis")
         return lowerGridBarrier(op, rewriter);
@@ -565,6 +672,7 @@ struct DistributedBarrierOpConversion
 
 void tle::populateDistributedBarrierOpToLLVMPatterns(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
-    PatternBenefit benefit) {
-  patterns.add<DistributedBarrierOpConversion>(typeConverter, benefit);
+    PatternBenefit benefit, const TargetInfoBase *targetInfo) {
+  patterns.add<DistributedBarrierOpConversion>(typeConverter, benefit,
+                                               targetInfo);
 }

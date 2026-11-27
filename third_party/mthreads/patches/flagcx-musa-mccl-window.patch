@@ -1,0 +1,84 @@
+--- /dev/fd/63	2026-11-25 16:14:29.887732053 +0800
++++ b/flagcx/adaptor/ccl/musa_mccl_adaptor.cc
+@@ -50,7 +50,13 @@
+ }
+ 
+ flagcxResult_t mcclAdaptorCommDestroy(flagcxInnerComm_t comm) {
+-  return (flagcxResult_t)mcclCommDestroy(comm->base);
++  if (comm == NULL)
++    return flagcxInvalidArgument;
++  flagcxResult_t result = (flagcxResult_t)mcclCommDestroy(comm->base);
++  if (result != flagcxSuccess)
++    return result;
++  free(comm);
++  return flagcxSuccess;
+ }
+ 
+ flagcxResult_t mcclAdaptorCommAbort(flagcxInnerComm_t comm) {
+@@ -85,22 +91,22 @@
+                                                (mcclResult_t *)asyncError);
+ }
+ 
+-// TODO: unsupported
+ flagcxResult_t mcclAdaptorMemAlloc(void **ptr, size_t size) {
+-  return flagcxNotSupported;
++  return (flagcxResult_t)mcclMemAlloc(ptr, size);
+ }
+ 
+-// TODO: unsupported
+-flagcxResult_t mcclAdaptorMemFree(void *ptr) { return flagcxNotSupported; }
++flagcxResult_t mcclAdaptorMemFree(void *ptr) {
++  return (flagcxResult_t)mcclMemFree(ptr);
++}
+ 
+-// TODO: unsupported
+-flagcxResult_t mcclAdaptorCommRegister(flagcxInnerComm_t comm, void *buff,
+-                                       size_t size, void **handle) {
++// Buffer registration without a window is not exposed by this MCCL build.
++flagcxResult_t mcclAdaptorCommRegister(flagcxInnerComm_t /*comm*/, void * /*buff*/,
++                                       size_t /*size*/, void ** /*handle*/) {
+   return flagcxNotSupported;
+ }
+ 
+-// TODO: unsupported
+-flagcxResult_t mcclAdaptorCommDeregister(flagcxInnerComm_t comm, void *handle) {
++flagcxResult_t mcclAdaptorCommDeregister(flagcxInnerComm_t /*comm*/,
++                                         void * /*handle*/) {
+   return flagcxNotSupported;
+ }
+ 
+@@ -108,12 +114,32 @@
+                                              size_t size,
+                                              flagcxInnerWindow_t *win,
+                                              int winFlags) {
+-  return flagcxNotSupported;
++  if (winFlags != FLAGCX_WIN_SYMMETRIC && winFlags != FLAGCX_WIN_COLL_SYMMETRIC)
++    return flagcxNotSupported;
++  if (*win == NULL) {
++    FLAGCXCHECK(flagcxCalloc(win, 1));
++  }
++  mcclWindow_t mcclWin = NULL;
++  // MCCL 2.11 exposes MCCL_WIN_COLL_SYMMETRIC for symmetric peer access.
++  flagcxResult_t res = (flagcxResult_t)mcclCommWindowRegister(
++      comm->base, buff, size, &mcclWin, MCCL_WIN_COLL_SYMMETRIC);
++  if (res == flagcxSuccess) {
++    (*win)->base = mcclWin;
++    (*win)->winFlags = winFlags;
++  } else {
++    free(*win);
++    *win = NULL;
++  }
++  return res;
+ }
+ 
+ flagcxResult_t mcclAdaptorCommWindowDeregister(flagcxInnerComm_t comm,
+                                                flagcxInnerWindow_t win) {
+-  return flagcxNotSupported;
++  flagcxResult_t res =
++      (flagcxResult_t)mcclCommWindowDeregister(comm->base, win->base);
++  if (res == flagcxSuccess)
++    free(win);
++  return res;
+ }
+ 
+ flagcxResult_t mcclAdaptorReduce(const void *sendbuff, void *recvbuff,

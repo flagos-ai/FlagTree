@@ -29,7 +29,9 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
+#ifndef TRITON_MTHREADS_BACKEND
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#endif
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "tle/dialect/include/IR/Dialect.h"
@@ -39,6 +41,19 @@
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Tools/LayoutUtils.h"
 #include "llvm/Support/raw_ostream.h"
+
+#ifdef TRITON_MTHREADS_BACKEND
+// mthreads Utility.h does not provide emitPadding; FlagCX remote_pointers
+// never need the padded-shared local_pointers path.
+namespace mlir::triton {
+static inline Value emitPadding(Location, RewriterBase &,
+                                triton::gpu::PaddedSharedEncodingAttr, unsigned,
+                                Value, bool) {
+  llvm_unreachable("padded shared encoding unsupported on MUSA FlagCX path");
+}
+} // namespace mlir::triton
+#endif
+
 namespace {
 
 using namespace mlir;
@@ -67,6 +82,13 @@ static std::optional<int> getScalarBitWidth(Type ty) {
 // (addrspace=7).
 Value mapSharedToClusterPointer(ConversionPatternRewriter &rewriter,
                                 Location loc, Value ptr, Value ctaId) {
+#ifdef TRITON_MTHREADS_BACKEND
+  (void)rewriter;
+  (void)loc;
+  (void)ptr;
+  (void)ctaId;
+  return Value();
+#else
   auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(ptr.getType());
   if (!ptrTy)
     return Value();
@@ -81,6 +103,7 @@ Value mapSharedToClusterPointer(ConversionPatternRewriter &rewriter,
   auto clusterPtrTy =
       LLVM::LLVMPointerType::get(rewriter.getContext(), clusterSharedAddrSpace);
   return NVVM::MapaOp::create(rewriter, loc, clusterPtrTy, ptr, ctaId);
+#endif
 }
 
 // Declare the external flagcxGetIntraPointerC function in the LLVM IR module.
@@ -442,8 +465,6 @@ LogicalResult lowerDeviceSpace(Location loc, Value mem_ptr,
 
   auto ctx = rewriter.getContext();
   auto genericPtrTy = LLVM::LLVMPointerType::get(ctx);
-  auto globalPtrTy = LLVM::LLVMPointerType::get(
-      ctx, static_cast<unsigned>(NVVM::NVVMMemorySpace::Global));
   Value comm_dev_ptr =
       rewriter.create<LLVM::IntToPtrOp>(loc, genericPtrTy, memPtr);
 
@@ -451,10 +472,13 @@ LogicalResult lowerDeviceSpace(Location loc, Value mem_ptr,
       loc, TypeRange{func.getFunctionType().getReturnType()},
       FlatSymbolRefAttr::get(func), ValueRange{comm_dev_ptr, byteOffset, peer});
 
-  // The external C ABI returns a generic pointer. The remote tensor remains
-  // global memory, so restore AS1 explicitly at the call boundary.
-  Value peerPtr = rewriter.create<LLVM::AddrSpaceCastOp>(
-      loc, globalPtrTy, getPeerPtrCall.getResult());
+  // FlagCX returns a generic AS0 pointer. MUSA (and CUDA) Triton loads need
+  // global AS1; without the cast, mtgpu kernel loads of UVA/IPC addresses
+  // illegally fault even though host memcpy of the same VA succeeds.
+  constexpr unsigned kGlobalAddrSpace = 1;
+  auto globalPtrTy = LLVM::LLVMPointerType::get(ctx, kGlobalAddrSpace);
+  Value peerPtr = LLVM::AddrSpaceCastOp::create(
+      rewriter, loc, globalPtrTy, getPeerPtrCall.getResult());
   resultPtrs.push_back(peerPtr);
 
   return success();

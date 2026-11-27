@@ -32,7 +32,12 @@ import triton.language.core as tl
 try:
     from triton._C.libtriton.tle import attr, utils
 except ImportError:
-    pass
+    try:
+        # mthreads builds keep the standalone tle plugin disabled and expose
+        # FlagCX attr/utils under the backend module instead.
+        from triton._C.libtriton.mthreads.tle import attr, utils
+    except ImportError:
+        pass
 if TYPE_CHECKING:
     from . import TLESemantic
 
@@ -64,12 +69,33 @@ def _parse_src_arg(builder, src, index=0):
     try:
         from triton.runtime import DistributedRtContext
         src = tl._unwrap_if_constexpr(src)
+        # Runtime (mem, comm) tensor pair — required on MUSA where constexpr
+        # absolute device addresses illegally fault inside kernels.
+        # Inside @triton.jit, `(a, b)` is tl.tuple, not a Python tuple.
+        is_pair = isinstance(src, (tuple, list)) or type(src).__name__ == "tuple"
+        if is_pair and len(src) >= 2:
+            el = tl._unwrap_if_constexpr(src[index])
+            if isinstance(el, tl.tensor):
+                return el.handle
+            if isinstance(el, int):
+                return builder.get_int64(el)
         if isinstance(src, DistributedRtContext):
+            # MUSA rejects constexpr absolute device addresses baked as
+            # inttoptr immediates. Require the runtime (mem, comm) pair path.
+            from triton._flagtree_backend import FLAGTREE_BACKEND
+            if FLAGTREE_BACKEND in ("mthreads", "musa", "mtgpu"):
+                raise TypeError(
+                    "On MUSA/mthreads, do not pass DistributedRtContext as "
+                    "tl.constexpr device_dptr. Use tle.runtime_device_dptr(ctx) "
+                    "and pass (mem_ptr, comm_ptr) as do_not_specialize i64 args, "
+                    "then rebuild device_dptr=(mem_ptr, comm_ptr) in the kernel.")
             return builder.get_int64(src[index])
         elif src:
             return src.handle
         else:
             return None
+    except TypeError:
+        raise
     except Exception:
         return src.handle
 

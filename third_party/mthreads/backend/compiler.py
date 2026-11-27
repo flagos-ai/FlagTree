@@ -17,6 +17,13 @@ import shlex
 import subprocess
 import tempfile
 
+try:
+    from .distributed import Distributed, extern_libs_hash, link_flagcx
+except ImportError:  # FlagCX wiring optional when the module is absent
+    Distributed = None
+    extern_libs_hash = None
+    link_flagcx = None
+
 _DEFAULT_MUSA_PREFIX = "/usr/local/musa"
 
 # FlagGems uses this feature level to distinguish a backend that turns known
@@ -836,6 +843,129 @@ def _llc_opt_level(options: "MUSAOptions") -> str:
     return level
 
 
+def _rewrite_flagcx_peer_loads_to_generic(ir_text: str) -> str:
+    """Cast FlagCX generic (AS0) global loads/stores to AS1 for MUSA.
+
+    Host memcpy of FlagCX UVA/IPC addresses works, but mtgpu kernel loads of the
+    same addresses as plain AS0 pointers illegally fault. Upgrade remaining
+    non-atomic generic load/store operands to global AS1.
+    """
+    out = []
+    cast_id = 0
+    # No trailing \b: inttoptr (...) ends with ')' which is non-word, so \b
+    # would fail before the following comma and skip Window metadata loads.
+    load_re = re.compile(
+        r"\b(load(?! atomic)\b[^,\n]*),\s*ptr (?!addrspace)(%[\w.]+|inttoptr \([^)]+\))")
+    store_re = re.compile(
+        r"\b(store(?! atomic)\b[^,\n]*,)\s*ptr (?!addrspace)(%[\w.]+|inttoptr \([^)]+\))")
+    for line in ir_text.splitlines(keepends=True):
+        if "atomic" in line:
+            out.append(line)
+            continue
+        m = load_re.search(line) or store_re.search(line)
+        if m:
+            ptr = m.group(2)
+            cast_id += 1
+            cname = f"%flagcx.gcast.{cast_id}"
+            indent = re.match(r"^(\s*)", line).group(1)
+            if ptr.startswith("inttoptr"):
+                # Inline form is `inttoptr (i64 N to ptr)`; instruction form
+                # drops the parentheses: `inttoptr i64 N to ptr`.
+                tmp = f"%flagcx.gptr.{cast_id}"
+                insn = re.sub(r"^inttoptr\s*\((.*)\)$", r"inttoptr \1", ptr.strip())
+                out.append(f"{indent}{tmp} = {insn}\n")
+                out.append(
+                    f"{indent}{cname} = addrspacecast ptr {tmp} to ptr addrspace(1)\n")
+                line = line.replace(f"ptr {ptr}", f"ptr addrspace(1) {cname}", 1)
+            else:
+                out.append(
+                    f"{indent}{cname} = addrspacecast ptr {ptr} to ptr addrspace(1)\n")
+                line = line.replace(f"ptr {ptr}", f"ptr addrspace(1) {cname}", 1)
+        out.append(line)
+    return "".join(out)
+
+
+def _rewrite_flagcx_musa_atomics_for_llc(ir_text: str) -> str:
+    """Rewrite FlagCX atomics into forms mtgpu llc can select.
+
+    Bundled llc rejects syncscope("musa_system") and AtomicLoad on generic/AS5
+    pointers. Cast atomic operands to global AS1 and use musa_device scope.
+    """
+    text = ir_text.replace('syncscope("musa_system")', 'syncscope("musa_device")')
+    text = text.replace('syncscope("agent")', 'syncscope("musa_device")')
+    out = []
+    cast_id = 0
+    patterns = (
+        re.compile(r"\bload atomic(?: volatile)? \S+,\s*ptr (?!addrspace)(%[\w.]+)\b"),
+        re.compile(r"\bstore atomic(?: volatile)? \S+ %[\w.]+,\s*ptr (?!addrspace)(%[\w.]+)\b"),
+        re.compile(r"\batomicrmw \S+,\s*ptr (?!addrspace)(%[\w.]+)\b"),
+    )
+    for line in text.splitlines(keepends=True):
+        for pattern in patterns:
+            m = pattern.search(line)
+            if not m:
+                continue
+            ptr = m.group(1)
+            cast_id += 1
+            cname = f"%flagcx.ascast.{cast_id}"
+            indent = re.match(r"^(\s*)", line).group(1)
+            out.append(f"{indent}{cname} = addrspacecast ptr {ptr} to ptr addrspace(1)\n")
+            line = line.replace(f"ptr {ptr}", f"ptr addrspace(1) {cname}", 1)
+            break
+        out.append(line)
+    return "".join(out)
+
+
+def _internalize_flagcx_functions(ir_text: str) -> str:
+    """Make FlagCX helpers internal so -shared mubin links without REL32."""
+    out = []
+    for line in ir_text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if stripped.startswith("define ") and "@flagcx" in line and "define internal " not in line:
+            replaced = False
+            for linkage in ("protected ", "hidden ", "external ", "weak_odr ",
+                            "weak ", "linkonce_odr ", "linkonce "):
+                token = f"define {linkage}"
+                if token in line:
+                    line = line.replace(token, "define internal ", 1)
+                    replaced = True
+                    break
+            if not replaced:
+                line = re.sub(r"^(\s*define\s+)", r"\1internal ", line, count=1)
+        out.append(line)
+    return "".join(out)
+
+
+def _rewrite_unrealized_ptr_addrspacecasts(mod):
+    """Turn unrealized AS0→ASn pointer casts into real llvm.addrspacecast.
+
+    MUSA device loads of FlagCX UVA/IPC pointers need global AS1.
+    """
+    import tempfile
+    from pathlib import Path
+
+    text = mod.str() if hasattr(mod, "str") else str(mod)
+    if "unrealized_conversion_cast" not in text:
+        return mod
+
+    new_text, n = re.subn(
+        r"builtin\.unrealized_conversion_cast\s+(%[\w.\d]+)\s*:"
+        r"\s*(!llvm\.ptr)\s+to\s+(!llvm\.ptr(?:<\d+>)?)",
+        r"llvm.addrspacecast \1 : \2 to \3",
+        text,
+    )
+    if n == 0:
+        return mod
+
+    with tempfile.NamedTemporaryFile("w", suffix=".mlir", delete=False) as f:
+        f.write(new_text)
+        path = Path(f.name)
+    try:
+        return ir.parse_mlir_module(str(path), mod.context)
+    finally:
+        path.unlink(missing_ok=True)
+
+
 @dataclass(frozen=True)
 class MUSAOptions:
     sqmma_descriptor_abi: str = "pointer"
@@ -892,6 +1022,8 @@ class MUSAOptions:
             extern_libs["libdevice"] = knobs.musa.libdevice_path or str(default_libdir / "libdevice.31.bc")
         if self.arch is not None and _capability_from_arch(self.arch) == 31 and not extern_libs.get("printf", None):
             extern_libs["printf"] = knobs.musa.libprintf_path or str(default_libdir / "libprintf.bc")
+        if Distributed is not None and "flagcx" not in extern_libs:
+            extern_libs.update(Distributed().get_extern_libs())
         object.__setattr__(self, "extern_libs", tuple(extern_libs.items()))
         assert self.num_warps > 0 and (self.num_warps & (self.num_warps - 1)) == 0, \
             "num_warps must be a power of 2"
@@ -910,7 +1042,10 @@ class MUSAOptions:
         hash_dict["llc_asm_tool_signature"] = _tool_version_signature(llc_asm_path or "")
         hash_dict["musa_k128_sqmma_opt_in_live"] = os.getenv("TRITON_MUSA_ENABLE_K128_SQMMA", "") == "1"
         if hash_dict["extern_libs"]:
-            hash_dict["extern_libs"] = tuple((k, file_hash(v)) for k, v in sorted(hash_dict["extern_libs"]))
+            if extern_libs_hash is not None:
+                hash_dict["extern_libs"] = extern_libs_hash(hash_dict["extern_libs"])
+            else:
+                hash_dict["extern_libs"] = tuple((k, file_hash(v)) for k, v in sorted(hash_dict["extern_libs"]))
         key = "_".join([f"{name}-{val}" for name, val in sorted(hash_dict.items())])
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
@@ -1343,19 +1478,32 @@ class MUSABackend(BaseBackend):
 
         pm.run(mod, "make_llir")
 
+        # Temporary MUSA FlagCX escape: leftover AS0→AS1 unrealized casts from
+        # remote peer pointers must become llvm.addrspacecast before translation.
+        mod = _rewrite_unrealized_ptr_addrspacecasts(mod)
+
         llvm.init_targets()
         context = llvm.context()
         llvm_mod = llvm.to_module(mod, context)
         mthreads.attach_datalayout(llvm_mod)
 
+        if link_flagcx is not None:
+            link_flagcx(llvm_mod, options.extern_libs, llvm, options.arch)
+            # Bundled mtgpu llc currently crashes (≥ -O1) on FlagCX device IR.
+            # make_mubin drops to -O0 when this flag is set.
+            if dict(options.extern_libs or ()).get("flagcx"):
+                metadata["uses_flagcx"] = True
         if options.extern_libs:
-            inline_paths = [path for (name, path) in options.extern_libs if name != "printf"]
+            inline_paths = [
+                path for (name, path) in options.extern_libs if name not in ("printf", "flagcx")
+            ]
             printf_paths = [path for (name, path) in options.extern_libs if name == "printf"]
             if inline_paths:
                 llvm.link_extern_libs(llvm_mod, inline_paths)
             if printf_paths:
                 llvm.link_extern_libs(llvm_mod, printf_paths, force_inline=False)
 
+        # Still run O3 so alwaysinline FlagCX helpers dissolve before llc.
         MUSABackend._optimize_llir_module(llvm_mod, metadata, capability)
         metadata["readonly_register_fence_count"] = (mthreads.lower_dead_tied_register_fences(llvm_mod)
                                                      if options.lower_dead_tied_register_fences else 0)
@@ -1412,6 +1560,10 @@ class MUSABackend(BaseBackend):
                                f"(default {_DEFAULT_MUSA_PREFIX}).")
 
         ir_text = src
+        if metadata.get("uses_flagcx"):
+            ir_text = _rewrite_flagcx_peer_loads_to_generic(ir_text)
+            ir_text = _rewrite_flagcx_musa_atomics_for_llc(ir_text)
+            ir_text = _internalize_flagcx_functions(ir_text)
         if opt.sqmma_descriptor_abi in ("sdk_scalar", "sdk_scalar_volatile"):
             ir_text = _sdk_sqmma_descriptor_compat(ir_text, volatile=opt.sqmma_descriptor_abi.endswith("_volatile"))
         llc_major = _detect_llvm_major_version(llc_path)
@@ -1429,7 +1581,9 @@ class MUSABackend(BaseBackend):
             print(ir_text)
 
         capability = _capability_from_arch(arch)
-        llc_opt_level = _llc_opt_level(opt)
+        # FlagCX-linked kernels: bundled llc crashes in MachineDominatorTree / ISel
+        # at -O1/-O2; -O0 is a known-good workaround until the bitcode/llc gap closes.
+        llc_opt_level = "-O0" if metadata.get("uses_flagcx") else _llc_opt_level(opt)
         llc_opts = [
             "-march=mtgpu",
             f"-mcpu=mp_{capability}",
@@ -1437,7 +1591,11 @@ class MUSABackend(BaseBackend):
             llc_opt_level,
             "-filetype=obj",
         ]
-        llc_opts.extend(_llc_extra_options(metadata, opt, capability))
+        if not metadata.get("uses_flagcx"):
+            llc_opts.extend(_llc_extra_options(metadata, opt, capability))
+        else:
+            # Skip -mtgpu-enable-const-calc and other O2-oriented extras.
+            pass
 
         tmp_dir = tempfile.mkdtemp(prefix="triton-musa-")
         tmp_path = Path(tmp_dir)
@@ -1480,6 +1638,10 @@ class MUSABackend(BaseBackend):
                     print("// -----// MUASM Dump //----- //")
                     print(asm_file.read_text())
 
+            # FlagCX helpers are separate functions in the same module; PIC
+            # avoids REL32 against non-preemptible locals under -shared.
+            if metadata.get("uses_flagcx"):
+                llc_opts = list(llc_opts) + ["-relocation-model=pic"]
             llc_cmd = [llc_path, str(ll_file), *llc_opts, "-o", str(obj_file)]
             _run_tool_command(
                 "llc",
@@ -1488,7 +1650,8 @@ class MUSABackend(BaseBackend):
                 dump_log=knobs.musa.dump_toolchain_log,
             )
 
-            lld_cmd = [lld_path, "-flavor", "gnu", "-shared", str(obj_file), "-o", str(mubin_file)]
+            lld_cmd = [lld_path, "-flavor", "gnu", "-shared", "-Bsymbolic",
+                       str(obj_file), "-o", str(mubin_file)]
             _run_tool_command(
                 "ld.lld",
                 lld_cmd,
