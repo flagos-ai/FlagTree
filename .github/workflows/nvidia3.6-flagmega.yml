@@ -65,10 +65,6 @@ jobs:
         with:
           backend: nvidia
 
-      - name: Cleanup FlagTree Environment
-        if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
-        uses: flagos-ai/FlagTree/.github/actions/cleanup-flagtree-env@main
-
       - name: Detect Target Branch
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
         shell: bash
@@ -80,7 +76,14 @@ jobs:
         shell: bash
         run: |
           source ~/env-3.6.sh
-          MAX_JOBS=32 python3 -m pip install '.[flagmega]' pytest safetensors --no-build-isolation -v
+          FLAGMEGA_VENV="$(mktemp -d "$RUNNER_TEMP/flagmega-venv.XXXXXX")"
+          python3 -m venv --without-pip --system-site-packages "$FLAGMEGA_VENV"
+          source "$FLAGMEGA_VENV/bin/activate"
+          # Reuse the runner's CUDA PyTorch. Install the newer protobuf required
+          # by FlagMega's OR-Tools in this job's environment.
+          PIP_CONSTRAINT=/dev/null MAX_JOBS=32 python3 -m pip install \
+            '.[flagmega]' pytest safetensors --no-build-isolation -v
+          echo "FLAGMEGA_VENV=$FLAGMEGA_VENV" >> "$GITHUB_ENV"
 
       - name: Clear cache if ClearCache label present
         if: ${{ steps.check_backend.outputs.should_skip != 'true' }}
@@ -94,4 +97,5 @@ jobs:
         shell: bash
         run: |
           source ~/env.sh
+          source "$FLAGMEGA_VENV/bin/activate"
           python3 -m pytest -s python/test/flagmega
