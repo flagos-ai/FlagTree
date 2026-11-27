@@ -56,6 +56,14 @@ class FlagcxRuntimeConfig:
         spec = PathFinder.find_spec("flagcx", sys.path)
         return Path(spec.origin).parent if spec is not None else None
 
+    def is_dev_mode(self):
+        ENVS = ("DIST_DEV", "DEV_MODE", "FLAGCX_DEV")
+        for env in ENVS:
+            env_value = os.environ.get(env, "0")
+            if env_value in ("1", "true", "True", "ON"):
+                return True
+        return False
+
     def _is_available(self):
         env_keys = ("USE_FLAGCX", "USE_DIST", "USE_DISTRIBUTED", "USE_TLE_DIST", "USE_TLE_DISTRIBUTED")
         user_action = True
@@ -63,6 +71,9 @@ class FlagcxRuntimeConfig:
             user_action = os.environ.get(key) not in ('OFF', '0', 'false')
             if not user_action:
                 return False
+
+        if self._get_flagcx_wheel_path() is None and not self.is_dev_mode():
+            return False
         try:
             return flagcx_packages_detector()
         except ImportError:
