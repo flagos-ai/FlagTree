@@ -1,4 +1,4 @@
-#include "FlagCxOpToLLVM/FlagcxUtils.h"
+#include "triton/Conversion/TritonXPUToLLVM/FlagCxOpToLLVM/FlagcxUtils.h"
 #include "PatternTritonXPUOpToLLVM.h"
 
 #include "mlir/Conversion/LLVMCommon/Pattern.h"

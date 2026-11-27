@@ -1,6 +1,6 @@
 #include "triton/Conversion/TritonXPUToLLVM/FlagCxOpToLLVM/DeviceInitOpToLLVM.h"
 
-#include "FlagcxUtils.h"
+#include "triton/Conversion/TritonXPUToLLVM/FlagCxOpToLLVM/FlagcxUtils.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"

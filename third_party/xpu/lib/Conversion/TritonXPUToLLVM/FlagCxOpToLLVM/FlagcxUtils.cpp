@@ -1,4 +1,4 @@
-#include "FlagcxUtils.h"
+#include "triton/Conversion/TritonXPUToLLVM/FlagCxOpToLLVM/FlagcxUtils.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "llvm/ADT/StringMap.h"
