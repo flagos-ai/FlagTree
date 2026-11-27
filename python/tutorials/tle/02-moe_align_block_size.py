@@ -143,11 +143,14 @@ def round_up(x: int, y: int) -> int:
     return ((x + y - 1) // y) * y
 
 
-def _cusparse_include_paths() -> List[str]:
+def _nvidia_cuda_include_paths() -> List[str]:
     package_headers = (
         ("nvidia-cusparse-cu12", "nvidia/cusparse/include/cusparse.h"),
         ("nvidia-cusparse-cu13", "nvidia/cu13/include/cusparse.h"),
         ("nvidia-cusparse", "nvidia/cu13/include/cusparse.h"),
+        ("nvidia-cusolver-cu12", "nvidia/cusolver/include/cusolverDn.h"),
+        ("nvidia-cusolver-cu13", "nvidia/cu13/include/cusolverDn.h"),
+        ("nvidia-cusolver", "nvidia/cu13/include/cusolverDn.h"),
     )
     include_paths = []
     for package, header in package_headers:
@@ -1003,7 +1006,7 @@ inline uint32_t next_pow2(uint32_t x) noexcept {
             cuda_sources=[kernel_src],
             functions=None,
             extra_cuda_cflags=["-O3"],
-            extra_include_paths=_cusparse_include_paths(),
+            extra_include_paths=_nvidia_cuda_include_paths(),
             with_cuda=True,
             verbose=False,
         )
@@ -1071,7 +1074,7 @@ def _load_embedded_yiakwy_cuda_moe_align() -> Optional[Callable]:
             cuda_sources=[kernel_src],
             functions=None,
             extra_cuda_cflags=["-O3"],
-            extra_include_paths=_cusparse_include_paths(),
+            extra_include_paths=_nvidia_cuda_include_paths(),
             with_cuda=True,
             verbose=False,
         )
