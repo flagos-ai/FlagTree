@@ -129,11 +129,11 @@ jobs:
           fi
           ## flagtree tle python tutorials
           python3 python/tutorials/tle/01-fft.py
-          python3 python/tutorials/tle/02-moe_align_block_size.py
+          python3 python/tutorials/tle/02-moe_align_block_size.py --only_unit_test
           python3 python/tutorials/tle/03-topk.py
           python3 python/tutorials/tle/04-cluster-gemm.py
-          python3 python/tutorials/tle/deepseek_v32/01-topk_selector.py
-          python3 python/tutorials/tle/deepseek_v32/02-sparse-mla.py
+          python3 python/tutorials/tle/deepseek_v32/01-topk_selector.py --only_unit_test
+          python3 python/tutorials/tle/deepseek_v32/02-sparse-mla.py --only_unit_test
           ## flagtree tle python unit test
           export CLANG=/usr/local/lib/python3.12/dist-packages/mlir/llvm_artifact/bin/clang-22
           python3 -m pytest -s python/test/tle/integration
