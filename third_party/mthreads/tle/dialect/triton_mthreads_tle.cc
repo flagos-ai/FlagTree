@@ -7,6 +7,7 @@
 #include "TritonMUSACommon/TMEUtils.h"
 #include "TritonMUSAGPUTransforms/Passes.h"
 #include "ir.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Matchers.h"
@@ -924,6 +925,16 @@ void init_triton_musa_tle_ir(py::module m) {
                  resultType, src,
                  self.getBuilder().getI64IntegerAttr(offsetBytes));
            })
+#ifdef __FLAGTREE_COMMON_IR__
+      .def("create_tile_buffer_from_memdesc",
+           [](TritonOpBuilder &self, mlir::Type resultType,
+              mlir::Value src) -> mlir::Value {
+             return self
+                 .create<mlir::UnrealizedConversionCastOp>(
+                     mlir::TypeRange{resultType}, mlir::ValueRange{src})
+                 .getResult(0);
+           })
+#endif
       .def("create_memdesc_subslice",
            [](TritonOpBuilder &self, mlir::Type resultType, mlir::Value src,
               std::vector<int32_t> offsets) -> mlir::Value {
