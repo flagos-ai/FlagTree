@@ -4002,6 +4002,15 @@ _BENCH_XVALS = [
     (64, 131072, 2048),
     (64, 524288, 2048),
 ]
+_ONLY_UNIT_TEST_SKIPPED_XVALS = {
+    (1, 262144, 2048),
+    (1, 524288, 2048),
+    (64, 4096, 128),
+    (64, 8192, 256),
+    (64, 32768, 1024),
+    (64, 32768, 2048),
+    (64, 524288, 2048),
+}
 _PERF_TOPK2048_XVALS = [(batch, seq_len, 2048) for batch in (1, 132, 4096) for seq_len in (2048, 4096, 16384, 65536)]
 _TILELANG_SKIP_SEQ_LEN_MIN = 262144
 
@@ -4328,7 +4337,7 @@ def _parse_providers(raw):
 
 
 def run_bench(block_size, warmup, rep, show_plots, providers=None, bench_x_vals=None, quick_bench=False,
-              max_seq_len=None, perf_topk2048_cases=False):
+              max_seq_len=None, perf_topk2048_cases=False, only_unit_test=False):
     bench = benchmark.benchmarks
 
     x_vals = list(_PERF_TOPK2048_XVALS) if perf_topk2048_cases else list(_BENCH_XVALS)
@@ -4338,6 +4347,8 @@ def run_bench(block_size, warmup, rep, show_plots, providers=None, bench_x_vals=
         x_vals = [v for v in x_vals if v[1] <= max_seq_len]
     if bench_x_vals is not None:
         x_vals = list(bench_x_vals)
+    if only_unit_test:
+        x_vals = [v for v in x_vals if v not in _ONLY_UNIT_TEST_SKIPPED_XVALS]
     if not x_vals:
         raise ValueError("no benchmark x_vals left after filtering")
 
@@ -4387,6 +4398,7 @@ def main(argv=None):
     parser.add_argument("--show_plots", action="store_true", help="show plots in benchmark")
     parser.add_argument("--skip_correctness", action="store_true", help="skip correctness check")
     parser.add_argument("--skip_bench", action="store_true", help="skip benchmark")
+    parser.add_argument("--only_unit_test", action="store_true", help="skip selected benchmark cases")
     parser.add_argument(
         "--providers",
         type=str,
@@ -4443,6 +4455,7 @@ def main(argv=None):
             quick_bench=args.quick_bench,
             max_seq_len=args.max_seq_len,
             perf_topk2048_cases=args.perf_topk2048_cases,
+            only_unit_test=args.only_unit_test,
         )
 
 
