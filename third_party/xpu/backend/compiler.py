@@ -493,8 +493,7 @@ class XPUBackend(BaseBackend):
                 xpu.passes.ttsdnnir.add_tritonsdnn_ew_act_table_pass(pm, None)
             xpu.passes.ttsdnnir.add_tritonsdnn_loop_grid_pass(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_hoist_loop_invariant_dma_pass(pm, opt.arch)
-            xpu.passes.ttsdnnir.add_tritonsdnn_pipeline_pass(
-                pm, opt.arch)
+            xpu.passes.ttsdnnir.add_tritonsdnn_pipeline_pass(pm, opt.arch)
             xpu.passes.ttsdnnir.add_tritonsdnn_multi_buffer_pass(pm, opt.arch, opt.num_stages)
             xpu.passes.ttsdnnir.add_tritonsdnn_lower_rc_subview_pass(pm, opt.arch)
             passes.common.add_symbol_dce(pm)
@@ -600,13 +599,11 @@ class XPUBackend(BaseBackend):
             # "uni_sram, Required: 0, Hardware limit: 0" points triage at a
             # memory budget that was never the problem.
             msg = str(e)
-            budget = re.search(
-                r"Buffer alloc failed in (\w+): min required = (\d+) bytes"
-                r".*?hardware limit = (\d+)", msg, re.DOTALL)
+            budget = re.search(r"Buffer alloc failed in (\w+): min required = (\d+) bytes"
+                               r".*?hardware limit = (\d+)", msg, re.DOTALL)
             if budget is None:
                 raise
-            raise OutOfResources(int(budget.group(2)), int(budget.group(3)),
-                                 f"{budget.group(1)} ({msg})") from e
+            raise OutOfResources(int(budget.group(2)), int(budget.group(3)), f"{budget.group(1)} ({msg})") from e
 
         return mod
 
@@ -676,8 +673,7 @@ class XPUBackend(BaseBackend):
             for fn, info in lut_info.items():
                 # `fn` is `<function>@<slot>`: one slot per window, so a
                 # kernel can hold two `exp` tables over different ranges.
-                table = get_range_table(fn.split("@")[0], info.dtype, info.mode,
-                                        info.size, info.min, info.interval)
+                table = get_range_table(fn.split("@")[0], info.dtype, info.mode, info.size, info.min, info.interval)
                 mid = len(table) // 2
                 k += table[:mid]
                 b += table[mid:]

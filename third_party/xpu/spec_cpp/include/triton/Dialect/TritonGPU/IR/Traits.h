@@ -52,7 +52,8 @@ class LocalLoadTrait
 // again.  The allocator keeps such a buffer live to the end of the function
 // (`lib/Analysis/Allocation.cpp`): the memdesc value's own liveness ends at
 // this op, and reusing its bytes would hand the next buffer to a pointer that
-// is still in use.  A backend's local-base-pointer op (tle.gpu.local_ptr) carries it.
+// is still in use.  A backend's local-base-pointer op (tle.gpu.local_ptr)
+// carries it.
 template <typename ConcreteType>
 class SharedAddressEscapeTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, SharedAddressEscapeTrait> {

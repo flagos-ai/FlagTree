@@ -13,8 +13,8 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/Metadata.h"
 #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Verifier.h"
@@ -676,9 +676,8 @@ using ret = py::return_value_policy;
 // Runs both before the O3 pipeline and at the VectorizerStartEP callback (after
 // LoopSimplify/LoopRotate canonicalize multi-latch or late-materialized loops
 // into single-latch form, right before LoopVectorize).
-static void setScalarLoopHintsOnFunction(llvm::Function &f,
-                                         llvm::LoopInfo &li, unsigned width,
-                                         unsigned interleave) {
+static void setScalarLoopHintsOnFunction(llvm::Function &f, llvm::LoopInfo &li,
+                                         unsigned width, unsigned interleave) {
   if (f.isDeclaration())
     return;
   llvm::LLVMContext &ctx = f.getContext();
@@ -1102,8 +1101,7 @@ void init_triton_llvm(py::module &&m) {
             llvm::StringRef(flag)
                 .drop_front(strlen("scalar-loop-width="))
                 .getAsInteger(10, forcedVectorWidth);
-          else if (llvm::StringRef(flag).starts_with(
-                       "scalar-loop-interleave="))
+          else if (llvm::StringRef(flag).starts_with("scalar-loop-interleave="))
             llvm::StringRef(flag)
                 .drop_front(strlen("scalar-loop-interleave="))
                 .getAsInteger(10, forcedVectorInterleave);

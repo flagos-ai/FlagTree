@@ -101,8 +101,8 @@ Type getSlicedType(const Type &type, llvm::SmallVector<size_t> iterCount,
         // The caller may know which dimension this value indexes (the frozen
         // rank-1 table). That answer wins; otherwise fall back to the chain
         // rule, which for a 2-D schedule is exactly iterCount[1] / [0].
-        size_t count = rank1Count.value_or(isInner ? iterCount.back()
-                                                   : iterCount.front());
+        size_t count =
+            rank1Count.value_or(isInner ? iterCount.back() : iterCount.front());
         slicedShape[0] = std::max(tensorShape[0] / count, size_t(1));
       }
     } else {
@@ -252,10 +252,10 @@ std::optional<unsigned> tileDimOfStoredValue(Value value) {
 // (dim 1); expand_dims(axis=1) turns it into the K row (dim 0).
 //
 // The three answers the walk below can give. "Conflict" and "unknown" are kept
-// apart because they mean opposite things to the caller: a value that is widened
-// into BOTH tile dimensions is genuinely axis-ambiguous and must keep its
-// chain-based split, while a value that is never widened at all may still take
-// its dimension from a sibling (see mappedTileDimOfRank1).
+// apart because they mean opposite things to the caller: a value that is
+// widened into BOTH tile dimensions is genuinely axis-ambiguous and must keep
+// its chain-based split, while a value that is never widened at all may still
+// take its dimension from a sibling (see mappedTileDimOfRank1).
 enum class WidenedDim { Unknown, Conflict, Known };
 
 // Which tile dimension this rank-1 value -- or a rank-1 value it feeds -- is
@@ -302,11 +302,13 @@ WidenedDim widenedTileDimOfRank1(Value value, unsigned &dim) {
 // tile through the index vector they are compared with or added to:
 //
 //   %offs_n_2 = arith.addi %offs_n_1, %offs_n_0 : tensor<32xi32, #cluster>
-//   %ptrs_4   = triton_xpu.convert_layout %offs_n_2 : ... -> tensor<32xi32, slice dim=0>
-//   %ptrs_5   = tt.expand_dims %ptrs_4 {axis = 0} -> tensor<1x32xi32, #cluster>   // dim 1
+//   %ptrs_4   = triton_xpu.convert_layout %offs_n_2 : ... -> tensor<32xi32,
+//   slice dim=0> %ptrs_5   = tt.expand_dims %ptrs_4 {axis = 0} ->
+//   tensor<1x32xi32, #cluster>   // dim 1
 //   ...
-//   %mask = arith.cmpi slt, %offs_n_2, %splat_N : tensor<32xi1>                   // never widened
-//   %op   = tt.addptr %out_splat, %offs_n_2 : tensor<32x!tt.ptr<f32>>             // never widened
+//   %mask = arith.cmpi slt, %offs_n_2, %splat_N : tensor<32xi1> // never
+//   widened %op   = tt.addptr %out_splat, %offs_n_2 : tensor<32x!tt.ptr<f32>>
+//   // never widened
 //
 // With only the widening walk those two fall back to chain membership, which
 // for an axis-0 reduce tree answers iterCount[0] and leaves them at width 1
@@ -322,9 +324,10 @@ WidenedDim widenedTileDimOfRank1(Value value, unsigned &dim) {
 // otherwise merge the two axes into one component and answer nullopt for both,
 // which is what a first attempt at this did -- it regressed the lit suite
 // (139 -> 137) and the R03 shapes (11/11 -> 7/11).
-std::optional<unsigned> computeRank1TileDim(
-    Value value, llvm::DenseMap<Value, std::optional<unsigned>> &memo,
-    llvm::SmallPtrSet<void *, 32> &inProgress) {
+std::optional<unsigned>
+computeRank1TileDim(Value value,
+                    llvm::DenseMap<Value, std::optional<unsigned>> &memo,
+                    llvm::SmallPtrSet<void *, 32> &inProgress) {
   // Memoised and cycle-safe. The fallbacks below recurse, so without the memo a
   // long rank-1 chain would be walked once per value on it, and a loop-carried
   // value can reach itself through its own loop.
@@ -354,7 +357,8 @@ std::optional<unsigned> computeRank1TileDim(
   for (Operation *user : value.getUsers()) {
     if (user->getNumResults() != 1)
       continue;
-    auto userTy = mlir::dyn_cast<RankedTensorType>(user->getResult(0).getType());
+    auto userTy =
+        mlir::dyn_cast<RankedTensorType>(user->getResult(0).getType());
     if (!userTy || userTy.getShape().size() != 1)
       continue;
     bool found = false;
@@ -493,8 +497,8 @@ mlir::Operation *findRootOp(mlir::Operation *op) {
 // along that dimension.
 static size_t computePerDimClusterExtent(unsigned sizePerCore, unsigned shape,
                                          unsigned groupsPerCluster,
-                                         unsigned coresPerGroup,
-                                         bool unrollOpt, unsigned bufferSize) {
+                                         unsigned coresPerGroup, bool unrollOpt,
+                                         unsigned bufferSize) {
   if (unrollOpt)
     return groupsPerCluster * coresPerGroup;
   // The layout's sizePerCore is a claim, not a budget. ClusterLayoutAttr's
@@ -603,8 +607,9 @@ llvm::SmallVector<int64_t> getSlicedShape(const std::vector<int64_t> &shape,
 ///   - walk the result forward through layout conversions and reshapes;
 ///   - answer yes when a tt.expand_dims restores the axis that was reduced;
 ///   - bound the walk, a few links are enough for the shapes seen so far.
-static bool collectBroadcastBack(mlir::triton::ReduceOp reduceOp,
-                          llvm::SmallVectorImpl<mlir::Operation *> &expands) {
+static bool
+collectBroadcastBack(mlir::triton::ReduceOp reduceOp,
+                     llvm::SmallVectorImpl<mlir::Operation *> &expands) {
   // Walk the finite SSA use-graph to its end; `seen` visits each value once,
   // so no fixed depth cap is needed -- a normalization chain longer than
   // today's is still followed, not silently cut (that cut once lowered
@@ -637,8 +642,8 @@ static bool collectBroadcastBack(mlir::triton::ReduceOp reduceOp,
               mlir::triton::SplatOp>(user);
       bool keepsRank1 = false;
       if (user->getNumResults() == 1)
-        if (auto resTy = mlir::dyn_cast<RankedTensorType>(
-                user->getResult(0).getType()))
+        if (auto resTy =
+                mlir::dyn_cast<RankedTensorType>(user->getResult(0).getType()))
           keepsRank1 = resTy.getShape().size() == 1;
       if (passthrough || keepsRank1)
         for (mlir::Value res : user->getResults())
@@ -730,9 +735,8 @@ static bool isBroadcastBackOntoTile(mlir::triton::ReduceOp reduceOp) {
           return true;
       }
       mlir::Dialect *dialect = user->getDialect();
-      bool elementwise =
-          dialect && (dialect->getNamespace() == "arith" ||
-                      dialect->getNamespace() == "math");
+      bool elementwise = dialect && (dialect->getNamespace() == "arith" ||
+                                     dialect->getNamespace() == "math");
       if (elementwise || isa<mlir::triton::xpu::BroadcastOp,
                              mlir::triton::xpu::ConvertLayoutOp>(user))
         producers.push_back(user);
@@ -935,11 +939,11 @@ struct SliceLoopCtx {
   // The type an elementwise / compare / select result must take, read off the
   // op's already-final operands.
   //
-  // These ops all require their result to have the same shape as their operands,
-  // so the result cannot be sliced from iterCount and the op's own chain
-  // membership alone -- those can disagree with an operand that something else
-  // retyped (a loop whose yield set its result, a reduction, ...). The operand
-  // is the authority because producers are sliced before their users.
+  // These ops all require their result to have the same shape as their
+  // operands, so the result cannot be sliced from iterCount and the op's own
+  // chain membership alone -- those can disagree with an operand that something
+  // else retyped (a loop whose yield set its result, a reduction, ...). The
+  // operand is the authority because producers are sliced before their users.
   //
   // A non-constant operand wins over a constant one: a constant is retyped by
   // its own chain membership in handleConstantInLoop() and only reconciled with
@@ -955,7 +959,8 @@ struct SliceLoopCtx {
     // verifier instead.
     if (!op->hasTrait<mlir::OpTrait::SameOperandsAndResultShape>() &&
         !op->hasTrait<mlir::OpTrait::SameOperandsAndResultType>() &&
-        !isa<mlir::arith::SelectOp, mlir::arith::CmpFOp, mlir::arith::CmpIOp>(op))
+        !isa<mlir::arith::SelectOp, mlir::arith::CmpFOp, mlir::arith::CmpIOp>(
+            op))
       return std::nullopt;
     Type constTy;
     for (Value operand : op->getOperands()) {
@@ -964,9 +969,8 @@ struct SliceLoopCtx {
         continue;
       if (!isa_and_nonnull<mlir::arith::ConstantOp>(operand.getDefiningOp()))
         return operand.getType();
-      if (!constTy ||
-          mlir::cast<RankedTensorType>(constTy).getNumElements() <
-              operandTy.getNumElements())
+      if (!constTy || mlir::cast<RankedTensorType>(constTy).getNumElements() <
+                          operandTy.getNumElements())
         constTy = operand.getType();
     }
     if (!constTy)
@@ -1054,9 +1058,8 @@ struct SliceLoopCtx {
       // Shape only: the element type and the encoding stay the result's own
       // (arith.extsi widens the element type, a slice layout differs from its
       // parent).
-      res.setType(RankedTensorType::get(shapeTy.getShape(),
-                                        resTy.getElementType(),
-                                        resTy.getEncoding()));
+      res.setType(RankedTensorType::get(
+          shapeTy.getShape(), resTy.getElementType(), resTy.getEncoding()));
       hasChangedResult = true;
     }
   }
@@ -1608,9 +1611,8 @@ struct SliceLoopCtx {
     // here. Inferring one of their constant operands from an arbitrary sibling
     // rebuilds it at the sibling's shape and breaks the positional match.
     if (isa<mlir::scf::ForOp, mlir::scf::IfOp, mlir::scf::YieldOp,
-            mlir::scf::WhileOp, mlir::scf::ConditionOp,
-            triton::ScanOp, triton::ReduceOp, triton::xpu::ScanOp,
-            triton::xpu::ReduceOp>(op))
+            mlir::scf::WhileOp, mlir::scf::ConditionOp, triton::ScanOp,
+            triton::ReduceOp, triton::xpu::ScanOp, triton::xpu::ReduceOp>(op))
       return;
     for (unsigned opIdx = 0; opIdx < op->getNumOperands(); ++opIdx) {
       auto operand = op->getOperand(opIdx);
@@ -1700,12 +1702,13 @@ struct SliceLoopCtx {
   //        Computes per-iteration row indices based on reduce group topology.
   //  - other range (column-index or inner):
   //      → triton_xpu.make_range(start, end, realSize, index, null)
-  //        index = idx (outer, offset shifts per iteration) or null (inner, static).
+  //        index = idx (outer, offset shifts per iteration) or null (inner,
+  //        static).
   //
   // @param makeRangeOp  The tt.make_range to rewrite.
-  // @param isInner      Whether this op belongs to the inner (reduce-axis) chain.
-  // Whether `op` is part of this tree: one of the ops lower() walks, or an op
-  // nested inside one of their regions.
+  // @param isInner      Whether this op belongs to the inner (reduce-axis)
+  // chain. Whether `op` is part of this tree: one of the ops lower() walks, or
+  // an op nested inside one of their regions.
   bool isInTree(Operation *op) {
     if (sortedOpTree.contains(op))
       return true;
@@ -1721,9 +1724,9 @@ struct SliceLoopCtx {
   // Why: one tt.make_range can feed more than one OpTree, and each tree slices
   // it with its own iterCount. replaceAllUsesWith() hands this tree's sliced
   // value to the other tree's ops, which were sliced differently -- the
-  // fractional_max_pool3d shape, where one tree cut the range to width 1 and the
-  // other kept width 4. handleConstantInLoop() guards against the same hazard
-  // for constants.
+  // fractional_max_pool3d shape, where one tree cut the range to width 1 and
+  // the other kept width 4. handleConstantInLoop() guards against the same
+  // hazard for constants.
   void replaceUsesWithinTree(Value oldValue, Value newValue) {
     for (OpOperand &use : llvm::make_early_inc_range(oldValue.getUses()))
       if (isInTree(use.getOwner()))
@@ -1759,9 +1762,8 @@ struct SliceLoopCtx {
     if (auto srcEnc = srcTy.getEncoding()) {
       auto *infer = mlir::dyn_cast<triton::DialectInferLayoutInterface>(
           &srcEnc.getDialect());
-      if (!infer ||
-          failed(infer->inferTransOpEncoding(srcEnc, srcTy.getShape(), order,
-                                             retEnc, op.getLoc())))
+      if (!infer || failed(infer->inferTransOpEncoding(
+                        srcEnc, srcTy.getShape(), order, retEnc, op.getLoc())))
         return;
     }
     op.getResult().setType(
@@ -1779,8 +1781,7 @@ struct SliceLoopCtx {
           loc, slicedResTy, reduceGroupSize, reduceRowsPerCore, idx);
       rangeFamilyByBounds[{makeRangeOp.getStart(), makeRangeOp.getEnd()}]
           .push_back(newOutRangeOp.getResult());
-      replaceUsesWithinTree(makeRangeOp.getResult(),
-                            newOutRangeOp.getResult());
+      replaceUsesWithinTree(makeRangeOp.getResult(), newOutRangeOp.getResult());
     } else {
       Value index = isInner ? Value() : idx;
       uint32_t start = makeRangeOp.getStart();
@@ -1825,8 +1826,8 @@ struct SliceLoopCtx {
     auto newValue = reshapeDenseAttrTo(attr, slicedShapedType);
     if (!newValue)
       return;
-    auto newConstOp =
-        builder.create<mlir::arith::ConstantOp>(constOp->getLoc(), slicedResTy, newValue);
+    auto newConstOp = builder.create<mlir::arith::ConstantOp>(
+        constOp->getLoc(), slicedResTy, newValue);
     // Only replace uses within the current sortedOpTree to avoid affecting
     // constants shared across different op trees (which may have different
     // iterCounts).
@@ -1992,7 +1993,8 @@ struct SliceLoopCtx {
         // result matching.
         for (auto &thenOp : thenBlock)
           if (!isa<mlir::arith::ConstantOp>(thenOp))
-            reshapeConstOperandsToMatchSiblings(&thenOp, /*skipIfInTree=*/false);
+            reshapeConstOperandsToMatchSiblings(&thenOp,
+                                                /*skipIfInTree=*/false);
         if (auto thenYield =
                 dyn_cast<mlir::scf::YieldOp>(thenBlock.getTerminator()))
           reshapeConstYieldOperandsToMatchResults(thenYield,
@@ -2239,8 +2241,7 @@ struct SliceLoopCtx {
     // does this for an if nested in a for; the top-level path did not.
     if (auto thenYield =
             dyn_cast<mlir::scf::YieldOp>(thenBlock.getTerminator()))
-      reshapeConstYieldOperandsToMatchResults(thenYield,
-                                              ifOp.getResultTypes());
+      reshapeConstYieldOperandsToMatchResults(thenYield, ifOp.getResultTypes());
     for (auto *op : thenToErase)
       op->erase();
 
@@ -2261,8 +2262,8 @@ struct SliceLoopCtx {
         if (!isa<mlir::arith::ConstantOp>(elseOp))
           reshapeConstOperandsToMatchSiblings(&elseOp, /*skipIfInTree=*/false);
       }
-      if (auto elseYield = dyn_cast<mlir::scf::YieldOp>(
-              elseRegion.front().getTerminator()))
+      if (auto elseYield =
+              dyn_cast<mlir::scf::YieldOp>(elseRegion.front().getTerminator()))
         reshapeConstYieldOperandsToMatchResults(elseYield,
                                                 ifOp.getResultTypes());
     }
@@ -2320,7 +2321,8 @@ struct SliceLoopCtx {
   // expand_dims semantics require result = insert dim-1 at axis into src shape.
   // After slicing reduces the src (e.g., tensor<16xi32> → tensor<1xi32>), the
   // result must be recomputed from the actual sliced src shape, not from the
-  // original result shape divided by iterCount (which may be wrong for dim-1 axes).
+  // original result shape divided by iterCount (which may be wrong for dim-1
+  // axes).
   //
   // Example IR:
   //   Before slicing: %e = tt.expand_dims %r {axis=0} :
@@ -2461,9 +2463,8 @@ struct SliceLoopCtx {
           // arith.extsi's tensor<32xi32> -> tensor<32xi64> into i32 -> i32, and
           // an operand may legitimately carry a different encoding (an
           // expand_dims source is a slice, its result is not).
-          res.setType(RankedTensorType::get(shapeTy.getShape(),
-                                            resTy.getElementType(),
-                                            resTy.getEncoding()));
+          res.setType(RankedTensorType::get(
+              shapeTy.getShape(), resTy.getElementType(), resTy.getEncoding()));
           changed = true;
         }
       }
@@ -2643,10 +2644,9 @@ struct OpTree {
   /// (see third_party/xpu/docs/axis0_reduce_broadcast_back.md). The first
   /// chain must hold no other reduce, so stacked reduces are peeled one per
   /// round rather than split at once.
-  mlir::triton::ReduceOp
-  findSplittableReduce(llvm::SmallVectorImpl<Operation *> &chain,
-                       const llvm::SmallPtrSetImpl<mlir::Value> *carried =
-                           nullptr) {
+  mlir::triton::ReduceOp findSplittableReduce(
+      llvm::SmallVectorImpl<Operation *> &chain,
+      const llvm::SmallPtrSetImpl<mlir::Value> *carried = nullptr) {
     // Take the earliest flagged reduce whose own chain holds no other reduce.
     // logsumexp stacks two of them -- the sum consumes the tile that the max
     // was subtracted from -- and splitting the inner one first, then asking
@@ -2675,9 +2675,9 @@ struct OpTree {
   /// result is only the running prefix until the last slice and the store is
   /// guarded to the last iteration, so `x - tl.sum(x, axis=0)` writes one slice
   /// and leaves the rest at whatever the output held. Three real operators are
-  /// wrong because of it (orgqr, logsumexp at dim 0, linalg_householder_product)
-  /// and nothing told their callers. A compile error is worse to look at and
-  /// better to have than wrong numbers.
+  /// wrong because of it (orgqr, logsumexp at dim 0,
+  /// linalg_householder_product) and nothing told their callers. A compile
+  /// error is worse to look at and better to have than wrong numbers.
   ///
   /// TODO(@yanxin11): drop this once lowerSlicingLoop() splits the loop in two
   /// (accumulate, then consume); the plan and its constraints are in
@@ -2803,8 +2803,7 @@ bool OpTree::computeReduceGroupInfo(unsigned passGroupsPerCluster,
     reduceNGroup_ = passGroupsPerCluster;
     if (coreNum % reduceNGroup_ != 0) {
       if (!slicingOps_.empty())
-        (*slicingOps_.begin())
-            ->emitError()
+        (*slicingOps_.begin())->emitError()
             << "groups_per_cluster must divide core_num, but got "
             << reduceNGroup_ << " and " << coreNum;
       return false;
@@ -2966,8 +2965,7 @@ static LogicalResult checkRank3Allowed(Operation *anchor, size_t rank,
 
 static LogicalResult validateTensorShapes(Operation *anchor,
                                           ArrayRef<Type> tensorTypes,
-                                          unsigned coreNum,
-                                          unsigned bufferSize,
+                                          unsigned coreNum, unsigned bufferSize,
                                           bool allowRank3) {
   bool warnedRank3 = false;
   for (Type type : tensorTypes) {
@@ -2975,8 +2973,8 @@ static LogicalResult validateTensorShapes(Operation *anchor,
     if (!tensorType)
       continue;
     auto shape = tensorType.getShape();
-    if (failed(checkRank3Allowed(anchor, shape.size(), allowRank3,
-                                 warnedRank3)))
+    if (failed(
+            checkRank3Allowed(anchor, shape.size(), allowRank3, warnedRank3)))
       return failure();
     if (shape.size() == 2 && shape[1] > coreNum * bufferSize)
       return anchor->emitError("2D Shape[-1] <= core_num * buffer_size Limit. "
@@ -3062,9 +3060,8 @@ LogicalResult OpTree::computeIterCount(unsigned bufferSize, unsigned coreNum,
 
   for (size_t i = 0; i < tensorTypes_.size(); ++i) {
     if (auto tensorType = mlir::dyn_cast<RankedTensorType>(tensorTypes_[i])) {
-      auto spaceSize =
-          getSizePerCluster(analysisOps_.front(), tensorTypes_[i], unrollOpt,
-                            bufferSize);
+      auto spaceSize = getSizePerCluster(analysisOps_.front(), tensorTypes_[i],
+                                         unrollOpt, bufferSize);
       if (failed(spaceSize))
         return failure();
       auto tensorShape = tensorType.getShape();
@@ -3085,7 +3082,7 @@ LogicalResult OpTree::computeIterCount(unsigned bufferSize, unsigned coreNum,
     isAtomicSim = false;
   if (isAtomicSim)
     iterCount_.assign(iterCount_.size(),
-                     mlir::ceil<size_t>(totalElements, maxGm2lmLrie));
+                      mlir::ceil<size_t>(totalElements, maxGm2lmLrie));
   return success();
 }
 
@@ -3149,7 +3146,6 @@ void OpTree::partitionChains() {
         getOpChainFwd(innerChain_, scanOp);
     }
   }
-
 }
 
 // Whether every ExpandDimsOp reachable from `user` sits on the inner axis.
@@ -3314,8 +3310,8 @@ void OpTree::splitSharedMakeRanges() {
       // already supports rely on.
       bool userIsInner = inOpChain(innerChain_, user);
       if (iterCount_.size() > 1 && user->getNumResults() == 1) {
-        if (auto userResTy = mlir::dyn_cast<RankedTensorType>(
-                user->getResult(0).getType());
+        if (auto userResTy =
+                mlir::dyn_cast<RankedTensorType>(user->getResult(0).getType());
             userResTy && userResTy.getShape().size() == 1)
           if (auto dim = tileDimOfRank1(user->getResult(0)))
             userIsInner = (*dim == 1);
@@ -3336,11 +3332,11 @@ void OpTree::splitSharedMakeRanges() {
 // Whether `op` is a 1-D value that both chains slice at once.
 //
 // Why: SliceLoopCtx::lower() picks ONE chain membership per op
-// (`isInner = inOpChain(innerChain, op)`) and getSlicedType() slices a 1-D value
-// by iterCount[1] when it is inner, by iterCount[0] otherwise. A value that
-// innerChain_ owns but that also feeds an op outside the chain is therefore
-// sliced at one width while the other consumers expect the other, and the two
-// meet at a cmpi/andi/addi that requires equal operand types.
+// (`isInner = inOpChain(innerChain, op)`) and getSlicedType() slices a 1-D
+// value by iterCount[1] when it is inner, by iterCount[0] otherwise. A value
+// that innerChain_ owns but that also feeds an op outside the chain is
+// therefore sliced at one width while the other consumers expect the other, and
+// the two meet at a cmpi/andi/addi that requires equal operand types.
 //
 // How:
 //   - the value must be inner-owned, single-result and rank 1;
@@ -3368,12 +3364,12 @@ bool OpTree::isSharedAcrossChains(Operation *op) {
   //
   // _col_sum_kernel is the first case: the column index %offs_n_2 is dim 1, and
   // its outer consumers are the store's own cmpi/addptr, which take dim 1 from
-  // %offs_n_2 through the sibling step -- the clone kept width 1 while the index
-  // vector stayed at 32. xpu_legalize_loop_invariant_arange is the second: the
-  // loop-invariant arange is dim 1 through expand_dims(axis=0), but its outer
-  // consumer is the scf.for itself, whose iter_arg width comes from the loop's
-  // own chain membership and does not resolve to dim 1 -- so there the split is
-  // load-bearing.
+  // %offs_n_2 through the sibling step -- the clone kept width 1 while the
+  // index vector stayed at 32. xpu_legalize_loop_invariant_arange is the
+  // second: the loop-invariant arange is dim 1 through expand_dims(axis=0), but
+  // its outer consumer is the scf.for itself, whose iter_arg width comes from
+  // the loop's own chain membership and does not resolve to dim 1 -- so there
+  // the split is load-bearing.
   if (iterCount_.size() > 1) {
     // A value that the widening walk finds on BOTH axes has two consumers that
     // want two widths -- which is exactly what a split is for. The
@@ -3604,8 +3600,8 @@ static bool hasMatchingCombine(mlir::triton::ReduceOp reduceOp,
 }
 
 /// The reduce feeding `update`, looking past everything but the accumulator.
-static mlir::triton::ReduceOp
-findReduceBehindUpdate(mlir::Operation *update, mlir::Value acc) {
+static mlir::triton::ReduceOp findReduceBehindUpdate(mlir::Operation *update,
+                                                     mlir::Value acc) {
   for (mlir::Value operand : update->getOperands()) {
     if (operand == acc)
       continue;
@@ -3915,10 +3911,12 @@ static void hoistPreHostStores(mlir::scf::ForOp sliceFor,
     if (keepHost.contains(&op))
       builder.clone(op, map);
 
-  auto low = builder.create<mlir::arith::ConstantOp>(loc, builder.getIndexAttr(0));
-  auto upper =
-      builder.create<mlir::arith::ConstantOp>(loc, builder.getIndexAttr(*upperBound));
-  auto step = builder.create<mlir::arith::ConstantOp>(loc, builder.getIndexAttr(1));
+  auto low =
+      builder.create<mlir::arith::ConstantOp>(loc, builder.getIndexAttr(0));
+  auto upper = builder.create<mlir::arith::ConstantOp>(
+      loc, builder.getIndexAttr(*upperBound));
+  auto step =
+      builder.create<mlir::arith::ConstantOp>(loc, builder.getIndexAttr(1));
   auto initFor = builder.create<mlir::scf::ForOp>(loc, low, upper, step);
   builder.setInsertionPointToStart(initFor.getBody());
   map.map(sliceFor.getInductionVar(), initFor.getInductionVar());
@@ -3936,7 +3934,8 @@ static void splitFlippedLoopForBroadcastBack(mlir::scf::ForOp sliceFor,
   // be carried through both loops, which this rewrite does not do.
   if (sliceFor.getNumRegionIterArgs() != 0)
     return;
-  auto rty = mlir::dyn_cast<mlir::RankedTensorType>(red.getResult()[0].getType());
+  auto rty =
+      mlir::dyn_cast<mlir::RankedTensorType>(red.getResult()[0].getType());
   if (!rty)
     return;
 
@@ -3983,7 +3982,6 @@ static void splitFlippedLoopForBroadcastBack(mlir::scf::ForOp sliceFor,
   red.getResult()[0].replaceAllUsesWith(loopA.getResult(0));
   red.erase();
 }
-
 
 /// The broadcast-back reduce that will go through the flip, or null.
 ///
@@ -4144,9 +4142,9 @@ void OpTree::lowerSlicingLoop() {
     forLoopOp.getRegionIterArg(n).setType(carriedTy);
     forLoopOp.getResult(n).setType(carriedTy);
     // The slicing loop must start from the source loop's init. lower() moves
-    // the op that defines it (the zero splat) into the loop body, so materialise
-    // an equivalent before the loop first; otherwise the init stops dominating
-    // the loop.
+    // the op that defines it (the zero splat) into the loop body, so
+    // materialise an equivalent before the loop first; otherwise the init stops
+    // dominating the loop.
     mlir::Value carriedInit = acc.forOp.getInitArgs()[acc.argIdx];
     if (mlir::Operation *def = carriedInit.getDefiningOp()) {
       if (forLoopOp->isProperAncestor(def)) {
@@ -4164,8 +4162,7 @@ void OpTree::lowerSlicingLoop() {
     // cannot tell two invocations inside slice 0 apart). loopNum stays the
     // slicing loop trip count: StoreControl still needs it for the store guard.
     // rewriteReduceInRegion() has turned the tt.reduce into the XPU op by now.
-    if (auto xpuReduce =
-            findDefOpBwd<mlir::triton::xpu::ReduceOp>(reduced))
+    if (auto xpuReduce = findDefOpBwd<mlir::triton::xpu::ReduceOp>(reduced))
       xpuReduce->setAttr("loopCache",
                          mlir::BoolAttr::get(xpuReduce.getContext(), false));
     yieldOp->setOperand(n, acc.forOp.getResult(acc.argIdx));
@@ -4364,8 +4361,8 @@ LogicalResult OpTree::lowerSlicingLoopInsideFor(mlir::scf::ForOp hostFor) {
         if (feedsMovedSet(user, movedSet)) {
           if (::getenv("TRITONXPU_TRACE_FLIP"))
             llvm::errs() << "[flip] fail feedsMovedSet def="
-                         << res.getDefiningOp()->getName() << " user="
-                         << user->getName() << "\n";
+                         << res.getDefiningOp()->getName()
+                         << " user=" << user->getName() << "\n";
           return failure();
         }
         if (!escapeSlot.contains(res)) {
@@ -4522,12 +4519,17 @@ LogicalResult OpTree::lowerSlicingLoopInsideFor(mlir::scf::ForOp hostFor) {
   builder.setInsertionPointAfter(idx.getDefiningOp());
 
   SetVector<Operation *> sortedMoved = sortOpTreeBwd(movedSet);
-  SliceLoopCtx ctx{sortedMoved,       iterCount_,
-                   outIterCount,      innerChain_,
-                   outerChain_,       rank1Dims_,
+  SliceLoopCtx ctx{sortedMoved,
+                   iterCount_,
+                   outIterCount,
+                   innerChain_,
+                   outerChain_,
+                   rank1Dims_,
                    reduceGroupSize_,
-                   reduceRowsPerCore_, builder,
-                   idx,               upper};
+                   reduceRowsPerCore_,
+                   builder,
+                   idx,
+                   upper};
   ctx.lower(sliceYieldOp);
 
   // Re-route the external uses to the slicing loop results.
@@ -4827,8 +4829,7 @@ struct TritonXPULegalizePass
       return;
     }
 
-    auto sliceEnc =
-        mlir::dyn_cast<triton::gpu::SliceEncodingAttr>(encoding);
+    auto sliceEnc = mlir::dyn_cast<triton::gpu::SliceEncodingAttr>(encoding);
     assert(sliceEnc && "Unexpected tensor encoding in SM Optimization");
     auto parentEnc =
         mlir::cast<triton::xpu::ClusterLayoutAttr>(sliceEnc.getParent());
@@ -4836,7 +4837,8 @@ struct TritonXPULegalizePass
     auto sizePerCore = parentEnc.getSizePerCore();
     auto order = parentEnc.getOrder();
 
-    SmallVector<unsigned> newCoresPerGroup(parentEnc.getCoresPerGroup().size(), 1);
+    SmallVector<unsigned> newCoresPerGroup(parentEnc.getCoresPerGroup().size(),
+                                           1);
     SmallVector<unsigned> newGroupsPerCluster(
         parentEnc.getGroupsPerCluster().size(), 1);
     SmallVector<unsigned> newSizePerCore(sizePerCore.size(), 1);
@@ -4904,11 +4906,11 @@ struct TritonXPULegalizePass
     for (auto op : reduces) {
       OpBuilder b(op);
       Location loc = op.getLoc();
-      Value zero = b.create<mlir::arith::ConstantOp>(
-          loc, b.getI32Type(), b.getI32IntegerAttr(0));
-      auto newOp = b.create<triton::xpu::ReduceOp>(
-          loc, op->getResultTypes(), op.getSrcs(), op.getAxis(),
-          /*outIterCount=*/1u, zero);
+      Value zero = b.create<mlir::arith::ConstantOp>(loc, b.getI32Type(),
+                                                     b.getI32IntegerAttr(0));
+      auto newOp = b.create<triton::xpu::ReduceOp>(loc, op->getResultTypes(),
+                                                   op.getSrcs(), op.getAxis(),
+                                                   /*outIterCount=*/1u, zero);
       auto &newCombine = newOp.getCombineOp();
       b.cloneRegionBefore(op.getCombineOp(), newCombine, newCombine.end());
       // HasParent requires triton_xpu.reduce.return inside the new op.
@@ -4917,8 +4919,8 @@ struct TritonXPULegalizePass
         if (!ret)
           continue;
         OpBuilder rb(ret);
-        auto newRet =
-            rb.create<triton::xpu::ReduceReturnOp>(ret.getLoc(), ret.getOperands());
+        auto newRet = rb.create<triton::xpu::ReduceReturnOp>(ret.getLoc(),
+                                                             ret.getOperands());
         ret->replaceAllUsesWith(newRet->getResults());
         ret.erase();
       }
@@ -4944,11 +4946,11 @@ struct TritonXPULegalizePass
     for (auto op : scans) {
       OpBuilder b(op);
       Location loc = op.getLoc();
-      Value zero = b.create<mlir::arith::ConstantOp>(
-          loc, b.getI32Type(), b.getI32IntegerAttr(0));
-      auto newOp = b.create<triton::xpu::ScanOp>(
-          loc, op->getResultTypes(), op.getSrcs(), op.getAxis(),
-          op.getReverse(), zero);
+      Value zero = b.create<mlir::arith::ConstantOp>(loc, b.getI32Type(),
+                                                     b.getI32IntegerAttr(0));
+      auto newOp =
+          b.create<triton::xpu::ScanOp>(loc, op->getResultTypes(), op.getSrcs(),
+                                        op.getAxis(), op.getReverse(), zero);
       auto &newCombine = newOp.getCombineOp();
       b.cloneRegionBefore(op.getCombineOp(), newCombine, newCombine.end());
       // HasParent requires triton_xpu.scan.return inside the new op.
@@ -5241,89 +5243,91 @@ struct TritonXPULegalizePass
       // Peel every splittable reduce; the loop exits when none remain, so no
       // fixed round count can cut it short (logsumexp needs 2).
       while (true) {
-      llvm::SmallVector<Operation *> chain;
-      auto splittable = tree.findSplittableReduce(chain, &carriedTotals);
-      if (!splittable)
-        break;
+        llvm::SmallVector<Operation *> chain;
+        auto splittable = tree.findSplittableReduce(chain, &carriedTotals);
+        if (!splittable)
+          break;
 
-      // A chained accumulator (var-mean: v = sum((x - mean)^2)) reads a total an
-      // earlier round carried out. findSplittableReduce() stopped its chain at
-      // those totals, so the carried mean is a loop-invariant leaf here and the
-      // accumulate tree below slices only the tile -- see
-      // third_party/xpu/docs/axis0_reduce_broadcast_back.md.
+        // A chained accumulator (var-mean: v = sum((x - mean)^2)) reads a total
+        // an earlier round carried out. findSplittableReduce() stopped its
+        // chain at those totals, so the carried mean is a loop-invariant leaf
+        // here and the accumulate tree below slices only the tile -- see
+        // third_party/xpu/docs/axis0_reduce_broadcast_back.md.
 
-      // Clone the chain ahead of its first op, so the accumulate loop lands
-      // before the consumer loop and dominates it. For a chained accumulator the
-      // chain also reads carried totals (the mean's loop result); the clone
-      // must land after the loop that produced each, or that result will not
-      // dominate it. Push the insertion point past the latest such producer.
-      Operation *insertBefore = chain.front();
-      for (Operation *op : chain)
-        for (mlir::Value operand : op->getOperands())
-          if (carriedTotals.contains(operand))
-            if (Operation *def = operand.getDefiningOp())
-              if (def->getBlock() == insertBefore->getBlock() &&
-                  insertBefore->isBeforeInBlock(def) && def->getNextNode())
-                insertBefore = def->getNextNode();
-      OpBuilder cloneBuilder(insertBefore);
-      IRMapping map;
-      Operation *clonedReduce = nullptr;
-      llvm::SmallVector<Operation *> clones;
-      for (Operation *op : chain) {
-        Operation *clone = cloneBuilder.clone(*op, map);
-        clones.push_back(clone);
-        if (op == splittable.getOperation())
-          clonedReduce = clone;
-      }
+        // Clone the chain ahead of its first op, so the accumulate loop lands
+        // before the consumer loop and dominates it. For a chained accumulator
+        // the chain also reads carried totals (the mean's loop result); the
+        // clone must land after the loop that produced each, or that result
+        // will not dominate it. Push the insertion point past the latest such
+        // producer.
+        Operation *insertBefore = chain.front();
+        for (Operation *op : chain)
+          for (mlir::Value operand : op->getOperands())
+            if (carriedTotals.contains(operand))
+              if (Operation *def = operand.getDefiningOp())
+                if (def->getBlock() == insertBefore->getBlock() &&
+                    insertBefore->isBeforeInBlock(def) && def->getNextNode())
+                  insertBefore = def->getNextNode();
+        OpBuilder cloneBuilder(insertBefore);
+        IRMapping map;
+        Operation *clonedReduce = nullptr;
+        llvm::SmallVector<Operation *> clones;
+        for (Operation *op : chain) {
+          Operation *clone = cloneBuilder.clone(*op, map);
+          clones.push_back(clone);
+          if (op == splittable.getOperation())
+            clonedReduce = clone;
+        }
 
-      auto dropClones = [&]() {
-        for (Operation *clone : llvm::reverse(clones))
-          clone->erase();
-      };
-      if (!clonedReduce) {
-        dropClones();
-        break;
-      }
+        auto dropClones = [&]() {
+          for (Operation *clone : llvm::reverse(clones))
+            clone->erase();
+        };
+        if (!clonedReduce) {
+          dropClones();
+          break;
+        }
 
-      llvm::SetVector<Operation *> accumSlicing, accumAnalysis;
-      auto accumTree = OpTree::build(clonedReduce, accumSlicing,
-                                     accumAnalysis, storeOps_, &carriedTotals);
-      if (!accumTree) {
-        dropClones();
-        break;
-      }
-      accumTree->carryReduceResult_ = clonedReduce;
-      bool ok = accumTree->computeReduceGroupInfo(this->groupsPerCluster,
-                                                  this->coreNum);
-      ok &= succeeded(accumTree->computeIterCount(
-          this->bufferSize, this->coreNum, this->groupsPerCluster,
-          hasGm2lmFeedingReduce_, maxGm2lmLrie_, this->allowRank3));
-      if (!ok) {
-        dropClones();
-        break;
-      }
-      accumTree->partitionChains();
-      accumTree->computeRank1Dims();
-      accumTree->splitSharedMakeRanges();
-      accumTree->splitSharedChainValues();
-      accumTree->computeRank1Dims();
-      accumReduceNum += accumTree->countReduceOps();
-      accumTree->lowerSlicingLoop();
-      if (!accumTree->carriedReduceTotal_) {
-        dropClones();
-        break;
-      }
+        llvm::SetVector<Operation *> accumSlicing, accumAnalysis;
+        auto accumTree =
+            OpTree::build(clonedReduce, accumSlicing, accumAnalysis, storeOps_,
+                          &carriedTotals);
+        if (!accumTree) {
+          dropClones();
+          break;
+        }
+        accumTree->carryReduceResult_ = clonedReduce;
+        bool ok = accumTree->computeReduceGroupInfo(this->groupsPerCluster,
+                                                    this->coreNum);
+        ok &= succeeded(accumTree->computeIterCount(
+            this->bufferSize, this->coreNum, this->groupsPerCluster,
+            hasGm2lmFeedingReduce_, maxGm2lmLrie_, this->allowRank3));
+        if (!ok) {
+          dropClones();
+          break;
+        }
+        accumTree->partitionChains();
+        accumTree->computeRank1Dims();
+        accumTree->splitSharedMakeRanges();
+        accumTree->splitSharedChainValues();
+        accumTree->computeRank1Dims();
+        accumReduceNum += accumTree->countReduceOps();
+        accumTree->lowerSlicingLoop();
+        if (!accumTree->carriedReduceTotal_) {
+          dropClones();
+          break;
+        }
 
-      // The consumer now reads the complete reduction, and its own reduce is
-      // dead: drop it from the tree before the derivations below run, so the
-      // iteration counts and chains are computed without it.
-      carriedTotals.insert(accumTree->carriedReduceTotal_);
-      splittable->getResult(0).replaceAllUsesWith(
-          accumTree->carriedReduceTotal_);
-      tree.slicingOps_.remove(splittable);
-      tree.analysisOps_.remove(splittable);
-      splittable.erase();
-      accumTrees.push_back(std::move(*accumTree));
+        // The consumer now reads the complete reduction, and its own reduce is
+        // dead: drop it from the tree before the derivations below run, so the
+        // iteration counts and chains are computed without it.
+        carriedTotals.insert(accumTree->carriedReduceTotal_);
+        splittable->getResult(0).replaceAllUsesWith(
+            accumTree->carriedReduceTotal_);
+        tree.slicingOps_.remove(splittable);
+        tree.analysisOps_.remove(splittable);
+        splittable.erase();
+        accumTrees.push_back(std::move(*accumTree));
       }
     }
 
@@ -5334,8 +5338,8 @@ struct TritonXPULegalizePass
     unsigned reduceNum = accumReduceNum, scanNum = 0;
     bool sliceable = true;
     for (auto &tree : opTrees) {
-      sliceable &= tree.computeReduceGroupInfo(this->groupsPerCluster,
-                                               this->coreNum);
+      sliceable &=
+          tree.computeReduceGroupInfo(this->groupsPerCluster, this->coreNum);
       sliceable &= succeeded(tree.computeIterCount(
           this->bufferSize, this->coreNum, this->groupsPerCluster,
           hasGm2lmFeedingReduce_, maxGm2lmLrie_, this->allowRank3));

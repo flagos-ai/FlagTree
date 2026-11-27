@@ -63,7 +63,8 @@ def sad(arg0, arg1, arg2, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0, arg1, arg2], {
             (core.dtype("int32"), core.dtype("int32"), core.dtype("uint32")): ("Unsupported.sad", core.dtype("int32")),
-            (core.dtype("uint32"), core.dtype("uint32"), core.dtype("uint32")): ("Unsupported.sad", core.dtype("uint32")),
+            (core.dtype("uint32"), core.dtype("uint32"), core.dtype("uint32")):
+            ("Unsupported.sad", core.dtype("uint32")),
         }, is_pure=True, _semantic=_semantic)
 
 
@@ -72,7 +73,6 @@ def abs(arg0, _semantic=None):
     # tt.absf / tt.absi cover every supported dtype directly; no device symbol
     # is needed. Reached from FlagGems via libdevice.abs (special_round).
     return _math.abs(arg0, _semantic=_semantic)
-
 
 
 @core.extern
@@ -219,10 +219,9 @@ def rcp_rn(arg0, _semantic=None):
     arg0 = _semantic.to_tensor(arg0)
     if arg0.dtype == core.dtype("fp32"):
         return arg0.__rtruediv__(1.0, _semantic=_semantic)
-    return core.extern_elementwise(
-        "", "", [arg0], {
-            (core.dtype("fp64"), ): ("Unsupported.rcp_rn", core.dtype("fp64")),
-        }, is_pure=True, _semantic=_semantic)
+    return core.extern_elementwise("", "", [arg0], {
+        (core.dtype("fp64"), ): ("Unsupported.rcp_rn", core.dtype("fp64")),
+    }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
@@ -1072,9 +1071,7 @@ def nearbyint(arg0, _semantic=None):
         # not +0.0).  Take the sign bit from x by bitcast; `x * 0.0` folds to
         # +0.0 under the backend's fast-math flags.  NaN / zero inputs pass
         # straight through.
-        sign_bits = _semantic.and_(
-            _semantic.bitcast(x, i64),
-            _semantic.full(x.shape, -(1 << 63), i64))
+        sign_bits = _semantic.and_(_semantic.bitcast(x, i64), _semantic.full(x.shape, -(1 << 63), i64))
         signed_zero = _semantic.bitcast(sign_bits, fp64)
         result = _semantic.where(_semantic.equal(result, zero), signed_zero, result)
         is_nan = _semantic.not_equal(x, x)
@@ -1084,12 +1081,11 @@ def nearbyint(arg0, _semantic=None):
         return core.extern_elementwise("", "", [x], {
             tuple(a.dtype for a in [x]): ("Unsupported.nearbyint", x.dtype),
         }, is_pure=True, _semantic=_semantic)
-    return core.extern_elementwise(
-        "", "", [
-            x,
-        ], {
-            (_FP32, ): ("_ZN3xpu9nearbyintEf", _FP32),
-        }, is_pure=True, _semantic=_semantic)
+    return core.extern_elementwise("", "", [
+        x,
+    ], {
+        (_FP32, ): ("_ZN3xpu9nearbyintEf", _FP32),
+    }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
@@ -1121,13 +1117,12 @@ def copysign(arg0, arg1, _semantic=None):
     x = _semantic.to_tensor(arg0)
     if x.dtype != _FP32:
         return core.extern_elementwise("", "", [x, _semantic.to_tensor(arg1)], {
-        tuple(a.dtype for a in [x, _semantic.to_tensor(arg1)]): (f"Unsupported.copysign", _FP32),
-    }, is_pure=True, _semantic=_semantic)
+            tuple(a.dtype for a in [x, _semantic.to_tensor(arg1)]): (f"Unsupported.copysign", _FP32),
+        }, is_pure=True, _semantic=_semantic)
     ua = _semantic.bitcast(x, core.dtype("uint32"))
     ub = _semantic.bitcast(_semantic.to_tensor(arg1), core.dtype("uint32"))
     r = _semantic.xor_(_semantic.and_(ua, 0x7FFFFFFF), _semantic.and_(ub, 0x80000000))
     return _semantic.bitcast(r, _FP32)
-
 
 
 @core.extern
@@ -1158,18 +1153,16 @@ def nextafter(arg0, arg1, _semantic=None):
     y = _semantic.to_tensor(arg1)
     if x.dtype != _FP32:
         return core.extern_elementwise("", "", [x, y], {
-        tuple(a.dtype for a in [x, y]): (f"Unsupported.nextafter", _FP32),
-    }, is_pure=True, _semantic=_semantic)
+            tuple(a.dtype for a in [x, y]): (f"Unsupported.nextafter", _FP32),
+        }, is_pure=True, _semantic=_semantic)
     xi = _semantic.bitcast(x, core.dtype("int32"))
     yi = _semantic.bitcast(y, core.dtype("int32"))
     exp_mask, frac_mask = 2139095040, 8388607  # 0x7F800000 / 0x007FFFFF
     sign_bit, cross = -2147483648, -2147483647  # 0x80000000 / 0x80000001
-    xnan = _semantic.logical_and(
-        _semantic.equal(_semantic.and_(xi, exp_mask), exp_mask),
-        _semantic.not_equal(_semantic.and_(xi, frac_mask), 0))
-    ynan = _semantic.logical_and(
-        _semantic.equal(_semantic.and_(yi, exp_mask), exp_mask),
-        _semantic.not_equal(_semantic.and_(yi, frac_mask), 0))
+    xnan = _semantic.logical_and(_semantic.equal(_semantic.and_(xi, exp_mask), exp_mask),
+                                 _semantic.not_equal(_semantic.and_(xi, frac_mask), 0))
+    ynan = _semantic.logical_and(_semantic.equal(_semantic.and_(yi, exp_mask), exp_mask),
+                                 _semantic.not_equal(_semantic.and_(yi, frac_mask), 0))
     # IEEE 754: x == y returns y. The comparison must be on values, not bit
     # patterns, so that nextafter(+0, -0) yields -0 instead of a subnormal.
     is_equal = _semantic.equal(x, y)
@@ -1179,13 +1172,17 @@ def nextafter(arg0, arg1, _semantic=None):
     kx = _semantic.where(_semantic.less_than(xi, 0), _semantic.xor_(_semantic.invert(xi), sign_bit), xi)
     ky = _semantic.where(_semantic.less_than(yi, 0), _semantic.xor_(_semantic.invert(yi), sign_bit), yi)
     is_going_up = _semantic.cast(_semantic.less_than(kx, ky), core.dtype("int32"))
-    inc = _semantic.mul(_semantic.sub(_semantic.mul(is_going_up, 2, sanitize_overflow=False), 1, sanitize_overflow=False),
-                        _semantic.sub(_semantic.mul(is_positive, 2, sanitize_overflow=False), 1, sanitize_overflow=False),
-                        sanitize_overflow=False)
-    zc = _semantic.add(
-        _semantic.mul(_semantic.mul(is_positive, _semantic.sub(1, is_going_up, sanitize_overflow=False), sanitize_overflow=False), x_is_zero, sanitize_overflow=False),
-        _semantic.mul(_semantic.mul(_semantic.sub(1, is_positive, sanitize_overflow=False), is_going_up, sanitize_overflow=False), x_is_zm, sanitize_overflow=False),
+    inc = _semantic.mul(
+        _semantic.sub(_semantic.mul(is_going_up, 2, sanitize_overflow=False), 1, sanitize_overflow=False),
+        _semantic.sub(_semantic.mul(is_positive, 2, sanitize_overflow=False), 1, sanitize_overflow=False),
         sanitize_overflow=False)
+    zc = _semantic.add(
+        _semantic.mul(
+            _semantic.mul(is_positive, _semantic.sub(1, is_going_up, sanitize_overflow=False), sanitize_overflow=False),
+            x_is_zero, sanitize_overflow=False),
+        _semantic.mul(
+            _semantic.mul(_semantic.sub(1, is_positive, sanitize_overflow=False), is_going_up, sanitize_overflow=False),
+            x_is_zm, sanitize_overflow=False), sanitize_overflow=False)
     step = _semantic.where(_semantic.equal(zc, 1), _semantic.add(xi, cross, sanitize_overflow=False),
                            _semantic.add(xi, inc, sanitize_overflow=False))
     r = _semantic.where(is_equal, yi, step)
@@ -1235,12 +1232,8 @@ def _f64_round(x, _semantic):
     magic = _f64(4503599627370496.0, x, _semantic)  # 2**52
     neg_magic = _semantic.sub(zero, magic, sanitize_overflow=False)
     shift = _semantic.where(_semantic.less_than(x, zero), neg_magic, magic)
-    rounded = _semantic.sub(
-        _semantic.add(x, shift, sanitize_overflow=False), shift,
-        sanitize_overflow=False)
-    outside = _semantic.logical_or(
-        _semantic.greater_equal(x, magic),
-        _semantic.less_equal(x, neg_magic))
+    rounded = _semantic.sub(_semantic.add(x, shift, sanitize_overflow=False), shift, sanitize_overflow=False)
+    outside = _semantic.logical_or(_semantic.greater_equal(x, magic), _semantic.less_equal(x, neg_magic))
     return _semantic.where(outside, x, rounded)
 
 
@@ -1248,46 +1241,45 @@ def _f64_horner(t2, coeffs, start, _semantic):
     """Evaluate start + t2*(c0 + t2*(c1 + ...)) in fp64."""
     acc = _f64(coeffs[-1], t2, _semantic)
     for c in reversed(coeffs[:-1]):
-        acc = _semantic.add(_semantic.mul(acc, t2, sanitize_overflow=False),
-                            _f64(c, t2, _semantic), sanitize_overflow=False)
-    return _semantic.add(_semantic.mul(acc, t2, sanitize_overflow=False),
-                         _f64(start, t2, _semantic), sanitize_overflow=False)
+        acc = _semantic.add(_semantic.mul(acc, t2, sanitize_overflow=False), _f64(c, t2, _semantic),
+                            sanitize_overflow=False)
+    return _semantic.add(_semantic.mul(acc, t2, sanitize_overflow=False), _f64(start, t2, _semantic),
+                         sanitize_overflow=False)
 
 
 def _f64_sin_cos(x, _semantic):
     """(sin x, cos x) by reducing x to [-pi/4, pi/4] and re-selecting by quadrant."""
-    inv_pio2 = _semantic.mul(x, _f64(0.63661977236758134308, x, _semantic),
-                             sanitize_overflow=False)
+    inv_pio2 = _semantic.mul(x, _f64(0.63661977236758134308, x, _semantic), sanitize_overflow=False)
     k = _f64_round(inv_pio2, _semantic)
     # Cody-Waite: subtract k*(pi/2) in two pieces so each product stays exact.
-    r = _semantic.sub(x, _semantic.mul(k, _f64(1.5707963267948966, x, _semantic),
-                                       sanitize_overflow=False), sanitize_overflow=False)
-    r = _semantic.sub(r, _semantic.mul(k, _f64(6.123233995736766e-17, x, _semantic),
-                                       sanitize_overflow=False), sanitize_overflow=False)
-    r = _semantic.sub(r, _semantic.mul(k, _f64(-1.4973849048591698e-33, x, _semantic),
-                                       sanitize_overflow=False), sanitize_overflow=False)
+    r = _semantic.sub(x, _semantic.mul(k, _f64(1.5707963267948966, x, _semantic), sanitize_overflow=False),
+                      sanitize_overflow=False)
+    r = _semantic.sub(r, _semantic.mul(k, _f64(6.123233995736766e-17, x, _semantic), sanitize_overflow=False),
+                      sanitize_overflow=False)
+    r = _semantic.sub(r, _semantic.mul(k, _f64(-1.4973849048591698e-33, x, _semantic), sanitize_overflow=False),
+                      sanitize_overflow=False)
     r2 = _semantic.mul(r, r, sanitize_overflow=False)
     # sin(r) = r*(1 + r2*c0 + r2^2*c1 + ...), cos(r) = 1 + r2*d0 + ...
-    s_poly = _semantic.mul(r, _f64_horner(r2, [-1.6666666666666666e-01, 8.3333333333333333e-03,
-                                               -1.9841269841269841e-04, 2.7557319223985891e-06,
-                                               -2.5052108385441719e-08, 1.6059043836821613e-10,
-                                               -7.6471637318198165e-13, 2.8114572543455208e-15],
-                                          1.0, _semantic), sanitize_overflow=False)
-    c_poly = _f64_horner(r2, [-5.0000000000000000e-01, 4.1666666666666667e-02,
-                              -1.3888888888888889e-03, 2.4801587301587302e-05,
-                              -2.7557319223985891e-07, 2.0876756987868099e-09,
-                              -1.1470745597729725e-11, 4.7794773323873853e-14],
-                          1.0, _semantic)
+    s_poly = _semantic.mul(
+        r,
+        _f64_horner(r2, [
+            -1.6666666666666666e-01, 8.3333333333333333e-03, -1.9841269841269841e-04, 2.7557319223985891e-06,
+            -2.5052108385441719e-08, 1.6059043836821613e-10, -7.6471637318198165e-13, 2.8114572543455208e-15
+        ], 1.0, _semantic), sanitize_overflow=False)
+    c_poly = _f64_horner(r2, [
+        -5.0000000000000000e-01, 4.1666666666666667e-02, -1.3888888888888889e-03, 2.4801587301587302e-05,
+        -2.7557319223985891e-07, 2.0876756987868099e-09, -1.1470745597729725e-11, 4.7794773323873853e-14
+    ], 1.0, _semantic)
     q = _semantic.and_(_semantic.cast(k, _I64), 3)
     # quadrant 0: (s, c)  1: (c, -s)  2: (-s, -c)  3: (-c, s)
     neg_s = _semantic.sub(_f64(0.0, x, _semantic), s_poly, sanitize_overflow=False)
     neg_c = _semantic.sub(_f64(0.0, x, _semantic), c_poly, sanitize_overflow=False)
-    sin_x = _semantic.where(_semantic.equal(q, 0), s_poly,
-                            _semantic.where(_semantic.equal(q, 1), c_poly,
-                                            _semantic.where(_semantic.equal(q, 2), neg_s, neg_c)))
-    cos_x = _semantic.where(_semantic.equal(q, 0), c_poly,
-                            _semantic.where(_semantic.equal(q, 1), neg_s,
-                                            _semantic.where(_semantic.equal(q, 2), neg_c, s_poly)))
+    sin_x = _semantic.where(
+        _semantic.equal(q, 0), s_poly,
+        _semantic.where(_semantic.equal(q, 1), c_poly, _semantic.where(_semantic.equal(q, 2), neg_s, neg_c)))
+    cos_x = _semantic.where(
+        _semantic.equal(q, 0), c_poly,
+        _semantic.where(_semantic.equal(q, 1), neg_s, _semantic.where(_semantic.equal(q, 2), neg_c, s_poly)))
     return sin_x, cos_x
 
 
@@ -1301,9 +1293,8 @@ def _f64_log2(x, _semantic):
     # field-extraction log makes.
     e = _semantic.sub(_semantic.and_(_semantic.ashr(bits, 52), _semantic.full(x.shape, 0x7FF, _I64)),
                       _semantic.full(x.shape, 1023, _I64), sanitize_overflow=False)
-    mant_bits = _semantic.or_(
-        _semantic.and_(bits, _semantic.full(x.shape, 0x000FFFFFFFFFFFFF, _I64)),
-        _semantic.full(x.shape, 0x3FF0000000000000, _I64))
+    mant_bits = _semantic.or_(_semantic.and_(bits, _semantic.full(x.shape, 0x000FFFFFFFFFFFFF, _I64)),
+                              _semantic.full(x.shape, 0x3FF0000000000000, _I64))
     m = _semantic.bitcast(mant_bits, _FP64)
     # m in [1, 2); t = (m-1)/(m+1) lies in [0, 1/3] and
     # log(m) = 2*(t + t^3/3 + t^5/5 + ...).
@@ -1311,21 +1302,16 @@ def _f64_log2(x, _semantic):
     den = _semantic.add(m, one, sanitize_overflow=False)
     t = _semantic.truediv(num, den)
     t2 = _semantic.mul(t, t, sanitize_overflow=False)
-    series = _f64_horner(t2, [3.3333333333333333e-01, 2.0000000000000000e-01,
-                              1.4285714285714286e-01, 1.1111111111111111e-01,
-                              9.0909090909090909e-02, 7.6923076923076923e-02,
-                              6.6666666666666667e-02, 5.8823529411764706e-02,
-                              5.2631578947368421e-02, 4.7619047619047619e-02,
-                              4.3478260869565217e-02, 4.0000000000000000e-02,
-                              3.7037037037037037e-02, 3.4482758620689655e-02,
-                              3.2258064516129032e-02, 3.0303030303030303e-02,
-                              2.8571428571428571e-02, 2.7027027027027027e-02,
-                              2.5641025641025641e-02, 2.4390243902439024e-02],
-                          1.0, _semantic)
-    log_m = _semantic.mul(_semantic.mul(t, _f64(2.0, x, _semantic), sanitize_overflow=False),
-                          series, sanitize_overflow=False)
-    log2_m = _semantic.mul(log_m, _f64(1.4426950408889634074, x, _semantic),
-                           sanitize_overflow=False)
+    series = _f64_horner(t2, [
+        3.3333333333333333e-01, 2.0000000000000000e-01, 1.4285714285714286e-01, 1.1111111111111111e-01,
+        9.0909090909090909e-02, 7.6923076923076923e-02, 6.6666666666666667e-02, 5.8823529411764706e-02,
+        5.2631578947368421e-02, 4.7619047619047619e-02, 4.3478260869565217e-02, 4.0000000000000000e-02,
+        3.7037037037037037e-02, 3.4482758620689655e-02, 3.2258064516129032e-02, 3.0303030303030303e-02,
+        2.8571428571428571e-02, 2.7027027027027027e-02, 2.5641025641025641e-02, 2.4390243902439024e-02
+    ], 1.0, _semantic)
+    log_m = _semantic.mul(_semantic.mul(t, _f64(2.0, x, _semantic), sanitize_overflow=False), series,
+                          sanitize_overflow=False)
+    log2_m = _semantic.mul(log_m, _f64(1.4426950408889634074, x, _semantic), sanitize_overflow=False)
     return _semantic.add(_semantic.cast(e, _FP64), log2_m, sanitize_overflow=False)
 
 
@@ -1335,15 +1321,14 @@ def _f64_exp2(z, _semantic):
     one = _f64(1.0, z, _semantic)
     pos_inf = _semantic.truediv(one, zero)
     n = _f64_round(z, _semantic)
-    f = _semantic.sub(z, n, sanitize_overflow=False)          # in [-0.5, 0.5]
+    f = _semantic.sub(z, n, sanitize_overflow=False)  # in [-0.5, 0.5]
     # 2**f = exp(f*ln2), Taylor to f**12.
     u = _semantic.mul(f, _f64(0.69314718055994530942, z, _semantic), sanitize_overflow=False)
     acc = _f64(1.0 / 479001600.0, z, _semantic)
-    for c in (1.0 / 39916800.0, 1.0 / 3628800.0, 1.0 / 362880.0, 1.0 / 40320.0,
-              1.0 / 5040.0, 1.0 / 720.0, 1.0 / 120.0, 1.0 / 24.0, 1.0 / 6.0,
-              1.0 / 2.0, 1.0, 1.0):
-        acc = _semantic.add(_semantic.mul(acc, u, sanitize_overflow=False),
-                            _f64(c, z, _semantic), sanitize_overflow=False)
+    for c in (1.0 / 39916800.0, 1.0 / 3628800.0, 1.0 / 362880.0, 1.0 / 40320.0, 1.0 / 5040.0, 1.0 / 720.0, 1.0 / 120.0,
+              1.0 / 24.0, 1.0 / 6.0, 1.0 / 2.0, 1.0, 1.0):
+        acc = _semantic.add(_semantic.mul(acc, u, sanitize_overflow=False), _f64(c, z, _semantic),
+                            sanitize_overflow=False)
     # ldexp takes an int32 exponent: fptosi of NaN or of a value outside
     # int32 is poison, which is exactly what pow(x, +-inf) and pow(x, huge)
     # feed here (inf - inf = NaN for the fractional part).  Clamp before the
@@ -1378,8 +1363,7 @@ def _f64_atan(x, _semantic):
     shift = zero
     for _ in range(2):
         hit = _semantic.greater_than(a, tan_pi_12)
-        num = _semantic.sub(_semantic.mul(a, sqrt3, sanitize_overflow=False), one,
-                            sanitize_overflow=False)
+        num = _semantic.sub(_semantic.mul(a, sqrt3, sanitize_overflow=False), one, sanitize_overflow=False)
         den = _semantic.add(sqrt3, a, sanitize_overflow=False)
         a = _semantic.where(hit, _semantic.truediv(num, den), a)
         shift = _semantic.where(hit, _semantic.add(shift, pi_6, sanitize_overflow=False), shift)
@@ -1408,10 +1392,9 @@ def sin(arg0, _semantic=None):
         return core.extern_elementwise("", "", [x], {
             tuple(a.dtype for a in [x]): ("Unsupported.sin", x.dtype),
         }, is_pure=True, _semantic=_semantic)
-    return core.extern_elementwise(
-        "", "", [x], {
-            (_FP32, ): ("_ZN3xpu4sinfEf", _FP32),
-        }, is_pure=True, _semantic=_semantic)
+    return core.extern_elementwise("", "", [x], {
+        (_FP32, ): ("_ZN3xpu4sinfEf", _FP32),
+    }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
@@ -1423,10 +1406,9 @@ def cos(arg0, _semantic=None):
         return core.extern_elementwise("", "", [x], {
             tuple(a.dtype for a in [x]): ("Unsupported.cos", x.dtype),
         }, is_pure=True, _semantic=_semantic)
-    return core.extern_elementwise(
-        "", "", [x], {
-            (_FP32, ): ("_ZN3xpu4cosfEf", _FP32),
-        }, is_pure=True, _semantic=_semantic)
+    return core.extern_elementwise("", "", [x], {
+        (_FP32, ): ("_ZN3xpu4cosfEf", _FP32),
+    }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
@@ -1439,24 +1421,29 @@ def sinpi(arg0, _semantic=None):
     x = _semantic.to_tensor(arg0)
     if x.dtype != _FP32:
         return core.extern_elementwise("", "", [x], {
-        tuple(a.dtype for a in [x]): (f"Unsupported.sinpi", _FP32),
-    }, is_pure=True, _semantic=_semantic)
+            tuple(a.dtype for a in [x]): (f"Unsupported.sinpi", _FP32),
+        }, is_pure=True, _semantic=_semantic)
     half = _semantic.full(x.shape, 0.5, _FP32)
     n = _math.floor(_semantic.add(x, half, sanitize_overflow=False), _semantic=_semantic)
     r = _semantic.sub(x, n, sanitize_overflow=False)
-    odd = _semantic.sub(n, _semantic.mul(_math.floor(_semantic.mul(n, half, sanitize_overflow=False), _semantic=_semantic), _semantic.full(x.shape, 2.0, _FP32), sanitize_overflow=False), sanitize_overflow=False)
+    odd = _semantic.sub(
+        n,
+        _semantic.mul(_math.floor(_semantic.mul(n, half, sanitize_overflow=False), _semantic=_semantic),
+                      _semantic.full(x.shape, 2.0, _FP32), sanitize_overflow=False), sanitize_overflow=False)
     p = _semantic.mul(_semantic.full(x.shape, 3.141592653589793, _FP32), r, sanitize_overflow=False)
     p2 = _semantic.mul(p, p, sanitize_overflow=False)
     _sp = _semantic.full(p2.shape, -2.505210838544172e-08, p2.dtype)
-    _sp = _semantic.add(_semantic.mul(_sp, p2, sanitize_overflow=False), 2.7557319223985893e-06, sanitize_overflow=False)
-    _sp = _semantic.add(_semantic.mul(_sp, p2, sanitize_overflow=False), -0.0001984126984126984, sanitize_overflow=False)
+    _sp = _semantic.add(_semantic.mul(_sp, p2, sanitize_overflow=False), 2.7557319223985893e-06,
+                        sanitize_overflow=False)
+    _sp = _semantic.add(_semantic.mul(_sp, p2, sanitize_overflow=False), -0.0001984126984126984,
+                        sanitize_overflow=False)
     _sp = _semantic.add(_semantic.mul(_sp, p2, sanitize_overflow=False), 0.008333333333333333, sanitize_overflow=False)
     _sp = _semantic.add(_semantic.mul(_sp, p2, sanitize_overflow=False), -0.16666666666666666, sanitize_overflow=False)
     _sp = _semantic.add(_semantic.mul(_sp, p2, sanitize_overflow=False), 1.0, sanitize_overflow=False)
     series = _semantic.mul(p, _sp, sanitize_overflow=False)
-    s = _semantic.where(_semantic.less_than(p2, _semantic.full(x.shape, 0.25, _FP32)), series, _math.sin(p, _semantic=_semantic))
+    s = _semantic.where(_semantic.less_than(p2, _semantic.full(x.shape, 0.25, _FP32)), series,
+                        _math.sin(p, _semantic=_semantic))
     return _semantic.where(_semantic.equal(odd, 0), s, _semantic.minus(s))
-
 
 
 @core.extern
@@ -1466,12 +1453,15 @@ def cospi(arg0, _semantic=None):
     x = _semantic.to_tensor(arg0)
     if x.dtype != _FP32:
         return core.extern_elementwise("", "", [x], {
-        tuple(a.dtype for a in [x]): (f"Unsupported.cospi", _FP32),
-    }, is_pure=True, _semantic=_semantic)
+            tuple(a.dtype for a in [x]): (f"Unsupported.cospi", _FP32),
+        }, is_pure=True, _semantic=_semantic)
     half = _semantic.full(x.shape, 0.5, _FP32)
     n = _math.floor(_semantic.add(x, half, sanitize_overflow=False), _semantic=_semantic)
     r = _semantic.sub(x, n, sanitize_overflow=False)
-    odd = _semantic.sub(n, _semantic.mul(_math.floor(_semantic.mul(n, half, sanitize_overflow=False), _semantic=_semantic), _semantic.full(x.shape, 2.0, _FP32), sanitize_overflow=False), sanitize_overflow=False)
+    odd = _semantic.sub(
+        n,
+        _semantic.mul(_math.floor(_semantic.mul(n, half, sanitize_overflow=False), _semantic=_semantic),
+                      _semantic.full(x.shape, 2.0, _FP32), sanitize_overflow=False), sanitize_overflow=False)
     p = _semantic.mul(_semantic.full(x.shape, 3.141592653589793, _FP32), r, sanitize_overflow=False)
     p2 = _semantic.mul(p, p, sanitize_overflow=False)
     _cp = _semantic.full(p2.shape, -2.755731922398589e-07, p2.dtype)
@@ -1480,9 +1470,9 @@ def cospi(arg0, _semantic=None):
     _cp = _semantic.add(_semantic.mul(_cp, p2, sanitize_overflow=False), 0.041666666666666664, sanitize_overflow=False)
     _cp = _semantic.add(_semantic.mul(_cp, p2, sanitize_overflow=False), -0.5, sanitize_overflow=False)
     _cp = _semantic.add(_semantic.mul(_cp, p2, sanitize_overflow=False), 1.0, sanitize_overflow=False)
-    c = _semantic.where(_semantic.less_than(p2, _semantic.full(x.shape, 0.25, _FP32)), _cp, _math.cos(p, _semantic=_semantic))
+    c = _semantic.where(_semantic.less_than(p2, _semantic.full(x.shape, 0.25, _FP32)), _cp,
+                        _math.cos(p, _semantic=_semantic))
     return _semantic.where(_semantic.equal(odd, 0), c, _semantic.minus(c))
-
 
 
 @core.extern
@@ -1509,10 +1499,9 @@ def exp(arg0, _semantic=None):
     arg0 = _semantic.to_tensor(arg0)
     if arg0.dtype == core.dtype("fp32"):
         return _math.exp(arg0, _semantic=_semantic)
-    return core.extern_elementwise(
-        "", "", [arg0], {
-            (core.dtype("fp64"), ): ("Unsupported.exp", core.dtype("fp64")),
-        }, is_pure=True, _semantic=_semantic)
+    return core.extern_elementwise("", "", [arg0], {
+        (core.dtype("fp64"), ): ("Unsupported.exp", core.dtype("fp64")),
+    }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
@@ -1578,36 +1567,26 @@ def atan2(arg0, arg1, _semantic=None):
         # +-pi/4 or +-3pi/4; handle that pair from the sign bits.
         abs_y = _semantic.where(y_neg, _semantic.sub(zero, y, sanitize_overflow=False), y)
         abs_x = _semantic.where(x_neg, _semantic.sub(zero, x, sanitize_overflow=False), x)
-        both_inf = _semantic.logical_and(_semantic.equal(abs_y, pos_inf),
-                                         _semantic.equal(abs_x, pos_inf))
+        both_inf = _semantic.logical_and(_semantic.equal(abs_y, pos_inf), _semantic.equal(abs_x, pos_inf))
         ratio = _semantic.truediv(y, x)
         base = _f64_atan(ratio, _semantic)
         neg_side = _semantic.logical_or(_semantic.less_than(x, zero), x_neg)
-        base = _semantic.where(
-            neg_side,
-            _semantic.add(base, _semantic.where(y_neg, neg_pi, pi),
-                          sanitize_overflow=False),
-            base)
+        base = _semantic.where(neg_side, _semantic.add(base, _semantic.where(y_neg, neg_pi, pi),
+                                                       sanitize_overflow=False), base)
         on_axis = _semantic.equal(x, zero)
         # A zero result must keep y's sign (atan2(+-0.0, +0.0) is +-0.0).
-        y_signed_zero = _semantic.bitcast(
-            _semantic.and_(_semantic.bitcast(y, _I64), sign_mask), _FP64)
+        y_signed_zero = _semantic.bitcast(_semantic.and_(_semantic.bitcast(y, _I64), sign_mask), _FP64)
         axis = _semantic.where(
             _semantic.greater_than(y, zero), half_pi,
-            _semantic.where(
-                _semantic.less_than(y, zero), neg_half_pi,
-                _semantic.where(x_neg,
-                                _semantic.where(y_neg, neg_pi, pi),
-                                y_signed_zero)))
+            _semantic.where(_semantic.less_than(y, zero), neg_half_pi,
+                            _semantic.where(x_neg, _semantic.where(y_neg, neg_pi, pi), y_signed_zero)))
         result = _semantic.where(on_axis, axis, base)
         # atan2(+-inf, +-inf): pi/4 or 3pi/4 by the x sign, negated by the y
         # sign.  Inserted after the axis fix-up so it overrides the NaN ratio.
         quarter_pi = _semantic.mul(pi, _f64(0.25, y, _semantic), sanitize_overflow=False)
-        inf_angle = _semantic.where(
-            x_neg, _semantic.mul(quarter_pi, _f64(3.0, y, _semantic),
-                                 sanitize_overflow=False), quarter_pi)
-        inf_angle = _semantic.where(
-            y_neg, _semantic.sub(zero, inf_angle, sanitize_overflow=False), inf_angle)
+        inf_angle = _semantic.where(x_neg, _semantic.mul(quarter_pi, _f64(3.0, y, _semantic), sanitize_overflow=False),
+                                    quarter_pi)
+        inf_angle = _semantic.where(y_neg, _semantic.sub(zero, inf_angle, sanitize_overflow=False), inf_angle)
         result = _semantic.where(both_inf, inf_angle, result)
         # atan2(+-0.0, +x) is +-0.0: _f64_atan works on |y/x| and loses the
         # sign of a zero result, so restore it from y.
@@ -1617,10 +1596,9 @@ def atan2(arg0, arg1, _semantic=None):
         return core.extern_elementwise("", "", [y, x], {
             tuple(a.dtype for a in [y, x]): ("Unsupported.atan2", x.dtype),
         }, is_pure=True, _semantic=_semantic)
-    return core.extern_elementwise(
-        "", "", [y, x], {
-            (_FP32, _FP32): ("_ZN3xpu6atan2fEff", _FP32),
-        }, is_pure=True, _semantic=_semantic)
+    return core.extern_elementwise("", "", [y, x], {
+        (_FP32, _FP32): ("_ZN3xpu6atan2fEff", _FP32),
+    }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
@@ -1655,10 +1633,9 @@ def log(arg0, _semantic=None):
     arg0 = _semantic.to_tensor(arg0)
     if arg0.dtype == core.dtype("fp32"):
         return _math.log(arg0, _semantic=_semantic)
-    return core.extern_elementwise(
-        "", "", [arg0], {
-            (core.dtype("fp64"), ): ("Unsupported.log", core.dtype("fp64")),
-        }, is_pure=True, _semantic=_semantic)
+    return core.extern_elementwise("", "", [arg0], {
+        (core.dtype("fp64"), ): ("Unsupported.log", core.dtype("fp64")),
+    }, is_pure=True, _semantic=_semantic)
 
 
 @core.extern
@@ -1724,8 +1701,8 @@ def hypot(arg0, arg1, _semantic=None):
     y = _semantic.to_tensor(arg1)
     if x.dtype != _FP32:
         return core.extern_elementwise("", "", [x, y], {
-        tuple(a.dtype for a in [x, y]): (f"Unsupported.hypot", _FP32),
-    }, is_pure=True, _semantic=_semantic)
+            tuple(a.dtype for a in [x, y]): (f"Unsupported.hypot", _FP32),
+        }, is_pure=True, _semantic=_semantic)
     ax = _math.abs(x, _semantic=_semantic)
     ay = _math.abs(y, _semantic=_semantic)
     hi = _semantic.maximum(ax, ay, core.PropagateNan.NONE)
@@ -1734,7 +1711,10 @@ def hypot(arg0, arg1, _semantic=None):
     safe = _semantic.where(nz, hi, _semantic.full(hi.shape, 1.0, hi.dtype))
     rr = _semantic.truediv(lo, safe)
     one = _semantic.full(hi.shape, 1.0, hi.dtype)
-    res = _semantic.mul(hi, _math.sqrt(_semantic.add(one, _semantic.mul(rr, rr, sanitize_overflow=False), sanitize_overflow=False), _semantic=_semantic), sanitize_overflow=False)
+    res = _semantic.mul(
+        hi,
+        _math.sqrt(_semantic.add(one, _semantic.mul(rr, rr, sanitize_overflow=False), sanitize_overflow=False),
+                   _semantic=_semantic), sanitize_overflow=False)
     res = _semantic.where(nz, res, hi)
     has_nan = _semantic.logical_or(_semantic.not_equal(x, x), _semantic.not_equal(y, y))
     has_inf = _semantic.equal(hi, float("inf"))
@@ -1747,7 +1727,6 @@ def hypot(arg0, arg1, _semantic=None):
     return res
 
 
-
 @core.extern
 def rhypot(arg0, arg1, _semantic=None):
     # 1 / hypot(x, y); the reciprocal of the overflow-safe form above.
@@ -1755,11 +1734,9 @@ def rhypot(arg0, arg1, _semantic=None):
     y = _semantic.to_tensor(arg1)
     if x.dtype != _FP32:
         return core.extern_elementwise("", "", [x, y], {
-        tuple(a.dtype for a in [x, y]): (f"Unsupported.rhypot", _FP32),
-    }, is_pure=True, _semantic=_semantic)
-    return _semantic.truediv(_semantic.full(x.shape, 1.0, _FP32),
-                             hypot(x, y, _semantic=_semantic))
-
+            tuple(a.dtype for a in [x, y]): (f"Unsupported.rhypot", _FP32),
+        }, is_pure=True, _semantic=_semantic)
+    return _semantic.truediv(_semantic.full(x.shape, 1.0, _FP32), hypot(x, y, _semantic=_semantic))
 
 
 @core.extern
@@ -1883,8 +1860,8 @@ def cyl_bessel_i0(arg0, _semantic=None):
     x = _semantic.to_tensor(arg0)
     if x.dtype != _FP32:
         return core.extern_elementwise("", "", [x], {
-        tuple(a.dtype for a in [x]): (f"Unsupported.cyl_bessel_i0", _FP32),
-    }, is_pure=True, _semantic=_semantic)
+            tuple(a.dtype for a in [x]): (f"Unsupported.cyl_bessel_i0", _FP32),
+        }, is_pure=True, _semantic=_semantic)
     a = _math.abs(x, _semantic=_semantic)
     t = _semantic.truediv(a, _semantic.full(x.shape, 3.75, _FP32))
     t2 = _semantic.mul(t, t, sanitize_overflow=False)
@@ -1905,13 +1882,9 @@ def cyl_bessel_i0(arg0, _semantic=None):
     _lg = _semantic.add(_semantic.mul(_lg, inv, sanitize_overflow=False), 0.00225319, sanitize_overflow=False)
     _lg = _semantic.add(_semantic.mul(_lg, inv, sanitize_overflow=False), 0.01328592, sanitize_overflow=False)
     _lg = _semantic.add(_semantic.mul(_lg, inv, sanitize_overflow=False), 0.39894228, sanitize_overflow=False)
-    large = _semantic.mul(
-        _semantic.truediv(_math.exp(a, _semantic=_semantic),
-                          _math.sqrt(a, _semantic=_semantic)),
-        _lg,
-        sanitize_overflow=False)
+    large = _semantic.mul(_semantic.truediv(_math.exp(a, _semantic=_semantic), _math.sqrt(a, _semantic=_semantic)), _lg,
+                          sanitize_overflow=False)
     return _semantic.where(_semantic.less_equal(a, _semantic.full(x.shape, 3.75, _FP32)), _sm, large)
-
 
 
 @core.extern
@@ -1922,8 +1895,8 @@ def cyl_bessel_i1(arg0, _semantic=None):
     x = _semantic.to_tensor(arg0)
     if x.dtype != _FP32:
         return core.extern_elementwise("", "", [x], {
-        tuple(a.dtype for a in [x]): (f"Unsupported.cyl_bessel_i1", _FP32),
-    }, is_pure=True, _semantic=_semantic)
+            tuple(a.dtype for a in [x]): (f"Unsupported.cyl_bessel_i1", _FP32),
+        }, is_pure=True, _semantic=_semantic)
     a = _math.abs(x, _semantic=_semantic)
     t = _semantic.truediv(a, _semantic.full(x.shape, 3.75, _FP32))
     t2 = _semantic.mul(t, t, sanitize_overflow=False)
@@ -1945,14 +1918,10 @@ def cyl_bessel_i1(arg0, _semantic=None):
     _lg = _semantic.add(_semantic.mul(_lg, inv, sanitize_overflow=False), -0.00362018, sanitize_overflow=False)
     _lg = _semantic.add(_semantic.mul(_lg, inv, sanitize_overflow=False), -0.03988024, sanitize_overflow=False)
     _lg = _semantic.add(_semantic.mul(_lg, inv, sanitize_overflow=False), 0.39894228, sanitize_overflow=False)
-    large = _semantic.mul(
-        _semantic.truediv(_math.exp(a, _semantic=_semantic),
-                          _math.sqrt(a, _semantic=_semantic)),
-        _lg,
-        sanitize_overflow=False)
+    large = _semantic.mul(_semantic.truediv(_math.exp(a, _semantic=_semantic), _math.sqrt(a, _semantic=_semantic)), _lg,
+                          sanitize_overflow=False)
     mag = _semantic.where(_semantic.less_equal(a, _semantic.full(x.shape, 3.75, _FP32)), small, large)
     return _semantic.where(_semantic.less_than(x, 0), _semantic.minus(mag), mag)
-
 
 
 @core.extern
@@ -2009,12 +1978,13 @@ def normcdfinv(arg0, _semantic=None):
     p = _semantic.to_tensor(arg0)
     if p.dtype != _FP32:
         return core.extern_elementwise("", "", [p], {
-        tuple(a.dtype for a in [p]): (f"Unsupported.normcdfinv", _FP32),
-    }, is_pure=True, _semantic=_semantic)
+            tuple(a.dtype for a in [p]): (f"Unsupported.normcdfinv", _FP32),
+        }, is_pure=True, _semantic=_semantic)
     half = _semantic.full(p.shape, 0.5, _FP32)
     q = _semantic.sub(p, half, sanitize_overflow=False)
     aq = _math.abs(q, _semantic=_semantic)
-    rc = _semantic.sub(_semantic.full(p.shape, 0.180625, _FP32), _semantic.mul(q, q, sanitize_overflow=False), sanitize_overflow=False)
+    rc = _semantic.sub(_semantic.full(p.shape, 0.180625, _FP32), _semantic.mul(q, q, sanitize_overflow=False),
+                       sanitize_overflow=False)
     _nc = _semantic.full(rc.shape, 59.10937472, rc.dtype)
     _nc = _semantic.add(_semantic.mul(_nc, rc, sanitize_overflow=False), 159.29113202, sanitize_overflow=False)
     _nc = _semantic.add(_semantic.mul(_nc, rc, sanitize_overflow=False), 50.434271938, sanitize_overflow=False)
@@ -2025,7 +1995,9 @@ def normcdfinv(arg0, _semantic=None):
     _dc = _semantic.add(_semantic.mul(_dc, rc, sanitize_overflow=False), 1.0, sanitize_overflow=False)
     x_central = _semantic.mul(q, _semantic.truediv(_nc, _dc), sanitize_overflow=False)
     pt = _semantic.where(_semantic.less_than(q, 0), p, _semantic.sub(half, q, sanitize_overflow=False))
-    r = _math.sqrt(_semantic.sub(_semantic.full(p.shape, 0.0, _FP32), _math.log(pt, _semantic=_semantic), sanitize_overflow=False), _semantic=_semantic)
+    r = _math.sqrt(
+        _semantic.sub(_semantic.full(p.shape, 0.0, _FP32), _math.log(pt, _semantic=_semantic), sanitize_overflow=False),
+        _semantic=_semantic)
     r1 = _semantic.sub(r, _semantic.full(p.shape, 1.6, _FP32), sanitize_overflow=False)
     _n1 = _semantic.full(r1.shape, 0.17023821103, r1.dtype)
     _n1 = _semantic.add(_semantic.mul(_n1, r1, sanitize_overflow=False), 1.3067284816, sanitize_overflow=False)
@@ -2038,13 +2010,11 @@ def normcdfinv(arg0, _semantic=None):
     # 1e-16 is nine orders below an fp32 ulp of 1/r (a no-op), while r = +inf
     # maps to 1e16 so the tail branch yields +inf instead of inf/inf = NaN.
     r2 = _semantic.sub(
-        _semantic.truediv(_semantic.full(p.shape, 1.0, _FP32),
-                          _semantic.add(_semantic.truediv(_semantic.full(p.shape, 1.0, _FP32), r),
-                                        _semantic.full(p.shape, 1e-16, _FP32),
-                                        sanitize_overflow=False),
-                          ),
-        _semantic.full(p.shape, 5.0, _FP32),
-        sanitize_overflow=False)
+        _semantic.truediv(
+            _semantic.full(p.shape, 1.0, _FP32),
+            _semantic.add(_semantic.truediv(_semantic.full(p.shape, 1.0, _FP32), r),
+                          _semantic.full(p.shape, 1e-16, _FP32), sanitize_overflow=False),
+        ), _semantic.full(p.shape, 5.0, _FP32), sanitize_overflow=False)
     _n2 = _semantic.full(r2.shape, 0.017337203997, r2.dtype)
     _n2 = _semantic.add(_semantic.mul(_n2, r2, sanitize_overflow=False), 0.42868294337, sanitize_overflow=False)
     _n2 = _semantic.add(_semantic.mul(_n2, r2, sanitize_overflow=False), 3.081226386, sanitize_overflow=False)
@@ -2052,13 +2022,11 @@ def normcdfinv(arg0, _semantic=None):
     _d2 = _semantic.full(r2.shape, 0.012258202635, r2.dtype)
     _d2 = _semantic.add(_semantic.mul(_d2, r2, sanitize_overflow=False), 0.24197894225, sanitize_overflow=False)
     _d2 = _semantic.add(_semantic.mul(_d2, r2, sanitize_overflow=False), 1.0, sanitize_overflow=False)
-    x_tail = _semantic.mul(_semantic.truediv(q, aq),
-                           _semantic.where(_semantic.greater_than(r, _semantic.full(p.shape, 5.0, _FP32)),
-                                           _semantic.truediv(_n2, _d2),
-                                           _semantic.truediv(_n1, _d1)),
-                           sanitize_overflow=False)
+    x_tail = _semantic.mul(
+        _semantic.truediv(q, aq),
+        _semantic.where(_semantic.greater_than(r, _semantic.full(p.shape, 5.0, _FP32)), _semantic.truediv(_n2, _d2),
+                        _semantic.truediv(_n1, _d1)), sanitize_overflow=False)
     return _semantic.where(_semantic.less_equal(aq, _semantic.full(p.shape, 0.425, _FP32)), x_central, x_tail)
-
 
 
 @core.extern
@@ -2081,8 +2049,8 @@ def lgamma(arg0, _semantic=None):
     x = _semantic.to_tensor(arg0)
     if x.dtype != _FP32:
         return core.extern_elementwise("", "", [x], {
-        tuple(a.dtype for a in [x]): (f"Unsupported.lgamma", _FP32),
-    }, is_pure=True, _semantic=_semantic)
+            tuple(a.dtype for a in [x]): (f"Unsupported.lgamma", _FP32),
+        }, is_pure=True, _semantic=_semantic)
     reflect = _semantic.less_than(x, 0.5)
     one = _semantic.full(x.shape, 1.0, _FP32)
     y = _semantic.where(reflect, _semantic.sub(one, x, sanitize_overflow=False), x)
@@ -2091,53 +2059,79 @@ def lgamma(arg0, _semantic=None):
     # Lanczos series: c0 + sum_k c_k / (z + k). This is a sum of reciprocals,
     # not a polynomial in z.
     _h = _semantic.full(z.shape, 0.9999999999998099, z.dtype)
-    _h = _semantic.add(_h, _semantic.truediv(_semantic.full(z.shape, 676.5203681218851, _FP32), _semantic.add(z, _semantic.full(z.shape, 1.0, _FP32), sanitize_overflow=False)), sanitize_overflow=False)
-    _h = _semantic.add(_h, _semantic.truediv(_semantic.full(z.shape, -1259.1392167224028, _FP32), _semantic.add(z, _semantic.full(z.shape, 2.0, _FP32), sanitize_overflow=False)), sanitize_overflow=False)
-    _h = _semantic.add(_h, _semantic.truediv(_semantic.full(z.shape, 771.3234287776531, _FP32), _semantic.add(z, _semantic.full(z.shape, 3.0, _FP32), sanitize_overflow=False)), sanitize_overflow=False)
-    _h = _semantic.add(_h, _semantic.truediv(_semantic.full(z.shape, -176.6150291621406, _FP32), _semantic.add(z, _semantic.full(z.shape, 4.0, _FP32), sanitize_overflow=False)), sanitize_overflow=False)
-    _h = _semantic.add(_h, _semantic.truediv(_semantic.full(z.shape, 12.507343278686905, _FP32), _semantic.add(z, _semantic.full(z.shape, 5.0, _FP32), sanitize_overflow=False)), sanitize_overflow=False)
-    _h = _semantic.add(_h, _semantic.truediv(_semantic.full(z.shape, -0.13857109526572012, _FP32), _semantic.add(z, _semantic.full(z.shape, 6.0, _FP32), sanitize_overflow=False)), sanitize_overflow=False)
-    _h = _semantic.add(_h, _semantic.truediv(_semantic.full(z.shape, 9.984369578019572e-06, _FP32), _semantic.add(z, _semantic.full(z.shape, 7.0, _FP32), sanitize_overflow=False)), sanitize_overflow=False)
-    _h = _semantic.add(_h, _semantic.truediv(_semantic.full(z.shape, 1.5056327351493116e-07, _FP32), _semantic.add(z, _semantic.full(z.shape, 8.0, _FP32), sanitize_overflow=False)), sanitize_overflow=False)
+    _h = _semantic.add(
+        _h,
+        _semantic.truediv(_semantic.full(z.shape, 676.5203681218851, _FP32),
+                          _semantic.add(z, _semantic.full(z.shape, 1.0, _FP32), sanitize_overflow=False)),
+        sanitize_overflow=False)
+    _h = _semantic.add(
+        _h,
+        _semantic.truediv(_semantic.full(z.shape, -1259.1392167224028, _FP32),
+                          _semantic.add(z, _semantic.full(z.shape, 2.0, _FP32), sanitize_overflow=False)),
+        sanitize_overflow=False)
+    _h = _semantic.add(
+        _h,
+        _semantic.truediv(_semantic.full(z.shape, 771.3234287776531, _FP32),
+                          _semantic.add(z, _semantic.full(z.shape, 3.0, _FP32), sanitize_overflow=False)),
+        sanitize_overflow=False)
+    _h = _semantic.add(
+        _h,
+        _semantic.truediv(_semantic.full(z.shape, -176.6150291621406, _FP32),
+                          _semantic.add(z, _semantic.full(z.shape, 4.0, _FP32), sanitize_overflow=False)),
+        sanitize_overflow=False)
+    _h = _semantic.add(
+        _h,
+        _semantic.truediv(_semantic.full(z.shape, 12.507343278686905, _FP32),
+                          _semantic.add(z, _semantic.full(z.shape, 5.0, _FP32), sanitize_overflow=False)),
+        sanitize_overflow=False)
+    _h = _semantic.add(
+        _h,
+        _semantic.truediv(_semantic.full(z.shape, -0.13857109526572012, _FP32),
+                          _semantic.add(z, _semantic.full(z.shape, 6.0, _FP32), sanitize_overflow=False)),
+        sanitize_overflow=False)
+    _h = _semantic.add(
+        _h,
+        _semantic.truediv(_semantic.full(z.shape, 9.984369578019572e-06, _FP32),
+                          _semantic.add(z, _semantic.full(z.shape, 7.0, _FP32), sanitize_overflow=False)),
+        sanitize_overflow=False)
+    _h = _semantic.add(
+        _h,
+        _semantic.truediv(_semantic.full(z.shape, 1.5056327351493116e-07, _FP32),
+                          _semantic.add(z, _semantic.full(z.shape, 8.0, _FP32), sanitize_overflow=False)),
+        sanitize_overflow=False)
     log_a = _math.log(_h, _semantic=_semantic)
     half = _semantic.full(x.shape, 0.5, _FP32)
     lg_pos = _semantic.add(
         _semantic.sub(
-            _semantic.add(_semantic.full(x.shape, 0.9189385332046727, _FP32),
-                          _semantic.mul(_semantic.add(z, half, sanitize_overflow=False),
-                                        _math.log(t, _semantic=_semantic), sanitize_overflow=False),
-                          sanitize_overflow=False),
-            t,
-            sanitize_overflow=False),
-        log_a,
+            _semantic.add(
+                _semantic.full(x.shape, 0.9189385332046727, _FP32),
+                _semantic.mul(_semantic.add(z, half, sanitize_overflow=False), _math.log(t, _semantic=_semantic),
+                              sanitize_overflow=False), sanitize_overflow=False), t, sanitize_overflow=False), log_a,
         sanitize_overflow=False)
-    reduced = _semantic.sub(x, _math.floor(_semantic.add(x, half, sanitize_overflow=False), _semantic=_semantic), sanitize_overflow=False)
+    reduced = _semantic.sub(x, _math.floor(_semantic.add(x, half, sanitize_overflow=False), _semantic=_semantic),
+                            sanitize_overflow=False)
     angle = _semantic.mul(_semantic.full(x.shape, 3.141592653589793, _FP32), reduced, sanitize_overflow=False)
     angle2 = _semantic.mul(angle, angle, sanitize_overflow=False)
     sin_taylor = _semantic.mul(
         angle,
-        _semantic.add(one,
-                      _semantic.mul(angle2,
-                                    _semantic.add(_semantic.full(x.shape, -1.0/6.0, _FP32),
-                                                  _semantic.mul(angle2, _semantic.full(x.shape, 1.0/120.0, _FP32), sanitize_overflow=False),
-                                                  sanitize_overflow=False),
-                                    sanitize_overflow=False),
-                      sanitize_overflow=False),
+        _semantic.add(
+            one,
+            _semantic.mul(
+                angle2,
+                _semantic.add(
+                    _semantic.full(x.shape, -1.0 / 6.0, _FP32),
+                    _semantic.mul(angle2, _semantic.full(x.shape, 1.0 / 120.0, _FP32), sanitize_overflow=False),
+                    sanitize_overflow=False), sanitize_overflow=False), sanitize_overflow=False),
         sanitize_overflow=False)
-    sin_val = _math.abs(_semantic.where(_semantic.less_than(angle2, _semantic.full(x.shape, 1e-4, _FP32)),
-                                        sin_taylor,
-                                        _math.sin(angle, _semantic=_semantic)),
-                        _semantic=_semantic)
-    lg_neg = _semantic.sub(_semantic.sub(_semantic.full(x.shape, 1.1447298858494002, _FP32),
-                                         _math.log(sin_val, _semantic=_semantic),
-                                         sanitize_overflow=False),
-                           lg_pos,
-                           sanitize_overflow=False)
+    sin_val = _math.abs(
+        _semantic.where(_semantic.less_than(angle2, _semantic.full(x.shape, 1e-4, _FP32)), sin_taylor,
+                        _math.sin(angle, _semantic=_semantic)), _semantic=_semantic)
+    lg_neg = _semantic.sub(
+        _semantic.sub(_semantic.full(x.shape, 1.1447298858494002, _FP32), _math.log(sin_val, _semantic=_semantic),
+                      sanitize_overflow=False), lg_pos, sanitize_overflow=False)
     out = _semantic.where(reflect, lg_neg, lg_pos)
-    is_pole = _semantic.logical_and(_semantic.less_equal(x, 0),
-                                    _semantic.equal(x, _math.floor(x, _semantic=_semantic)))
+    is_pole = _semantic.logical_and(_semantic.less_equal(x, 0), _semantic.equal(x, _math.floor(x, _semantic=_semantic)))
     return _semantic.where(is_pole, _semantic.full(x.shape, float("inf"), _FP32), out)
-
 
 
 @core.extern
@@ -2215,49 +2209,40 @@ def pow(arg0, arg1, _semantic=None):
         # as non-integral (negative base -> NaN).
         y_int = _f64_round(arg1, _semantic)
         limit = _f64(4503599627370496.0, arg0, _semantic)  # 2**52
-        abs_y = _semantic.where(_semantic.less_than(arg1, zero),
-                                _semantic.sub(zero, arg1, sanitize_overflow=False),
+        abs_y = _semantic.where(_semantic.less_than(arg1, zero), _semantic.sub(zero, arg1, sanitize_overflow=False),
                                 arg1)
         in_range = _semantic.less_equal(abs_y, limit)
         y_safe = _semantic.where(in_range, y_int, zero)
         is_int = _semantic.logical_and(_semantic.equal(arg1, y_int), in_range)
-        odd = _semantic.not_equal(
-            _semantic.and_(_semantic.cast(y_safe, _I64), 1), 0)
+        odd = _semantic.not_equal(_semantic.and_(_semantic.cast(y_safe, _I64), 1), 0)
         odd_int = _semantic.logical_and(is_int, odd)
 
-        abs_base = _semantic.where(
-            negative, _semantic.sub(zero, arg0, sanitize_overflow=False), arg0)
-        out = _f64_exp2(_semantic.mul(arg1, _f64_log2(abs_base, _semantic), sanitize_overflow=False),
-                        _semantic)
+        abs_base = _semantic.where(negative, _semantic.sub(zero, arg0, sanitize_overflow=False), arg0)
+        out = _f64_exp2(_semantic.mul(arg1, _f64_log2(abs_base, _semantic), sanitize_overflow=False), _semantic)
         out = _semantic.where(is_one_base, one, out)
         # pow(+-0, y): 0 for y > 0, 1 for y == 0, +inf for y < 0, NaN for a
         # NaN exponent.  A -0.0 base with an odd integral y flips the sign of
         # the zero/inf.
         is_nan_exp = _semantic.not_equal(arg1, arg1)
         zero_base = _semantic.where(_semantic.greater_than(arg1, zero), zero,
-                                    _semantic.where(_semantic.equal(arg1, zero), one,
-                                                    pos_inf))
+                                    _semantic.where(_semantic.equal(arg1, zero), one, pos_inf))
         zero_base = _semantic.where(is_nan_exp, nan, zero_base)
         zero_i64 = _semantic.full(arg0.shape, 0, _I64)
-        neg_zero = _semantic.logical_and(
-            _semantic.equal(arg0, zero),
-            _semantic.less_than(_semantic.bitcast(arg0, _I64), zero_i64))
-        zero_base = _semantic.where(
-            _semantic.logical_and(neg_zero, odd_int),
-            _semantic.mul(zero_base, minus_one, sanitize_overflow=False),
-            zero_base)
+        neg_zero = _semantic.logical_and(_semantic.equal(arg0, zero),
+                                         _semantic.less_than(_semantic.bitcast(arg0, _I64), zero_i64))
+        zero_base = _semantic.where(_semantic.logical_and(neg_zero, odd_int),
+                                    _semantic.mul(zero_base, minus_one, sanitize_overflow=False), zero_base)
         out = _semantic.where(_semantic.equal(arg0, zero), zero_base, out)
         # pow(+inf, y): +inf for y > 0, +0 for y < 0, 1 for y == 0, NaN for a
         # NaN exponent.  _f64_log2 reads +inf's exponent field as 1024, so the
         # generic exp2(y*log2(x)) path would return a finite value.
         is_pos_inf = _semantic.equal(arg0, pos_inf)
-        inf_base = _semantic.where(_semantic.greater_than(arg1, zero), pos_inf,
-                                   _semantic.where(_semantic.less_than(arg1, zero), zero,
-                                                   _semantic.where(is_nan_exp, nan, one)))
+        inf_base = _semantic.where(
+            _semantic.greater_than(arg1, zero), pos_inf,
+            _semantic.where(_semantic.less_than(arg1, zero), zero, _semantic.where(is_nan_exp, nan, one)))
         out = _semantic.where(is_pos_inf, inf_base, out)
         # pow(x < 0, y) is real only for integral y: (-1)^y * |x|^y.
-        signed = _semantic.where(
-            odd_int, _semantic.mul(out, minus_one, sanitize_overflow=False), out)
+        signed = _semantic.where(odd_int, _semantic.mul(out, minus_one, sanitize_overflow=False), out)
         out = _semantic.where(negative, _semantic.where(is_int, signed, nan), out)
         # pow(x, +-inf) depends only on |x|: 1 for |x| == 1, +inf/0 for
         # |x| > 1, 0/+inf for |x| < 1.  The generic exp2(y*log2|x|) path gets
@@ -2265,12 +2250,9 @@ def pow(arg0, arg1, _semantic=None):
         # turn a finite negative base into NaN, so override both.
         is_inf_exp = _semantic.equal(abs_y, pos_inf)
         inf_exp = _semantic.where(
-            _semantic.greater_than(abs_base, one),
-            _semantic.where(_semantic.greater_than(arg1, zero), pos_inf, zero),
-            _semantic.where(
-                _semantic.less_than(abs_base, one),
-                _semantic.where(_semantic.greater_than(arg1, zero), zero, pos_inf),
-                one))
+            _semantic.greater_than(abs_base, one), _semantic.where(_semantic.greater_than(arg1, zero), pos_inf, zero),
+            _semantic.where(_semantic.less_than(abs_base, one),
+                            _semantic.where(_semantic.greater_than(arg1, zero), zero, pos_inf), one))
         out = _semantic.where(is_inf_exp, inf_exp, out)
         out = _semantic.where(_semantic.not_equal(arg0, arg0), arg0, out)
         # pow(anything, +-0) is 1, including a NaN base.
@@ -2282,8 +2264,7 @@ def pow(arg0, arg1, _semantic=None):
     return core.extern_elementwise(
         "", "", [arg0, arg1], {
             (_FP32, _FP32): ("_ZN3xpu3powEff", _FP32),
-            (core.dtype("fp16"), core.dtype("fp16")): (
-                "_ZN3xpu4hpowEDF16_DF16_", core.dtype("fp16")),
+            (core.dtype("fp16"), core.dtype("fp16")): ("_ZN3xpu4hpowEDF16_DF16_", core.dtype("fp16")),
         }, is_pure=True, _semantic=_semantic)
 
 

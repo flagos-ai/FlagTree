@@ -417,9 +417,10 @@ void init_triton_ir(py::module &&m) {
       }))
       .def("printOpOnDiagnostic",
            [](MLIRContext &self, bool v) { self.printOpOnDiagnostic(v); })
-      .def("printStackTraceOnDiagnostic", [](MLIRContext &self, bool v) {
-        self.printStackTraceOnDiagnostic(v);
-      })
+      .def("printStackTraceOnDiagnostic",
+           [](MLIRContext &self, bool v) {
+             self.printStackTraceOnDiagnostic(v);
+           })
       // Every registered op name, sorted, with its Elementwise answer. The
       // completeness gate enumerates the dialect surface at RUNTIME (which
       // ops exist and which carry the trait) instead of scanning tablegen,
@@ -499,12 +500,13 @@ void init_triton_ir(py::module &&m) {
              self.print(os);
              return os.str();
            })
-      .def("set_name", [](Location &self, std::string &name) {
-        mlir::StringAttr nameAttr =
-            mlir::StringAttr::get(self.getContext(), name);
-        mlir::NameLoc nameLoc = mlir::NameLoc::get(nameAttr, self);
-        self = dyn_cast<Location>(nameLoc);
-      })
+      .def("set_name",
+           [](Location &self, std::string &name) {
+             mlir::StringAttr nameAttr =
+                 mlir::StringAttr::get(self.getContext(), name);
+             mlir::NameLoc nameLoc = mlir::NameLoc::get(nameAttr, self);
+             self = dyn_cast<Location>(nameLoc);
+           })
       .def("file_line_col",
            [](Location &self)
                -> std::optional<std::tuple<std::string, int, int>> {
@@ -779,8 +781,8 @@ void init_triton_ir(py::module &&m) {
            })
       // Read-only twin of the ModuleOp one above (``ttg.num-warps``): the
       // fact harvest walks a lowered module and reads per-op integer attrs
-      // (``tt.reduce``'s ``axis``) by position key, so the generic ``operation``
-      // binding needs the same accessor.
+      // (``tt.reduce``'s ``axis``) by position key, so the generic
+      // ``operation`` binding needs the same accessor.
       .def("get_int_attr",
            [](Operation &self, const std::string &name) -> py::object {
              auto ret = self.getAttrOfType<IntegerAttr>(name);

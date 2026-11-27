@@ -356,12 +356,14 @@ bool DotOp::verifyDims() {
 
   // MX packed operands (currently mxfp4 B, two E2M1 values per byte) carry
   // `mx_b_k_pack = 2`: the physical B K extent is the logical K divided by
-  // the pack factor. 
-  // For example: 
+  // the pack factor.
+  // For example:
   // A is 8x256xf8E4M3FN, B is 128x512xi8, C is 8x512xf32
-  // 
-  // %acc = tt.dot %a, %b, %acc_0 {mx_a_dtype = 11 : i32, mx_b_dtype = 14 : i32, mx_b_k_pack = 2 : i32} : 
-  //              tensor<8x256xf8E4M3FN> * tensor<128x512xi8> -> tensor<8x512xf32>
+  //
+  // %acc = tt.dot %a, %b, %acc_0 {mx_a_dtype = 11 : i32, mx_b_dtype = 14 : i32,
+  // mx_b_k_pack = 2 : i32} :
+  //              tensor<8x256xf8E4M3FN> * tensor<128x512xi8> ->
+  //              tensor<8x512xf32>
   if (auto packAttr =
           this->getOperation()->getAttrOfType<IntegerAttr>("mx_b_k_pack")) {
     int64_t pack = packAttr.getInt();

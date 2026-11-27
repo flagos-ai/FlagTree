@@ -544,15 +544,16 @@ void init_gluon_ir(py::module &&m) {
       // dma_wait / async_wait_group), so `updateWaits` does not renumber it
       // from its missing token operand and `combineRedundantWaitOps` does not
       // fold it into a neighbour.
-      .def("create_async_wait_group",
-           [](GluonOpBuilder &self, int num, bool user_scheduled) {
-             ValueRange tokens;
-             auto waitOp = self.create<ttg::AsyncWaitOp>(tokens, num);
-             if (user_scheduled)
-               waitOp->setAttr(mlir::triton::kUserAsyncWaitAttr,
-                               mlir::UnitAttr::get(self.getContext()));
-           },
-           py::arg("num"), py::arg("user_scheduled") = false)
+      .def(
+          "create_async_wait_group",
+          [](GluonOpBuilder &self, int num, bool user_scheduled) {
+            ValueRange tokens;
+            auto waitOp = self.create<ttg::AsyncWaitOp>(tokens, num);
+            if (user_scheduled)
+              waitOp->setAttr(mlir::triton::kUserAsyncWaitAttr,
+                              mlir::UnitAttr::get(self.getContext()));
+          },
+          py::arg("num"), py::arg("user_scheduled") = false)
       .def("create_convert_layout",
            [](GluonOpBuilder &self, Type resultTy, Value value) -> Value {
              return self.create<ttg::ConvertLayoutOp>(resultTy, value);

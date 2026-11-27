@@ -70,7 +70,6 @@ SmallVector<unsigned, 4> argSort(const SmallVector<int64_t> &arr);
 // Return the operand used to access the memory in the operation
 Value getMemAccessPtr(Operation *op);
 
-
 // Return bitwidth of tensor element
 unsigned getElementBitWidth(RankedTensorType type);
 

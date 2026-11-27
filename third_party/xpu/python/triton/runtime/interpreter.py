@@ -234,20 +234,28 @@ def _get_np_dtype(tt_dtype):
 # NOTE: fp8e4b15 is Triton-only and has no torch counterpart, so its row follows
 # the OCP e4m3 convention (all-ones = NaN) rather than a measurement.
 _FLOAT_FORMATS = {
-    "fp8e5": {"max_finite_bits": 0x7B, "inf": 0x7C, "nan": 0x7F, "saturate": True, "signed_special": True,
-              "signed_zero": True},
-    "fp8e4nv": {"max_finite_bits": 0x7E, "inf": None, "nan": 0x7F, "saturate": True, "signed_special": True,
-                "signed_zero": True},
-    "fp8e5b16": {"max_finite_bits": 0x7F, "inf": None, "nan": 0x80, "saturate": True, "signed_special": False,
-                 "signed_zero": False},
-    "fp8e4b8": {"max_finite_bits": 0x7F, "inf": None, "nan": 0x80, "saturate": True, "signed_special": False,
-                "signed_zero": False},
-    "fp8e4b15": {"max_finite_bits": 0x7E, "inf": None, "nan": 0x7F, "saturate": True, "signed_special": True,
-                 "signed_zero": True},
-    "fp16": {"max_finite_bits": 0x7BFF, "inf": 0x7C00, "nan": 0x7E00, "saturate": False, "signed_special": True,
-             "signed_zero": True},
-    "bf16": {"max_finite_bits": 0x7F7F, "inf": 0x7F80, "nan": 0x7FC0, "saturate": False, "signed_special": True,
-             "signed_zero": True},
+    "fp8e5":
+    {"max_finite_bits": 0x7B, "inf": 0x7C, "nan": 0x7F, "saturate": True, "signed_special": True, "signed_zero": True},
+    "fp8e4nv":
+    {"max_finite_bits": 0x7E, "inf": None, "nan": 0x7F, "saturate": True, "signed_special": True, "signed_zero": True},
+    "fp8e5b16": {
+        "max_finite_bits": 0x7F, "inf": None, "nan": 0x80, "saturate": True, "signed_special": False, "signed_zero":
+        False
+    },
+    "fp8e4b8": {
+        "max_finite_bits": 0x7F, "inf": None, "nan": 0x80, "saturate": True, "signed_special": False, "signed_zero":
+        False
+    },
+    "fp8e4b15":
+    {"max_finite_bits": 0x7E, "inf": None, "nan": 0x7F, "saturate": True, "signed_special": True, "signed_zero": True},
+    "fp16": {
+        "max_finite_bits": 0x7BFF, "inf": 0x7C00, "nan": 0x7E00, "saturate": False, "signed_special": True,
+        "signed_zero": True
+    },
+    "bf16": {
+        "max_finite_bits": 0x7F7F, "inf": 0x7F80, "nan": 0x7FC0, "saturate": False, "signed_special": True,
+        "signed_zero": True
+    },
 }
 
 
@@ -835,9 +843,8 @@ class InterpreterBuilder:
 
     def create_fma(self, x, y, z):
         tl_dtype = z.dtype.scalar
-        out = (_widen_float(x.data, x.dtype.scalar)
-               * _widen_float(y.data, y.dtype.scalar)
-               + _widen_float(z.data, tl_dtype))
+        out = (_widen_float(x.data, x.dtype.scalar) * _widen_float(y.data, y.dtype.scalar) +
+               _widen_float(z.data, tl_dtype))
         if _is_bit_stored_float(tl_dtype):
             out = _narrow_float(out, tl_dtype)
         return TensorHandle(out, tl_dtype)

@@ -1289,8 +1289,8 @@ def _do_bench_wall_clock(fn, warmup=25, rep=100, grad_to_none=None, quantiles=No
 
     if os.getenv("TRITON_XPU_BENCH_USE_EVENTS", "0") == "1":
         from triton.testing import do_bench
-        return do_bench(fn, warmup=warmup, rep=rep, grad_to_none=grad_to_none,
-                        quantiles=quantiles, return_mode=return_mode)
+        return do_bench(fn, warmup=warmup, rep=rep, grad_to_none=grad_to_none, quantiles=quantiles,
+                        return_mode=return_mode)
 
     import time
 
