@@ -13,7 +13,8 @@ DEVICE_ID = 0
 torch_npu.npu.set_device(int(DEVICE_ID))
 
 M = N = K = 128
-GRID = (1,)
+GRID = (1, )
+
 
 @triton.jit
 def addmm_ref_kernel(a_ptr, b_ptr, c_ptr):
@@ -103,18 +104,20 @@ def test_maxmin(torch_dtype):
         c0 = torch.randn(1024, dtype=torch_dtype, device="npu")
         ref_fn = torch.maximum if kind == "max" else torch.minimum
         c_elem = c0.clone()
-        elem_maxmin_gm_kernel[(1,)](x, c_elem, IS_MAX=(kind == "max"))
+        elem_maxmin_gm_kernel[(1, )](x, c_elem, IS_MAX=(kind == "max"))
         # Reference: load C, max/min, store.
         c_ref = c0.clone()
-        elem_maxmin_ref_kernel[(1,)](x, c_ref, IS_MAX=(kind == "max"))
+        elem_maxmin_ref_kernel[(1, )](x, c_ref, IS_MAX=(kind == "max"))
         torch.npu.synchronize()
         # A/B: the only difference between the two kernels is the switch.
         exact = torch.equal(c_elem, c_ref)
         # Anchor the reference kernel against torch.maximum/minimum.
         assert exact and torch.equal(c_ref, ref_fn(c0, x)), f"atomic {kind} mismatch or bad reference kernel"
         print(f"{kind}(vector): PASSED!")
-        gm_time = do_bench_npu(lambda: elem_maxmin_gm_kernel[(1,)](x, c_elem, IS_MAX=(kind == "max")), clear_l2_cache=True)
-        ref_time = do_bench_npu(lambda: elem_maxmin_ref_kernel[(1,)](x, c_ref, IS_MAX=(kind == "max")), clear_l2_cache=True)
+        gm_time = do_bench_npu(lambda: elem_maxmin_gm_kernel[(1, )](x, c_elem, IS_MAX=(kind == "max")),
+                               clear_l2_cache=True)
+        ref_time = do_bench_npu(lambda: elem_maxmin_ref_kernel[(1, )](x, c_ref, IS_MAX=(kind == "max")),
+                                clear_l2_cache=True)
         print(f"{kind}(vector): gm time: {gm_time * 1000:.2f} us, "
               f"ref time: {ref_time * 1000:.2f} us, speedup: {ref_time / gm_time:.2f}x")
 
@@ -124,7 +127,6 @@ test_cases = [
     (torch.float16, 1e-2, 1e-2),
     (torch.bfloat16, 2e-2, 2e-2),
 ]
-
 
 if __name__ == "__main__":
     for i, (torch_dtype, atol, rtol) in enumerate(test_cases, start=1):

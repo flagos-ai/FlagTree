@@ -149,8 +149,9 @@ void buildInplacedElemopGm(AscendNPUIROpBuilder &self, const std::string &kind,
   } else if (kind == "none") {
     atomicKind = hivm::AtomicKind::NONE;
   } else {
-    throw std::runtime_error(
-        "inplaced_elemop_gm only supports kind 'add'/'max'/'min'/'none', got: " + kind);
+    throw std::runtime_error("inplaced_elemop_gm only supports kind "
+                             "'add'/'max'/'min'/'none', got: " +
+                             kind);
   }
   auto kindAttr = hivm::AtomicKindAttr::get(ctx, atomicKind);
   // 'type' is semantically meaningless for 'none', but emitting an empty
@@ -787,9 +788,7 @@ void init_ascend_ir(py::module &&m) {
            })
       .def("inplaced_elemop_gm",
            [](AscendNPUIROpBuilder &self, std::string &kind,
-              Type dtype) -> void {
-             buildInplacedElemopGm(self, kind, dtype);
-           })
+              Type dtype) -> void { buildInplacedElemopGm(self, kind, dtype); })
       .def("get_target_attribute",
            [](AscendNPUIROpBuilder &self,
               hivm::AddressSpace &addressSpace) -> Attribute {

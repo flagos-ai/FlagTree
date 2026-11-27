@@ -231,8 +231,8 @@ def _atomic_dtype_to_ir(dtype, _semantic=None):
     dtype = _unwrap_if_constexpr(dtype)
     if not isinstance(dtype, tl.dtype):
         raise TypeError(f"dtype must be a tl.dtype (e.g. tl.float32), got {type(dtype)}")
-    if not (dtype.is_fp16() or dtype.is_bf16() or dtype.is_fp32() or dtype.is_int8()
-            or dtype.is_int16() or dtype.is_int32()):
+    if not (dtype.is_fp16() or dtype.is_bf16() or dtype.is_fp32() or dtype.is_int8() or dtype.is_int16()
+            or dtype.is_int32()):
         raise ValueError(f"unsupported atomic dtype: {dtype}, only supports "
                          "fp16/bf16/fp32/int8/int16/int32")
     return dtype.to_ir(_semantic.builder)
