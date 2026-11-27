@@ -7,7 +7,6 @@ from triton.flagmega.targets import NvidiaSm90Target
 
 
 class _Module(fm.Module):
-
     def __init__(self):
         super().__init__(dialect="nn", stage="distributed", entry="main")
 
@@ -16,9 +15,10 @@ class _Module(fm.Module):
         weight = self.input("weight", fm.tensor_type("bfloat16", [16]))
         bias = fm.F.builtin.splat_const(weight.type, 0.0, name="bias")
         stats = fm.F.nn.norm_stats(value, axis=-1, use_mean=False, name="stats")
-        output = fm.F.nn.norm_apply(value, stats, weight, bias, axis=-1, epsilon=1e-6, use_mean=False,
-                                    round_before_scale=True, name="output")
-        self.function("main", (value, weight), (output, ))
+        output = fm.F.nn.norm_apply(
+            value, stats, weight, bias,
+            axis=-1, epsilon=1e-6, use_mean=False, round_before_scale=True, name="output")
+        self.function("main", (value, weight), (output,))
 
 
 def test_post_distribution_norm_fusion_is_a_named_dumpable_stage():
@@ -30,23 +30,32 @@ def test_post_distribution_norm_fusion_is_a_named_dumpable_stage():
     assert stage is not None and stage.name == "fold-materialized-packed-qkv-combine"
     folded = stage.run(thawed, NvidiaSm90Target())
     assert folded.stage == "qkv_combine_folded"
-    lowered = get_stage(next_stage(folded.stage).name).run(folded, NvidiaSm90Target())
+    lowered = get_stage(next_stage(folded.stage).name).run(
+        folded, NvidiaSm90Target())
     assert lowered.stage == "qkv_combine_lowered"
-    sunk = get_stage(next_stage(lowered.stage).name).run(lowered, NvidiaSm90Target())
+    sunk = get_stage(next_stage(lowered.stage).name).run(
+        lowered, NvidiaSm90Target())
     assert sunk.stage == "norm_stats_boxing_sunk"
-    propagated = get_stage(next_stage(sunk.stage).name).run(sunk, NvidiaSm90Target())
+    propagated = get_stage(next_stage(sunk.stage).name).run(
+        sunk, NvidiaSm90Target())
     assert propagated.stage == "distributed_boundary_layout_propagated"
-    finalized = get_stage(next_stage(propagated.stage).name).run(propagated, NvidiaSm90Target())
+    finalized = get_stage(next_stage(propagated.stage).name).run(
+        propagated, NvidiaSm90Target())
     assert finalized.stage == "norm_bindings_finalized"
-    finalized_sunk = get_stage(next_stage(finalized.stage).name).run(finalized, NvidiaSm90Target())
+    finalized_sunk = get_stage(next_stage(finalized.stage).name).run(
+        finalized, NvidiaSm90Target())
     assert finalized_sunk.stage == "finalized_norm_stats_boxing_sunk"
-    contracted = get_stage(next_stage(finalized_sunk.stage).name).run(finalized_sunk, NvidiaSm90Target())
+    contracted = get_stage(next_stage(finalized_sunk.stage).name).run(
+        finalized_sunk, NvidiaSm90Target())
     assert contracted.stage == "add_norm_stats_lowered"
-    contracted = get_stage(next_stage(contracted.stage).name).run(contracted, NvidiaSm90Target())
+    contracted = get_stage(next_stage(contracted.stage).name).run(
+        contracted, NvidiaSm90Target())
     assert contracted.stage == "vector_contracts_lowered"
-    gated = get_stage(next_stage(contracted.stage).name).run(contracted, NvidiaSm90Target())
+    gated = get_stage(next_stage(contracted.stage).name).run(
+        contracted, NvidiaSm90Target())
     assert gated.stage == "attention_gate_fused"
-    result = get_stage(next_stage(gated.stage).name).run(gated, NvidiaSm90Target())
+    result = get_stage(next_stage(gated.stage).name).run(
+        gated, NvidiaSm90Target())
     assert result.stage == "fused_norm"
     assert result.node_map["output"].op == "nn.rms_norm"
     assert next_stage(result.stage).name == "constant-cse"

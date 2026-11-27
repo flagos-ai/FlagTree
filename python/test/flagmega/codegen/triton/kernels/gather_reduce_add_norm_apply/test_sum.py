@@ -4,7 +4,8 @@
 import pytest
 
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
-    _gather_reduce_add_norm_apply_call, )
+    _gather_reduce_add_norm_apply_call,
+)
 from triton.flagmega.codegen.triton.templates import TritonTemplateRegistry
 from triton.flagmega.errors import CodegenError
 
@@ -22,15 +23,26 @@ def _abi(
     owner_stride=0,
 ):
     local_shape = tuple(shape if local_shape is None else local_shape)
-    raw_policies = tuple(axis_policies or ({"kind": "broadcast"} for _ in shape))
-    policies = tuple({
-        **policy,
-        "stages":
-        tuple({
-            **stage,
-            "distribution": stage.get("distribution", {"kind": "contiguous"}),
-        } for stage in policy.get("stages", ())),
-    } if policy.get("kind") == "split" else policy for policy in raw_policies)
+    raw_policies = tuple(
+        axis_policies or ({"kind": "broadcast"} for _ in shape)
+    )
+    policies = tuple(
+        {
+            **policy,
+            "stages": tuple(
+                {
+                    **stage,
+                    "distribution": stage.get(
+                        "distribution", {"kind": "contiguous"}
+                    ),
+                }
+                for stage in policy.get("stages", ())
+            ),
+        }
+        if policy.get("kind") == "split"
+        else policy
+        for policy in raw_policies
+    )
     strides = []
     stride = 1
     for extent in reversed(local_shape):
@@ -45,20 +57,23 @@ def _abi(
         "logical_shape": tuple(shape),
         "local_capacity_shape": local_shape,
         "active_shape_expressions": tuple(str(value) for value in local_shape),
-        "logical_coordinate_expressions": tuple(coordinates
-                                                or (f"local_coord_{axis}" for axis in range(len(local_shape)))),
+        "logical_coordinate_expressions": tuple(
+            coordinates
+            or (f"local_coord_{axis}" for axis in range(len(local_shape)))
+        ),
         "scalar_storage_strides": tuple(reversed(strides)),
         "scalar_lane_shape": (),
         "scalar_lane_count": 1,
         "component_stride_scalar_elements": owner_stride,
         "coordinate_space": coordinate_space,
         "distributed_type": {
-            "kind":
-            "distributed",
+            "kind": "distributed",
             "tensor": {
                 "kind": "tensor",
                 "dtype": dtype,
-                "shape": tuple({"kind": "fixed", "value": value} for value in shape),
+                "shape": tuple(
+                    {"kind": "fixed", "value": value} for value in shape
+                ),
                 "layout": {},
             },
             "placement": {
@@ -66,13 +81,16 @@ def _abi(
                 "name": "yx",
                 "hierarchy_levels": "bb",
             },
-            "axis_policies":
-            policies,
-            "partial": (None if partial_axes is None else {
-                "kind": "partial",
-                "axes": tuple(partial_axes),
-                "reduce_op": "sum",
-            }),
+            "axis_policies": policies,
+            "partial": (
+                None
+                if partial_axes is None
+                else {
+                    "kind": "partial",
+                    "axes": tuple(partial_axes),
+                    "reduce_op": "sum",
+                }
+            ),
         },
     }
 
@@ -85,18 +103,18 @@ def _parameter(formal, abi):
             "actual": formal,
             "runtime_argument": formal,
             "abi": abi,
-        }, ),
+        },),
     }
 
 
 def _raw(
-        *,
-        use_mean=False,
-        partial_axes=(0, 1),
-        partial_owner_count=128,
-        partial=None,
-        value=None,
-        parameter=None,
+    *,
+    use_mean=False,
+    partial_axes=(0, 1),
+    partial_owner_count=128,
+    partial=None,
+    value=None,
+    parameter=None,
 ):
     partial = partial or _abi(
         (1, 16),
@@ -106,7 +124,7 @@ def _raw(
         owner_stride=16,
     )
     value = value or _abi((1, 16))
-    parameter = parameter or _abi((16, ))
+    parameter = parameter or _abi((16,))
     components = 2 if use_mean else 1
     workspace = _abi((components, 128), dtype="float32")
     return {
@@ -134,20 +152,23 @@ def _raw(
             _parameter("result_0", value),
             _parameter("result_1", value),
         ),
-        "workspaces": (_parameter("norm_stats_partials", workspace), ),
+        "workspaces": (
+            _parameter("norm_stats_partials", workspace),
+        ),
     }
 
 
 @pytest.mark.parametrize("use_mean", [False, True])
 def test_renderer_materializes_private_stats_with_one_grid_barrier(
-    use_mean,
-    assert_entry_owned_phase_schedule,
+    use_mean, assert_entry_owned_phase_schedule,
 ):
     call = {
         **_gather_reduce_add_norm_apply_call(_raw(use_mean=use_mean)),
         "symbol": "_flagmega_test_gather_reduce_add_norm_apply",
-        "signature": ("input, addend, scale, bias, result_0, result_1, "
-                      "norm_stats_partials"),
+        "signature": (
+            "input, addend, scale, bias, result_0, result_1, "
+            "norm_stats_partials"
+        ),
         "execution_kind": "collective",
         "family": "gather_reduce_add_norm_apply",
         "variant": "sum",
@@ -156,7 +177,7 @@ def test_renderer_materializes_private_stats_with_one_grid_barrier(
     source = TritonTemplateRegistry().render(
         "kernels/gather_reduce_add_norm_apply/sum.py.jinja",
         {
-            "render_calls": (call, ),
+            "render_calls": (call,),
             "distributed_entry": True,
             "mesh_axis_names": ("y", "x"),
             "mesh_hierarchy": (8, 16),
@@ -165,7 +186,9 @@ def test_renderer_materializes_private_stats_with_one_grid_barrier(
 
     compile(source, "gather_reduce_add_norm_apply.py", "exec")
     assert_entry_owned_phase_schedule(source, call["symbol"])
-    annotation = source.rsplit("def _flagmega_test_gather_reduce_add_norm_apply", 1)[0].rstrip().splitlines()[-1]
+    annotation = source.rsplit(
+        "def _flagmega_test_gather_reduce_add_norm_apply", 1
+    )[0].rstrip().splitlines()[-1]
     assert annotation == "@triton.jit"
     assert source.count("tle.distributed_barrier(FLAGMEGA_GRID_MESH)") == 1
     assert "norm_owner_start in tl.range" in source
@@ -191,7 +214,7 @@ def test_renderer_materializes_private_stats_with_one_grid_barrier(
 def test_split_y_partial_x_partitions_materialization_across_all_writers():
     split_y = (
         {"kind": "broadcast"},
-        {"kind": "split", "stages": ({"hierarchy_axes": (0, )}, )},
+        {"kind": "split", "stages": ({"hierarchy_axes": (0,)},)},
     )
     partial = _abi(
         (1, 2048),
@@ -200,7 +223,7 @@ def test_split_y_partial_x_partitions_materialization_across_all_writers():
         coordinate_space="local",
         coordinates=("local_coord_0", "local_coord_1 + shard_coord_0 * 256"),
         axis_policies=split_y,
-        partial_axes=(1, ),
+        partial_axes=(1,),
         owner_stride=256,
     )
     value = _abi(
@@ -210,23 +233,26 @@ def test_split_y_partial_x_partitions_materialization_across_all_writers():
         axis_policies=split_y,
     )
     parameter = _abi(
-        (2048, ),
-        local_shape=(256, ),
-        coordinates=("local_coord_0 + shard_coord_0 * 256", ),
-        axis_policies=(split_y[1], ),
+        (2048,),
+        local_shape=(256,),
+        coordinates=("local_coord_0 + shard_coord_0 * 256",),
+        axis_policies=(split_y[1],),
     )
 
     call = _gather_reduce_add_norm_apply_call(
         _raw(
-            partial_axes=(1, ),
+            partial_axes=(1,),
             partial_owner_count=16,
             partial=partial,
             value=value,
             parameter=parameter,
-        ))
+        )
+    )
 
     assert call["partial_reduction_width"] == 16
-    assert call["partial_owner"] == ("(shard_y * 16 + (gather_partial_lane))")
+    assert call["partial_owner"] == (
+        "(shard_y * 16 + (gather_partial_lane))"
+    )
     assert call["participant_active"] == "True"
     assert call["stats_writer_index"] == "((shard_y) * 16 + (shard_x))"
     assert call["stats_owner_count"] == 128
@@ -240,7 +266,7 @@ def test_down_projection_split_yx_uses_all_128_stats_writers():
         {"kind": "broadcast"},
         {
             "kind": "split",
-            "stages": ({"hierarchy_axes": (0, 1)}, ),
+            "stages": ({"hierarchy_axes": (0, 1)},),
         },
     )
     partial = _abi(
@@ -261,13 +287,17 @@ def test_down_projection_split_yx_uses_all_128_stats_writers():
         axis_policies=split_yx,
     )
     parameter = _abi(
-        (2048, ),
-        local_shape=(16, ),
-        coordinates=("local_coord_0 + (shard_coord_0 * 16 + shard_coord_1) * 16", ),
-        axis_policies=(split_yx[1], ),
+        (2048,),
+        local_shape=(16,),
+        coordinates=(
+            "local_coord_0 + (shard_coord_0 * 16 + shard_coord_1) * 16",
+        ),
+        axis_policies=(split_yx[1],),
     )
 
-    call = _gather_reduce_add_norm_apply_call(_raw(partial=partial, value=value, parameter=parameter))
+    call = _gather_reduce_add_norm_apply_call(
+        _raw(partial=partial, value=value, parameter=parameter)
+    )
 
     assert call["partial_reduction_width"] == 32
     assert call["partial_owner"] == "(gather_partial_lane)"
@@ -280,11 +310,11 @@ def test_down_projection_split_yx_uses_all_128_stats_writers():
 def test_down_projection_split_y_partial_x_uses_all_output_shards():
     split_y = (
         {"kind": "broadcast"},
-        {"kind": "split", "stages": ({"hierarchy_axes": (0, )}, )},
+        {"kind": "split", "stages": ({"hierarchy_axes": (0,)},)},
     )
     split_yx = (
         {"kind": "broadcast"},
-        {"kind": "split", "stages": ({"hierarchy_axes": (0, 1)}, )},
+        {"kind": "split", "stages": ({"hierarchy_axes": (0, 1)},)},
     )
     partial = _abi(
         (1, 2048),
@@ -293,7 +323,7 @@ def test_down_projection_split_y_partial_x_uses_all_output_shards():
         coordinate_space="local",
         coordinates=("local_coord_0", "local_coord_1 + shard_coord_0 * 256"),
         axis_policies=split_y,
-        partial_axes=(1, ),
+        partial_axes=(1,),
         owner_stride=256,
     )
     value = _abi(
@@ -306,20 +336,23 @@ def test_down_projection_split_y_partial_x_uses_all_output_shards():
         axis_policies=split_yx,
     )
     parameter = _abi(
-        (2048, ),
-        local_shape=(16, ),
-        coordinates=("local_coord_0 + (shard_coord_0 * 16 + shard_coord_1) * 16", ),
-        axis_policies=(split_yx[1], ),
+        (2048,),
+        local_shape=(16,),
+        coordinates=(
+            "local_coord_0 + (shard_coord_0 * 16 + shard_coord_1) * 16",
+        ),
+        axis_policies=(split_yx[1],),
     )
 
     call = _gather_reduce_add_norm_apply_call(
         _raw(
-            partial_axes=(1, ),
+            partial_axes=(1,),
             partial_owner_count=16,
             partial=partial,
             value=value,
             parameter=parameter,
-        ))
+        )
+    )
 
     assert call["local_capacity"] == 16
     assert call["participant_active"] == "True"
@@ -361,11 +394,11 @@ def test_renderer_sizes_statistics_from_the_selected_iteration_domain():
         owner_stride=4,
     )
     value = _abi((4, 8), local_shape=(2, 8))
-    parameter = _abi((8, ))
+    parameter = _abi((8,))
     workspace = _abi((4, 1, 128), dtype="float32")
     raw = _raw(partial=partial, value=value, parameter=parameter)
     raw["semantic_attrs"]["axis"] = 1
-    raw["workspaces"] = (_parameter("norm_stats_partials", workspace), )
+    raw["workspaces"] = (_parameter("norm_stats_partials", workspace),)
 
     call = _gather_reduce_add_norm_apply_call(raw)
 

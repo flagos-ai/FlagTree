@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""reference sparse expert stage relations over arbitrary target-owned meshes.
+"""nncase sparse expert stage relations over arbitrary target-owned meshes.
 
 Expert banks retain their expert axis while TopK slots have independent owners.
 Token, route, reduction and output features are separate placement roles. Op inference is the final
@@ -41,8 +41,8 @@ def _candidate(context, definition, tensors, policies, partials=None):
     inputs = tuple(
         DistributedType(tensors[parameter.name],
                         tuple(policies.get(parameter.name, (SBP.broadcast(), ) *
-                                           tensors[parameter.name].rank)), context.placement, partial=(
-                                               partials or {}).get(parameter.name))
+                                           tensors[parameter.name].rank)), context.placement,
+                        partial=(partials or {}).get(parameter.name))
         for parameter in definition.input_parameters)
     typed_inputs = tuple(
         Node(parameter.name, "builtin.var", (), value) for parameter, value in zip(definition.input_parameters, inputs))
@@ -58,7 +58,7 @@ def _candidate(context, definition, tensors, policies, partials=None):
         objective_kind="analytic" if factors is not None else "heuristic",
         objective_model=context.operation_cost_model.identity
         if factors is not None else "sparse-experts-output-bytes/v1",
-        objective_evidence=("reference-sparse-experts-stage-relations", "target-owned-split-policies",
+        objective_evidence=("nncase-sparse-experts-stage-relations", "target-owned-split-policies",
                             "vector-scalar-split-units", "op-owned-rounding-legality", "selected-expert-cost"),
     )
 
@@ -81,7 +81,7 @@ class SparseExpertsGateUpCandidateProvider(DistributedCandidateProviderBase):
         output = tensor_of(context.source_call.type)
         token_policies = _axis_policies(context, output, 0,
                                         ((definition.dispatched, 0, 1, 1), (definition.router_expert_ids, 0, 1, 1)))
-        route_policies = _axis_policies(context, output, 1, ((definition.router_expert_ids, 1, 1, 1), ))
+        route_policies = _axis_policies(context, output, 1, ((definition.router_expert_ids, 1, 1, 1),))
         intermediate_policies = _axis_policies(context, output, 2, ((definition.gate_weight, 1, 1, lanes(output.dtype)),
                                                                     (definition.up_weight, 1, 1, lanes(output.dtype))))
         broadcast = SBP.broadcast()
@@ -126,12 +126,11 @@ class SparseExpertsDownCandidateProvider(DistributedCandidateProviderBase):
         intermediate_policies = _axis_policies(context, activation, 2,
                                                ((definition.activations, 2, 1, 1),
                                                 (definition.down_weight, 2, 1, lanes(activation.dtype))))
-        route_policies = _axis_policies(context, output, 1, ((definition.router_expert_ids, 1, 1, 1), ))
+        route_policies = _axis_policies(context, output, 1, ((definition.router_expert_ids, 1, 1, 1),))
         output_policies = _axis_policies(context, output, 2, ((definition.down_weight, 1, 1, lanes(output.dtype)), ))
         broadcast = SBP.broadcast()
         results = []
-        for token, route, intermediate, output_policy in product(token_policies, route_policies, intermediate_policies,
-                                                                 output_policies):
+        for token, route, intermediate, output_policy in product(token_policies, route_policies, intermediate_policies, output_policies):
             try:
                 role_axes(token, route, intermediate, output_policy)
                 scalar_intermediate = scale_policy(intermediate, lanes(activation.dtype), 1)
@@ -162,16 +161,15 @@ class SparseExpertsDispatchCandidateProvider(DistributedCandidateProviderBase):
         d = SparseExpertsDispatch
         tensors = _source_tensors(context, d)
         policies = (
-            _axis_policies(context, tensors["value"], 0, ((d.value, 0, 1, 1), )),
-            _axis_policies(context, tensors["router_expert_ids"], 1, ((d.router_expert_ids, 1, 1, 1), )),
-            _axis_policies(context, tensors["value"], 1, ((d.value, 1, 1, 1), )),
+            _axis_policies(context, tensors["value"], 0, ((d.value, 0, 1, 1),)),
+            _axis_policies(context, tensors["router_expert_ids"], 1, ((d.router_expert_ids, 1, 1, 1),)),
+            _axis_policies(context, tensors["value"], 1, ((d.value, 1, 1, 1),)),
         )
         result = []
         for token, route, hidden in product(*policies):
             try:
                 role_axes(token, route, hidden)
-                result.append(
-                    _candidate(context, d, tensors, {"value": (token, hidden), "router_expert_ids": (token, route)}))
+                result.append(_candidate(context, d, tensors, {"value": (token, hidden), "router_expert_ids": (token, route)}))
             except IRSchemaError:
                 continue
         return tuple(result)
@@ -188,20 +186,18 @@ class PartitionedSparseExpertsDownCandidateProvider(DistributedCandidateProvider
         output = tensor_of(context.source_call.type)
         partition = _axis_policies(context, output, 0, ((d.activations, 2, 1, 1), (d.down_weight, 1, 1, 1)))
         token = _axis_policies(context, output, 1, ((d.activations, 0, 1, 1), (d.router_expert_ids, 0, 1, 1)))
-        route = _axis_policies(context, output, 2, ((d.router_expert_ids, 1, 1, 1), ))
-        hidden = _axis_policies(context, output, 3, ((d.down_weight, 2, 1, lanes(output.dtype)), ))
+        route = _axis_policies(context, output, 2, ((d.router_expert_ids, 1, 1, 1),))
+        hidden = _axis_policies(context, output, 3, ((d.down_weight, 2, 1, lanes(output.dtype)),))
         b = SBP.broadcast()
         result = []
         for p, t, r, h in product(partition, token, route, hidden):
             try:
                 role_axes(p, t, r, h)
                 scalar_hidden = scale_policy(h, lanes(output.dtype), 1)
-                result.append(
-                    _candidate(context, d, tensors, {
-                        "activations": (t, r, p, b),
-                        "router_expert_ids": (t, r),
-                        "down_weight": (b, p, scalar_hidden, b),
-                    }))
+                result.append(_candidate(context, d, tensors, {
+                    "activations": (t, r, p, b), "router_expert_ids": (t, r),
+                    "down_weight": (b, p, scalar_hidden, b),
+                }))
             except IRSchemaError:
                 continue
         return tuple(result)
@@ -216,8 +212,7 @@ class SparseExpertsCombineCandidateProvider(DistributedCandidateProviderBase):
         d = SparseExpertsCombine
         tensors = _source_tensors(context, d)
         projection = tensors["projections"]
-        policies = tuple(
-            _axis_policies(context, projection, axis, ((d.projections, axis, 1, 1), )) for axis in range(3))
+        policies = tuple(_axis_policies(context, projection, axis, ((d.projections, axis, 1, 1),)) for axis in range(3))
         result = []
         for token, route, hidden in product(*policies):
             try:
@@ -228,17 +223,14 @@ class SparseExpertsCombineCandidateProvider(DistributedCandidateProviderBase):
                 if not context.source_call.attrs["round_weighted_output"]:
                     partials.extend(axes for count in range(1, len(unused) + 1) for axes in combinations(unused, count))
                 for axes in partials:
-                    result.append(
-                        _candidate(context, d, tensors,
-                                   {"projections": (token, route, hidden), "router_expert_weights":
-                                    (token, route)}, {"projections": SBP.partial(axes) if axes else None}))
+                    result.append(_candidate(context, d, tensors,
+                                             {"projections": (token, route, hidden), "router_expert_weights": (token, route)},
+                                             {"projections": SBP.partial(axes) if axes else None}))
             except IRSchemaError:
                 continue
         return tuple(result)
 
 
-__all__ = [
-    "SparseExpertsGateUpCandidateProvider", "SparseExpertsDownCandidateProvider",
-    "SparseExpertsDispatchCandidateProvider", "SparseExpertsCombineCandidateProvider",
-    "PartitionedSparseExpertsDownCandidateProvider"
-]
+__all__ = ["SparseExpertsGateUpCandidateProvider", "SparseExpertsDownCandidateProvider",
+           "SparseExpertsDispatchCandidateProvider", "SparseExpertsCombineCandidateProvider",
+           "PartitionedSparseExpertsDownCandidateProvider"]

@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Candidate contracts mirroring reference AutoDistributed providers."""
+"""Candidate contracts mirroring nncase AutoDistributed providers."""
 
 from __future__ import annotations
 
@@ -25,11 +25,14 @@ from triton.flagmega.passes.auto_distributed.split_candidates import (
     DistributedSplitCandidateProvider,
 )
 from triton.flagmega.passes.auto_distributed.reshard_cost import (
-    DistributedReshardCostModel, )
+    DistributedReshardCostModel,
+)
 from triton.flagmega.passes.auto_distributed.operation_cost import (
-    DistributedOperationCostModel, )
+    DistributedOperationCostModel,
+)
 from triton.flagmega.passes.auto_distributed.candidate_identity import (
-    distributed_candidate_id, )
+    distributed_candidate_id,
+)
 
 
 @dataclass(frozen=True)
@@ -47,15 +50,17 @@ class DistributedCandidateContext:
     placement: Placement
     available_input_types: tuple[tuple[IRType, ...], ...]
     split_candidate_provider: DistributedSplitCandidateProvider = field(
-        default_factory=ContiguousDistributedSplitCandidateProvider)
-    reshard_cost_model: DistributedReshardCostModel = field(default_factory=DistributedReshardCostModel)
-    operation_cost_model: DistributedOperationCostModel = field(default_factory=DistributedOperationCostModel)
+        default_factory=ContiguousDistributedSplitCandidateProvider
+    )
+    reshard_cost_model: DistributedReshardCostModel = field(
+        default_factory=DistributedReshardCostModel
+    )
+    operation_cost_model: DistributedOperationCostModel = field(
+        default_factory=DistributedOperationCostModel
+    )
     type_inference_memo: dict = field(default_factory=dict, compare=False, repr=False)
     _candidate_snapshots: dict[int | tuple[int, IRType], tuple[object, tuple[DistributedCandidate, ...]]] = field(
-        default_factory=dict,
-        init=False,
-        repr=False,
-        compare=False,
+        default_factory=dict, init=False, repr=False, compare=False,
     )
 
     def split_candidates(
@@ -72,8 +77,14 @@ class DistributedCandidateContext:
             divisor *= self.placement.hierarchy[axis]
         if divisor <= 1:
             return ()
-        granularity = (None if (not dimension.is_fixed or dimension.fixed_value % divisor) else dimension.fixed_value //
-                       divisor)
+        granularity = (
+            None
+            if (
+                not dimension.is_fixed
+                or dimension.fixed_value % divisor
+            )
+            else dimension.fixed_value // divisor
+        )
         candidates = self.split_candidate_provider.get_candidates(
             DistributedSplitCandidateContext(
                 tensor,
@@ -83,7 +94,8 @@ class DistributedCandidateContext:
                 granularity,
                 dimension.fixed_value if dimension.is_fixed else None,
                 purpose,
-            ))
+            )
+        )
         # A target owns the split distribution.  In particular, PyNTT's
         # block-cyclic policy permits ragged logical extents whereas a
         # contiguous split still requires exact divisibility.  Validate each
@@ -93,7 +105,10 @@ class DistributedCandidateContext:
         for candidate in candidates:
             policies = [SBP.broadcast() for _ in tensor.shape]
             policies[tensor_axis] = candidate
-            if (candidate not in result and is_distributable(tensor, tuple(policies), self.placement)):
+            if (
+                candidate not in result
+                and is_distributable(tensor, tuple(policies), self.placement)
+            ):
                 result.append(candidate)
         return tuple(result)
 
@@ -102,7 +117,10 @@ class DistributedCandidateContext:
 
         return tuple(
             DistributedType(tensor, policies, self.placement)
-            for policies in leaf_candidate_policies(tensor, self.placement, split_candidates=self.split_candidates))
+            for policies in leaf_candidate_policies(
+                tensor, self.placement, split_candidates=self.split_candidates
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -127,16 +145,22 @@ class DistributedCandidate:
     def __post_init__(self) -> None:
         if not self.id or not self.reason:
             raise ValueError("DistributedCandidate requires a non-empty id and reason.")
-        if (isinstance(self.operation_cost, bool) or not isinstance(self.operation_cost, int) or self.operation_cost < 0
-                or self.operation_cost > 2_000_000_000):
-            raise ValueError("DistributedCandidate operation_cost must be an integer in [0, 2_000_000_000].")
+        if (
+            isinstance(self.operation_cost, bool)
+            or not isinstance(self.operation_cost, int)
+            or self.operation_cost < 0
+            or self.operation_cost > 2_000_000_000
+        ):
+            raise ValueError(
+                "DistributedCandidate operation_cost must be an integer in [0, 2_000_000_000]."
+            )
         if self.objective_kind not in {"analytic", "heuristic", "measured", "agent"}:
             raise ValueError(f"Unknown distributed objective kind {self.objective_kind!r}.")
         if not self.objective_model:
             raise ValueError("DistributedCandidate requires an objective model identifier.")
         evidence = tuple(str(value) for value in self.objective_evidence)
         if not evidence:
-            evidence = (f"candidate-reason:{self.reason}", )
+            evidence = (f"candidate-reason:{self.reason}",)
         object.__setattr__(self, "objective_evidence", evidence)
 
 
@@ -149,45 +173,40 @@ class DistributedCandidateProvider(Protocol):
         self,
         context: DistributedCandidateContext,
         default_return_types: Sequence[IRType],
-    ) -> tuple[IRType, ...]:
-        ...
+    ) -> tuple[IRType, ...]: ...
 
     def try_get_input_type_tuples(
         self,
         context: DistributedCandidateContext,
         return_type: IRType,
-    ) -> tuple[DistributedCandidateTuple, ...] | None:
-        ...
+    ) -> tuple[DistributedCandidateTuple, ...] | None: ...
 
     def create_candidate_target(
         self,
         context: DistributedCandidateContext,
         return_type: IRType,
-    ) -> str:
-        ...
+    ) -> str: ...
 
     def create_candidate_attrs(
         self,
         context: DistributedCandidateContext,
         return_type: IRType,
-    ) -> Mapping[str, object] | None:
-        ...
+    ) -> Mapping[str, object] | None: ...
 
     def create_candidate(
         self,
         context: DistributedCandidateContext,
         return_type: IRType,
         inputs: DistributedCandidateTuple,
-    ) -> DistributedCandidate:
-        ...
+    ) -> DistributedCandidate: ...
 
 
 class DistributedCandidateProviderBase:
-    """Handwritten provider base with the reference three-part public contract.
+    """Handwritten provider base with nncase's three-part public contract.
 
     Concrete providers enumerate their small, target-specific candidate set in
     one local method. Search still consumes return types and input tuples
-    separately, exactly like reference. Public candidates are renamed from their
+    separately, exactly like nncase. Public candidates are renamed from their
     implementation-local labels to the complete type relation, so inserting or
     reordering a legal candidate cannot retarget an editable selection.
     """
@@ -218,7 +237,8 @@ class DistributedCandidateProviderBase:
         values = tuple(
             DistributedCandidateTuple(candidate.input_types, candidate.reason)
             for candidate in self.get_candidates(context)
-            if candidate.return_type == return_type)
+            if candidate.return_type == return_type
+        )
         return values
 
     def create_candidate_target(
@@ -243,8 +263,13 @@ class DistributedCandidateProviderBase:
         return_type: IRType,
         inputs: DistributedCandidateTuple,
     ) -> DistributedCandidate:
-        candidate = next(candidate for candidate in self.get_candidates(context) if candidate.return_type == return_type
-                         and candidate.input_types == inputs.input_types and candidate.reason == inputs.reason)
+        candidate = next(
+            candidate
+            for candidate in self.get_candidates(context)
+            if candidate.return_type == return_type
+            and candidate.input_types == inputs.input_types
+            and candidate.reason == inputs.reason
+        )
         return replace(
             candidate,
             target_op=self.create_candidate_target(context, return_type),
@@ -252,7 +277,7 @@ class DistributedCandidateProviderBase:
         )
 
     def get_candidates(self, context: DistributedCandidateContext) -> tuple[DistributedCandidate, ...]:
-        """Enumerate once for all queries in the reference provider protocol."""
+        """Enumerate once for all queries in the nncase provider protocol."""
 
         cached = context._candidate_snapshots.get(id(self))
         if cached is not None and cached[0] is self:
@@ -266,11 +291,16 @@ class DistributedCandidateProviderBase:
                     candidate.return_type,
                     candidate.input_types,
                 ),
-            ) for candidate in self._enumerate_candidates(context))
+            )
+            for candidate in self._enumerate_candidates(context)
+        )
         ids = tuple(candidate.id for candidate in values)
         if len(set(ids)) != len(ids):
             duplicates = sorted({value for value in ids if ids.count(value) > 1})
-            raise ValueError("Distributed candidates must have unique semantic identities: " + ", ".join(duplicates))
+            raise ValueError(
+                "Distributed candidates must have unique semantic identities: "
+                + ", ".join(duplicates)
+            )
         context._candidate_snapshots[id(self)] = (self, values)
         return values
 
@@ -281,7 +311,8 @@ class DistributedCandidateProviderRegistry:
     def __init__(self) -> None:
         self._providers: dict[str, DistributedCandidateProvider] = {}
         self._split_candidate_provider: DistributedSplitCandidateProvider = (
-            ContiguousDistributedSplitCandidateProvider())
+            ContiguousDistributedSplitCandidateProvider()
+        )
 
     @property
     def split_candidate_provider(self) -> DistributedSplitCandidateProvider:

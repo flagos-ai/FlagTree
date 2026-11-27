@@ -16,7 +16,8 @@ from triton.flagmega.runtime import load
 from triton.flagmega.targets import NvidiaSm90Target
 
 
-def expert_module(family, packed=False, *, quantization="dynamic_fp8_ue8m0", block=128, reduction=256, rounded=False):
+def expert_module(family, packed=False, *, quantization="dynamic_fp8_ue8m0", block=128,
+                  reduction=256, rounded=False):
     definition = SparseExpertsGateUp if family == "sparse_experts_gate_up" else PartitionedSparseExpertsDown
     lanes = (2, 2) if packed else ()
     dtype = fm.vector_type("bfloat16", lanes) if lanes else "bfloat16"
@@ -29,33 +30,28 @@ def expert_module(family, packed=False, *, quantization="dynamic_fp8_ue8m0", blo
             types[field + "_weight"] = fm.tensor_type("float8_e4m3fn", (3, 72, reduction))
             types[field + "_input_scale"] = fm.tensor_type("float32", (3, 1))
             types[field + "_proj_scale"] = fm.tensor_type("float32", (3, 1, -(-reduction // block)))
-        attrs.update(output_dtype=dtype, round_projections=True, round_activation=True, gate_clamp_max=10.,
-                     up_clamp=10.)
+        attrs.update(output_dtype=dtype, round_projections=True, round_activation=True,
+                     gate_clamp_max=10., up_clamp=10.)
     else:
-        types = {
-            **common, "activations": fm.tensor_type(dtype, (1, 2, 2, capacity)), "down_weight":
-            fm.tensor_type("float8_e4m3fn", (3, 2, 72, reduction)), "down_input_scale":
-            fm.tensor_type("float32", (3, 1)), "down_proj_scale": fm.tensor_type("float32",
-                                                                                 (3, 2, 1, -(-reduction // block)))
-        }
+        types = {**common, "activations": fm.tensor_type(dtype, (1, 2, 2, capacity)),
+                 "down_weight": fm.tensor_type("float8_e4m3fn", (3, 2, 72, reduction)),
+                 "down_input_scale": fm.tensor_type("float32", (3, 1)),
+                 "down_proj_scale": fm.tensor_type("float32", (3, 2, 1, -(-reduction // block)))}
         attrs.update(output_lanes=lanes, round_projection=rounded)
 
     class Graph(fm.Module):
-
         def forward(self):
             values = tuple(self.input(p.name, types[p.name], id=p.name) for p in definition.input_parameters)
             result = definition.construct(*values, **attrs, name="projection")
-            self.function("main", values, (result, ))
+            self.function("main", values, (result,))
 
     return Graph(dialect="nn", stage="frozen_constants", entry="main").build()
 
 
 @pytest.mark.parametrize("family", ["sparse_experts_gate_up", "partitioned_sparse_experts_down"])
 @pytest.mark.parametrize("mode,block,k,supported", [
-    ("dynamic_fp8_ue8m0", 128, 256, True),
-    ("dynamic_fp8_ue8m0", 64, 256, False),
-    ("dynamic_fp8_ue8m0", 128, 192, False),
-    ("dynamic_fp8", 128, 256, False),
+    ("dynamic_fp8_ue8m0", 128, 256, True), ("dynamic_fp8_ue8m0", 64, 256, False),
+    ("dynamic_fp8_ue8m0", 128, 192, False), ("dynamic_fp8", 128, 256, False),
 ])
 def test_wgmma_candidate_requires_its_block_quantization_contract(family, mode, block, k, supported):
     module = expert_module(family, quantization=mode, block=block, reduction=k)
@@ -72,7 +68,7 @@ def test_expert_wgmma_requires_hopper_mma_capability():
         identity = f"tir.{family}.wgmma"
         implementation = NvidiaSm90Target().triton_implementation_model.implementation(identity)
         assert identity not in {i.id for i in IluvatarBiV150Target().triton_implementation_model.implementations}
-        assert NvidiaSm120Target().capability.missing(implementation.requires) == ("mma_v3", )
+        assert NvidiaSm120Target().capability.missing(implementation.requires) == ("mma_v3",)
 
 
 def cuda_projection(value, weight, scale):
@@ -87,16 +83,16 @@ def cuda_projection(value, weight, scale):
     acc = torch.zeros((rows, 16), device=value.device)
     for block in range(k // 128):
         rhs = q[block * 128:(block + 1) * 128].expand(16, 128).contiguous().T
-        part = torch._scaled_mm(padded[:, block * 128:(block + 1) * 128], rhs, scale_a=one, scale_b=one,
-                                out_dtype=torch.float32, use_fast_accum=True)
+        part = torch._scaled_mm(padded[:, block * 128:(block + 1) * 128], rhs,
+                                scale_a=one, scale_b=one, out_dtype=torch.float32, use_fast_accum=True)
         b_scale = scale[:, block].repeat_interleave(128)[:, None]
         acc = torch.addcmul(acc, part * b_scale, a_scale[block, 0])
     return acc[:n, 0]
 
 
 @pytest.mark.parametrize("family,rounded", [("sparse_experts_gate_up", False),
-                                            ("partitioned_sparse_experts_down", False),
-                                            ("partitioned_sparse_experts_down", True)])
+                                         ("partitioned_sparse_experts_down", False),
+                                         ("partitioned_sparse_experts_down", True)])
 @pytest.mark.parametrize("packed", [False, True])
 def test_wgmma_expert_projection_matches_cuda(tmp_path, family, rounded, packed):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
@@ -104,11 +100,9 @@ def test_wgmma_expert_projection_matches_cuda(tmp_path, family, rounded, packed)
     module = expert_module(family, packed, rounded=rounded)
     base = NvidiaSm90Target().triton_implementation_model
     identity = f"tir.{family}.wgmma"
-    target = NvidiaSm90Target(triton_implementation_model=replace(
-        base, preferences={
-            **base.preferences,
-            family: (identity, *base.preferences.get(family, ())),
-        }))
+    target = NvidiaSm90Target(triton_implementation_model=replace(base, preferences={
+        **base.preferences, family: (identity, *base.preferences.get(family, ())),
+    }))
     compiler = Compiler()
     compiler.target = target
     compiled = compiler.compile(module).module
@@ -135,8 +129,9 @@ def test_wgmma_expert_projection_matches_cuda(tmp_path, family, rounded, packed)
         expected = []
         for route, expert in enumerate((2, 0)):
             x = values["dispatched"].reshape(1, 2, 256)[0, route]
-            gate, up = (cuda_projection(x, values[field + "_weight"][expert], values[field + "_proj_scale"][expert]) *
-                        values[field + "_input_scale"][expert] for field in ("gate", "up"))
+            gate, up = (cuda_projection(x, values[field + "_weight"][expert],
+                                       values[field + "_proj_scale"][expert])
+                        * values[field + "_input_scale"][expert] for field in ("gate", "up"))
             gate, up = gate.bfloat16().clamp(max=10), up.bfloat16().clamp(-10, 10)
             expected.append(torch.nn.functional.silu(gate) * up)
         expected = torch.stack(expected).reshape(1, 2, 72)
@@ -145,8 +140,8 @@ def test_wgmma_expert_projection_matches_cuda(tmp_path, family, rounded, packed)
         activation = values["activations"].reshape(1, 2, 2, 256)
         for partition in range(2):
             for route, expert in enumerate((2, 0)):
-                projected = cuda_projection(activation[0, route, partition], values["down_weight"][expert, partition],
-                                            values["down_proj_scale"][expert, partition])
+                projected = cuda_projection(activation[0, route, partition],
+                    values["down_weight"][expert, partition], values["down_proj_scale"][expert, partition])
                 projected = projected * values["down_input_scale"][expert]
                 expected[partition, 0, route] = projected.bfloat16().float() if rounded else projected
     if packed:

@@ -35,10 +35,11 @@ def distributed_candidate_id(
     """
 
     family = _safe(family)
-    placements = sorted(
-        {_placement_signature(placement)
-         for value in (*input_types, return_type)
-         for placement in _placements(value)})
+    placements = sorted({
+        _placement_signature(placement)
+        for value in (*input_types, return_type)
+        for placement in _placements(value)
+    })
     mesh = "" if not placements else ".mesh_" + "__".join(placements)
     inputs = "__".join(layout_signature(value) for value in input_types)
     output = layout_signature(return_type)
@@ -48,7 +49,11 @@ def distributed_candidate_id(
 def layout_signature(value: IRType) -> str:
     if isinstance(value, DistributedType):
         policies = "_".join(_sbp_signature(policy) for policy in value.axis_policies)
-        partial = ("" if value.partial is None else f"_partial_{_sbp_signature(value.partial)}")
+        partial = (
+            ""
+            if value.partial is None
+            else f"_partial_{_sbp_signature(value.partial)}"
+        )
         exclusive = "" if value.exclusive is None else f"_exclusive_{_sbp_signature(value.exclusive)}"
         return f"d_{policies}{partial}{exclusive}"
     if isinstance(value, TensorType):
@@ -70,7 +75,9 @@ def _sbp_signature(value) -> str:
         axes = "_".join(str(axis) for axis in value.axes)
         return f"p_{value.reduce_op.value}_h{axes}"
     if isinstance(value, SBPSplit):
-        return "s_" + "_then_".join(_stage_signature(stage) for stage in value.stages)
+        return "s_" + "_then_".join(
+            _stage_signature(stage) for stage in value.stages
+        )
     return _safe(type(value).__name__)
 
 
@@ -78,7 +85,11 @@ def _stage_signature(stage) -> str:
     axes = "_".join(str(axis) for axis in stage.hierarchy_axes)
     distribution = stage.distribution
     if isinstance(distribution, ContiguousSplit):
-        granularity = ("auto" if distribution.granularity is None else _safe(str(distribution.granularity)))
+        granularity = (
+            "auto"
+            if distribution.granularity is None
+            else _safe(str(distribution.granularity))
+        )
         return f"c_h{axes}_g{granularity}"
     if isinstance(distribution, BlockCyclicSplit):
         return f"bc_h{axes}_b{distribution.block_size}"

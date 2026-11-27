@@ -52,8 +52,10 @@ def _flat_bounds(program, shape, maps, start, count):
     for step, transform in enumerate(program["transforms"]):
         dims = transform["shape"]
         if step != 0 or tuple(dims) != tuple(program["shape"]):
-            coords = [_digit_bounds(low, high, prod(dims[axis + 1:]), capacity) for axis, capacity in enumerate(dims)]
-        terms = [(a * stride, b * stride) for (a, b), stride in zip(coords, transform["source_strides"], strict=True)]
+            coords = [_digit_bounds(low, high, prod(dims[axis + 1:]), capacity)
+                      for axis, capacity in enumerate(dims)]
+        terms = [(a * stride, b * stride) for (a, b), stride in
+                 zip(coords, transform["source_strides"], strict=True)]
         low = sum(min(term) for term in terms)
         high = sum(max(term) for term in terms)
     return low, high
@@ -83,7 +85,8 @@ def _operand_bounds(program, shape, maps, start, count):
             source_high = last // row * width + last % row - begin
             if source_low < 0 or source_high >= operand["nbytes"]:
                 raise ArtifactError("Readonly source address map exceeds its operand.")
-            result.append((operand["source"], operand["offset"] + source_low, operand["offset"] + source_high + 1))
+            result.append((operand["source"], operand["offset"] + source_low,
+                           operand["offset"] + source_high + 1))
         prefix += operand["extent"]
     return result
 
@@ -95,9 +98,10 @@ def _windows(rows, sources, page):
                 source, low, high = value
                 if not 0 <= low < high <= sources[source]["nbytes"]:
                     raise ArtifactError("Readonly source window is outside its verified file.")
-    intervals = sorted({(source, low // page * page, min((high + page - 1) // page * page, sources[source]["nbytes"]))
-                        for row in rows
-                        for value in row if value is not None for source, low, high in (value, )})
+    intervals = sorted({(source, low // page * page,
+                         min((high + page - 1) // page * page, sources[source]["nbytes"]))
+                        for row in rows for value in row if value is not None
+                        for source, low, high in (value,)})
     windows = []
     for source, low, high in intervals:
         if low < 0 or high <= low or high > sources[source]["nbytes"]:
@@ -123,7 +127,8 @@ def source_transfers(program, layouts, sources, *, budget, page=mmap.PAGESIZE):
     shape = tuple(layouts[0][1])
 
     def partition(owner_begin, owner_end, start, count):
-        rows = [_operand_bounds(program, shape, layout[2], start, count) for layout in layouts[owner_begin:owner_end]]
+        rows = [_operand_bounds(program, shape, layout[2], start, count)
+                for layout in layouts[owner_begin:owner_end]]
         windows = _windows(rows, sources, page)
         pinned = sum((window.end - window.begin + page - 1) // page * page for window in windows)
         if pinned > budget:
@@ -141,18 +146,13 @@ def source_transfers(program, layouts, sources, *, budget, page=mmap.PAGESIZE):
             else:
                 raise ArtifactError("Readonly source single-byte pin geometry exceeds its budget.")
             return
-        indices = tuple(
-            tuple(None if value is None else next(
-                i
-                for i, window in enumerate(windows)
-                if window.source == value[0] and window.begin <= value[1] and window.end >= value[2])
-                  for value in row)
-            for row in rows)
+        indices = tuple(tuple(None if value is None else next(
+            i for i, window in enumerate(windows)
+            if window.source == value[0] and window.begin <= value[1] and window.end >= value[2]
+        ) for value in row) for row in rows)
         yield SourceTransfer(owner_begin, owner_end, start, count, windows, indices)
 
     yield from partition(0, len(layouts), 0, prod(shape))
-
-
 def _map_coordinate(coord, index, block, shards, capacity):
     if block == 0:
         return coord + index * capacity

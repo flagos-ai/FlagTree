@@ -28,6 +28,7 @@ from triton.flagmega.passes.functions.graph import function_nodes
 if TYPE_CHECKING:
     from triton.flagmega.passes.tir.bufferize.planner import BufferizationOptions
 
+
 MEMORY_SPACE_METADATA = "bufferization.memory_space"
 FUNCTION_MEMORY_PLACEMENT_SCHEMA = "flagmega.function-memory-placement/v1"
 
@@ -58,8 +59,12 @@ def plan_function_memory(
             f"Block-local memory space {block_local!r} is not declared.",
             stage=module.stage,
         ) from error
-    if (not block_space.supports_lifetime_reuse or block_space.allocation_scope.value != "function"
-            or block_space.sharing_scope.value != "block" or block_space.kind == "shared"):
+    if (
+        not block_space.supports_lifetime_reuse
+        or block_space.allocation_scope.value != "function"
+        or block_space.sharing_scope.value != "block"
+        or block_space.kind == "shared"
+    ):
         raise IRVerificationError(
             f"Block-local memory space {block_local!r} must be a non-shared "
             "function-scoped block-sharing lifetime pool.",
@@ -67,7 +72,7 @@ def plan_function_memory(
         )
 
     promoted: list[str] = []
-    _nodes = {node.id: node for node in module.nodes}
+    nodes = {node.id: node for node in module.nodes}
     for function in module.functions:
         local_nodes = function_nodes(module, function)
         local_ids = {node.id for node in local_nodes}
@@ -81,10 +86,10 @@ def plan_function_memory(
             if MEMORY_SPACE_METADATA in node.metadata:
                 continue
             if _can_place_block_local(
-                    module,
-                    node,
-                    users,
-                    outputs,
+                module,
+                node,
+                users,
+                outputs,
             ):
                 promoted.append(node.id)
 
@@ -93,24 +98,41 @@ def plan_function_memory(
         replace(
             node,
             metadata={**dict(node.metadata), MEMORY_SPACE_METADATA: block_local},
-        ) if node.id in promoted_set else node for node in module.nodes)
-    return _record_placement(replace(module, nodes=rewritten), options, tuple(promoted))
+        )
+        if node.id in promoted_set
+        else node
+        for node in module.nodes
+    )
+    return _record_placement(
+        replace(module, nodes=rewritten), options, tuple(promoted)
+    )
 
 
 def _can_place_block_local(module, node, users_by_value, function_outputs) -> bool:
     value_type = node.type
-    if (node.op in {
+    if (
+        node.op in {
             "builtin.get_item",
             "builtin.tuple",
             "distributed.sharded_view",
             "tir.buffer_view",
             "tir.buffer_subspan",
-    } or not _all_owner_local_distributed_leaves(value_type) or node.id in function_outputs
-            or not users_by_value.get(node.id)
-            or _may_alias_function_output(module, node.id, users_by_value, function_outputs)):
+        }
+        or not _all_owner_local_distributed_leaves(value_type)
+        or node.id in function_outputs
+        or not users_by_value.get(node.id)
+        or _may_alias_function_output(
+            module, node.id, users_by_value, function_outputs
+        )
+    ):
         return False
     producer = kernel_dispatch_for_call(module, node)
-    if (producer is None or not _effects_are_owner_local(producer, producer.outputs, require_write=True)):
+    if (
+        producer is None
+        or not _effects_are_owner_local(
+            producer, producer.outputs, require_write=True
+        )
+    ):
         return False
     users = _terminal_consumers_through_local_views(
         module,
@@ -122,9 +144,14 @@ def _can_place_block_local(module, node, users_by_value, function_outputs) -> bo
         return False
     for user, input_index in users:
         consumer = kernel_dispatch_for_call(module, user)
-        if (consumer is None or input_index >= len(consumer.arguments)
-                or not _effects_are_owner_local(consumer, (consumer.arguments[input_index], ), require_write=False)
-                or not _consumer_preserves_exclusive_blocks(value_type, user.type)):
+        if (
+            consumer is None
+            or input_index >= len(consumer.arguments)
+            or not _effects_are_owner_local(
+                consumer, (consumer.arguments[input_index],), require_write=False
+            )
+            or not _consumer_preserves_exclusive_blocks(value_type, user.type)
+        ):
             return False
     return True
 
@@ -137,26 +164,26 @@ def _consumer_preserves_exclusive_blocks(source_type, result_type) -> bool:
     An E input feeding a non-E result therefore needs chip-wide backing.
     """
     if isinstance(source_type, TupleType):
-        return all(_consumer_preserves_exclusive_blocks(field, result_type) for field in source_type.fields)
+        return all(_consumer_preserves_exclusive_blocks(field, result_type)
+                   for field in source_type.fields)
     if not isinstance(source_type, DistributedType) or source_type.exclusive is None:
         return True
     exclusive = source_type.exclusive
-    owners = exclusive.owner_coordinates or (0, ) * len(exclusive.axes)
-    required = {
-        axis: owner
-        for axis, owner in zip(exclusive.axes, owners)
-        if source_type.placement.is_physical_block_axis(axis)
-    }
+    owners = exclusive.owner_coordinates or (0,) * len(exclusive.axes)
+    required = {axis: owner for axis, owner in zip(exclusive.axes, owners)
+                if source_type.placement.is_physical_block_axis(axis)}
     if not required:
         return True
     if isinstance(result_type, TupleType):
         return bool(result_type.fields) and all(
-            _consumer_preserves_exclusive_blocks(source_type, field) for field in result_type.fields)
-    if (not isinstance(result_type, DistributedType) or result_type.placement != source_type.placement
+            _consumer_preserves_exclusive_blocks(source_type, field)
+            for field in result_type.fields)
+    if (not isinstance(result_type, DistributedType)
+            or result_type.placement != source_type.placement
             or result_type.exclusive is None):
         return False
     result_exclusive = result_type.exclusive
-    result_owners = result_exclusive.owner_coordinates or (0, ) * len(result_exclusive.axes)
+    result_owners = result_exclusive.owner_coordinates or (0,) * len(result_exclusive.axes)
     retained = dict(zip(result_exclusive.axes, result_owners))
     return all(retained.get(axis) == owner for axis, owner in required.items())
 
@@ -190,8 +217,8 @@ def _may_alias_function_output(
                     pending.append(user.id)
                 continue
             if user.op in {
-                    "distributed.sharded_view",
-                    "tir.buffer_view",
+                "distributed.sharded_view",
+                "tir.buffer_view",
             }:
                 pending.append(user.id)
                 continue
@@ -199,7 +226,10 @@ def _may_alias_function_output(
                 if user.id in function_outputs:
                     return True
                 for projection, _ in users_by_value.get(user.id, ()):
-                    if (projection.op == "builtin.get_item" and int(projection.attrs.get("index", -1)) == input_index):
+                    if (
+                        projection.op == "builtin.get_item"
+                        and int(projection.attrs.get("index", -1)) == input_index
+                    ):
                         pending.append(projection.id)
                 continue
             dispatch = kernel_dispatch_for_call(module, user)
@@ -210,7 +240,11 @@ def _may_alias_function_output(
             output_indices = {
                 index
                 for index, output in enumerate(dispatch.outputs)
-                if any(candidate.input == argument and candidate.output == output for candidate in aliases)
+                if any(
+                    candidate.input == argument
+                    and candidate.output == output
+                    for candidate in aliases
+                )
             }
             if not output_indices:
                 continue
@@ -220,7 +254,11 @@ def _may_alias_function_output(
                 pending.append(user.id)
                 continue
             for projection, _ in users_by_value.get(user.id, ()):
-                if (projection.op == "builtin.get_item" and int(projection.attrs.get("index", -1)) in output_indices):
+                if (
+                    projection.op == "builtin.get_item"
+                    and int(projection.attrs.get("index", -1))
+                    in output_indices
+                ):
                     pending.append(projection.id)
     return False
 
@@ -254,8 +292,12 @@ def _terminal_consumers_through_local_views(
             continue
         for user, input_index in current_users:
             if user.op == "builtin.get_item":
-                if (input_index != 0 or len(user.inputs) != 1 or user.id in function_outputs
-                        or not isinstance(current_type, TupleType)):
+                if (
+                    input_index != 0
+                    or len(user.inputs) != 1
+                    or user.id in function_outputs
+                    or not isinstance(current_type, TupleType)
+                ):
                     return ()
                 field_index = int(user.attrs.get("index", -1))
                 if field_index < 0 or field_index >= len(current_type.fields):
@@ -266,19 +308,25 @@ def _terminal_consumers_through_local_views(
                 pending.append((user, field_type))
                 continue
             if user.op == "distributed.sharded_view":
-                if (input_index == 0 and len(user.inputs) == 1 and user.id not in function_outputs
-                        and _is_same_owner_local_narrowing_view(current_type, user.type)):
+                if (
+                    input_index == 0
+                    and len(user.inputs) == 1
+                    and user.id not in function_outputs
+                    and _is_same_owner_local_narrowing_view(
+                        current_type, user.type
+                    )
+                ):
                     pending.append((user, user.type))
                     continue
                 # Other ShardedViews remain canonical-global backing
                 # boundaries. They are irrelevant only when every downstream
                 # use is a metadata-only PrimFunction operand.
                 if _branch_has_physical_use(
-                        module,
-                        user,
-                        users_by_value,
-                        function_outputs,
-                        set(),
+                    module,
+                    user,
+                    users_by_value,
+                    function_outputs,
+                    set(),
                 ):
                     return ()
                 continue
@@ -289,20 +337,29 @@ def _terminal_consumers_through_local_views(
                 pending.append((user, user.type))
                 continue
             if user.op != "tir.buffer_view":
-                if not _consumer_reads_physical_input(module, user, input_index):
+                if not _consumer_reads_physical_input(
+                    module, user, input_index
+                ):
                     continue
                 terminal.append((user, input_index))
                 continue
-            if (input_index != 0 or len(user.inputs) != 1 or user.id in function_outputs
-                    or not _same_owner_local_storage(current_type, user.type)):
+            if (
+                input_index != 0
+                or len(user.inputs) != 1
+                or user.id in function_outputs
+                or not _same_owner_local_storage(current_type, user.type)
+            ):
                 return ()
             pending.append((user, user.type))
     return tuple(terminal)
 
 
 def _is_same_owner_local_narrowing_view(source_type, result_type) -> bool:
-    return (isinstance(source_type, DistributedType) and isinstance(result_type, DistributedType)
-            and is_local_shard_subview(source_type, result_type))
+    return (
+        isinstance(source_type, DistributedType)
+        and isinstance(result_type, DistributedType)
+        and is_local_shard_subview(source_type, result_type)
+    )
 
 
 def _consumer_reads_physical_input(module, user, input_index: int) -> bool:
@@ -341,18 +398,18 @@ def _branch_has_physical_use(
         return True
     for user, input_index in users_by_value.get(source.id, ()):
         if user.op in {
-                "builtin.get_item",
-                "builtin.tuple",
-                "tir.buffer_view",
-                "tir.buffer_subspan",
-                "distributed.sharded_view",
+            "builtin.get_item",
+            "builtin.tuple",
+            "tir.buffer_view",
+            "tir.buffer_subspan",
+            "distributed.sharded_view",
         }:
             if _branch_has_physical_use(
-                    module,
-                    user,
-                    users_by_value,
-                    function_outputs,
-                    visited,
+                module,
+                user,
+                users_by_value,
+                function_outputs,
+                visited,
             ):
                 return True
             continue
@@ -368,14 +425,20 @@ def _all_owner_local_distributed_leaves(value_type) -> bool:
         return value_type.partial is None
     if isinstance(value_type, TupleType):
         return bool(value_type.fields) and all(
-            _all_owner_local_distributed_leaves(field) for field in value_type.fields)
+            _all_owner_local_distributed_leaves(field)
+            for field in value_type.fields
+        )
     return False
 
 
 def _same_owner_local_storage(source_type, result_type) -> bool:
-    if (not isinstance(source_type, DistributedType) or not isinstance(result_type, DistributedType)
-            or source_type.partial is not None or result_type.partial is not None
-            or source_type.placement != result_type.placement):
+    if (
+        not isinstance(source_type, DistributedType)
+        or not isinstance(result_type, DistributedType)
+        or source_type.partial is not None
+        or result_type.partial is not None
+        or source_type.placement != result_type.placement
+    ):
         return False
     return _local_storage_nbytes(source_type) == _local_storage_nbytes(result_type)
 
@@ -393,26 +456,33 @@ def _effects_are_owner_local(dispatch, names, *, require_write: bool) -> bool:
         effect = effects.get(name)
         if effect is None:
             return False
-        if (effect.scope in {MemoryAccessScope.CHIP, MemoryAccessScope.DEVICE}
-                or effect.owner_access is not MemoryOwnerAccess.LOCAL or effect.kind is not MemoryEffectKind.DIRECT
-                or (require_write and (not effect.physical_mode & MemoryAccessMode.WRITE
-                                       # A fixed writer cannot populate every owner's private copy.
-                                       or effect.access_domain.kind is not MemoryAccessDomainKind.ALL_BLOCKS))):
+        if (
+            effect.scope in {MemoryAccessScope.CHIP, MemoryAccessScope.DEVICE}
+            or effect.owner_access is not MemoryOwnerAccess.LOCAL
+            or effect.kind is not MemoryEffectKind.DIRECT
+            or (
+                require_write
+                and (
+                    not effect.physical_mode & MemoryAccessMode.WRITE
+                    # A fixed writer cannot populate every owner's private copy.
+                    or effect.access_domain.kind is not MemoryAccessDomainKind.ALL_BLOCKS
+                )
+            )
+        ):
             return False
     return True
 
 
 def _record_placement(module, options, promoted) -> IRModule:
-    return replace(
-        module, metadata={
-            **dict(module.metadata),
-            "function_memory_placement": {
-                "schema": FUNCTION_MEMORY_PLACEMENT_SCHEMA,
-                "default": options.workspace,
-                "block_local": options.block_local,
-                "promoted": list(promoted),
-            },
-        })
+    return replace(module, metadata={
+        **dict(module.metadata),
+        "function_memory_placement": {
+            "schema": FUNCTION_MEMORY_PLACEMENT_SCHEMA,
+            "default": options.workspace,
+            "block_local": options.block_local,
+            "promoted": list(promoted),
+        },
+    })
 
 
 __all__ = [

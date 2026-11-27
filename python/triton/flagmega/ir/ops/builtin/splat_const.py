@@ -94,7 +94,7 @@ class SplatConst(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(bytes_written=tensor_nbytes(tensor_of(node.type)), notes=("compile-time-splat", ))
+        return OpCost(bytes_written=tensor_nbytes(tensor_of(node.type)), notes=("compile-time-splat",))
 
     @classmethod
     def python_call(cls, node: Node) -> PythonCall:

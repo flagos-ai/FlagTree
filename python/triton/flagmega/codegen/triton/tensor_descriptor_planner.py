@@ -12,6 +12,7 @@ from triton.flagmega.ir.distributed_type import placement_from_data, sbp_from_da
 from triton.flagmega.ir.local_shard import local_shard_descriptor
 from triton.flagmega.ir.model import DistributedType, tensor_type
 
+
 _DTYPE_ITEM_SIZES = {
     "uint8": 1,
     "int8": 1,
@@ -70,31 +71,52 @@ def packed_distributed_tensor_map_table_request(
             block_shape=block_shape,
         )
     if coordinate_space != "canonical_global":
-        raise CodegenError("Tensor-map tables require canonical-global or compact-owner source "
-                           f"storage, not {coordinate_space!r}.")
+        raise CodegenError(
+            "Tensor-map tables require canonical-global or compact-owner source "
+            f"storage, not {coordinate_space!r}."
+        )
     distributed = abi.get("distributed_type")
     if not isinstance(distributed, Mapping):
-        raise CodegenError("Tensor-map tables require a serialized DistributedType.")
+        raise CodegenError(
+            "Tensor-map tables require a serialized DistributedType."
+        )
     placement = distributed.get("placement")
-    hierarchy = (placement.get("hierarchy") if isinstance(placement, Mapping) else None)
+    hierarchy = (
+        placement.get("hierarchy") if isinstance(placement, Mapping) else None
+    )
     policies = distributed.get("axis_policies")
     logical_shape = _positive_int_tuple(abi.get("logical_shape"), "logical shape")
-    local_shape = _positive_int_tuple(abi.get("local_capacity_shape"), "local capacity shape")
+    local_shape = _positive_int_tuple(
+        abi.get("local_capacity_shape"), "local capacity shape"
+    )
     physical_shape = _positive_int_tuple(descriptor_shape, "descriptor shape")
-    physical_strides = _positive_int_tuple(descriptor_strides, "descriptor strides")
+    physical_strides = _positive_int_tuple(
+        descriptor_strides, "descriptor strides"
+    )
     tile_shape = _positive_int_tuple(block_shape, "descriptor block shape")
     mesh_shape = _positive_int_tuple(hierarchy, "mesh hierarchy")
-    if (not isinstance(policies, (tuple, list)) or len(policies) != len(logical_shape)
-            or len(local_shape) != len(logical_shape)):
-        raise CodegenError("Tensor-map table distributed policy/shape ranks differ.")
-    if not (len(physical_shape) == len(physical_strides) == len(tile_shape)
-            and physical_shape[:len(logical_shape)] == logical_shape):
-        raise CodegenError("Tensor-map table physical descriptor does not preserve its logical prefix.")
+    if (
+        not isinstance(policies, (tuple, list))
+        or len(policies) != len(logical_shape)
+        or len(local_shape) != len(logical_shape)
+    ):
+        raise CodegenError(
+            "Tensor-map table distributed policy/shape ranks differ."
+        )
+    if not (
+        len(physical_shape) == len(physical_strides) == len(tile_shape)
+        and physical_shape[:len(logical_shape)] == logical_shape
+    ):
+        raise CodegenError(
+            "Tensor-map table physical descriptor does not preserve its logical prefix."
+        )
     scalar_dtype = str(abi.get("scalar_dtype", ""))
     try:
         item_size = _DTYPE_ITEM_SIZES[scalar_dtype]
     except KeyError as error:
-        raise CodegenError(f"Tensor-map table does not support dtype {scalar_dtype!r}.") from error
+        raise CodegenError(
+            f"Tensor-map table does not support dtype {scalar_dtype!r}."
+        ) from error
     if offset_bytes < 0:
         raise CodegenError("Tensor-map table source offset must be non-negative.")
 
@@ -123,19 +145,24 @@ def packed_distributed_tensor_map_table_request(
             active = shard_axis.active_extent.fixed_value
             capacity = shard_axis.local_capacity.fixed_value
             if capacity != local_shape[axis]:
-                raise CodegenError("Tensor-map table local capacity disagrees with the buffer ABI: "
-                                   f"axis {axis} has {capacity}, expected {local_shape[axis]}.")
+                raise CodegenError(
+                    "Tensor-map table local capacity disagrees with the buffer ABI: "
+                    f"axis {axis} has {capacity}, expected {local_shape[axis]}."
+                )
             owner_origins.append(origin)
             owner_extents.append(active)
             owner_strides[axis] *= stride
-        base_scalar_elements = sum(origin * physical_strides[axis] for axis, origin in enumerate(owner_origins))
+        base_scalar_elements = sum(
+            origin * physical_strides[axis]
+            for axis, origin in enumerate(owner_origins)
+        )
         local_descriptor_shape = tuple(owner_extents) + physical_shape[len(logical_shape):]
         if 0 in owner_extents:
             # Tensor maps cannot encode zero extents. An empty owner's unused
             # entry names one in-bounds logical element, retaining packed lanes;
             # its actual zero active domain remains in the kernel's shard ABI.
             base_scalar_elements = 0
-            local_descriptor_shape = (1, ) * len(logical_shape) + physical_shape[len(logical_shape):]
+            local_descriptor_shape = (1,) * len(logical_shape) + physical_shape[len(logical_shape):]
         entries.append({
             "offset_bytes": offset_bytes + base_scalar_elements * item_size,
             "shape": local_descriptor_shape,
@@ -177,54 +204,68 @@ def _compact_owner_tensor_map_table_request(
     """
 
     physical_shape = _positive_int_tuple(descriptor_shape, "descriptor shape")
-    physical_strides = _positive_int_tuple(descriptor_strides, "descriptor strides")
+    physical_strides = _positive_int_tuple(
+        descriptor_strides, "descriptor strides"
+    )
     tile_shape = _positive_int_tuple(block_shape, "descriptor block shape")
-    local_shape = _positive_int_tuple(abi.get("local_capacity_shape"), "local capacity shape")
-    if not (len(physical_shape) == len(physical_strides) == len(tile_shape)
-            and physical_shape[:len(local_shape)] == local_shape):
-        raise CodegenError("Compact-owner tensor-map table descriptor does not preserve its "
-                           "local capacity prefix.")
+    local_shape = _positive_int_tuple(
+        abi.get("local_capacity_shape"), "local capacity shape"
+    )
+    if not (
+        len(physical_shape) == len(physical_strides) == len(tile_shape)
+        and physical_shape[:len(local_shape)] == local_shape
+    ):
+        raise CodegenError(
+            "Compact-owner tensor-map table descriptor does not preserve its "
+            "local capacity prefix."
+        )
     scalar_dtype = str(abi.get("scalar_dtype", ""))
     try:
         item_size = _DTYPE_ITEM_SIZES[scalar_dtype]
     except KeyError as error:
-        raise CodegenError(f"Compact-owner tensor-map table does not support dtype {scalar_dtype!r}.") from error
+        raise CodegenError(
+            f"Compact-owner tensor-map table does not support dtype {scalar_dtype!r}."
+        ) from error
     if offset_bytes < 0:
-        raise CodegenError("Compact-owner tensor-map table source offset must be non-negative.")
+        raise CodegenError(
+            "Compact-owner tensor-map table source offset must be non-negative."
+        )
     owner_count = int(abi.get("owner_count", 0))
     if owner_count <= 0:
-        raise CodegenError("Compact-owner tensor-map table requires resident owners.")
+        raise CodegenError(
+            "Compact-owner tensor-map table requires resident owners."
+        )
     component_stride = int(abi.get("component_stride_scalar_elements", 0))
     if component_stride <= 0:
-        raise CodegenError("Compact-owner tensor-map table source has no scalar owner stride.")
+        raise CodegenError(
+            "Compact-owner tensor-map table source has no scalar owner stride."
+        )
     component_span = 1 + sum(
-        (extent - 1) * stride for extent, stride in zip(physical_shape, physical_strides, strict=True))
+        (extent - 1) * stride
+        for extent, stride in zip(physical_shape, physical_strides, strict=True)
+    )
     if component_stride < component_span:
-        raise CodegenError("Compact-owner tensor-map payloads overlap in physical storage.")
+        raise CodegenError(
+            "Compact-owner tensor-map payloads overlap in physical storage."
+        )
     return {
-        "parameter":
-        parameter,
-        "source":
-        source,
-        "kind":
-        "table",
-        "dtype":
-        scalar_dtype,
-        "block_shape":
-        tile_shape,
-        "padding":
-        "zero",
-        "swizzle_mode":
-        _tma_swizzle_mode(tile_shape, item_size),
-        "entry_size_bytes":
-        128,
-        "entries":
-        tuple({
-            "offset_bytes": offset_bytes + owner * component_stride * item_size,
-            "shape": physical_shape,
-            "strides": physical_strides,
-            "source_shape_axes": tuple(() for _ in physical_shape),
-        } for owner in range(owner_count)),
+        "parameter": parameter,
+        "source": source,
+        "kind": "table",
+        "dtype": scalar_dtype,
+        "block_shape": tile_shape,
+        "padding": "zero",
+        "swizzle_mode": _tma_swizzle_mode(tile_shape, item_size),
+        "entry_size_bytes": 128,
+        "entries": tuple(
+            {
+                "offset_bytes": offset_bytes + owner * component_stride * item_size,
+                "shape": physical_shape,
+                "strides": physical_strides,
+                "source_shape_axes": tuple(() for _ in physical_shape),
+            }
+            for owner in range(owner_count)
+        ),
     }
 
 
@@ -249,58 +290,72 @@ def packed_owner_prefix_tensor_map_table_request(
     """
 
     physical_shape = _positive_int_tuple(descriptor_shape, "descriptor shape")
-    physical_strides = _positive_int_tuple(descriptor_strides, "descriptor strides")
+    physical_strides = _positive_int_tuple(
+        descriptor_strides, "descriptor strides"
+    )
     tile_shape = _positive_int_tuple(block_shape, "descriptor block shape")
     if owner_count <= 0:
         raise CodegenError("Tensor-map owner-prefix table requires owners.")
-    if not (len(physical_shape) == len(physical_strides) == len(tile_shape) and len(physical_shape) >= 2
-            and physical_shape[0] == owner_count and tile_shape[0] == 1):
-        raise CodegenError("Tensor-map owner-prefix table requires matching ranks, one "
-                           "leading owner extent, and a unit owner tile.")
+    if not (
+        len(physical_shape) == len(physical_strides) == len(tile_shape)
+        and len(physical_shape) >= 2
+        and physical_shape[0] == owner_count
+        and tile_shape[0] == 1
+    ):
+        raise CodegenError(
+            "Tensor-map owner-prefix table requires matching ranks, one "
+            "leading owner extent, and a unit owner tile."
+        )
     scalar_dtype = str(abi.get("scalar_dtype", ""))
     try:
         item_size = _DTYPE_ITEM_SIZES[scalar_dtype]
     except KeyError as error:
-        raise CodegenError(f"Tensor-map owner-prefix table does not support dtype {scalar_dtype!r}.") from error
+        raise CodegenError(
+            f"Tensor-map owner-prefix table does not support dtype {scalar_dtype!r}."
+        ) from error
     if offset_bytes < 0:
-        raise CodegenError("Tensor-map owner-prefix table source offset must be non-negative.")
+        raise CodegenError(
+            "Tensor-map owner-prefix table source offset must be non-negative."
+        )
     owner_stride = physical_strides[0]
     owner_span = 1 + sum(
-        (extent - 1) * stride for extent, stride in zip(physical_shape[1:], physical_strides[1:], strict=True))
+        (extent - 1) * stride
+        for extent, stride in zip(
+            physical_shape[1:], physical_strides[1:], strict=True
+        )
+    )
     if owner_stride < owner_span:
-        raise CodegenError("Tensor-map owner-prefix payloads overlap in physical storage.")
+        raise CodegenError(
+            "Tensor-map owner-prefix payloads overlap in physical storage."
+        )
 
     local_shape = physical_shape[1:]
     local_strides = physical_strides[1:]
     local_tile = tile_shape[1:]
     return {
-        "parameter":
-        parameter,
-        "source":
-        source,
-        "kind":
-        "table",
-        "dtype":
-        scalar_dtype,
-        "block_shape":
-        local_tile,
-        "padding":
-        "zero",
-        "swizzle_mode":
-        _tma_swizzle_mode(local_tile, item_size),
-        "entry_size_bytes":
-        128,
-        "entries":
-        tuple({
-            "offset_bytes": offset_bytes + owner * owner_stride * item_size,
-            "shape": local_shape,
-            "strides": local_strides,
-            "source_shape_axes": tuple(() for _ in local_shape),
-        } for owner in range(owner_count)),
+        "parameter": parameter,
+        "source": source,
+        "kind": "table",
+        "dtype": scalar_dtype,
+        "block_shape": local_tile,
+        "padding": "zero",
+        "swizzle_mode": _tma_swizzle_mode(local_tile, item_size),
+        "entry_size_bytes": 128,
+        "entries": tuple(
+            {
+                "offset_bytes": offset_bytes + owner * owner_stride * item_size,
+                "shape": local_shape,
+                "strides": local_strides,
+                "source_shape_axes": tuple(() for _ in local_shape),
+            }
+            for owner in range(owner_count)
+        ),
     }
 
 
-def _unflatten_owner(linear_owner: int, hierarchy: tuple[int, ...]) -> tuple[int, ...]:
+def _unflatten_owner(
+    linear_owner: int, hierarchy: tuple[int, ...]
+) -> tuple[int, ...]:
     coordinates = [0] * len(hierarchy)
     remainder = linear_owner
     for axis in range(len(hierarchy) - 1, -1, -1):
@@ -310,8 +365,17 @@ def _unflatten_owner(linear_owner: int, hierarchy: tuple[int, ...]) -> tuple[int
 
 
 def _positive_int_tuple(value: object, name: str) -> tuple[int, ...]:
-    if (not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)) or not value
-            or any(not isinstance(item, int) or isinstance(item, bool) or item <= 0 for item in value)):
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes, bytearray))
+        or not value
+        or any(
+            not isinstance(item, int)
+            or isinstance(item, bool)
+            or item <= 0
+            for item in value
+        )
+    ):
         raise CodegenError(f"Tensor-map table {name} must contain positive integers.")
     return tuple(int(item) for item in value)
 

@@ -24,7 +24,7 @@ class ShardedView(OpDefinition):
     const_evaluable = True
     numpy_materializable = True
     value = input_parameter(is_tensor())
-    byte_preserving_input_parameters = (value, )
+    byte_preserving_input_parameters = (value,)
     new_type = attribute_parameter(positional=True)
 
     @classmethod
@@ -54,7 +54,7 @@ class ShardedView(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(notes=("read-only-sharded-alias", ))
+        return OpCost(notes=("read-only-sharded-alias",))
 
     @classmethod
     def zero_copy_input_index(cls, inputs, attrs, return_type):

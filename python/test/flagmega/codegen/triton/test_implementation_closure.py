@@ -7,7 +7,8 @@ from triton.flagmega.codegen.triton.templates import (
     TritonTemplateRegistry,
 )
 from triton.flagmega.targets.portable_triton_implementations import (
-    portable_triton_implementation_model, )
+    portable_triton_implementation_model,
+)
 
 
 def test_every_catalog_implementation_has_a_renderer_and_resolvable_template():

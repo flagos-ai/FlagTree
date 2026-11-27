@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
 {# One chip's instance of a distributed buffer holds only the components its own
    owners produced.  A leaf whose destination region is not contained in that
    instance selects each element's source chip and reads it through the FlagCX

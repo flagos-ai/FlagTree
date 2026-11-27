@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: block_fp8/mma platform=nvidia architecture=sm90
+# flagmega-kernel: block_fp8/mma platform=nvidia architecture=sm90
 {% set block_fp8_variant = "mma" %}
 {% include "kernels/_activation_quantization.py.jinja" %}
 {% include "kernels/_fp8_wgmma_row_dot.py.jinja" %}

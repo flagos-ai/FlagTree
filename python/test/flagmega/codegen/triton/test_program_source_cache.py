@@ -21,28 +21,22 @@ from triton.flagmega.errors import ArtifactError
 
 
 def compile_pair(first_variant):
-
     class Target(NvidiaSm90Target):
-
         def propose_tir(self, module):
             module = super().propose_tir(module)
-            points = [
-                point for point in module.selection_points if point.kind == "tir" and point.owner in module.node_map
-                and module.node_map[point.owner].op == "ntt.packed_matmul"
-            ]
+            points = [point for point in module.selection_points
+                      if point.kind == "tir" and point.owner in module.node_map
+                      and module.node_map[point.owner].op == "ntt.packed_matmul"]
             assert len(points) == 2
-            choices = [(points[0].id, first_variant), (points[1].id, "tir.dense_matmul.packed_k_major_mma")]
-            module = apply_plan(
-                module,
-                override_plan(module, choices, policy="test.program-source-cache",
-                              rationale="Change the first operator while preserving the second program."))
-            return replace(
-                module, metadata={
-                    **module.metadata, "kernel_program_partition": (
-                        dict(symbol="program_first", calls=(points[0].owner, ), num_warps=8),
-                        dict(symbol="program_second", calls=(points[1].owner, ), num_warps=4),
-                    )
-                })
+            choices = [(points[0].id, first_variant),
+                       (points[1].id, "tir.dense_matmul.packed_k_major_mma")]
+            module = apply_plan(module, override_plan(
+                module, choices, policy="test.program-source-cache",
+                rationale="Change the first operator while preserving the second program."))
+            return replace(module, metadata={**module.metadata, "kernel_program_partition": (
+                dict(symbol="program_first", calls=(points[0].owner,), num_warps=8),
+                dict(symbol="program_second", calls=(points[1].owner,), num_warps=4),
+            )})
 
     compiler = Compiler()
     compiler.target = Target()
@@ -77,6 +71,7 @@ def test_only_edited_program_recompiles(tmp_path, monkeypatch):
     assert first.cache_key != edited_first.cache_key
     assert second.src == same_second.src
     assert second.cache_key == same_second.cache_key
+
 
 
 def test_program_templates_render_once(tmp_path, monkeypatch):
@@ -161,7 +156,8 @@ def test_descriptor_override_keeps_program_preparation(tmp_path, monkeypatch):
     spec = renderer_registry.resolve(module)
     # Existing descriptor extensions retain the registered source renderer
     # through the original five-argument registration API.
-    wrapped = PackageRendererSpec(spec.name, spec.kind, spec.matches, lambda module: spec.describe(module), spec.render)
+    wrapped = PackageRendererSpec(spec.name, spec.kind, spec.matches,
+                                  lambda module: spec.describe(module), spec.render)
     monkeypatch.setitem(renderer_registry._specs, spec.name, wrapped)
     after = write_artifact(module, tmp_path / "after", target="nvidia-sm90", emit_executable=True)
     assert len(visits) == expected
@@ -176,8 +172,8 @@ def test_mixed_mesh_namespaces_keep_program_template_flags(tmp_path):
     first, second = descriptor["programs"]
     descriptor["programs"] = ({**first, "mesh_context": {}}, {**second, "shared_silu": True})
     source = ast.parse(render_tir_package(descriptor, RENDERER_VERSION))
-    builder = next(node for node in source.body
-                   if isinstance(node, ast.FunctionDef) and node.name == "_flagmega_build_program_second")
+    builder = next(node for node in source.body if isinstance(node, ast.FunctionDef)
+                   and node.name == "_flagmega_build_program_second")
     assert any(isinstance(node, ast.FunctionDef) and node.name == "_flagmega_silu" for node in builder.body)
 
 
@@ -191,14 +187,14 @@ def test_device_reuses_unchanged_program_compilation(tmp_path, monkeypatch):
         "a": torch.ones((8, 8, 8, 2, 8), device="cuda", dtype=torch.bfloat16) / 8,
         "b": torch.ones((8, 4, 8, 2, 8), device="cuda", dtype=torch.bfloat16) / 4,
     }
-    guards = [torch.full((n + 32, ), -123., device="cuda", dtype=torch.bfloat16) for n in (64, 32)]
+    guards = [torch.full((n + 32,), -123., device="cuda", dtype=torch.bfloat16) for n in (64, 32)]
     outputs = [value[16:-16].reshape(1, -1, 8) for value in guards]
     hashes = []
     for artifact in (before, after):
         runtime = load(artifact, device="cuda:0")
         results = iter(outputs)
-        arguments = tuple(
-            next(results) if spec["role"] == "result" else values[spec["value"]] for spec in runtime.external_arguments)
+        arguments = tuple(next(results) if spec["role"] == "result" else values[spec["value"]]
+                          for spec in runtime.external_arguments)
         try:
             Runtime.prepare(runtime, *arguments)
             hashes.append(tuple(prepared.compiled_kernel.hash for prepared in runtime._prepared))
@@ -215,18 +211,19 @@ def test_device_reuses_unchanged_program_compilation(tmp_path, monkeypatch):
                     weight = values[name].permute(0, 3, 4, 1, 2).reshape(128, -1)
                     gold = (values["x"].double() @ weight.double()).bfloat16()
                     assert torch.equal(output.reshape(1, -1), gold)
-                assert all(bool((guard[:16] == -123).all() & (guard[-16:] == -123).all()) for guard in guards)
+                assert all(bool((guard[:16] == -123).all() & (guard[-16:] == -123).all())
+                           for guard in guards)
         finally:
             runtime.close()
     assert hashes[0][0] != hashes[1][0]
     assert hashes[0][1] == hashes[1][1]
 
 
-@pytest.mark.parametrize(
-    "cause", ["bytes", "section", "digest", "exports", "path", "alias_duplicate", "alias_cycle", "alias_missing"])
+@pytest.mark.parametrize("cause", ["bytes", "section", "digest", "exports", "path",
+                                   "alias_duplicate", "alias_cycle", "alias_missing"])
 def test_program_files_retain_artifact_integrity_checks(tmp_path, cause):
-    artifact = write_artifact(compile_pair("tir.dense_matmul.packed_k_major_mma"), tmp_path / "artifact",
-                              target="nvidia-sm90", emit_executable=True)
+    artifact = write_artifact(compile_pair("tir.dense_matmul.packed_k_major_mma"),
+                              tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     path = artifact / "artifact.json"
     manifest = json.loads(path.read_text())
     record = manifest["codegen"]["program_sources"][0]
@@ -234,9 +231,8 @@ def test_program_files_retain_artifact_integrity_checks(tmp_path, cause):
         source = artifact / record["source"]
         source.write_text(source.read_text() + "\n# corrupt source\n")
     elif cause == "section":
-        manifest["sections"] = [
-            section for section in manifest["sections"] if section["name"] != f"codegen.program.{record['symbol']}"
-        ]
+        manifest["sections"] = [section for section in manifest["sections"]
+                                if section["name"] != f"codegen.program.{record['symbol']}"]
     elif cause == "digest":
         record["source_sha256"] = "0" * 64
     elif cause == "exports":
@@ -259,15 +255,12 @@ def test_legacy_single_source_artifact_loads_and_refreshes(tmp_path, monkeypatch
 
     def legacy(*args, **kwargs):
         package = render(*args, **kwargs)
-        return {
-            name: value
-            for name, value in package.items()
-            if name not in {"program_source_layout", "program_sources", "program_entry_aliases"}
-        }
+        return {name: value for name, value in package.items()
+                if name not in {"program_source_layout", "program_sources", "program_entry_aliases"}}
 
     monkeypatch.setattr(artifact_module, "render_triton_package", legacy)
-    artifact = write_artifact(compile_pair("tir.dense_matmul.packed_k_major_mma"), tmp_path / "artifact",
-                              target="nvidia-sm90", emit_executable=True)
+    artifact = write_artifact(compile_pair("tir.dense_matmul.packed_k_major_mma"),
+                              tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     before, module = load_artifact(artifact)
     original = load(artifact)
     assert len(original.kernels) == 2
@@ -285,8 +278,8 @@ def test_legacy_single_source_artifact_loads_and_refreshes(tmp_path, monkeypatch
 
 
 def test_refresh_rejects_a_corrupt_unreferenced_program_file(tmp_path):
-    artifact = write_artifact(compile_pair("tir.dense_matmul.packed_k_major_mma"), tmp_path / "artifact",
-                              target="nvidia-sm90", emit_executable=True)
+    artifact = write_artifact(compile_pair("tir.dense_matmul.packed_k_major_mma"),
+                              tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     manifest_path = artifact / "artifact.json"
     before = manifest_path.read_bytes()
     record = json.loads(before)["codegen"]["program_sources"][0]
@@ -320,7 +313,7 @@ def test_shared_entry_type_annotations_have_a_capture_scope(tmp_path, split):
     from triton.flagmega.codegen.triton import render_triton_package
 
     module = _compile_pipeline_module(reusable=True, worker_depth=4, program_dag=True,
-                                      implementation="tir.dense_matmul.tensor_descriptor_gemv")
+                                     implementation="tir.dense_matmul.tensor_descriptor_gemv")
     package = render_triton_package(module, tmp_path)
     source = package["program_sources"][0]["source"] if split else package["source"]
     kernel = getattr(import_source(tmp_path / source), "program_0")

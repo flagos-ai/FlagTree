@@ -12,7 +12,8 @@ from typing import Callable, Mapping
 
 from triton.flagmega.codegen.triton.descriptor_resources import DescriptorResources
 from triton.flagmega.codegen.triton.function_call import (
-    emit_function_call_arguments, )
+    emit_function_call_arguments,
+)
 from triton.flagmega.codegen.triton.function_pool_abi import (
     ROW_INDEX,
     OFFSET_TABLE,
@@ -100,8 +101,10 @@ def build_pipeline_source_schedule(
     definitions: dict[tuple[str, bool], dict[str, object]] = {}
     active: list[str] = []
     row_strides = bank_row_strides(module, verify_buffer_plan(module))
-    pool_abis, offset_tables = (plan_function_pool_abis(bindings, row_strides, entry=module.entry)
-                                if pool_function_arguments else ({}, []))
+    pool_abis, offset_tables = (
+        plan_function_pool_abis(bindings, row_strides, entry=module.entry)
+        if pool_function_arguments else ({}, [])
+    )
     from triton.flagmega.passes.tir.lower_transfer_pipeline_regions import program_host_functions, native_program_function
     host_functions = program_host_functions(module)
 
@@ -109,12 +112,13 @@ def build_pipeline_source_schedule(
         # The entry is never a loop body, so keep it on one key: a second
         # copy would be emitted as an uncalled device function.
         key = (name, bool(in_loop) and name != module.entry)
-        incoming_contract = None if incoming_readiness is None else (incoming_readiness.before_call_id,
-                                                                     incoming_readiness.readonly_parameters)
+        incoming_contract = None if incoming_readiness is None else (
+            incoming_readiness.before_call_id, incoming_readiness.readonly_parameters)
         if key in definitions:
             if definitions[key].get("incoming_readiness_contract") != incoming_contract:
-                raise CodegenError("One reusable function must have one incoming readiness ABI; "
-                                   "use distinct typed functions for ungated and gated invocations.")
+                raise CodegenError(
+                    "One reusable function must have one incoming readiness ABI; "
+                    "use distinct typed functions for ungated and gated invocations.")
             return definitions[key]
         if name in active:
             raise CodegenError("Recursive pipeline function: " + " -> ".join((*active, name)))
@@ -125,21 +129,18 @@ def build_pipeline_source_schedule(
         actuals.update(function_pool_aliases(pool_abi))
         if offset_tables:
             actuals[OFFSET_TABLE] = OFFSET_TABLE
-        context = _Context(name, actuals, {value: (value, 0) for value in signature}, {}, ())
+        context = _Context(name, actuals,
+                           {value: (value, 0) for value in signature}, {}, ())
         function = module.execution_function_map[name]
         body = _top_level_region(function.body, name) or function.body
         builder = _PipelineSourceBuilder(
-            module,
-            bindings,
-            encoded_calls,
-            kernel_event_factory,
-            build_function,
-            descriptor_instantiator,
-            pool_abis,
-            bool(offset_tables),
+            module, bindings, encoded_calls, kernel_event_factory,
+            build_function, descriptor_instantiator, pool_abis, bool(offset_tables),
         )
         builder.descriptor_specs = DescriptorResources(formal_origins=name != module.entry)
-        builder.row_index_formal = ROW_INDEX in source_signature_probe(signature, pool_abi, bool(offset_tables))
+        builder.row_index_formal = ROW_INDEX in source_signature_probe(
+            signature, pool_abi, bool(offset_tables)
+        )
         builder.in_loop = bool(in_loop)
         builder.incoming_readiness = incoming_readiness
         builder.loop_variable = _induction_formal(module, name) if in_loop else None
@@ -151,36 +152,27 @@ def build_pipeline_source_schedule(
                 if request.get('function', module.entry) != name:
                     continue
                 local = native_program_function(module, function, request)
-                native = _PipelineSourceBuilder(module, bindings, encoded_calls, kernel_event_factory, build_function,
-                                                descriptor_instantiator, pool_abis, bool(offset_tables))
+                native = _PipelineSourceBuilder(module, bindings, encoded_calls, kernel_event_factory,
+                    build_function, descriptor_instantiator, pool_abis, bool(offset_tables))
                 native.descriptor_specs = builder.descriptor_specs
                 native.row_index_formal = builder.row_index_formal
                 native_schedules[request['symbol']] = native.build(
                     _top_level_region(local.body, name) or local.body, context)
         source_signature = function_pool_signature(
-            (*signature, *builder.descriptor_specs.parameters()),
-            pool_abi,
+            (*signature, *builder.descriptor_specs.parameters()), pool_abi,
             has_tables=bool(offset_tables),
         )
         result = {
-            "function":
-            name,
-            "symbol":
-            f"_flagmega_function_{_identifier(name)}",
-            "signature_arguments":
-            source_signature,
-            "logical_signature_arguments":
-            list(signature),
-            "typed_signature_arguments":
-            list(source_signature),
-            "function_pool_abi":
-            pool_abi,
-            "host_tensor_descriptor_specs":
-            builder.descriptor_specs,
-            "schedule":
-            schedule,
-            **({'host_control_scope': True,
-                'native_program_schedules': native_schedules} if name in host_functions else {}),
+            "function": name,
+            "symbol": f"_flagmega_function_{_identifier(name)}",
+            "signature_arguments": source_signature,
+            "logical_signature_arguments": list(signature),
+            "typed_signature_arguments": list(source_signature),
+            "function_pool_abi": pool_abi,
+            "host_tensor_descriptor_specs": builder.descriptor_specs,
+            "schedule": schedule,
+            **({'host_control_scope': True, 'native_program_schedules': native_schedules}
+               if name in host_functions else {}),
         }
         if incoming_contract is not None:
             result["incoming_readiness_contract"] = incoming_contract
@@ -192,19 +184,16 @@ def build_pipeline_source_schedule(
     _compact_duplicate_function_actuals(root["schedule"], tuple(definitions.values()))
     return {
         **root["schedule"],
-        "host_tensor_descriptor_specs":
-        root["host_tensor_descriptor_specs"],
+        "host_tensor_descriptor_specs": root["host_tensor_descriptor_specs"],
         "device_functions": [
             definition for (name, _in_loop), definition in definitions.items()
             if name != module.entry or name in host_functions
         ],
-        "function_offset_tables":
-        offset_tables,
+        "function_offset_tables": offset_tables,
     }
 
 
 class _PipelineSourceBuilder:
-
     def __init__(
         self,
         module: IRModule,
@@ -247,24 +236,22 @@ class _PipelineSourceBuilder:
         self.incoming_readiness_uses = 0
         self.host_scope = False
 
-    def build(self, region: ProducerConsumerRegion | Sequential, context: _Context) -> dict[str, object]:
+    def build(
+        self, region: ProducerConsumerRegion | Sequential, context: _Context
+    ) -> dict[str, object]:
         self._visit_body(
-            region.consume_body if isinstance(region, ProducerConsumerRegion) else region,
-            "consumer",
-            context,
-            (context.function_name, ),
-            self.consumer_events,
+            region.consume_body if isinstance(region, ProducerConsumerRegion) else region, "consumer", context,
+            (context.function_name,), self.consumer_events,
         )
         if isinstance(region, ProducerConsumerRegion):
             self._visit_body(
-                region.produce_body,
-                "producer",
-                context,
-                (context.function_name, ),
-                self.producer_events,
+                region.produce_body, "producer", context,
+                (context.function_name,), self.producer_events,
             )
         if isinstance(region, ProducerConsumerRegion) and not self.stages:
-            raise CodegenError(f"Pipeline entry @{context.function_name} has no leaf transfer stage.")
+            raise CodegenError(
+                f"Pipeline entry @{context.function_name} has no leaf transfer stage."
+            )
         if self.incoming_readiness is not None and self.incoming_readiness_uses != 1:
             raise CodegenError("Imported readiness must be consumed once at its typed mutable transfer.")
         # A wrap-around wait guards the arena bytes this body's own later
@@ -284,89 +271,147 @@ class _PipelineSourceBuilder:
             # pipe instance serves all trips, so the close is after the loop
             # and `tle.pipe.drain` needs it in the same async task.  Arena
             # hazards that need per-trip waiting are handoffs instead.
-            self.producer_events, producer_drains = _split_drains(self.producer_events)
-            self.consumer_events, consumer_drains = _split_drains(self.consumer_events)
-            self.auxiliary_events, auxiliary_drains = _split_drains(self.auxiliary_events)
+            self.producer_events, producer_drains = _split_drains(
+                self.producer_events
+            )
+            self.consumer_events, consumer_drains = _split_drains(
+                self.consumer_events
+            )
+            self.auxiliary_events, auxiliary_drains = _split_drains(
+                self.auxiliary_events
+            )
             self._deferred_drains = {
                 "producer": producer_drains,
                 "consumer": consumer_drains,
                 "auxiliary": auxiliary_drains,
             }
         producer_warps = {int(value["producer_warps"]) for value in self.stages}
-        producer_registers = {int(value["producer_registers"]) for value in self.stages}
+        producer_registers = {
+            int(value["producer_registers"]) for value in self.stages
+        }
         if len(producer_warps) > 1 or len(producer_registers) > 1:
-            raise CodegenError("One producer task cannot combine stages with different worker "
-                               "warp/register contracts.")
-        auxiliary_stages = [value for value in self.stages if value["auxiliary_consumer"] is not None]
-        auxiliary_warps = {int(value["auxiliary_consumer"]["warps"]) for value in auxiliary_stages}
-        auxiliary_registers = {int(value["auxiliary_consumer"]["registers"]) for value in auxiliary_stages}
-        if (len(auxiliary_warps) > 1 or len(auxiliary_registers) > 1):
-            raise CodegenError("One auxiliary consumer task cannot combine stages with "
-                               "different warp/register contracts.")
-        shared_arena_required_nbytes = max((int(workspace["offset_bytes"]) + int(workspace["nbytes"])
-                                            for stage in self.stages
-                                            for workspace in stage["workspaces"]), default=0)
-        shared_arena_alignment_bytes = max(
-            (max(int(workspace["alignment_bytes"]), int(workspace["allocation_alignment_bytes"]))
-             for stage in self.stages
-             for workspace in stage["workspaces"]), default=16)
-        shared_space = next(value for value in verify_buffer_plan(self.module).memory_spaces if value.name == "shared")
+            raise CodegenError(
+                "One producer task cannot combine stages with different worker "
+                "warp/register contracts."
+            )
+        auxiliary_stages = [
+            value for value in self.stages
+            if value["auxiliary_consumer"] is not None
+        ]
+        auxiliary_warps = {
+            int(value["auxiliary_consumer"]["warps"])
+            for value in auxiliary_stages
+        }
+        auxiliary_registers = {
+            int(value["auxiliary_consumer"]["registers"])
+            for value in auxiliary_stages
+        }
+        if (
+            len(auxiliary_warps) > 1
+            or len(auxiliary_registers) > 1
+        ):
+            raise CodegenError(
+                "One auxiliary consumer task cannot combine stages with "
+                "different warp/register contracts."
+            )
+        shared_arena_required_nbytes = max((
+            int(workspace["offset_bytes"]) + int(workspace["nbytes"])
+            for stage in self.stages
+            for workspace in stage["workspaces"]
+        ), default=0)
+        shared_arena_alignment_bytes = max((
+            max(int(workspace["alignment_bytes"]),
+                int(workspace["allocation_alignment_bytes"]))
+            for stage in self.stages
+            for workspace in stage["workspaces"]
+        ), default=16)
+        shared_space = next(
+            value for value in verify_buffer_plan(self.module).memory_spaces
+            if value.name == "shared"
+        )
         try:
-            shared_arena_nbytes = shared_space.allocation_bytes(shared_arena_required_nbytes)
+            shared_arena_nbytes = shared_space.allocation_bytes(
+                shared_arena_required_nbytes
+            )
         except IRSchemaError as error:
-            raise CodegenError("Triton Shared arena allocation violates the target "
-                               f"memory-space contract: {error}") from error
+            raise CodegenError(
+                "Triton Shared arena allocation violates the target "
+                f"memory-space contract: {error}"
+            ) from error
         return {
-            "schema":
-            "flagmega.triton-pipeline-source-schedule/v3",
-            "drained_stage_ids":
-            tuple(sorted(self.drained_stage_ids)),
-            "stages":
-            self.stages,
-            "handoffs":
-            self.handoffs,
-            "consumer_events":
-            self.consumer_events,
-            "producer_events":
-            self.producer_events,
-            "auxiliary_events":
-            self.auxiliary_events,
+            "schema": "flagmega.triton-pipeline-source-schedule/v3",
+            "drained_stage_ids": tuple(sorted(self.drained_stage_ids)),
+            "stages": self.stages,
+            "handoffs": self.handoffs,
+            "consumer_events": self.consumer_events,
+            "producer_events": self.producer_events,
+            "auxiliary_events": self.auxiliary_events,
             # Writers whose stream stays open across loop trips; the caller
             # closes each once after the final trip.
-            "trip_scoped_drains":
-            self._deferred_drains,
+            "trip_scoped_drains": self._deferred_drains,
             "trip_scoped_closes": [
                 *_post_loop_closes(self.producer_events, 1),
-                *(close for event in self.producer_events for close in (event.get("trip_scoped_closes") or ())),
+                *(
+                    close
+                    for event in self.producer_events
+                    for close in (event.get("trip_scoped_closes") or ())
+                ),
             ],
             "consumer_endpoints": [
-                *(str(channel["reader_name"]) for stage in self.stages for channel in stage["channels"]),
-                *(str(workspace["variable"]) for stage in self.stages for workspace in stage["consumer_workspaces"]),
-                *(str(endpoint) for stage in self.stages if stage["auxiliary_consumer"] is not None
-                  for endpoint in stage["auxiliary_consumer"]["primary_endpoints"]),
-                *(str(value["writer_name"]) for value in self.handoffs if value["semantic"]),
+                *(
+                    str(channel["reader_name"])
+                    for stage in self.stages
+                    for channel in stage["channels"]
+                ),
+                *(
+                    str(workspace["variable"])
+                    for stage in self.stages
+                    for workspace in stage["consumer_workspaces"]
+                ),
+                *(
+                    str(endpoint)
+                    for stage in self.stages
+                    if stage["auxiliary_consumer"] is not None
+                    for endpoint in stage["auxiliary_consumer"][
+                        "primary_endpoints"
+                    ]
+                ),
+                *(
+                    str(value["writer_name"])
+                    for value in self.handoffs
+                    if value["semantic"]
+                ),
             ],
             "producer_endpoints": [
-                *(str(channel["writer_name"]) for stage in self.stages for channel in stage["channels"]),
-                *(str(value["reader_name"]) for value in self.handoffs if value["semantic"]),
-                *(('_flagmega_incoming_source_reader', ) if self.incoming_readiness is not None else ()),
+                *(
+                    str(channel["writer_name"])
+                    for stage in self.stages
+                    for channel in stage["channels"]
+                ),
+                *(
+                    str(value["reader_name"])
+                    for value in self.handoffs
+                    if value["semantic"]
+                ),
+                *(('_flagmega_incoming_source_reader',) if self.incoming_readiness is not None else ()),
             ],
             "auxiliary_endpoints": [
-                str(endpoint) for stage in self.stages if stage["auxiliary_consumer"] is not None
+                str(endpoint)
+                for stage in self.stages
+                if stage["auxiliary_consumer"] is not None
                 for endpoint in stage["auxiliary_consumer"]["endpoints"]
             ],
-            "shared_arena_nbytes":
-            shared_arena_nbytes,
-            "shared_arena_alignment_bytes":
-            shared_arena_alignment_bytes,
-            "shared_arena_required_nbytes":
-            shared_arena_required_nbytes,
-            "producer_warps":
-            producer_warps.pop() if producer_warps else None,
-            "producer_registers":
-            producer_registers.pop() if producer_registers else None,
-            "auxiliary_consumer_warps": (None if not auxiliary_warps else auxiliary_warps.pop()),
-            "auxiliary_consumer_registers": (None if not auxiliary_registers else auxiliary_registers.pop()),
+            "shared_arena_nbytes": shared_arena_nbytes,
+            "shared_arena_alignment_bytes": shared_arena_alignment_bytes,
+            "shared_arena_required_nbytes": shared_arena_required_nbytes,
+            "producer_warps": producer_warps.pop() if producer_warps else None,
+            "producer_registers": producer_registers.pop() if producer_registers else None,
+            "auxiliary_consumer_warps": (
+                None if not auxiliary_warps else auxiliary_warps.pop()
+            ),
+            "auxiliary_consumer_registers": (
+                None if not auxiliary_registers else auxiliary_registers.pop()
+            ),
         }
 
     def _visit_body(
@@ -390,23 +435,18 @@ class _PipelineSourceBuilder:
                 # the generated loop actually executes one iteration's work.
                 from .loop_carry import loop_copy
                 buffers = self.bindings[context.function_name]['call_abi'].get('loop_buffers', {})
-
                 def copies(source_field, result_field):
                     events = []
                     for carry in statement.carry_bindings:
-                        event = loop_copy(buffers[getattr(carry, source_field)], buffers[getattr(carry, result_field)])
-                        for key in ('source', 'source_offset', 'result', 'result_offset', 'active', 'writer_active',
-                                    'value'):
-                            if isinstance(event.get(key), str):
+                        event = loop_copy(buffers[getattr(carry,source_field)], buffers[getattr(carry,result_field)])
+                        for key in ('source','source_offset','result','result_offset','active','writer_active','value'):
+                            if isinstance(event.get(key),str):
                                 event[key] = _substitute(event[key], context.actual_by_formal)
                         events.append(event)
                     return events
-
-                carry_barrier = {
-                    'kind': 'barrier', 'scope': synchronization_scope_name(statement.carry_scope), 'axis_group_axes':
-                    (), 'loop_carry': True
-                }
-                carry_prologue = [*copies('initial', 'current'), carry_barrier] if statement.carry_bindings else []
+                carry_barrier = {'kind':'barrier','scope':synchronization_scope_name(statement.carry_scope),
+                                 'axis_group_axes':(), 'loop_carry':True}
+                carry_prologue = [*copies('initial','current'), carry_barrier] if statement.carry_bindings else []
                 nested: list[dict[str, object]] = []
                 outer_in_loop = self.in_loop
                 outer_loop_variable = self.loop_variable
@@ -422,22 +462,23 @@ class _PipelineSourceBuilder:
                 if statement.body_function and not getattr(region_body, "fields", ()):
                     callee = self.module.execution_function_map.get(statement.body_function)
                     if callee is None:
-                        raise CodegenError("A structured loop references unmaterialized "
-                                           f"@{statement.body_function}.")
+                        raise CodegenError(
+                            "A structured loop references unmaterialized "
+                            f"@{statement.body_function}."
+                        )
                     region = _top_level_region(callee.body, callee.name) or callee.body
                     if isinstance(region, ProducerConsumerRegion):
                         # The body's own producer side belongs to its transfer
                         # pipeline, which this loop does not re-establish.
-                        raise CodegenError(f"Structured loop body @{callee.name} owns a transfer "
-                                           "pipeline; lower it to a callable region first.")
+                        raise CodegenError(
+                            f"Structured loop body @{callee.name} owns a transfer "
+                            "pipeline; lower it to a callable region first."
+                        )
                     region_body = region
                 try:
                     self._visit_body(
-                        region_body,
-                        role,
-                        context,
-                        (*region_path, statement.loop_var.name),
-                        nested,
+                        region_body, role, context,
+                        (*region_path, statement.loop_var.name), nested,
                     )
                 finally:
                     self.in_loop = outer_in_loop
@@ -445,9 +486,9 @@ class _PipelineSourceBuilder:
                     self.loop_trips = outer_loop_trips
                 if statement.carry_bindings:
                     nested.append(carry_barrier)
-                    nested.extend(copies('yielded', 'staging'))
+                    nested.extend(copies('yielded','staging'))
                     nested.append(carry_barrier)
-                    nested.extend(copies('staging', 'current'))
+                    nested.extend(copies('staging','current'))
                     nested.append(carry_barrier)
                 # A trip-scoped stream closes once after the final trip, and
                 # `tle.pipe.drain` requires that close to precede it in the
@@ -457,7 +498,10 @@ class _PipelineSourceBuilder:
                     _static_bound(statement.domain.stop),
                     _static_bound(statement.domain.step),
                 )
-                hoisted = (_collect_trip_closes(nested, trips) if role == "producer" else [])
+                hoisted = (
+                    _collect_trip_closes(nested, trips)
+                    if role == "producer" else []
+                )
                 nested, hoisted_drains = _split_drains(nested)
                 for event in nested:
                     hoisted_drains.extend(event.get("trip_scoped_drains") or ())
@@ -472,30 +516,20 @@ class _PipelineSourceBuilder:
                     output.extend(_wrap_around_priming(self.handoffs))
 
                 output.append({
-                    "kind":
-                    "loop",
-                    "loop_var":
-                    statement.loop_var.name,
+                    "kind": "loop",
+                    "loop_var": statement.loop_var.name,
                     # The manifest is JSON, so publish plain bounds rather
                     # than DimConst objects.
-                    "start":
-                    _static_bound(statement.domain.start),
-                    "stop":
-                    _static_bound(statement.domain.stop),
-                    "step":
-                    _static_bound(statement.domain.step),
-                    "body_function":
-                    statement.body_function,
-                    "iter_args":
-                    tuple(value.name for value in statement.iter_args),
-                    "yield_values":
-                    tuple(value.name for value in statement.yield_values),
-                    "events":
-                    nested,
-                    **({
-                        'prologue_events': carry_prologue,
-                        'epilogue_events': [*copies('current', 'result'), carry_barrier]
-                    } if statement.carry_bindings else {}),
+                    "start": _static_bound(statement.domain.start),
+                    "stop": _static_bound(statement.domain.stop),
+                    "step": _static_bound(statement.domain.step),
+                    "body_function": statement.body_function,
+                    "iter_args": tuple(value.name for value in statement.iter_args),
+                    "yield_values": tuple(value.name for value in statement.yield_values),
+                    "events": nested,
+                    **({'prologue_events':carry_prologue,
+                        'epilogue_events':[*copies('current','result'),carry_barrier]}
+                       if statement.carry_bindings else {}),
                 })
                 # The loop ran every trip's acquire/commit on one pipe
                 # instance, so each trip-scoped writer closes exactly once,
@@ -525,12 +559,11 @@ class _PipelineSourceBuilder:
                     wrap_around=bool(statement.wrap_around),
                 )
                 output.append({
-                    "kind":
-                    "handoff",
-                    "endpoint":
-                    handoff["writer_name" if role == "consumer" else "reader_name"],
-                    "action":
-                    "commit" if role == "consumer" else "wait",
+                    "kind": "handoff",
+                    "endpoint": handoff[
+                        "writer_name" if role == "consumer" else "reader_name"
+                    ],
+                    "action": "commit" if role == "consumer" else "wait",
                     # A reusable slot must be released after it is consumed,
                     # or the next iteration's commit waits on a full pipe. A
                     # one-shot slot is never reused and needs no release.
@@ -541,10 +574,13 @@ class _PipelineSourceBuilder:
                     # let the next trip's commit proceed before those stages
                     # have run.  Its release is deferred to the end of the
                     # body instead, which is where the guarded work finishes.
-                    "release": (bool(handoff.get("repeated")) or self.in_loop) and role != "consumer"
-                    and not statement.wrap_around,
+                    "release": (bool(handoff.get("repeated")) or self.in_loop)
+                               and role != "consumer"
+                               and not statement.wrap_around,
                     # Deferred release for the wrap-around case above.
-                    "deferred_release": (bool(statement.wrap_around) and role != "consumer"),
+                    "deferred_release": (
+                        bool(statement.wrap_around) and role != "consumer"
+                    ),
                     # phase = (iter // capacity) % 2, so a reusable slot must
                     # advance its index with the loop or the next iteration
                     # waits on a phase the pipe has already passed.  The pipe
@@ -557,19 +593,18 @@ class _PipelineSourceBuilder:
                     # ahead, and a priming commit before the loop supplies
                     # index 0 for the first trip.  Using one index on both
                     # sides would make trip i wait on its own later commit.
-                    "index":
-                    _handoff_index(
+                    "index": _handoff_index(
                         self.loop_variable,
                         ahead=bool(statement.wrap_around) and role == "consumer",
                     ),
                     # The enclosing loop reads this to emit the priming
                     # commit the first trip's wait depends on.
-                    "wrap_around":
-                    bool(statement.wrap_around),
+                    "wrap_around": bool(statement.wrap_around),
                     # The writer side of a reusable slot must acquire before
                     # committing, or a later trip's commit overruns a slot the
                     # reader has not released yet.
-                    "acquire": (bool(handoff.get("repeated")) or self.in_loop) and role == "consumer",
+                    "acquire": (bool(handoff.get("repeated")) or self.in_loop)
+                               and role == "consumer",
                 })
                 continue
             if isinstance(statement, PipelineDrain):
@@ -591,54 +626,69 @@ class _PipelineSourceBuilder:
                 if (role == "producer" and self.incoming_readiness is not None
                         and statement.operation.call_id == self.incoming_readiness.before_call_id):
                     output.append({
-                        "kind": "handoff",
-                        "endpoint": "_flagmega_incoming_source_reader",
-                        "action": "wait",
-                        "release": False,
-                        "deferred_release": False,
-                        "index": "0",
-                        "wrap_around": False,
-                        "acquire": False,
+                        "kind": "handoff", "endpoint": "_flagmega_incoming_source_reader",
+                        "action": "wait", "release": False, "deferred_release": False,
+                        "index": "0", "wrap_around": False, "acquire": False,
                     })
                     self.incoming_readiness_uses += 1
                 before = len(self.stages)
                 before_events = len(output)
-                self._visit_stage(statement, role, context, region_path, output)
+                self._visit_stage(
+                    statement, role, context, region_path, output
+                )
                 key = (*region_path, statement.stage_id)
                 if role == "consumer":
-                    leaves = tuple(str(value["id"]) for value in self.stages[before:])
+                    leaves = tuple(
+                        str(value["id"]) for value in self.stages[before:]
+                    )
                     if not leaves:
                         # A nested stage may reference leaf stages already
                         # registered by an equivalent path only in malformed IR.
-                        raise CodegenError(f"Pipeline stage {statement.stage_id!r} produced no "
-                                           "leaf transfer stages.")
+                        raise CodegenError(
+                            f"Pipeline stage {statement.stage_id!r} produced no "
+                            "leaf transfer stages."
+                        )
                     # A nested pipeline function exports only pipe endpoints
                     # whose lifetimes remain open at its boundary. Drains in
                     # the callee have already consumed their endpoints and
                     # must not be repeated when the caller drains the
-                    # enclosing PipelineStage. This matches the reference # PipelineDeviceFunctionInterface residual drain ABI.
+                    # enclosing PipelineStage. This matches nncase's
+                    # PipelineDeviceFunctionInterface residual drain ABI.
                     internally_drained: set[str] = set()
                     for event in output[before_events:]:
                         internally_drained.update(event.get("drained_stages", ()))
                         if event["kind"] != "drain":
                             continue
-                        inner_key = tuple(str(value) for value in event["logical_stage"])
+                        inner_key = tuple(
+                            str(value) for value in event["logical_stage"]
+                        )
                         try:
-                            internally_drained.update(self.logical_stage_leaves[inner_key])
+                            internally_drained.update(
+                                self.logical_stage_leaves[inner_key]
+                            )
                         except KeyError as error:
-                            raise CodegenError("Nested pipeline drain references an unknown "
-                                               f"logical stage {inner_key}.") from error
-                    self.logical_stage_leaves[key] = tuple(leaf for leaf in leaves if leaf not in internally_drained)
+                            raise CodegenError(
+                                "Nested pipeline drain references an unknown "
+                                f"logical stage {inner_key}."
+                            ) from error
+                    self.logical_stage_leaves[key] = tuple(
+                        leaf for leaf in leaves
+                        if leaf not in internally_drained
+                    )
                 continue
             if isinstance(statement, (PrimFunctionCall, KernelInvoke)):
                 if role != "consumer":
-                    raise CodegenError("A pipeline producer body may contain calls only through "
-                                       "PipelineStage.")
+                    raise CodegenError(
+                        "A pipeline producer body may contain calls only through "
+                        "PipelineStage."
+                    )
                 self._visit_call(statement, role, context, output, staged=False)
                 continue
-            raise CodegenError(f"Pipeline source generation does not support "
-                               f"{type(statement).__name__} in @{context.function_name}; lower "
-                               "structured task control flow to explicit source-schedule nodes.")
+            raise CodegenError(
+                f"Pipeline source generation does not support "
+                f"{type(statement).__name__} in @{context.function_name}; lower "
+                "structured task control flow to explicit source-schedule nodes."
+            )
 
     def _visit_stage(
         self,
@@ -650,15 +700,18 @@ class _PipelineSourceBuilder:
     ) -> None:
         operation = stage.operation
         if not isinstance(operation, (PrimFunctionCall, KernelInvoke)):
-            raise CodegenError("Entry pipeline source generation expects materialized "
-                               "PrimFunctionCall stages.")
+            raise CodegenError(
+                "Entry pipeline source generation expects materialized "
+                "PrimFunctionCall stages."
+            )
         incoming_reader = None
         if stage.source_readiness is not None:
             if self.in_loop:
                 raise CodegenError("Imported readiness does not support repeated call epochs.")
-            incoming_reader = self._handoff((*region_path, stage.source_readiness.handoff_id))["reader_name"]
-        self._visit_call(operation, role, context, output, staged=True, source_readiness=stage.source_readiness,
-                         incoming_reader=incoming_reader)
+            incoming_reader = self._handoff(
+                (*region_path, stage.source_readiness.handoff_id))["reader_name"]
+        self._visit_call(operation, role, context, output, staged=True,
+                         source_readiness=stage.source_readiness, incoming_reader=incoming_reader)
 
     @staticmethod
     def _static_bound(value):
@@ -679,35 +732,51 @@ class _PipelineSourceBuilder:
         if primitive is not None:
             dispatch = kernel_dispatch_of(primitive)
             if dispatch is None:
-                raise CodegenError(f"Pipeline call {call.call_id!r} references general TIR "
-                                   f"PrimFunction @{call.callee}; only a selected kernel ABI is supported.")
-            is_pipeline = (dispatch.microkernel is not None and dispatch.microkernel.transfer_pipeline is not None)
+                raise CodegenError(
+                    f"Pipeline call {call.call_id!r} references general TIR "
+                    f"PrimFunction @{call.callee}; only a selected kernel ABI is supported."
+                )
+            is_pipeline = (
+                dispatch.microkernel is not None
+                and dispatch.microkernel.transfer_pipeline is not None
+            )
             if self.host_scope:
                 if role != 'consumer' or staged or source_readiness is not None:
                     raise CodegenError('A host invocation cannot carry native pipeline endpoints.')
                 output.append(self._kernel_event(context, call))
                 return
             if staged != is_pipeline:
-                raise CodegenError(f"Pipeline role structure for call {call.call_id!r} differs "
-                                   "from its selected transfer contract.")
+                raise CodegenError(
+                    f"Pipeline role structure for call {call.call_id!r} differs "
+                    "from its selected transfer contract."
+                )
             event = self._kernel_event(context, call)
             if not is_pipeline:
                 output.append(event)
                 return
             stage_plan = self._leaf_stage(context, call, event)
             endpoints = [
-                str(channel["reader_name" if role == "consumer" else "writer_name"])
+                str(channel[
+                    "reader_name" if role == "consumer" else "writer_name"
+                ])
                 for channel in stage_plan["channels"]
             ]
             if role == "consumer":
-                endpoints.extend(str(workspace["variable"]) for workspace in stage_plan["consumer_workspaces"])
+                endpoints.extend(
+                    str(workspace["variable"])
+                    for workspace in stage_plan["consumer_workspaces"]
+                )
                 auxiliary = stage_plan["auxiliary_consumer"]
                 if auxiliary is not None:
-                    endpoints.extend(str(value) for value in auxiliary["primary_endpoints"])
+                    endpoints.extend(
+                        str(value) for value in auxiliary["primary_endpoints"]
+                    )
             expected = tuple(event[f"pipeline_{role}_parameters"])
             if len(endpoints) != len(expected):
-                raise CodegenError(f"Pipeline stage {call.call_id!r} {role} endpoint arity "
-                                   "differs from its prepared helper ABI.")
+                raise CodegenError(
+                    f"Pipeline stage {call.call_id!r} {role} endpoint arity "
+                    "differs from its prepared helper ABI."
+                )
             arguments = _join_arguments(endpoints, str(event["arguments"]))
             # A counted loop calls this stage once per trip against ONE pipe
             # instance, where the straight-line schedule gave every call site
@@ -730,47 +799,48 @@ class _PipelineSourceBuilder:
             dynamic = bool(self.in_loop) and not commits
             if commits:
                 arguments = _join_arguments(
-                    (arguments, ),
+                    (arguments,),
                     f"({self.loop_variable}) * {commits}",
                 )
             elif dynamic:
                 arguments = _join_arguments(
-                    (arguments, ),
+                    (arguments,),
                     f"({self.loop_variable}), {self.loop_trips}",
                 )
             output.append({
                 **event,
-                "kind":
-                "pipeline_kernel_call",
-                "role":
-                role,
-                "symbol":
-                f"{event['symbol']}__{role}",
-                "arguments":
-                arguments,
+                "kind": "pipeline_kernel_call",
+                "role": role,
+                "symbol": f"{event['symbol']}__{role}",
+                "arguments": arguments,
                 **({"census_endpoint": endpoints[0]} if event.get("census_selected") else {}),
-                "trip_scoped_pipe":
-                bool(commits),
-                "trip_scoped_dynamic":
-                dynamic,
+                "trip_scoped_pipe": bool(commits),
+                "trip_scoped_dynamic": dynamic,
                 # Instantiated writer endpoints, so the enclosing loop can
                 # close this stage's stream once after the final trip.
-                "trip_scoped_writers":
-                tuple(str(channel["writer_name"])
-                      for channel in stage_plan["channels"]) if commits and role == "producer" else (),
+                "trip_scoped_writers": tuple(
+                    str(channel["writer_name"])
+                    for channel in stage_plan["channels"]
+                ) if commits and role == "producer" else (),
             })
             if role == "consumer":
-                self._append_auxiliary_event((*context.call_path, call.call_id), event, stage_plan)
+                self._append_auxiliary_event(
+                    (*context.call_path, call.call_id), event, stage_plan
+                )
             return
 
         execution = self.module.execution_function_map.get(call.callee)
         if execution is None:
-            raise CodegenError(f"Pipeline call {call.call_id!r} references unknown @{call.callee}.")
+            raise CodegenError(
+                f"Pipeline call {call.call_id!r} references unknown @{call.callee}."
+            )
         nested = self._nested_context(context, call, execution.name)
         region = _top_level_region(execution.body, execution.name)
         if not self.host_scope and staged != (region is not None):
-            raise CodegenError(f"Call {call.call_id!r} PipelineStage placement differs from "
-                               f"ExecutionFunction @{execution.name}.")
+            raise CodegenError(
+                f"Call {call.call_id!r} PipelineStage placement differs from "
+                f"ExecutionFunction @{execution.name}."
+            )
         key = (*context.call_path, call.call_id)
         instance = self.function_instances.get(key)
         definition = self.function_builder(execution.name, self.in_loop, source_readiness)
@@ -781,8 +851,7 @@ class _PipelineSourceBuilder:
                 resources, names = {'stages': [], 'handoffs': []}, {}
             else:
                 resources, names = instantiate_resources(
-                    definition["schedule"],
-                    nested.shared_by_name,
+                    definition["schedule"], nested.shared_by_name,
                     f"_flagmega_{_identifier('__'.join(key))}",
                 )
             if source_readiness is not None:
@@ -792,14 +861,15 @@ class _PipelineSourceBuilder:
             self.stages.extend(resources["stages"])
             # A callee invoked from a structured loop performs its handoffs
             # once per iteration, so their slots must be reusable.
-            self.handoffs.extend({**value, "repeated": True} if self.in_loop else value
-                                 for value in resources["handoffs"])
+            self.handoffs.extend(
+                {**value, "repeated": True} if self.in_loop else value
+                for value in resources["handoffs"]
+            )
             descriptor_binding_start = len(self.descriptor_specs.argument_bindings)
             descriptors = self.descriptor_instantiator(
-                {"host_tensor_descriptor_requests": descriptor_requests(definition["host_tensor_descriptor_specs"])},
-                nested.storage_roots,
-                self.descriptor_specs,
-                key,
+                {"host_tensor_descriptor_requests": descriptor_requests(
+                    definition["host_tensor_descriptor_specs"])},
+                nested.storage_roots, self.descriptor_specs, key,
             )
             actuals = [
                 nested.actual_by_formal[str(formal)]
@@ -807,26 +877,22 @@ class _PipelineSourceBuilder:
                 if formal not in function_pool_aliases(self.pool_abis.get(execution.name))
             ]
             pool_actuals = function_pool_actuals(
-                self.bindings[context.function_name],
-                call,
-                self.pool_abis.get(execution.name),
-                context.actual_by_formal,
-                has_tables=self.has_offset_tables,
+                self.bindings[context.function_name], call, self.pool_abis.get(execution.name),
+                context.actual_by_formal, has_tables=self.has_offset_tables,
                 # Inside a counted loop the callee's bank row is the trip.
                 # A function between the loop and the bank user receives the
                 # index as its own formal and forwards it unchanged.
-                row_index=self.loop_variable or (ROW_INDEX if self.row_index_formal else None),
+                row_index=self.loop_variable or (
+                    ROW_INDEX if self.row_index_formal else None
+                ),
             )
             instance = {
-                "names":
-                names,
+                "names": names,
                 "arguments": [*actuals, *descriptors, *pool_actuals],
-                "descriptor_argument_bindings":
-                dict(
-                    zip(definition["host_tensor_descriptor_specs"].parameters(),
-                        self.descriptor_specs.argument_bindings[descriptor_binding_start:], strict=True)),
-                "drained_stages":
-                () if self.host_scope else tuple(names[value] for value in definition["schedule"]["drained_stage_ids"]),
+                "descriptor_argument_bindings": dict(zip(
+                    definition["host_tensor_descriptor_specs"].parameters(),
+                    self.descriptor_specs.argument_bindings[descriptor_binding_start:], strict=True)),
+                "drained_stages": () if self.host_scope else tuple(names[value] for value in definition["schedule"]["drained_stage_ids"]),
             }
             self.function_instances[key] = instance
             self.drained_stage_ids.update(instance["drained_stages"])
@@ -834,12 +900,11 @@ class _PipelineSourceBuilder:
                 self.auxiliary_events.append(self._function_event(call, definition, instance, "auxiliary"))
         if self.host_scope:
             arguments = tuple(instance['arguments'])
-            output.append({
-                'kind': 'function_call', 'call': call.call_id, 'callee': call.callee, 'symbol': definition['symbol'],
-                'arguments': ', '.join(arguments), 'argument_expressions': arguments, 'descriptor_argument_bindings':
-                instance['descriptor_argument_bindings'], 'endpoint_bindings': {}, 'drained_stages': (),
-                'barrier_before': False, 'host_invocation': True
-            })
+            output.append({'kind': 'function_call', 'call': call.call_id, 'callee': call.callee,
+                'symbol': definition['symbol'], 'arguments': ', '.join(arguments),
+                'argument_expressions': arguments, 'descriptor_argument_bindings': instance['descriptor_argument_bindings'],
+                'endpoint_bindings': {}, 'drained_stages': (), 'barrier_before': False,
+                'host_invocation': True})
         else:
             output.append(self._function_event(call, definition, instance, role))
 
@@ -850,60 +915,58 @@ class _PipelineSourceBuilder:
         suffix = "auxiliary_consumer" if role == "auxiliary" else role
         arguments = (*endpoints, *instance["arguments"])
         return {
-            "kind":
-            "function_call",
-            "call":
-            call.call_id,
-            "callee":
-            call.callee,
-            "symbol":
-            f"{definition['symbol']}__{suffix}",
-            "arguments":
-            ", ".join(arguments),
-            "argument_expressions":
-            arguments,
-            "descriptor_argument_bindings":
-            instance["descriptor_argument_bindings"],
-            "endpoint_bindings":
-            dict(zip(
-                definition["schedule"][f"{role}_endpoints"],
-                endpoints,
-                strict=True,
+            "kind": "function_call",
+            "call": call.call_id,
+            "callee": call.callee,
+            "symbol": f"{definition['symbol']}__{suffix}",
+            "arguments": ", ".join(arguments),
+            "argument_expressions": arguments,
+            "descriptor_argument_bindings": instance["descriptor_argument_bindings"],
+            "endpoint_bindings": dict(zip(
+                definition["schedule"][f"{role}_endpoints"], endpoints, strict=True,
             )),
-            "barrier_before":
-            False,
-            "drained_stages":
-            instance["drained_stages"],
+            "barrier_before": False,
+            "drained_stages": instance["drained_stages"],
             # Per-trip stage closes deferred to the caller, remapped to this
             # instance's endpoint names.
-            "trip_scoped_closes": [{**close, "endpoint": names.get(str(close["endpoint"]), str(close["endpoint"]))}
-                                   for close in definition["schedule"].get("trip_scoped_closes", ())],
+            "trip_scoped_closes": [
+                {**close, "endpoint": names.get(
+                    str(close["endpoint"]), str(close["endpoint"]))}
+                for close in definition["schedule"].get("trip_scoped_closes", ())
+            ],
             # Drains the callee deferred because its stream now closes in the
             # caller, after the final trip.
-            "trip_scoped_drains":
-            [{**drain, "endpoints": [names.get(str(value), str(value))
-                                     for value in drain.get("endpoints", ())]}
-             for drain in (definition["schedule"].get("trip_scoped_drains") or {}).get(role, ())],
+            "trip_scoped_drains": [
+                {**drain, "endpoints": [
+                    names.get(str(value), str(value))
+                    for value in drain.get("endpoints", ())
+                ]}
+                for drain in (definition["schedule"].get("trip_scoped_drains") or {}).get(role, ())
+            ],
         }
 
-    def _kernel_event(self, context: _Context, call: PrimFunctionCall) -> dict[str, object]:
+    def _kernel_event(
+        self, context: _Context, call: PrimFunctionCall
+    ) -> dict[str, object]:
         key = (*context.call_path, call.call_id)
         cached = self.event_cache.get(key)
         if cached is not None:
             return dict(cached)
         try:
-            encoded = next(value for value in self.encoded_calls[context.function_name]
-                           if str(value["call"]) == call.call_id)
+            encoded = next(
+                value for value in self.encoded_calls[context.function_name]
+                if str(value["call"]) == call.call_id
+            )
         except (KeyError, StopIteration) as error:
-            raise CodegenError(f"Pipeline call {call.call_id!r} has no encoded kernel ABI in "
-                               f"@{context.function_name}.") from error
+            raise CodegenError(
+                f"Pipeline call {call.call_id!r} has no encoded kernel ABI in "
+                f"@{context.function_name}."
+            ) from error
         actual_by_formal = context.actual_by_formal
         if "census_layer_actual" in encoded:
             from .trace_config import CENSUS_LAYER_ARGUMENT
-            actual_by_formal = {
-                **actual_by_formal, CENSUS_LAYER_ARGUMENT:
-                _substitute(str(encoded["census_layer_actual"]), actual_by_formal)
-            }
+            actual_by_formal = {**actual_by_formal, CENSUS_LAYER_ARGUMENT:
+                               _substitute(str(encoded["census_layer_actual"]), actual_by_formal)}
         event = self.kernel_event_factory(
             context.function_name,
             encoded,
@@ -935,33 +998,58 @@ class _PipelineSourceBuilder:
         existing = self.stage_by_key.get(key)
         if existing is not None:
             return existing
-        encoded = next(value for value in self.encoded_calls[context.function_name]
-                       if str(value["call"]) == call.call_id)
+        encoded = next(
+            value for value in self.encoded_calls[context.function_name]
+            if str(value["call"]) == call.call_id
+        )
         contract = encoded.get("pipeline_contract")
         local_workspaces = encoded.get("shared_workspaces")
-        if not isinstance(contract, Mapping) or not isinstance(local_workspaces, (tuple, list)):
-            raise CodegenError(f"Pipeline stage {call.call_id!r} has no encoded resource contract.")
+        if not isinstance(contract, Mapping) or not isinstance(
+            local_workspaces, (tuple, list)
+        ):
+            raise CodegenError(
+                f"Pipeline stage {call.call_id!r} has no encoded resource contract."
+            )
         channels = contract.get("channels")
         prepared_channels = encoded.get("pipeline_channels")
-        consumer_workspace_indices = contract.get("consumer_shared_workspace_indices", ())
-        if (not isinstance(channels, (tuple, list)) or not channels or not isinstance(prepared_channels, (tuple, list))
-                or len(prepared_channels) != len(channels)):
-            raise CodegenError("A transfer-pipelined source stage must expose matching typed "
-                               "and prepared channels.")
+        consumer_workspace_indices = contract.get(
+            "consumer_shared_workspace_indices", ()
+        )
+        if (
+            not isinstance(channels, (tuple, list))
+            or not channels
+            or not isinstance(prepared_channels, (tuple, list))
+            or len(prepared_channels) != len(channels)
+        ):
+            raise CodegenError(
+                "A transfer-pipelined source stage must expose matching typed "
+                "and prepared channels."
+            )
         if not isinstance(consumer_workspace_indices, (tuple, list)):
-            raise CodegenError("Transfer-pipeline consumer Shared workspace indices must be a sequence.")
+            raise CodegenError(
+                "Transfer-pipeline consumer Shared workspace indices must be a sequence."
+            )
         if len(local_workspaces) != len(call.shared_workspace_buffers):
-            raise CodegenError(f"Pipeline stage {call.call_id!r} Shared ABI arity differs from "
-                               "its caller-owned buffers.")
-        actual_buffers = tuple(context.shared_by_name.get(value.name, value) for value in call.shared_workspace_buffers)
+            raise CodegenError(
+                f"Pipeline stage {call.call_id!r} Shared ABI arity differs from "
+                "its caller-owned buffers."
+            )
+        actual_buffers = tuple(
+            context.shared_by_name.get(value.name, value)
+            for value in call.shared_workspace_buffers
+        )
         workspaces = []
         stem = _identifier("__".join(key))
-        for index, (local, actual) in enumerate(zip(local_workspaces, actual_buffers, strict=True)):
+        for index, (local, actual) in enumerate(zip(
+            local_workspaces, actual_buffers, strict=True
+        )):
             shape = tuple(int(value) for value in local["shape"])
             actual_shape = tuple(value.fixed_value for value in actual.dimensions)
             if shape != actual_shape or str(local["dtype"]) != actual.elem_type.value:
-                raise CodegenError(f"Pipeline stage {call.call_id!r} Shared workspace {index} "
-                                   "differs from its selected typed descriptor.")
+                raise CodegenError(
+                    f"Pipeline stage {call.call_id!r} Shared workspace {index} "
+                    "differs from its selected typed descriptor."
+                )
             workspaces.append({
                 **dict(local),
                 "name": str(local["name"]),
@@ -977,10 +1065,16 @@ class _PipelineSourceBuilder:
                 # The view's layout requirement and its allocation's base
                 # alignment are distinct, especially after edit/resume.
                 "allocation_alignment_bytes": actual.mem_span.buffer.alignment,
-                "matrix_compatible": bool(local.get("matrix_compatible", False)),
+                "matrix_compatible": bool(
+                    local.get("matrix_compatible", False)
+                ),
             })
         raw_capacity = contract.get("capacity")
-        capacity = int(encoded["num_stages"] if raw_capacity is None else raw_capacity)
+        capacity = int(
+            encoded["num_stages"]
+            if raw_capacity is None
+            else raw_capacity
+        )
         ordinal = len(self.stages)
         channel_plans = []
         owned_indices: set[int] = set()
@@ -989,41 +1083,74 @@ class _PipelineSourceBuilder:
                 raise CodegenError("Transfer-pipeline channel must be a mapping.")
             channel_name = str(channel.get("name", ""))
             if not channel_name.isidentifier() or keyword.iskeyword(channel_name):
-                raise CodegenError(f"Pipeline channel {channel_name!r} is not a Python identifier.")
+                raise CodegenError(
+                    f"Pipeline channel {channel_name!r} is not a Python identifier."
+                )
             try:
-                indices = tuple(int(value) for value in channel["shared_workspace_indices"])
+                indices = tuple(
+                    int(value) for value in channel["shared_workspace_indices"]
+                )
             except (KeyError, TypeError, ValueError) as error:
-                raise CodegenError(f"Pipeline channel {channel_name!r} has invalid Shared indices.") from error
-            if not indices or any(index < 0 or index >= len(workspaces) or index in owned_indices for index in indices):
-                raise CodegenError(f"Pipeline channel {channel_name!r} has invalid or multiply "
-                                   "owned Shared workspaces.")
+                raise CodegenError(
+                    f"Pipeline channel {channel_name!r} has invalid Shared indices."
+                ) from error
+            if not indices or any(
+                index < 0 or index >= len(workspaces) or index in owned_indices
+                for index in indices
+            ):
+                raise CodegenError(
+                    f"Pipeline channel {channel_name!r} has invalid or multiply "
+                    "owned Shared workspaces."
+                )
             owned_indices.update(indices)
             for index in indices:
                 workspace = workspaces[index]
-                if (not workspace["shape"] or int(workspace["shape"][0]) != capacity):
-                    raise CodegenError(f"Pipeline stage {call.call_id!r} capacity {capacity} "
-                                       f"differs from Shared workspace {workspace['name']!r} "
-                                       "leading dimension.")
-            channel_stem = (stem if len(channels) == 1 else f"{stem}_{_identifier(channel_name)}")
+                if (
+                    not workspace["shape"]
+                    or int(workspace["shape"][0]) != capacity
+                ):
+                    raise CodegenError(
+                        f"Pipeline stage {call.call_id!r} capacity {capacity} "
+                        f"differs from Shared workspace {workspace['name']!r} "
+                        "leading dimension."
+                    )
+            channel_stem = (
+                stem if len(channels) == 1
+                else f"{stem}_{_identifier(channel_name)}"
+            )
             prepared = prepared_channels[channel_index]
-            if (not isinstance(prepared, Mapping) or str(prepared.get("name", "")) != channel_name
-                    or tuple(prepared.get("workspace_names",
-                                          ())) != tuple(workspaces[index]["name"] for index in indices)):
-                raise CodegenError(f"Pipeline channel {channel_name!r} prepared helper ABI "
-                                   "differs from its typed workspace contract.")
+            if (
+                not isinstance(prepared, Mapping)
+                or str(prepared.get("name", "")) != channel_name
+                or tuple(prepared.get("workspace_names", ()))
+                != tuple(workspaces[index]["name"] for index in indices)
+            ):
+                raise CodegenError(
+                    f"Pipeline channel {channel_name!r} prepared helper ABI "
+                    "differs from its typed workspace contract."
+                )
             raw_fields = prepared.get("fields")
             if not isinstance(raw_fields, (tuple, list)) or len(raw_fields) != len(indices):
-                raise CodegenError(f"Pipeline channel {channel_name!r} has no one-to-one pipe fields.")
+                raise CodegenError(
+                    f"Pipeline channel {channel_name!r} has no one-to-one pipe fields."
+                )
             fields = []
             for field, index in zip(raw_fields, indices, strict=True):
-                if (not isinstance(field, Mapping)
-                        or str(field.get("workspace_name", "")) != str(workspaces[index]["name"])):
-                    raise CodegenError(f"Pipeline channel {channel_name!r} pipe field differs "
-                                       "from its Shared workspace binding.")
+                if (
+                    not isinstance(field, Mapping)
+                    or str(field.get("workspace_name", ""))
+                    != str(workspaces[index]["name"])
+                ):
+                    raise CodegenError(
+                        f"Pipeline channel {channel_name!r} pipe field differs "
+                        "from its Shared workspace binding."
+                    )
                 field_name = str(field.get("name", ""))
                 if not field_name.isidentifier() or keyword.iskeyword(field_name):
-                    raise CodegenError(f"Pipeline channel {channel_name!r} field {field_name!r} "
-                                       "is not a Python identifier.")
+                    raise CodegenError(
+                        f"Pipeline channel {channel_name!r} field {field_name!r} "
+                        "is not a Python identifier."
+                    )
                 fields.append({
                     "name": field_name,
                     "workspace": workspaces[index],
@@ -1037,14 +1164,23 @@ class _PipelineSourceBuilder:
                 "fields": fields,
             })
         try:
-            consumer_workspaces = [workspaces[int(index)] for index in consumer_workspace_indices]
+            consumer_workspaces = [
+                workspaces[int(index)] for index in consumer_workspace_indices
+            ]
         except (IndexError, TypeError, ValueError) as error:
-            raise CodegenError("Transfer pipeline references an invalid consumer Shared workspace.") from error
+            raise CodegenError(
+                "Transfer pipeline references an invalid consumer Shared workspace."
+            ) from error
         consumer_index_set = {int(value) for value in consumer_workspace_indices}
-        if (len(consumer_index_set) != len(consumer_workspaces) or owned_indices & consumer_index_set
-                or owned_indices | consumer_index_set != set(range(len(workspaces)))):
-            raise CodegenError("Every Shared workspace must have exactly one transfer-channel "
-                               "or consumer owner.")
+        if (
+            len(consumer_index_set) != len(consumer_workspaces)
+            or owned_indices & consumer_index_set
+            or owned_indices | consumer_index_set != set(range(len(workspaces)))
+        ):
+            raise CodegenError(
+                "Every Shared workspace must have exactly one transfer-channel "
+                "or consumer owner."
+            )
         for index, workspace in enumerate(workspaces):
             workspace["pipe_owned"] = index in owned_indices
             workspace["consumer_owned"] = index in consumer_index_set
@@ -1081,32 +1217,57 @@ class _PipelineSourceBuilder:
         prepared = encoded.get("pipeline_auxiliary_consumer")
         if contract is None:
             if prepared is not None:
-                raise CodegenError("Prepared auxiliary consumer has no typed contract.")
+                raise CodegenError(
+                    "Prepared auxiliary consumer has no typed contract."
+                )
             return None
         if not isinstance(contract, Mapping) or not isinstance(prepared, Mapping):
-            raise CodegenError("Auxiliary consumer requires matching typed and prepared ABI.")
+            raise CodegenError(
+                "Auxiliary consumer requires matching typed and prepared ABI."
+            )
         try:
-            channel_indices = tuple(int(value) for value in contract["channel_indices"])
-            workspace_indices = tuple(int(value) for value in contract.get("consumer_shared_workspace_indices", ()))
+            channel_indices = tuple(
+                int(value) for value in contract["channel_indices"]
+            )
+            workspace_indices = tuple(
+                int(value)
+                for value in contract.get(
+                    "consumer_shared_workspace_indices", ()
+                )
+            )
         except (KeyError, TypeError, ValueError) as error:
-            raise CodegenError("Auxiliary consumer has invalid channel/workspace indices.") from error
-        if (not channel_indices or len(set(channel_indices)) != len(channel_indices)
-                or any(index < 0 or index >= len(channels)
-                       for index in channel_indices) or len(set(workspace_indices)) != len(workspace_indices)
-                or any(index not in consumer_indices
-                       for index in workspace_indices) or tuple(prepared.get("channel_indices", ())) != channel_indices
-                or tuple(prepared.get("consumer_shared_workspace_indices", ())) != workspace_indices):
-            raise CodegenError("Auxiliary consumer ownership differs from its prepared helper ABI.")
+            raise CodegenError(
+                "Auxiliary consumer has invalid channel/workspace indices."
+            ) from error
+        if (
+            not channel_indices
+            or len(set(channel_indices)) != len(channel_indices)
+            or any(index < 0 or index >= len(channels) for index in channel_indices)
+            or len(set(workspace_indices)) != len(workspace_indices)
+            or any(index not in consumer_indices for index in workspace_indices)
+            or tuple(prepared.get("channel_indices", ())) != channel_indices
+            or tuple(prepared.get("consumer_shared_workspace_indices", ()))
+            != workspace_indices
+        ):
+            raise CodegenError(
+                "Auxiliary consumer ownership differs from its prepared helper ABI."
+            )
         parameters = encoded.get("parameters")
         if not isinstance(parameters, Mapping):
-            raise CodegenError("Auxiliary consumer requires implementation worker parameters.")
+            raise CodegenError(
+                "Auxiliary consumer requires implementation worker parameters."
+            )
         try:
             warps = int(parameters["auxiliary_consumer_warps"])
             registers = int(parameters["auxiliary_consumer_registers"])
         except (KeyError, TypeError, ValueError) as error:
-            raise CodegenError("Auxiliary consumer requires integer warp/register resources.") from error
+            raise CodegenError(
+                "Auxiliary consumer requires integer warp/register resources."
+            ) from error
         if warps <= 0 or registers <= 0:
-            raise CodegenError("Auxiliary consumer warp/register resources must be positive.")
+            raise CodegenError(
+                "Auxiliary consumer warp/register resources must be positive."
+            )
         start = self._handoff((*key, "auxiliary", "start"))
         done = self._handoff((*key, "auxiliary", "done"))
         start["semantic"] = False
@@ -1114,13 +1275,10 @@ class _PipelineSourceBuilder:
         selected_channels = [channels[index] for index in channel_indices]
         selected_workspaces = [workspaces[index] for index in workspace_indices]
         return {
-            "channel_indices":
-            channel_indices,
-            "consumer_shared_workspace_indices":
-            workspace_indices,
+            "channel_indices": channel_indices,
+            "consumer_shared_workspace_indices": workspace_indices,
             "primary_endpoints": (
-                start["writer_name"],
-                done["reader_name"],
+                start["writer_name"], done["reader_name"],
             ),
             "endpoints": (
                 *(value["reader_name"] for value in selected_channels),
@@ -1128,12 +1286,11 @@ class _PipelineSourceBuilder:
                 done["writer_name"],
                 *(value["variable"] for value in selected_workspaces),
             ),
-            "drain_endpoints":
-            tuple(value["reader_name"] for value in selected_channels),
-            "warps":
-            warps,
-            "registers":
-            registers,
+            "drain_endpoints": tuple(
+                value["reader_name"] for value in selected_channels
+            ),
+            "warps": warps,
+            "registers": registers,
         }
 
     def _append_auxiliary_event(
@@ -1147,10 +1304,14 @@ class _PipelineSourceBuilder:
             return
         prepared = event.get("pipeline_auxiliary_consumer")
         if not isinstance(prepared, Mapping):
-            raise CodegenError("Auxiliary consumer stage has no prepared helper ABI.")
+            raise CodegenError(
+                "Auxiliary consumer stage has no prepared helper ABI."
+            )
         endpoints = tuple(str(value) for value in auxiliary["endpoints"])
         if len(endpoints) != len(tuple(prepared.get("parameters", ()))):
-            raise CodegenError("Auxiliary consumer endpoint arity differs from its helper ABI.")
+            raise CodegenError(
+                "Auxiliary consumer endpoint arity differs from its helper ABI."
+            )
         self.auxiliary_events.append({
             **event,
             "kind": "pipeline_kernel_call",
@@ -1168,23 +1329,42 @@ class _PipelineSourceBuilder:
     ) -> _Context:
         caller_binding = self.bindings[context.function_name]
         callee_binding = self.bindings[callee]
-        event = next(value for value in caller_binding["call_abi"]["events"]
-                     if value["kind"] == "function_call" and str(value["call"]) == call.call_id)
-        local_actuals = emit_function_call_arguments(self.module, caller_binding, event, callee_binding=callee_binding)
+        event = next(
+            value for value in caller_binding["call_abi"]["events"]
+            if value["kind"] == "function_call"
+            and str(value["call"]) == call.call_id
+        )
+        local_actuals = emit_function_call_arguments(
+            self.module, caller_binding, event, callee_binding=callee_binding
+        )
         signature = callee_binding["signature"]
         if len(local_actuals) != len(signature):
-            raise CodegenError(f"Pipeline call {call.call_id!r} does not match @{callee} ABI.")
+            raise CodegenError(
+                f"Pipeline call {call.call_id!r} does not match @{callee} ABI."
+            )
         actual_by_formal = {
             str(formal): _substitute(str(actual), context.actual_by_formal)
             for formal, actual in zip(signature, local_actuals, strict=True)
         }
-        storage_roots = function_call_storage_roots(caller_binding, callee_binding, event, context.storage_roots)
-        local_shared = _execution_shared_buffers(self.module.execution_function_map[callee])
-        actual_shared = tuple(context.shared_by_name.get(value.name, value) for value in call.shared_workspace_buffers)
+        storage_roots = function_call_storage_roots(
+            caller_binding, callee_binding, event, context.storage_roots
+        )
+        local_shared = _execution_shared_buffers(
+            self.module.execution_function_map[callee]
+        )
+        actual_shared = tuple(
+            context.shared_by_name.get(value.name, value)
+            for value in call.shared_workspace_buffers
+        )
         if len(local_shared) != len(actual_shared):
-            raise CodegenError(f"Pipeline call {call.call_id!r} exposes {len(actual_shared)} "
-                               f"Shared buffers, but @{callee} owns {len(local_shared)}.")
-        shared_by_name = {local.name: actual for local, actual in zip(local_shared, actual_shared, strict=True)}
+            raise CodegenError(
+                f"Pipeline call {call.call_id!r} exposes {len(actual_shared)} "
+                f"Shared buffers, but @{callee} owns {len(local_shared)}."
+            )
+        shared_by_name = {
+            local.name: actual
+            for local, actual in zip(local_shared, actual_shared, strict=True)
+        }
         return _Context(
             callee,
             actual_by_formal,
@@ -1193,7 +1373,9 @@ class _PipelineSourceBuilder:
             (*context.call_path, call.call_id),
         )
 
-    def _handoff(self, key: tuple[str, ...], *, wrap_around: bool = False) -> dict[str, object]:
+    def _handoff(
+        self, key: tuple[str, ...], *, wrap_around: bool = False
+    ) -> dict[str, object]:
         existing = self.handoff_by_key.get(key)
         if existing is not None:
             return existing
@@ -1235,7 +1417,9 @@ class _PipelineSourceBuilder:
             try:
                 leaves = self.logical_stage_leaves[key]
             except KeyError as error:
-                raise CodegenError(f"Pipeline drain references unknown logical stage {key}.") from error
+                raise CodegenError(
+                    f"Pipeline drain references unknown logical stage {key}."
+                ) from error
             by_id = {str(value["id"]): value for value in self.stages}
             role = event.pop("role")
             self.drained_stage_ids.update(leaves)
@@ -1244,15 +1428,22 @@ class _PipelineSourceBuilder:
                 stage = by_id[leaf]
                 auxiliary = stage["auxiliary_consumer"]
                 if role == "producer":
-                    endpoints.extend(channel["writer_name"] for channel in stage["channels"])
+                    endpoints.extend(
+                        channel["writer_name"] for channel in stage["channels"]
+                    )
                 elif role == "auxiliary":
                     if auxiliary is not None:
                         endpoints.extend(auxiliary["drain_endpoints"])
                 else:
-                    excluded = (set(auxiliary["channel_indices"]) if auxiliary is not None else set())
-                    endpoints.extend(channel["reader_name"]
-                                     for index, channel in enumerate(stage["channels"])
-                                     if index not in excluded)
+                    excluded = (
+                        set(auxiliary["channel_indices"])
+                        if auxiliary is not None else set()
+                    )
+                    endpoints.extend(
+                        channel["reader_name"]
+                        for index, channel in enumerate(stage["channels"])
+                        if index not in excluded
+                    )
             if endpoints:
                 event["endpoints"] = [str(value) for value in endpoints]
                 resolved.append(event)
@@ -1267,22 +1458,18 @@ def _compact_duplicate_function_actuals(root_schedule, definitions):
     at the kernel-function boundary. Expressions with loads or calls are not
     SSA identity proofs and are deliberately excluded here.
     """
-    schedules = tuple({
-        id(schedule): schedule
-        for schedule in (root_schedule, *(definition["schedule"] for definition in definitions),
-                         *(schedule for definition in definitions
-                           for schedule in definition.get('native_program_schedules', {}).values()))
-    }.values())
-    events = [
-        event for schedule in schedules for role in ("consumer", "producer", "auxiliary")
-        for event in schedule[f"{role}_events"]
-    ]
+    schedules = tuple({id(schedule): schedule for schedule in (
+        root_schedule, *(definition["schedule"] for definition in definitions),
+        *(schedule for definition in definitions for schedule in definition.get('native_program_schedules', {}).values())
+    )}.values())
+    events = [event for schedule in schedules
+              for role in ("consumer", "producer", "auxiliary")
+              for event in schedule[f"{role}_events"]]
     for definition in definitions:
         if definition.get('host_control_scope'):
             continue
-        calls = [
-            event for event in events if event["kind"] == "function_call" and event["callee"] == definition["function"]
-        ]
+        calls = [event for event in events if event["kind"] == "function_call"
+                 and event["callee"] == definition["function"]]
         if not calls:
             continue
         signature = list(definition["signature_arguments"])
@@ -1293,9 +1480,10 @@ def _compact_duplicate_function_actuals(root_schedule, definitions):
         for index, name in enumerate(signature):
             actuals = [call["argument_expressions"][prefix[id(call)] + index] for call in calls]
             if all(actual.isidentifier() for actual in actuals):
-                anchor = next(
-                    (other for other in retained if all(call["argument_expressions"][prefix[id(call)] + other] == actual
-                                                        for call, actual in zip(calls, actuals, strict=True))), None)
+                anchor = next((other for other in retained if all(
+                    call["argument_expressions"][prefix[id(call)] + other] == actual
+                    for call, actual in zip(calls, actuals, strict=True)
+                )), None)
                 if anchor is not None:
                     aliases[name] = signature[anchor]
                     removed.add(index)
@@ -1304,7 +1492,9 @@ def _compact_duplicate_function_actuals(root_schedule, definitions):
         if not aliases:
             continue
         definition["signature_arguments"] = [signature[index] for index in retained]
-        definition["typed_signature_arguments"] = [definition["typed_signature_arguments"][index] for index in retained]
+        definition["typed_signature_arguments"] = [
+            definition["typed_signature_arguments"][index] for index in retained
+        ]
         definition["duplicate_argument_aliases"] = aliases
         for call in calls:
             first = prefix[id(call)]
@@ -1314,7 +1504,6 @@ def _compact_duplicate_function_actuals(root_schedule, definitions):
             call["arguments"] = ", ".join(arguments)
 
         class Rename(ast.NodeTransformer):
-
             def visit_Name(self, node):
                 return ast.copy_location(ast.Name(aliases.get(node.id, node.id), node.ctx), node)
 
@@ -1337,30 +1526,49 @@ def function_call_storage_roots(
 ) -> dict[str, tuple[str, int]]:
     """Propagate verified physical storage roots through one function call."""
 
-    edges = {str(edge["formal"]): edge for edge in (*event["arguments"], *event["results"])}
+    edges = {
+        str(edge["formal"]): edge
+        for edge in (*event["arguments"], *event["results"])
+    }
     result: dict[str, tuple[str, int]] = {}
     for argument in callee_binding["arguments"]:
         formal_buffer = str(argument["buffer"])
         try:
             edge = edges[formal_buffer]
         except KeyError as error:
-            raise CodegenError(f"TIR nested call {event['call']!r} has no storage edge for "
-                               f"callee buffer {formal_buffer!r}.") from error
+            raise CodegenError(
+                f"TIR nested call {event['call']!r} has no storage edge for "
+                f"callee buffer {formal_buffer!r}."
+            ) from error
         if edge.get("actual_runtime_value_kind") != "pointer":
             continue
         local_root = str(edge["actual_runtime_argument"])
         try:
             root_name, root_offset = caller_roots[local_root]
         except KeyError as error:
-            raise CodegenError(f"TIR nested call {event['call']!r} cannot resolve caller "
-                               f"storage root {local_root!r}.") from error
+            raise CodegenError(
+                f"TIR nested call {event['call']!r} cannot resolve caller "
+                f"storage root {local_root!r}."
+            ) from error
         actual_abi = edge["actual_abi"]
         storage = str(actual_abi.get("storage"))
-        byte_offset = (int(actual_abi.get("pool_byte_offset", 0)) if bool(actual_abi.get("pooled", False)) else 0)
-        result[str(argument["name"])] = (root_name, root_offset + byte_offset)
+        byte_offset = (
+            int(actual_abi.get("pool_byte_offset", 0))
+            if bool(actual_abi.get("pooled", False))
+            else 0
+        )
+        result[str(argument["name"])] = (
+            root_name, root_offset + byte_offset
+        )
 
-    caller_pools = {str(pool["storage"]): pool for pool in caller_binding["pools"]}
-    frames = {str(frame["memory_space"]): frame for frame in event["memory_pools"]}
+    caller_pools = {
+        str(pool["storage"]): pool
+        for pool in caller_binding["pools"]
+    }
+    frames = {
+        str(frame["memory_space"]): frame
+        for frame in event["memory_pools"]
+    }
     for pool in callee_binding["pools"]:
         storage = str(pool["storage"])
         try:
@@ -1368,8 +1576,10 @@ def function_call_storage_roots(
             caller_pool_name = str(caller_pool["name"])
             root_name, root_offset = caller_roots[caller_pool_name]
         except KeyError as error:
-            raise CodegenError(f"TIR nested call {event['call']!r} cannot bind callee "
-                               f"{storage!r} storage.") from error
+            raise CodegenError(
+                f"TIR nested call {event['call']!r} cannot bind callee "
+                f"{storage!r} storage."
+            ) from error
         frame = frames.get(storage)
         if frame is not None:
             root_name = emit_pool_scope_base(caller_pool, root_name)
@@ -1378,13 +1588,19 @@ def function_call_storage_roots(
     return result
 
 
-def _top_level_region(body: Sequential, function_name: str) -> ProducerConsumerRegion | None:
-    regions = tuple(value for value in body.fields if isinstance(value, ProducerConsumerRegion))
+def _top_level_region(
+    body: Sequential, function_name: str
+) -> ProducerConsumerRegion | None:
+    regions = tuple(
+        value for value in body.fields if isinstance(value, ProducerConsumerRegion)
+    )
     if not regions:
         return None
     if len(body.fields) != 1 or len(regions) != 1:
-        raise CodegenError(f"Pipeline function @{function_name} must contain exactly one "
-                           "top-level ProducerConsumerRegion.")
+        raise CodegenError(
+            f"Pipeline function @{function_name} must contain exactly one "
+            "top-level ProducerConsumerRegion."
+        )
     return regions[0]
 
 
@@ -1405,7 +1621,10 @@ def _substitute(expression: str, values: Mapping[str, str]) -> str:
     names = tuple(sorted(values, key=len, reverse=True))
     if not names:
         return expression
-    pattern = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(map(re.escape, names)) + r")(?![A-Za-z0-9_])")
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9_])(" + "|".join(map(re.escape, names))
+        + r")(?![A-Za-z0-9_])"
+    )
     return pattern.sub(lambda match: f"({values[match.group(1)]})", expression)
 
 
@@ -1432,7 +1651,9 @@ def _triton_dtype(value: str) -> str:
     try:
         return mapping[value]
     except KeyError as error:
-        raise CodegenError(f"Pipeline Shared workspace has unsupported Triton dtype {value!r}.") from error
+        raise CodegenError(
+            f"Pipeline Shared workspace has unsupported Triton dtype {value!r}."
+        ) from error
 
 
 def _join_arguments(first: list[str], rest: str) -> str:
@@ -1561,7 +1782,8 @@ def _collect_trip_closes(events, trips: int):
             if event.get("kind") == "loop":
                 walk(event.get("events"))
                 continue
-            for close in (*_post_loop_closes([event], 1), *(event.get("trip_scoped_closes") or ())):
+            for close in (*_post_loop_closes([event], 1),
+                          *(event.get("trip_scoped_closes") or ())):
                 endpoint = str(close["endpoint"])
                 if endpoint in seen:
                     continue
@@ -1571,7 +1793,6 @@ def _collect_trip_closes(events, trips: int):
                     "endpoint": endpoint,
                     "iteration": trips * int(close["iteration"]),
                 })
-
     walk(events)
     return closes
 
@@ -1614,7 +1835,6 @@ def _post_loop_closes(events, trips: int):
                     "endpoint": writer,
                     "iteration": trips * commits,
                 })
-
     walk(events)
     return closes
 

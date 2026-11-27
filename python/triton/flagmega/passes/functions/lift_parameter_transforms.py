@@ -42,7 +42,7 @@ def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
         for root in module.nodes:
             packed_from = root.metadata.get("packed_from")
             if isinstance(packed_from, str):
-                sources = (packed_from, )
+                sources = (packed_from,)
             elif isinstance(packed_from, tuple) and packed_from:
                 sources = tuple(str(value) for value in packed_from)
             else:
@@ -64,7 +64,9 @@ def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
             )
             transforms.append(_Transform(root, sources, closure, parameter))
         if transforms:
-            transforms.sort(key=lambda value: min(function.parameters.index(source) for source in value.sources))
+            transforms.sort(
+                key=lambda value: min(function.parameters.index(source) for source in value.sources)
+            )
             transforms_by_function[function.name] = tuple(transforms)
             # A source may feed several physical representations, and may
             # still have ordinary users. Remove only the union of exclusively
@@ -73,9 +75,8 @@ def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
             closure = {node.id for transform in transforms for node in transform.nodes}
             sources = {source for transform in transforms for source in transform.sources}
             candidates = closure | sources
-            pending = [
-                value for value in candidates - roots if users.get(value, set()) - closure or value in function.outputs
-            ]
+            pending = [value for value in candidates - roots
+                       if users.get(value, set()) - closure or value in function.outputs]
             retained: set[str] = set()
             while pending:
                 value = pending.pop()
@@ -103,13 +104,14 @@ def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
             if source not in sources or source in retained:
                 parameters.append(source)
             parameters.extend(transform.parameter.id for transform in transforms if source == transform.sources[0])
-        root_parameters = {transform.root.id: transform.parameter.id for transform in transforms}
-        functions.append(
-            replace(
-                function,
-                parameters=tuple(parameters),
-                outputs=tuple(root_parameters.get(value, value) for value in function.outputs),
-            ))
+        root_parameters = {
+            transform.root.id: transform.parameter.id for transform in transforms
+        }
+        functions.append(replace(
+            function,
+            parameters=tuple(parameters),
+            outputs=tuple(root_parameters.get(value, value) for value in function.outputs),
+        ))
         for transform in transforms:
             removed.update(node.id for node in transform.nodes if node.id not in retained)
             removed.update(source for source in transform.sources if source not in retained)
@@ -157,19 +159,18 @@ def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
                 for parameter_id, actual_id in zip(function.parameters, node.inputs):
                     if parameter_id not in sources or parameter_id in retained:
                         inputs.append(actual_id)
-                    inputs.extend(clone_roots[transform.root.id].id
-                                  for transform in transforms
+                    inputs.extend(clone_roots[transform.root.id].id for transform in transforms
                                   if parameter_id == transform.sources[0])
-                result_nodes.append(
-                    replace(
-                        node,
-                        inputs=tuple(inputs),
-                        metadata={
-                            **dict(node.metadata),
-                            "lifted_parameter_transforms":
-                            tuple(transform.root.id for transform in transforms),
-                        },
-                    ))
+                result_nodes.append(replace(
+                    node,
+                    inputs=tuple(inputs),
+                    metadata={
+                        **dict(node.metadata),
+                        "lifted_parameter_transforms": tuple(
+                            transform.root.id for transform in transforms
+                        ),
+                    },
+                ))
             else:
                 inputs = tuple(replacement_inputs.get(value, value) for value in node.inputs)
                 result_nodes.append(replace(node, inputs=inputs))
@@ -179,8 +180,10 @@ def lift_parameter_constant_transforms(module: IRModule) -> IRModule:
     # closure, in which case keeping its point would leave a dangling owner
     # after the ABI rewrite. The choice has already been materialized by the
     # transform, so retire only points owned by removed nodes.
-    selection_points = tuple(point for point in module.selection_points
-                             if point.owner is None or point.owner not in removed)
+    selection_points = tuple(
+        point for point in module.selection_points
+        if point.owner is None or point.owner not in removed
+    )
     point_ids = {point.id for point in selection_points}
     return replace(
         module,
@@ -205,12 +208,19 @@ def _transform_closure(
             continue
         node = node_map[node_id]
         if not node.effect.is_pure:
-            raise IRVerificationError("A lifted parameter transform must be pure.", stage=stage, node_id=node.id)
+            raise IRVerificationError(
+                "A lifted parameter transform must be pure.", stage=stage, node_id=node.id
+            )
         reachable.add(node_id)
         for input_id in node.inputs:
             if input_id not in sources and input_id not in reachable:
                 pending.append(input_id)
-    leaves = {input_id for node_id in reachable for input_id in node_map[node_id].inputs if input_id not in reachable}
+    leaves = {
+        input_id
+        for node_id in reachable
+        for input_id in node_map[node_id].inputs
+        if input_id not in reachable
+    }
     if leaves != sources:
         raise IRVerificationError(
             f"Lifted transform {root.id!r} has non-parameter leaves {sorted(leaves - sources)}.",
@@ -235,7 +245,9 @@ def _clone_transform(
         metadata = dict(original.metadata)
         if original.id == transform.root.id:
             metadata.update({
-                "packed_from": (actual_sources[0] if len(actual_sources) == 1 else actual_sources),
+                "packed_from": (
+                    actual_sources[0] if len(actual_sources) == 1 else actual_sources
+                ),
                 "packed_for": call.id,
                 "lifted_from_function": str(call.attrs["callee"]),
             })
@@ -270,21 +282,34 @@ def _combined_rdata_group(
     the common layer index/count required by the rdata allocator.
     """
 
-    raw_groups = tuple(node_map[source].metadata.get("rdata_group") for source in actual_sources)
+    raw_groups = tuple(
+        node_map[source].metadata.get("rdata_group")
+        for source in actual_sources
+    )
     if not any(isinstance(value, Mapping) for value in raw_groups):
         return None
     if not all(isinstance(value, Mapping) for value in raw_groups):
-        raise IRVerificationError("A lifted multi-source transform cannot mix grouped and ungrouped "
-                                  "rdata parameters.")
+        raise IRVerificationError(
+            "A lifted multi-source transform cannot mix grouped and ungrouped "
+            "rdata parameters."
+        )
     groups = tuple(dict(value) for value in raw_groups)
     names = tuple(str(value.get("name", "")) for value in groups)
     indexes = {value.get("index") for value in groups}
     counts = {value.get("count") for value in groups}
-    if (any(not value for value in names) or len(indexes) != 1 or len(counts) != 1
-            or isinstance(next(iter(indexes)), bool) or not isinstance(next(iter(indexes)), int)
-            or isinstance(next(iter(counts)), bool) or not isinstance(next(iter(counts)), int)):
-        raise IRVerificationError("Lifted grouped transform sources require non-empty names and one "
-                                  "integer layer index/count.")
+    if (
+        any(not value for value in names)
+        or len(indexes) != 1
+        or len(counts) != 1
+        or isinstance(next(iter(indexes)), bool)
+        or not isinstance(next(iter(indexes)), int)
+        or isinstance(next(iter(counts)), bool)
+        or not isinstance(next(iter(counts)), int)
+    ):
+        raise IRVerificationError(
+            "Lifted grouped transform sources require non-empty names and one "
+            "integer layer index/count."
+        )
     if len(groups) == 1:
         return groups[0]
     return {

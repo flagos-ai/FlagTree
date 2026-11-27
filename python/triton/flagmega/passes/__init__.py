@@ -45,6 +45,14 @@ from triton.flagmega.passes.rewriter import (
     EGraphRulesPass,
 )
 from triton.flagmega.passes.gated_delta_net import decompose_gated_delta_net
+from triton.flagmega.passes.shape_bucket import (
+    bind_shape_buckets,
+    compute_segment_list,
+    parse_shape_bucket,
+    shape_bucket_bindings,
+    shape_bucket_declaration,
+    shape_bucket_segments,
+)
 
 __all__ = [
     "AutoVectorizePass",
@@ -85,4 +93,10 @@ __all__ = [
     "freeze_constant_islands",
     "require_constants_open",
     "current_pass_context",
+    "bind_shape_buckets",
+    "compute_segment_list",
+    "parse_shape_bucket",
+    "shape_bucket_bindings",
+    "shape_bucket_declaration",
+    "shape_bucket_segments",
 ]

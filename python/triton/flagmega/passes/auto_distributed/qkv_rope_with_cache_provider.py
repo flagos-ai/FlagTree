@@ -30,7 +30,8 @@ from triton.flagmega.passes.auto_distributed.candidates import (
     DistributedCandidateProviderBase,
 )
 from triton.flagmega.passes.auto_distributed.candidate_identity import (
-    distributed_candidate_id, )
+    distributed_candidate_id,
+)
 
 
 class QKVRoPEWithCacheCandidateProvider(DistributedCandidateProviderBase):
@@ -55,32 +56,33 @@ class QKVRoPEWithCacheCandidateProvider(DistributedCandidateProviderBase):
         results: list[DistributedCandidate] = []
         seen: set[tuple[IRType, tuple[IRType, ...]]] = set()
         choices = []
-        for index, (values, input_id, parameter) in enumerate(
-                zip(
-                    context.available_input_types[:10],
-                    node.inputs[:10],
-                    definition.input_parameters[:10],
-                )):
+        for index, (values, input_id, parameter) in enumerate(zip(
+            context.available_input_types[:10],
+            node.inputs[:10],
+            definition.input_parameters[:10],
+        )):
             logical = context.module.node_map[input_id].type
             if index == 0:
-                choices.append(_qkv_candidate_input_types(values, logical, context, head_axis=head_axis))
-            else:
                 choices.append(
-                    _candidate_input_types(
-                        values,
-                        logical,
-                        context,
-                        distribute=parameter.parameter_kind == ParameterKind.INPUT,
-                    ))
+                    _qkv_candidate_input_types(
+                        values, logical, context, head_axis=head_axis
+                    )
+                )
+            else:
+                choices.append(_candidate_input_types(
+                    values,
+                    logical,
+                    context,
+                    distribute=parameter.parameter_kind == ParameterKind.INPUT,
+                ))
         choices = tuple(choices)
         for input_types in product(*choices):
             if not isinstance(input_types[0], TupleType) or len(input_types[0].fields) != 3:
                 continue
-            stats = tuple(
-                NormStats.infer_type(
-                    (Node(f"<qkv.{role}>", "builtin.var", (), field), ),
-                    {"axis": node.attrs[f"{role}_axis"], "use_mean": node.attrs[f"{role}_use_mean"]},
-                ) for role, field in zip(("q", "k"), input_types[0].fields[:2]))
+            stats = tuple(NormStats.infer_type(
+                (Node(f"<qkv.{role}>", "builtin.var", (), field),),
+                {"axis": node.attrs[f"{role}_axis"], "use_mean": node.attrs[f"{role}_use_mean"]},
+            ) for role, field in zip(("q", "k"), input_types[0].fields[:2]))
             input_types = (*input_types, *(replace(value, partial=None) for value in stats))
             typed_inputs = tuple(
                 Node(
@@ -89,7 +91,9 @@ class QKVRoPEWithCacheCandidateProvider(DistributedCandidateProviderBase):
                     (),
                     value_type,
                     attrs={"name": f"<{node.id}.input.{index}>"},
-                ) for index, value_type in enumerate(input_types))
+                )
+                for index, value_type in enumerate(input_types)
+            )
             try:
                 return_type = definition.infer_type(typed_inputs, node.attrs)
             except (IRSchemaError, AssertionError, TypeError, ValueError):
@@ -118,15 +122,16 @@ class QKVRoPEWithCacheCandidateProvider(DistributedCandidateProviderBase):
                     "qkv-rope-cache-output-sbp",
                     target_op=node.op,
                     objective_kind="analytic" if factors is not None else "heuristic",
-                    objective_model=(context.operation_cost_model.identity
-                                     if factors is not None else "flagmega.qkv-rope-local-bytes/v1"),
+                    objective_model=(context.operation_cost_model.identity if factors is not None
+                                     else "flagmega.qkv-rope-local-bytes/v1"),
                     objective_evidence=(
                         "materialized-stats-apply-type-relation",
                         "op-definition-cost-factors",
                         "rope-type-relation",
                         "cache-update-type-relation",
                     ),
-                ))
+                )
+            )
         return tuple(results)
 
 
@@ -152,7 +157,7 @@ def _candidate_input_types(
     distribute: bool,
 ) -> tuple[IRType, ...]:
     if not distribute:
-        return (logical, )
+        return (logical,)
     result: list[IRType] = []
     for value in values:
         candidate = _lift_logical_tensors(value, context)
@@ -171,7 +176,7 @@ def _qkv_candidate_input_types(
     """Enumerate owner-local head and rotary-dimension layouts for Q/K/V.
 
     A reshape may be materialized from canonical storage and therefore expose
-    only a broadcast inferred type.  reference still offers downstream
+    only a broadcast inferred type.  nncase still offers downstream
     ``ShardedView`` candidates at the Q/K/V head boundary: query heads can use
     one placement axis while the usually smaller KV-head domain can use a
     different axis.  Enumerating those semantic layouts here lets the global
@@ -180,26 +185,34 @@ def _qkv_candidate_input_types(
     """
 
     if not isinstance(logical, TupleType) or len(logical.fields) != 3:
-        return _candidate_input_types(values, logical, context, distribute=True)
+        return _candidate_input_types(
+            values, logical, context, distribute=True
+        )
     options: list[tuple[IRType, ...]] = []
     for field in logical.fields:
         tensor = field.tensor if isinstance(field, DistributedType) else field
         if not isinstance(tensor, TensorType) or not 0 <= head_axis < tensor.rank:
             return ()
         policies = [SBP.broadcast() for _ in tensor.shape]
-        candidates: list[IRType] = [DistributedType(tensor, tuple(policies), context.placement)]
-        for placement_axis, owner_count in enumerate(context.placement.hierarchy):
+        candidates: list[IRType] = [
+            DistributedType(tensor, tuple(policies), context.placement)
+        ]
+        for placement_axis, owner_count in enumerate(
+            context.placement.hierarchy
+        ):
             if owner_count <= 1:
                 continue
             for split in context.split_candidates(
-                    tensor,
-                    head_axis,
-                (placement_axis, ),
-                    purpose="output",
+                tensor,
+                head_axis,
+                (placement_axis,),
+                purpose="output",
             ):
                 split_policies = list(policies)
                 split_policies[head_axis] = split
-                candidate = DistributedType(tensor, tuple(split_policies), context.placement)
+                candidate = DistributedType(
+                    tensor, tuple(split_policies), context.placement
+                )
                 if candidate not in candidates:
                     candidates.append(candidate)
         options.append(tuple(candidates))
@@ -215,11 +228,8 @@ def _qkv_candidate_input_types(
             result.append(candidate)
     tensors = tuple(field.tensor if isinstance(field, DistributedType) else field for field in logical.fields)
     for fields in coupled_rotary_layouts(
-            context,
-            tensors,
-            head_axis,
-            tuple(context.source_call.attrs["qkv_layout"]).index("dim"),
-            context.source_call.attrs.get("rotary_dim"),
+        context, tensors, head_axis, tuple(context.source_call.attrs["qkv_layout"]).index("dim"),
+        context.source_call.attrs.get("rotary_dim"),
     ):
         candidate = TupleType(fields, logical.is_variadic)
         if candidate not in result:

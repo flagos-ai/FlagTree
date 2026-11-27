@@ -24,7 +24,8 @@ class Permute(OpDefinition):
         attrs = super().normalize_attrs(attributes)
         axes = attrs["axes"]
         if not isinstance(axes, (tuple, list)) or any(
-                isinstance(value, bool) or not isinstance(value, int) for value in axes):
+            isinstance(value, bool) or not isinstance(value, int) for value in axes
+        ):
             raise IRSchemaError("F.tensors.permute axes must be an integer sequence.")
         return {"axes": tuple(axes)}
 
@@ -57,7 +58,7 @@ class Permute(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         size = tensor_nbytes(node.type) if isinstance(node.type, TensorType) else None
-        return OpCost(bytes_read=size, bytes_written=size, notes=("permute", ))
+        return OpCost(bytes_read=size, bytes_written=size, notes=("permute",))
 
 
 __all__ = ["Permute"]

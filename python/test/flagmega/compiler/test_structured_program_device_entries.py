@@ -11,37 +11,32 @@ from python.test.flagmega.compiler.test_structured_execution_programs import mix
 
 def mixed_pipeline_calls_module():
     from triton.flagmega import ir as fm
-
     class Graph(fm.Module):
-
         def forward(self):
-            kind = fm.tensor_type('bfloat16', (1, 2048))
-            value = self.input('formal', kind)
-            weight = self.weight('weight', fm.tensor_type('bfloat16', (2048, 2048)), source='memory', key='weight')
-            projection = fm.F.math.matmul(value, weight, transpose_b=True, reduction_order='relaxed', name='projection',
-                                          metadata={'execution_mesh': fm.ExecutionMesh.fixed((8, 16))})
-            middle = fm.F.math.add(projection, projection, name='independent', metadata={'execution_mesh': '*'})
-            result = fm.F.math.add(middle, middle, name='result',
-                                   metadata={'execution_mesh': fm.ExecutionMesh.fixed((8, 16))})
-            self.function('worker', (value, ), (result, ),
-                          attrs={'reusable': True, 'noinline': True, 'calling_convention': 'device'})
-            actual = self.input('actual', kind)
-            published = fm.F.math.add(actual, actual, name='published')
-            first = fm.F.builtin.call(published, callee='worker', result_type=result.type, name='first')
-            second = fm.F.builtin.call(first, callee='worker', result_type=result.type, name='second')
-            self.function('main', (actual, ), (second, ))
-
-    return Graph(dialect='high_level', stage='imported', entry='main').build()
+            kind = fm.tensor_type('bfloat16',(1,2048))
+            value = self.input('formal',kind)
+            weight = self.weight('weight',fm.tensor_type('bfloat16',(2048,2048)),source='memory',key='weight')
+            projection = fm.F.math.matmul(value,weight,transpose_b=True,reduction_order='relaxed',name='projection',
+                metadata={'execution_mesh':fm.ExecutionMesh.fixed((8,16))})
+            middle = fm.F.math.add(projection,projection,name='independent',metadata={'execution_mesh':'*'})
+            result = fm.F.math.add(middle,middle,name='result',metadata={'execution_mesh':fm.ExecutionMesh.fixed((8,16))})
+            self.function('worker',(value,),(result,),attrs={'reusable':True,'noinline':True,'calling_convention':'device'})
+            actual = self.input('actual',kind)
+            published = fm.F.math.add(actual,actual,name='published')
+            first = fm.F.builtin.call(published,callee='worker',result_type=result.type,name='first')
+            second = fm.F.builtin.call(first,callee='worker',result_type=result.type,name='second')
+            self.function('main',(actual,),(second,))
+    return Graph(dialect='high_level',stage='imported',entry='main').build()
 
 
 def compile_mixed_pipeline_calls():
     from triton.flagmega.selection import override_plan
     compiler = Compiler()
-    proposal = compiler.compile(mixed_pipeline_calls_module(), stop_after='propose-tir').module
-    point = next(p for p in proposal.selection_points if p.id == 'tir.projection.vectorized.compute')
+    proposal = compiler.compile(mixed_pipeline_calls_module(),stop_after='propose-tir').module
+    point = next(p for p in proposal.selection_points if p.id=='tir.projection.vectorized.compute')
     candidate = 'tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv'
     assert candidate in {c.id for c in point.candidates}
-    selected = compiler.run_stage(proposal, 'lower-tir', plan=override_plan(proposal, ((point.id, candidate), ))).module
+    selected = compiler.run_stage(proposal,'lower-tir',plan=override_plan(proposal,((point.id,candidate),))).module
     return compiler.compile(selected).module
 
 
@@ -50,17 +45,16 @@ def test_host_calls_publish_global_sources_to_independent_native_pipelines(tmp_p
     from triton.flagmega.codegen.triton.renderer import render_triton_package
     module = compile_mixed_pipeline_calls()
     descriptor = describe_tir_package(module)
-    assert descriptor['kernel_program_schema'] == 'flagmega.kernel-programs/v6-structured'
+    assert descriptor['kernel_program_schema']=='flagmega.kernel-programs/v6-structured'
     pipelines = [p for p in descriptor['programs'] if p['pipeline_schedule'] is not None]
     assert pipelines
-    assert all(p['pipeline_schedule']['producer_events'] and p['pipeline_schedule']['consumer_events']
-               for p in pipelines)
-    assert not isinstance(module.execution_function_map['main'].body.fields[0], fm.ProducerConsumerRegion)
-    assert not isinstance(module.execution_function_map['worker'].body.fields[0], fm.ProducerConsumerRegion)
-    rendered = render_triton_package(module, tmp_path)
-    compute = [s for s in rendered['kernels'] if s['invocation_kind'] == 'program']
-    assert len({s['entry_symbol'] for s in compute}) == 4
-    assert len(compute) == 7
+    assert all(p['pipeline_schedule']['producer_events'] and p['pipeline_schedule']['consumer_events'] for p in pipelines)
+    assert not isinstance(module.execution_function_map['main'].body.fields[0],fm.ProducerConsumerRegion)
+    assert not isinstance(module.execution_function_map['worker'].body.fields[0],fm.ProducerConsumerRegion)
+    rendered = render_triton_package(module,tmp_path)
+    compute = [s for s in rendered['kernels'] if s['invocation_kind']=='program']
+    assert len({s['entry_symbol'] for s in compute})==4
+    assert len(compute)==7
 
 
 def _record_device_receipt(tmp_path, runtime, module, case):
@@ -68,30 +62,24 @@ def _record_device_receipt(tmp_path, runtime, module, case):
     import os
     from pathlib import Path
     from triton.flagmega.passes.functions.graph import function_nodes
-
     def counts(nodes):
         result = dict(Pack=0, Slice=0, Cast=0, Concat=0, Unpack=0, Pad=0)
         for node in nodes:
-            key = {
-                'pack': 'Pack', 'slice': 'Slice', 'slice_to_shape': 'Slice', 'cast': 'Cast', 'vectorized_cast': 'Cast',
-                'concat': 'Concat', 'unpack': 'Unpack', 'pad': 'Pad'
-            }.get(node.op.rsplit('.', 1)[-1])
+            key = {'pack': 'Pack', 'slice': 'Slice', 'slice_to_shape': 'Slice', 'cast': 'Cast',
+                   'vectorized_cast': 'Cast', 'concat': 'Concat', 'unpack': 'Unpack', 'pad': 'Pad'}.get(node.op.rsplit('.', 1)[-1])
             if key:
                 result[key] += 1
         return result
-
-    record = dict(
-        case=case, passed=True, normal_artifact=str(tmp_path / 'artifact'), semantic_hash=module.semantic_hash,
-        generated_source_sha256=runtime.codegen['source_sha256'],
-        program_execution=runtime.codegen['program_execution'], invocations=runtime.codegen['kernels'],
-        resources=runtime.resource_report, eager_and_graph=True, output_guards=True,
-        ir_counts=dict(whole_module=counts(module.nodes),
-                       functions={f.name: counts(function_nodes(module, f))
-                                  for f in module.functions
-                                  }), full_model_acceptance=False, performance_measurement=False)
+    record = dict(case=case, passed=True, normal_artifact=str(tmp_path/'artifact'),
+                  semantic_hash=module.semantic_hash, generated_source_sha256=runtime.codegen['source_sha256'],
+                  program_execution=runtime.codegen['program_execution'], invocations=runtime.codegen['kernels'],
+                  resources=runtime.resource_report, eager_and_graph=True, output_guards=True,
+                  ir_counts=dict(whole_module=counts(module.nodes),
+                      functions={f.name: counts(function_nodes(module, f)) for f in module.functions}),
+                  full_model_acceptance=False, performance_measurement=False)
     directory = Path(os.environ.get('FLAGMEGA_STRUCTURED_RECEIPT_DIR', str(tmp_path)))
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / (case + '.json')).write_text(json.dumps(record, ensure_ascii=False, indent=2) + '\n')
+    (directory/(case+'.json')).write_text(json.dumps(record, ensure_ascii=False, indent=2)+'\n')
 
 
 @pytest.mark.parametrize('kind', ['ordinary', 'persistent'])
@@ -103,13 +91,13 @@ def test_mixed_loop_has_executable_shared_entries_and_declared_carry_transfers(k
     invocations = descriptor['kernels']
     compute = [v for v in invocations if v['invocation_kind'] == 'program']
     copies = [v for v in invocations if v['invocation_kind'] == 'loop_copy']
-    assert len(compute) == 3 * trips
-    assert len(copies) == 2 + 2 * trips
+    assert len(compute) == 3*trips
+    assert len(copies) == 2+2*trips
     assert len({v['entry_symbol'] for v in compute}) == (3 if trips else 0)
     assert all('argument_bindings' in v for v in invocations)
     assert copies[0]['transfer'] == ['initial', 'current']
     assert copies[-1]['transfer'] == ['current', 'result']
-    assert [v['transfer'] for v in copies[1:-1]] == [['yielded', 'staging'], ['staging', 'current']] * trips
+    assert [v['transfer'] for v in copies[1:-1]] == [['yielded', 'staging'], ['staging', 'current']]*trips
 
 
 def test_mixed_shared_calls_reuse_code_with_distinct_actual_bindings():
@@ -135,7 +123,8 @@ def embedded_calls_module():
     from triton.flagmega import ir as fm
     module = mixed_calls_module()
     first = module.node_map['first']
-    outside = fm.Node('outside', 'math.add', ('first', 'inc'), first.type, metadata={'execution_mesh': '*'})
+    outside = fm.Node('outside', 'math.add', ('first', 'inc'), first.type,
+                      metadata={'execution_mesh': '*'})
     nodes = []
     for node in module.nodes:
         if node.id == 'second':
@@ -172,22 +161,19 @@ def test_structured_runtime_rejects_joint_manifest_and_source_forgery(corrupt):
         forged['kernels'][0]['call_path'] = ['invented']
     else:
         forged['program_execution']['functions'][0]['steps'][0]['stop'] = 3
-    namespace = {
-        'FLAGMEGA_KERNEL_PROGRAMS': forged['kernels'], 'FLAGMEGA_PROGRAM_EXECUTION': forged['program_execution']
-    }
-    entries = {
-        v['entry_symbol']: SimpleNamespace(fn=SimpleNamespace(__name__=v['entry_symbol'], __globals__=namespace))
-        for v in forged['kernels']
-    }
+    namespace = {'FLAGMEGA_KERNEL_PROGRAMS': forged['kernels'], 'FLAGMEGA_PROGRAM_EXECUTION': forged['program_execution']}
+    entries = {v['entry_symbol']: SimpleNamespace(fn=SimpleNamespace(__name__=v['entry_symbol'], __globals__=namespace))
+               for v in forged['kernels']}
     kernels = tuple(entries[v['entry_symbol']] for v in forged['kernels'])
     with pytest.raises(ArtifactError, match='typed TIR'):
         verified_kernel_programs(forged, kernels, module)
 
 
-@pytest.mark.parametrize('kind,stop,shared', [('ordinary', 0, False), ('ordinary', 1, False), ('ordinary', 3, False),
-                                              ('persistent', 3, False), ('persistent', 0, False),
-                                              ('persistent', 1, False), ('ordinary', 1, True), ('persistent', 1, True),
-                                              ('calls', 2, False), ('embedded', 2, False)])
+@pytest.mark.parametrize('kind,stop,shared', [('ordinary', 0, False), ('ordinary', 1, False),
+                                           ('ordinary', 3, False), ('persistent', 3, False),
+                                           ('persistent', 0, False), ('persistent', 1, False),
+                                           ('ordinary', 1, True), ('persistent', 1, True),
+                                           ('calls', 2, False), ('embedded', 2, False)])
 def test_device_structured_calls_carry_mutation_rebinding_and_graph(tmp_path, kind, stop, shared):
     torch = pytest.importorskip('torch')
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
@@ -195,16 +181,15 @@ def test_device_structured_calls_carry_mutation_rebinding_and_graph(tmp_path, ki
     from triton.flagmega.artifacts import write_artifact
     from triton.flagmega.runtime import load
     from triton.flagmega.runtime.module import GeneratedTirCallGraphModule as Runtime
-    source = embedded_calls_module() if kind == 'embedded' else mixed_calls_module() if kind == 'calls' else mixed_loop(
-        stop, kind, second_stop=2 if shared else None)
+    source = embedded_calls_module() if kind == 'embedded' else mixed_calls_module() if kind == 'calls' else mixed_loop(stop, kind, second_stop=2 if shared else None)
     module = Compiler().compile(source).module
-    artifact = write_artifact(module, tmp_path / 'artifact', target='nvidia-sm90', emit_executable=True)
+    artifact = write_artifact(module, tmp_path/'artifact', target='nvidia-sm90', emit_executable=True)
     runtime = load(artifact, device='cuda:0')
     generator = torch.Generator(device='cuda').manual_seed(20261027)
-    value, inc = [torch.empty((4096, ), device='cuda') for _ in range(2)]
-    guard = torch.full((4128, ), -123.0, device='cuda')
+    value, inc = [torch.empty((4096,), device='cuda') for _ in range(2)]
+    guard = torch.full((4128,), -123.0, device='cuda')
     output = guard[16:-16]
-    trips = stop + 2 if shared else stop
+    trips = stop+2 if shared else stop
 
     def arguments():
         return tuple(output if s['role'] == 'result' else value if s['value'] == 'value' else inc
@@ -212,11 +197,11 @@ def test_device_structured_calls_carry_mutation_rebinding_and_graph(tmp_path, ki
 
     def mutate():
         for tensor in (value, inc):
-            tensor.copy_(torch.randint(-32, 33, tensor.shape, generator=generator, device='cuda').float() / 16)
+            tensor.copy_(torch.randint(-32, 33, tensor.shape, generator=generator, device='cuda').float()/16)
 
     def check():
         torch.cuda.synchronize()
-        assert torch.equal(output, value + (7 if kind == 'embedded' else 3 * trips) * inc)
+        assert torch.equal(output, value+(7 if kind == 'embedded' else 3*trips)*inc)
         assert bool((guard[:16] == -123).all() & (guard[-16:] == -123).all())
 
     try:
@@ -259,10 +244,9 @@ def coupled_carry_module():
     from triton.flagmega import ir as fm
     from triton.flagmega.ir.ops.core import construction_scope
     b = fm.IRBuilder(dialect='high_level', stage='imported')
-    tensor, index = fm.tensor_type('float32', (4096, )), fm.tensor_type('int64', ())
-    iv, a, c, inc = (b.var('iv', index, id='iv'), b.var('a', tensor,
-                                                        id='a'), b.var('b', tensor,
-                                                                       id='b'), b.var('capture', tensor, id='capture'))
+    tensor, index = fm.tensor_type('float32', (4096,)), fm.tensor_type('int64', ())
+    iv, a, c, inc = (b.var('iv', index, id='iv'), b.var('a', tensor, id='a'),
+                     b.var('b', tensor, id='b'), b.var('capture', tensor, id='capture'))
     with construction_scope(b):
         first = fm.F.math.add(c, inc, name='dynamic', metadata={'execution_mesh': '*'})
         second = fm.F.math.add(first, inc, name='fixed', metadata={'execution_mesh': (4, 16)})
@@ -272,7 +256,8 @@ def coupled_carry_module():
         lower = fm.F.builtin.scalar_const(index, 0, name='lower')
         upper = fm.F.builtin.scalar_const(index, 3, name='upper')
         stride = fm.F.builtin.scalar_const(index, 1, name='stride')
-        result = fm.F.control.for_loop(lower, upper, stride, x, y, body=body, captures=(increment, ), name='loop')
+        result = fm.F.control.for_loop(lower, upper, stride, x, y, body=body,
+                                      captures=(increment,), name='loop')
         left = fm.F.tensors.get_item(result, 0, name='left')
         right = fm.F.tensors.get_item(result, 1, name='right')
     b.function('main', (x, y, increment), (left, right))
@@ -283,24 +268,25 @@ def induction_module():
     from triton.flagmega import ir as fm
     from triton.flagmega.ir.ops.core import construction_scope
     b = fm.IRBuilder(dialect='high_level', stage='imported')
-    tensor, index = fm.tensor_type('int64', (4096, )), fm.tensor_type('int64', ())
-    iv, carried, capture = (b.var('iv', index, id='iv'), b.var('carried', tensor,
-                                                               id='carried'), b.var('capture', tensor, id='capture'))
+    tensor, index = fm.tensor_type('int64', (4096,)), fm.tensor_type('int64', ())
+    iv, carried, capture = (b.var('iv', index, id='iv'), b.var('carried', tensor, id='carried'),
+                            b.var('capture', tensor, id='capture'))
     with construction_scope(b):
-        indices = fm.F.tensors.broadcast_to(iv, shape=(4096, ), name='indices')
+        indices = fm.F.tensors.broadcast_to(iv, shape=(4096,), name='indices')
         first = fm.F.math.add(carried, indices, name='index_add', metadata={'execution_mesh': (8, 16)})
-        second = fm.F.math.add(first, capture, name='dynamic',
-                               metadata={'execution_mesh': '*', 'kernel_num_warps': 2, 'kernel_maxnreg': 64})
+        second = fm.F.math.add(first, capture, name='dynamic', metadata={'execution_mesh': '*',
+                              'kernel_num_warps': 2, 'kernel_maxnreg': 64})
         third = fm.F.math.add(second, capture, name='fixed', metadata={'execution_mesh': (4, 16)})
-    body = b.region('body', (iv, carried, capture), (third, ), iter_count=1)
+    body = b.region('body', (iv, carried, capture), (third,), iter_count=1)
     value, increment = (b.var(v, tensor, id=v) for v in ('value', 'increment'))
     with construction_scope(b):
         lower = fm.F.builtin.scalar_const(index, 1, name='lower')
         upper = fm.F.builtin.scalar_const(index, 6, name='upper')
         stride = fm.F.builtin.scalar_const(index, 2, name='stride')
-        result = fm.F.control.for_loop(lower, upper, stride, value, body=body, captures=(increment, ), name='loop')
+        result = fm.F.control.for_loop(lower, upper, stride, value, body=body,
+                                      captures=(increment,), name='loop')
         output = fm.F.tensors.get_item(result, 0, name='output')
-    b.function('main', (value, increment), (output, ))
+    b.function('main', (value, increment), (output,))
     return b.build(entry='main')
 
 
@@ -310,8 +296,8 @@ def test_structured_physical_plan_preserves_simultaneous_carries_and_real_induct
     descriptor = describe_tir_package(module)
     if case == 'coupled':
         copies = [v['transfer'] for v in descriptor['kernels'] if v['invocation_kind'] == 'loop_copy']
-        assert copies == [['initial', 'current']] * 2 + ([['yielded', 'staging']] * 2 +
-                                                         [['staging', 'current']] * 2) * 3 + [['current', 'result']] * 2
+        assert copies == [['initial', 'current']]*2 + (
+            [['yielded', 'staging']]*2 + [['staging', 'current']]*2)*3 + [['current', 'result']]*2
     else:
         compute = [v for v in descriptor['kernels'] if v['invocation_kind'] == 'program']
         assert [v['argument_bindings'][0]['value'] for v in compute[::3]] == [1, 3, 5]
@@ -327,23 +313,21 @@ def test_device_structured_simultaneous_carries_and_induction(tmp_path, case):
     from triton.flagmega.runtime.module import GeneratedTirCallGraphModule as Runtime
     module = Compiler().compile(coupled_carry_module() if case == 'coupled' else induction_module()).module
     dtype = torch.float32 if case == 'coupled' else torch.int64
-    feeds = {
-        v: torch.arange(4096, device='cuda', dtype=dtype) + (2**35 if case == 'induction' else 0)
-        for v in module.function_map['main'].parameters
-    }
+    feeds = {v: torch.arange(4096, device='cuda', dtype=dtype)+(2**35 if case == 'induction' else 0)
+             for v in module.function_map['main'].parameters}
     feeds['increment'].fill_(1)
     if case == 'coupled':
         feeds['other'].neg_()
-    guards = [torch.full((4128, ), -123, device='cuda', dtype=dtype) for _ in module.function_map['main'].outputs]
+    guards = [torch.full((4128,), -123, device='cuda', dtype=dtype)
+              for _ in module.function_map['main'].outputs]
     outputs = [v[16:-16] for v in guards]
-    runtime = load(write_artifact(module, tmp_path / 'artifact', target='nvidia-sm90', emit_executable=True),
-                   device='cuda:0')
+    runtime = load(write_artifact(module, tmp_path/'artifact', target='nvidia-sm90', emit_executable=True), device='cuda:0')
     results = iter(outputs)
     arguments = tuple(next(results) if s['role'] == 'result' else feeds[s['value']] for s in runtime.external_arguments)
 
     def check():
         torch.cuda.synchronize()
-        gold = [feeds['other'] + 4, feeds['value'] + 2] if case == 'coupled' else [feeds['value'] + 15]
+        gold = [feeds['other']+4, feeds['value']+2] if case == 'coupled' else [feeds['value']+15]
         assert all(torch.equal(a, b) for a, b in zip(outputs, gold, strict=True))
         assert all(bool((v[:16] == -123).all() & (v[-16:] == -123).all()) for v in guards)
 

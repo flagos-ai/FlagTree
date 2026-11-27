@@ -22,7 +22,9 @@ from ..qwen3.helpers import checkpoint
 
 def _write_rdata_artifact(tmp_path):
     source = checkpoint()
-    module = Compiler().compile(Qwen3LayerImporter(source, block_size=4, num_blocks=2).import_module()).module
+    module = Compiler().compile(
+        Qwen3LayerImporter(source, block_size=4, num_blocks=2).import_module()
+    ).module
     root = write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", checkpoint=source)
     return root, module
 
@@ -71,7 +73,9 @@ def test_rdata_verification_streams_the_image_instead_of_reading_it_all(tmp_path
     assert index["nbytes"] > 0
 
 
-def test_rdata_packing_streams_recipes_with_an_uncached_weight_resolver(tmp_path, monkeypatch):
+def test_rdata_packing_streams_recipes_with_an_uncached_weight_resolver(
+    tmp_path, monkeypatch
+):
     observed = []
     original = rdata_module.iter_numpy_materialized_constant_assets
 
@@ -79,7 +83,9 @@ def test_rdata_packing_streams_recipes_with_an_uncached_weight_resolver(tmp_path
         observed.append((source, frozenset(outputs or ())))
         yield from original(module, source, outputs=outputs)
 
-    monkeypatch.setattr(rdata_module, "iter_numpy_materialized_constant_assets", observe)
+    monkeypatch.setattr(
+        rdata_module, "iter_numpy_materialized_constant_assets", observe
+    )
     root, _ = _write_rdata_artifact(tmp_path)
 
     assert root.is_dir()
@@ -87,9 +93,13 @@ def test_rdata_packing_streams_recipes_with_an_uncached_weight_resolver(tmp_path
     assert observed[0][1]
 
 
-def test_rdata_packing_streams_byte_preserving_recipe_from_checkpoint_storage(tmp_path, ):
+def test_rdata_packing_streams_byte_preserving_recipe_from_checkpoint_storage(
+    tmp_path,
+):
     source = checkpoint()
-    module = Compiler().compile(Qwen3LayerImporter(source, block_size=4, num_blocks=2).import_module()).module
+    module = Compiler().compile(
+        Qwen3LayerImporter(source, block_size=4, num_blocks=2).import_module()
+    ).module
     source_key = "model.embed_tokens.weight"
     tensor = source.load_tensor(source_key)
     raw = tensor.view(torch.uint8).numpy().tobytes()
@@ -99,7 +109,6 @@ def test_rdata_packing_streams_byte_preserving_recipe_from_checkpoint_storage(tm
     loaded = []
 
     class StorageCheckpoint:
-
         @property
         def config(self):
             return source.config
@@ -126,7 +135,10 @@ def test_rdata_packing_streams_byte_preserving_recipe_from_checkpoint_storage(tm
         if any(node.op == "builtin.weight" and node.attrs["key"] == source_key for node in recipe.nodes)
     ]
     [output] = recipe.outputs
-    entry = next(value for value in index["entries"] if value["key"] == output)
+    entry = next(
+        value for value in index["entries"]
+        if value["key"] == output
+    )
     with (tmp_path / "assets" / "rdata.bin").open("rb") as stream:
         stream.seek(entry["offset"])
         packed = stream.read(entry["nbytes"])
@@ -139,7 +151,9 @@ def test_rdata_packing_streams_byte_preserving_recipe_from_checkpoint_storage(tm
 
 def test_canonical_rdata_plan_hashes_once_while_writing(tmp_path, monkeypatch):
     source = checkpoint()
-    module = Compiler().compile(Qwen3LayerImporter(source, block_size=4, num_blocks=2).import_module()).module
+    module = Compiler().compile(
+        Qwen3LayerImporter(source, block_size=4, num_blocks=2).import_module()
+    ).module
 
     def reject_second_image_scan(_path):
         raise AssertionError("canonical rdata packing must hash during its write pass")
@@ -151,12 +165,15 @@ def test_canonical_rdata_plan_hashes_once_while_writing(tmp_path, monkeypatch):
     assert len(index["sha256"]) == 64
 
 
-def test_stable_checkpoint_rdata_cache_packs_once_and_clones_independent_images(tmp_path, monkeypatch):
+def test_stable_checkpoint_rdata_cache_packs_once_and_clones_independent_images(
+    tmp_path, monkeypatch
+):
     source = checkpoint()
-    module = Compiler().compile(Qwen3LayerImporter(source, block_size=4, num_blocks=2).import_module()).module
+    module = Compiler().compile(
+        Qwen3LayerImporter(source, block_size=4, num_blocks=2).import_module()
+    ).module
 
     class StableCheckpoint:
-
         @property
         def config(self):
             return source.config
@@ -211,18 +228,23 @@ def test_stable_checkpoint_rdata_cache_packs_once_and_clones_independent_images(
 
 def test_rdata_cache_key_changes_with_checkpoint_identity(tmp_path):
     source = checkpoint()
-    module = Compiler().compile(Qwen3LayerImporter(source, block_size=4, num_blocks=2).import_module()).module
+    module = Compiler().compile(
+        Qwen3LayerImporter(source, block_size=4, num_blocks=2).import_module()
+    ).module
 
     class IdentifiedCheckpoint:
-
         def __init__(self, revision):
             self.revision = revision
 
         def cache_identity(self, keys):
             return {"revision": self.revision, "keys": sorted(keys)}
 
-    first = rdata_module._rdata_cache_key(module, IdentifiedCheckpoint("revision-a"))
-    second = rdata_module._rdata_cache_key(module, IdentifiedCheckpoint("revision-b"))
+    first = rdata_module._rdata_cache_key(
+        module, IdentifiedCheckpoint("revision-a")
+    )
+    second = rdata_module._rdata_cache_key(
+        module, IdentifiedCheckpoint("revision-b")
+    )
 
     assert first is not None
     assert second is not None
@@ -241,13 +263,17 @@ def test_tensor_storage_buffer_is_a_zero_copy_byte_view():
 
 def test_failed_rdata_pack_removes_its_temporary_sparse_image(tmp_path, monkeypatch):
     source = checkpoint()
-    module = Compiler().compile(Qwen3LayerImporter(source, block_size=4, num_blocks=2).import_module()).module
+    module = Compiler().compile(
+        Qwen3LayerImporter(source, block_size=4, num_blocks=2).import_module()
+    ).module
 
     def fail_materialization(*_args, **_kwargs):
         raise RuntimeError("injected recipe failure")
         yield  # pragma: no cover - preserve generator call semantics
 
-    monkeypatch.setattr(rdata_module, "iter_numpy_materialized_constant_assets", fail_materialization)
+    monkeypatch.setattr(
+        rdata_module, "iter_numpy_materialized_constant_assets", fail_materialization
+    )
     assets = tmp_path / "assets"
 
     with pytest.raises(RuntimeError, match="injected recipe failure"):
@@ -257,7 +283,9 @@ def test_failed_rdata_pack_removes_its_temporary_sparse_image(tmp_path, monkeypa
     assert not (assets / "rdata.bin").exists()
 
 
-def test_artifact_load_hashes_rdata_image_once_in_the_rdata_verifier(tmp_path, monkeypatch):
+def test_artifact_load_hashes_rdata_image_once_in_the_rdata_verifier(
+    tmp_path, monkeypatch
+):
     root, module = _write_rdata_artifact(tmp_path)
     original_hash_file = manifest_module.hash_file
     original_verify_image_hashes = rdata_module._verify_image_hashes
@@ -293,7 +321,9 @@ def test_deferred_rdata_section_digest_is_cross_checked_with_verified_index(tmp_
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     image = next(value for value in manifest["sections"] if value["name"] == "rdata.image")
     image["sha256"] = "0" * 64
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
     with pytest.raises(ArtifactError, match="image section.*verified index"):
         load_artifact(root)

@@ -20,20 +20,20 @@ def grouped_compiler(groups, tile=16, accumulator='vector', row_order='group_maj
     compiler = Compiler()
     target = NvidiaSm90Target()
     model = target.triton_implementation_model
-    target.triton_implementation_model = replace(
-        model, implementations=tuple(
-            replace(
-                i, parameters={
-                    **i.parameters, 'k_blocks_per_mma': groups, 'k_group_row_order': row_order, 'tile_n': tile,
-                    'compute_num_warps': 4, 'activation_layout': 'warp', 'accumulator_layout': accumulator
-                }) if i.id == 'tir.partitioned_block_scaled_linear.local' else i for i in model.implementations))
+    target.triton_implementation_model = replace(model, implementations=tuple(
+        replace(i, parameters={**i.parameters, 'k_blocks_per_mma': groups,
+                               'k_group_row_order': row_order,
+                               'tile_n': tile, 'compute_num_warps': 4,
+                               'activation_layout': 'warp', 'accumulator_layout': accumulator})
+        if i.id == 'tir.partitioned_block_scaled_linear.local' else i for i in model.implementations))
     compiler.target = target
     return compiler
 
 
 def test_existing_selection_without_K_groups_keeps_default_contract(tmp_path):
     from triton.flagmega.targets.nvidia.partitioned_block_scaled_linear import (
-        partitioned_block_scaled_linear_implementations, )
+        partitioned_block_scaled_linear_implementations,
+    )
     implementation, = partitioned_block_scaled_linear_implementations()
     assert 'k_blocks_per_mma' not in implementation.parameters
     assert 'k_group_row_order' not in implementation.parameters
@@ -76,40 +76,35 @@ def test_grouped_dot_keeps_K128_and_complete_P_T_N_task_domain(tmp_path, dynamic
 def test_rejects_invalid_K_group_geometry(groups):
     from triton.flagmega.errors import CodegenError
     with pytest.raises(CodegenError, match='K groups'):
-        describe_tir_package(
-            grouped_compiler(groups).compile(dynamic_fp8_projection_graph(tokens=1, n=80, k=3072, parts=1)).module)
+        describe_tir_package(grouped_compiler(groups).compile(
+            dynamic_fp8_projection_graph(tokens=1, n=80, k=3072, parts=1)).module)
 
 
 def test_grouped_dot_rejects_replicated_MMA_accumulator_contract():
     from triton.flagmega.errors import CodegenError
     with pytest.raises(CodegenError, match='ordered vector accumulator'):
-        describe_tir_package(
-            grouped_compiler(4,
-                             accumulator='mma').compile(dynamic_fp8_projection_graph(tokens=1, n=80, k=3072,
-                                                                                     parts=1)).module)
+        describe_tir_package(grouped_compiler(4, accumulator='mma').compile(
+            dynamic_fp8_projection_graph(tokens=1, n=80, k=3072, parts=1)).module)
 
 
 def test_rejects_unknown_K_group_row_mapping():
     from triton.flagmega.errors import CodegenError
     with pytest.raises(CodegenError, match='K group row order'):
-        describe_tir_package(
-            grouped_compiler(4,
-                             row_order='unknown').compile(dynamic_fp8_projection_graph(tokens=1, n=80, k=3072,
-                                                                                       parts=1)).module)
+        describe_tir_package(grouped_compiler(4, row_order='unknown').compile(
+            dynamic_fp8_projection_graph(tokens=1, n=80, k=3072, parts=1)).module)
 
 
 @pytest.mark.parametrize('kind', ('ordinary', 'persistent'))
 @pytest.mark.parametrize('quantization', ('dynamic_fp8_sm90', 'dynamic_fp8'))
 @pytest.mark.parametrize('groups,tile', ((2, 32), (4, 32), (8, 16), (16, 16)))
 @pytest.mark.parametrize('row_order', ('group_major', 'n_major'))
-def test_GPU_grouped_dot_preserves_K128_rounding_parts_tails_and_Graph(tmp_path, kind, quantization, groups, tile,
-                                                                       row_order):
-    _gpu_contract(tmp_path, kind, quantization, 'vector', 4, 16, 12288, 'warp', 4, tile, k_blocks_per_mma=groups,
-                  k_group_row_order=row_order)
+def test_GPU_grouped_dot_preserves_K128_rounding_parts_tails_and_Graph(tmp_path, kind, quantization, groups, tile, row_order):
+    _gpu_contract(tmp_path, kind, quantization, 'vector', 4, 16, 12288, 'warp', 4, tile,
+                  k_blocks_per_mma=groups, k_group_row_order=row_order)
 
 
 @pytest.mark.parametrize('kind', ('ordinary', 'persistent'))
 @pytest.mark.parametrize('quantization', ('dynamic_fp8_sm90', 'dynamic_fp8'))
 def test_GPU_N_major_uses_enclosing_eight_warps_with_selected_four(tmp_path, kind, quantization):
-    _gpu_contract(tmp_path, kind, quantization, 'vector', 4, 16, 12288, 'warp', 8, 32, k_blocks_per_mma=4,
-                  k_group_row_order='n_major')
+    _gpu_contract(tmp_path, kind, quantization, 'vector', 4, 16, 12288, 'warp', 8, 32,
+                  k_blocks_per_mma=4, k_group_row_order='n_major')

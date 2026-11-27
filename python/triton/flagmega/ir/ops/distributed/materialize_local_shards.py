@@ -9,7 +9,8 @@ from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_type import (
-    local_shape, )
+    local_shape,
+)
 from triton.flagmega.ir.local_shard import local_shard_descriptor
 from triton.flagmega.ir.model import DistributedType, IRType, Node, TensorType
 from triton.flagmega.ir.ops.core import (
@@ -48,7 +49,9 @@ class MaterializeLocalShards(OpDefinition):
         source = cls.value.type_of(inputs)
         assert isinstance(source, DistributedType)
         if source.partial is not None:
-            raise IRSchemaError("MaterializeLocalShards cannot materialize a partial value.")
+            raise IRSchemaError(
+                "MaterializeLocalShards cannot materialize a partial value."
+            )
         owner_count = 1
         for extent in source.placement.hierarchy:
             owner_count *= extent
@@ -67,9 +70,13 @@ class MaterializeLocalShards(OpDefinition):
         outer_shape = source_type.tensor.shape
         local = local_shape(source_type)
         if any(not dimension.is_fixed for dimension in (*outer_shape, *local)):
-            raise IRSchemaError("MaterializeLocalShards reference evaluation requires fixed dimensions.")
+            raise IRSchemaError(
+                "MaterializeLocalShards reference evaluation requires fixed dimensions."
+            )
         target_outer = tuple(dimension.fixed_value for dimension in local)
-        owner_coordinates = product(*(range(extent) for extent in source_type.placement.hierarchy))
+        owner_coordinates = product(*(
+            range(extent) for extent in source_type.placement.hierarchy
+        ))
         shards = []
         for coordinates in owner_coordinates:
             descriptor = local_shard_descriptor(source_type, coordinates)
@@ -77,8 +84,10 @@ class MaterializeLocalShards(OpDefinition):
             selected_shape = []
             for tensor_axis, axis in enumerate(descriptor.axes):
                 if not axis.active_extent.is_fixed:
-                    raise IRSchemaError("MaterializeLocalShards reference evaluation requires a "
-                                        "fixed per-owner active extent.")
+                    raise IRSchemaError(
+                        "MaterializeLocalShards reference evaluation requires a "
+                        "fixed per-owner active extent."
+                    )
                 active_extent = axis.active_extent.fixed_value
                 selected_shape.append(active_extent)
                 window = axis.local_slice
@@ -87,7 +96,10 @@ class MaterializeLocalShards(OpDefinition):
                     # a per-element index tensor.
                     shard = shard[(slice(None), ) * tensor_axis + (window, )]
                     continue
-                indices = tuple(axis.map_local_to_global(index).fixed_value for index in range(active_extent))
+                indices = tuple(
+                    axis.map_local_to_global(index).fixed_value
+                    for index in range(active_extent)
+                )
                 index = context.torch.tensor(
                     indices,
                     dtype=context.torch.int64,
@@ -115,9 +127,13 @@ class MaterializeLocalShards(OpDefinition):
         outer_shape = source_type.tensor.shape
         local = local_shape(source_type)
         if any(not dimension.is_fixed for dimension in (*outer_shape, *local)):
-            raise IRSchemaError("MaterializeLocalShards NumPy materialization requires fixed dimensions.")
+            raise IRSchemaError(
+                "MaterializeLocalShards NumPy materialization requires fixed dimensions."
+            )
         target_outer = tuple(dimension.fixed_value for dimension in local)
-        owner_coordinates = product(*(range(extent) for extent in source_type.placement.hierarchy))
+        owner_coordinates = product(*(
+            range(extent) for extent in source_type.placement.hierarchy
+        ))
         shards = []
         for coordinates in owner_coordinates:
             descriptor = local_shard_descriptor(source_type, coordinates)
@@ -125,8 +141,10 @@ class MaterializeLocalShards(OpDefinition):
             selected_shape = []
             for tensor_axis, axis in enumerate(descriptor.axes):
                 if not axis.active_extent.is_fixed:
-                    raise IRSchemaError("MaterializeLocalShards NumPy materialization requires a "
-                                        "fixed per-owner active extent.")
+                    raise IRSchemaError(
+                        "MaterializeLocalShards NumPy materialization requires a "
+                        "fixed per-owner active extent."
+                    )
                 active_extent = axis.active_extent.fixed_value
                 selected_shape.append(active_extent)
                 window = axis.local_slice
@@ -135,7 +153,10 @@ class MaterializeLocalShards(OpDefinition):
                     # a per-element index list.
                     shard = shard[(slice(None), ) * tensor_axis + (window, )]
                     continue
-                indices = tuple(axis.map_local_to_global(index).fixed_value for index in range(active_extent))
+                indices = tuple(
+                    axis.map_local_to_global(index).fixed_value
+                    for index in range(active_extent)
+                )
                 shard = context.numpy.take(shard, indices, axis=tensor_axis)
             if tuple(selected_shape) != target_outer:
                 physical_shape = (*target_outer, *tuple(value.shape[len(outer_shape):]))
@@ -149,8 +170,7 @@ class MaterializeLocalShards(OpDefinition):
     def cost(cls, node: Node) -> OpCost:
         return OpCost(
             bytes_written=tensor_nbytes(node.type),
-            notes=("offline-owner-major-sbp-materialization", ),
+            notes=("offline-owner-major-sbp-materialization",),
         )
-
 
 __all__ = ["MaterializeLocalShards"]

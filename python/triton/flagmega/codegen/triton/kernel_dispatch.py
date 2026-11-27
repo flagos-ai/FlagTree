@@ -9,6 +9,7 @@ from dataclasses import replace
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import IRModule, Node, kernel_dispatch_for_call
 
+
 _ZERO_COPY_ADAPTERS = frozenset({
     "distributed.sharded_view",
     "tir.buffer_view",
@@ -62,7 +63,10 @@ def selected_kernel_node(module: IRModule, value: str | Node) -> Node:
             node_id=node.id,
         )
     selection = module.selection_map.get(f"tir.{node.id}")
-    if (selection is not None and selection.candidate_id != dispatch.semantic_candidate):
+    if (
+        selection is not None
+        and selection.candidate_id != dispatch.semantic_candidate
+    ):
         raise CodegenError(
             f"TIR selection {selection.candidate_id!r} for node {node.id!r} does not "
             f"match materialized KernelDispatch semantic candidate "
@@ -71,14 +75,13 @@ def selected_kernel_node(module: IRModule, value: str | Node) -> Node:
             stage=module.stage,
             node_id=node.id,
         )
-    return replace(
-        node, op="tir.kernel", attrs={
-            "semantic_op": dispatch.semantic_op,
-            "candidate": dispatch.microkernel.implementation,
-            "parameters": dispatch.resolved_parameters,
-            "facts": dispatch.resolved_facts,
-            "semantic_attrs": dispatch.semantic_attrs,
-        })
+    return replace(node, op="tir.kernel", attrs={
+        "semantic_op": dispatch.semantic_op,
+        "candidate": dispatch.microkernel.implementation,
+        "parameters": dispatch.resolved_parameters,
+        "facts": dispatch.resolved_facts,
+        "semantic_attrs": dispatch.semantic_attrs,
+    })
 
 
 def selected_kernel_nodes(module: IRModule) -> tuple[Node, ...]:

@@ -43,8 +43,7 @@ def absorb_bank_parameter_transforms(module: IRModule) -> IRModule:
     # enclosing For passes in, and only then treat a row access as a boundary.
     bank_of_value = _bank_by_value(module, banks, region_names)
     rows = {
-        node.id: bank_of_value[node.inputs[0]]
-        for node in module.nodes
+        node.id: bank_of_value[node.inputs[0]] for node in module.nodes
         if node.op == "control.bank_get" and node.inputs[0] in bank_of_value
     }
     fields: dict[str, str] = {}
@@ -72,8 +71,9 @@ def absorb_bank_parameter_transforms(module: IRModule) -> IRModule:
         program = BankFieldProgram(source, renamed, renamed[-1].id)
         key = (bank.id, index)
         if key in programs:
-            raise IRVerificationError(f"Parameter bank field {index} has more than one absorbed transform.",
-                                      stage=module.stage, node_id=root.id)
+            raise IRVerificationError(
+                f"Parameter bank field {index} has more than one absorbed transform.",
+                stage=module.stage, node_id=root.id)
         programs[key] = (program, root, chain)
     if not programs:
         return module
@@ -93,22 +93,24 @@ def absorb_bank_parameter_transforms(module: IRModule) -> IRModule:
         if node.id in banks:
             schema = node.attrs["schema"]
             updated = tuple(
-                _absorbed(field, programs[(node.id, index)][0]) if (node.id, index) in programs else field
-                for index, field in enumerate(schema.fields))
-            nodes.append(
-                replace(
-                    node,
-                    type=ParameterBankSchema(schema.name, updated).type,
-                    attrs={**dict(node.attrs), "schema": ParameterBankSchema(schema.name, updated)},
-                ))
+                _absorbed(field, programs[(node.id, index)][0])
+                if (node.id, index) in programs else field
+                for index, field in enumerate(schema.fields)
+            )
+            nodes.append(replace(
+                node,
+                type=ParameterBankSchema(schema.name, updated).type,
+                attrs={**dict(node.attrs), "schema": ParameterBankSchema(schema.name, updated)},
+            ))
             continue
         inputs = tuple(replacements.get(value, value) for value in node.inputs)
-        if node.id in fields and (rows[fields[node.id]], int(node.attrs["index"])) in programs:
+        if node.id in fields and (rows[fields[node.id]],
+                                  int(node.attrs["index"])) in programs:
             bank_id = rows[fields[node.id]]
             index = int(node.attrs["index"])
-            nodes.append(
-                replace(node, inputs=inputs,
-                        type=programs[(bank_id, index)][0].node_map[programs[(bank_id, index)][0].output].type))
+            nodes.append(replace(node, inputs=inputs,
+                                 type=programs[(bank_id, index)][0].node_map[
+                                     programs[(bank_id, index)][0].output].type))
             continue
         nodes.append(replace(node, inputs=inputs))
 
@@ -121,7 +123,8 @@ def absorb_bank_parameter_transforms(module: IRModule) -> IRModule:
     row_types: dict[str, ParameterBankSchema] = {}
     for node in nodes:
         if node.id in bank_types and node.op in {"builtin.var", "builtin.parameter_bank"}:
-            typed.append(node if node.op == "builtin.parameter_bank" else replace(node, type=bank_types[node.id]))
+            typed.append(node if node.op == "builtin.parameter_bank"
+                         else replace(node, type=bank_types[node.id]))
             continue
         if node.op == "control.bank_get" and node.inputs[0] in bank_types:
             schema = schemas[bank_of_value[node.inputs[0]]]
@@ -168,9 +171,10 @@ def _absorbed(field: BankField, program: BankFieldProgram) -> BankField:
             names[node.id] = identity
             appended.append(replace(node, id=identity, inputs=tuple(names[value] for value in node.inputs)))
         combined = BankFieldProgram(previous.sources, (*previous.nodes, *appended), names[program.output])
-        return BankField(field.name, program.node_map[program.output].type, field.transform, combined, None,
-                         field.stored_types)
-    return BankField(field.name, program.node_map[program.output].type, field.transform, program, field.stored_type)
+        return BankField(field.name, program.node_map[program.output].type, field.transform,
+                         combined, None, field.stored_types)
+    return BankField(field.name, program.node_map[program.output].type, field.transform,
+                     program, field.stored_type)
 
 
 def _single_use_transform_chain(field_id, users, owned) -> tuple[Node, ...]:
@@ -186,7 +190,8 @@ def _single_use_transform_chain(field_id, users, owned) -> tuple[Node, ...]:
         if len(consumers) != 1:
             break
         node = consumers[0]
-        if node.op not in {"tensors.pack", "tensors.unpack", "tensors.permute", "tensors.reshape", "tensors.bitcast"}:
+        if node.op not in {"tensors.pack", "tensors.unpack", "tensors.permute",
+                           "tensors.reshape", "tensors.bitcast"}:
             break
         if node.id not in owned or len(node.inputs) != 1 or not node.effect.is_pure:
             break

@@ -13,8 +13,8 @@ from triton.flagmega.evaluator.dump import EvaluatorDumpWriter
 
 def test_mapping_and_nested_field_paths_do_not_overwrite_payloads(tmp_path):
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
-    node = builder.var("value", fm.tensor_type("float32", (1, )), id="value")
-    builder.function("main", (node, ), (node, ))
+    node = builder.var("value", fm.tensor_type("float32", (1,)), id="value")
+    builder.function("main", (node,), (node,))
     module = builder.build(entry="main")
     # This tests the dump writer's serialization protocol, independently of
     # evaluator op type checking. The writer explicitly supports structured
@@ -26,7 +26,7 @@ def test_mapping_and_nested_field_paths_do_not_overwrite_payloads(tmp_path):
         "a?b": torch.tensor([4.]),
         "a%2Fb": torch.tensor([5.]),
         "tuple_0": torch.tensor([6.]),
-        "tuple": (torch.tensor([7.]), ),
+        "tuple": (torch.tensor([7.]),),
     }
     manager = DumpManager(tmp_path, DumpFlags.EVALUATOR)
     with DumpScope(manager.root):

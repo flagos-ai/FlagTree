@@ -27,24 +27,24 @@ class RmsPackedDenseMatmulGluCandidateProvider:
         bias_value = _constant_splat_value(inputs[2], context.module)
         zero = bias_value == 0.0 and copysign(1.0, bias_value) == 1.0
         variants = []
-        for implementation in context.implementations('dense_matmul_glu', input_kind='packed', fusion='explicit_rms',
-                                                      packed_layout=node.attrs['packed_layout']):
+        for implementation in context.implementations(
+                'dense_matmul_glu', input_kind='packed', fusion='explicit_rms',
+                packed_layout=node.attrs['packed_layout']):
             pipeline = implementation.transfer_pipeline
             if (pipeline is None or len(pipeline.channels) != 1
                     or pipeline.channels[0].source_argument_indices != (3, 4)
                     or pipeline.channels[0].shared_workspace_indices != (0, 1)
-                    or pipeline.consumer_shared_workspace_indices != (2, )
+                    or pipeline.consumer_shared_workspace_indices != (2,)
                     or implementation.parameters.get('lhs_stage_extent') != k
                     or not implementation.parameters.get('paired_weight_fields')
                     or implementation.parameters.get('descriptor_kind') != 'table'
                     or node.attrs['norm_math_mode'] not in implementation.contract.get('norm_math_modes', ())
                     or not dense_glu_implementation_applicable(glu, proxy, implementation)):
                 continue
-            variants.append(
-                context.configure_implementation(
-                    implementation,
-                    semantic_parameters={'packed_layout': node.attrs['packed_layout'], 'norm_bias_is_zero':
-                                         zero}, facts={'explicit_rms_input': True, 'materializes_input_norm': False}))
+            variants.append(context.configure_implementation(implementation,
+                semantic_parameters={'packed_layout': node.attrs['packed_layout'],
+                                     'norm_bias_is_zero': zero},
+                facts={'explicit_rms_input': True, 'materializes_input_norm': False}))
         if not variants:
             return None
         variants = tuple(variants)

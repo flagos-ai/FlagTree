@@ -22,8 +22,7 @@ def reduce_sum_call(raw):
     result = _buffer(raw, "outputs", "result")
     input_type = _tensor_type(source["abi"])
     attrs = decode_fusion_attrs(raw["semantic_attrs"])
-    if ReduceSum.infer_call_type((Node("source", "builtin.var", (), input_type), ),
-                                 attrs) != _tensor_type(result["abi"]):
+    if ReduceSum.infer_call_type((Node("source", "builtin.var", (), input_type), ), attrs) != _tensor_type(result["abi"]):
         raise CodegenError("ReduceSum result ABI disagrees with its local/partial reduction contract.")
     rank = len(source["abi"]["local_capacity_shape"])
     axes = tuple(normalize_axis(axis, rank) for axis in attrs["axes"])
@@ -37,16 +36,12 @@ def reduce_sum_call(raw):
         # Large K retains the original one-row reduction and register footprint.
         row_tile = min(row_tile, 1 << (max(domain["rows"], 1) - 1).bit_length(),
                        int(raw["parameters"]["elements_per_program"]) // domain["tile"])
-        tiled_domain = local_reduction_domain(source["abi"], axes, int(raw["parameters"]["elements_per_program"]),
-                                              row_index="_fm_row[:, None]", reduction_index="_fm_offsets[None, :]",
-                                              lane_wise=True)
-        tiled = {
-            "row_tile":
-            row_tile, "tiled_active":
-            tiled_domain["active"], "tiled_source_offset":
-            emit_local_scalar_offset(source["abi"], tiled_domain["coordinates"],
-                                     lane_coordinate=tiled_domain.get("lane_coordinate"))
-        }
+        tiled_domain = local_reduction_domain(
+            source["abi"], axes, int(raw["parameters"]["elements_per_program"]),
+            row_index="_fm_row[:, None]", reduction_index="_fm_offsets[None, :]", lane_wise=True)
+        tiled = {"row_tile": row_tile, "tiled_active": tiled_domain["active"],
+                 "tiled_source_offset": emit_local_scalar_offset(source["abi"], tiled_domain["coordinates"],
+                                                                  lane_coordinate=tiled_domain.get("lane_coordinate"))}
     output_coordinates = (tuple("0" if axis in axes else coordinate
                                 for axis, coordinate in enumerate(domain["coordinates"]))
                           if attrs["keep_dims"] else domain["outer_coordinates"])
@@ -76,27 +71,20 @@ def reduce_sum_call(raw):
         pre, value = emit_body(body, "_fm_values", "_fm_sum_pre")
         identity, identity_value = emit_body(body, "_fm_accumulator", "_fm_sum_identity_pre")
         post, post_value = emit_body(next(iter(attrs.get("post_ops", ())), None),
-                                     f"(_fm_accumulator).to({triton_type(base.type)})", "_fm_sum_post")
-        program = {
-            "fusion_pre_lines": pre, "fusion_pre_value": value, "fusion_identity_lines": identity,
-            "fusion_identity_value": identity_value, "fusion_post_lines": post, "fusion_post_value": post_value
-        }
+                                    f"(_fm_accumulator).to({triton_type(base.type)})", "_fm_sum_post")
+        program = {"fusion_pre_lines": pre, "fusion_pre_value": value,
+                   "fusion_identity_lines": identity, "fusion_identity_value": identity_value,
+                   "fusion_post_lines": post, "fusion_post_value": post_value}
     return {
         **program,
         **domain,
         **tiled,
-        "identity":
-        not axes,
-        "scalar_value":
-        scalar_value,
-        "source":
-        None if scalar else _pointer(source),
-        "source_offset":
-        emit_local_scalar_offset(source["abi"], domain["coordinates"], lane_coordinate=domain.get("lane_coordinate")),
-        "result":
-        _pointer(result),
-        "result_offset":
-        emit_local_scalar_offset(result["abi"], output_coordinates, lane_coordinate=lane_coordinate),
-        "writer_active":
-        _canonical_writer_active(result["abi"]),
+        "identity": not axes,
+        "scalar_value": scalar_value,
+        "source": None if scalar else _pointer(source),
+        "source_offset": emit_local_scalar_offset(source["abi"], domain["coordinates"],
+                                                   lane_coordinate=domain.get("lane_coordinate")),
+        "result": _pointer(result),
+        "result_offset": emit_local_scalar_offset(result["abi"], output_coordinates, lane_coordinate=lane_coordinate),
+        "writer_active": _canonical_writer_active(result["abi"]),
     }

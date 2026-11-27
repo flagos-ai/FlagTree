@@ -23,6 +23,7 @@ from triton.flagmega.ir import (
     synchronization_scope_name,
 )
 
+
 FUNCTION_SCHEDULE_SCHEMA = "flagmega.triton-function-schedule/v2"
 
 
@@ -59,7 +60,9 @@ def describe_function_schedule(
             raise CodegenError(f"Recursive Triton function schedule: {cycle}.")
 
         abi = call_abi(name)
-        kernel_by_id = {str(call["call"]): call for call in abi["kernel_calls"]}
+        kernel_by_id = {
+            str(call["call"]): call for call in abi["kernel_calls"]
+        }
         memory_barriers = memory_barriers_for_function(module, name)
         regions: list[dict[str, object]] = []
         pending_local: list[str] = []
@@ -71,22 +74,16 @@ def describe_function_schedule(
                 return
             ordinal = len(regions)
             regions.append({
-                "kind":
-                "local_segment",
-                "name":
-                f"{name}_local_{ordinal}",
-                "calls":
-                tuple(pending_local),
-                "execution_domain":
-                "dense_local_shard",
-                "owner_participation":
-                "all",
-                "lowering":
-                "function_body",
-                "barrier_before":
-                pending_local_barrier,
-                "memory_dependencies":
-                tuple(memory_barriers.get(pending_local[0], ())) if pending_local_barrier else (),
+                "kind": "local_segment",
+                "name": f"{name}_local_{ordinal}",
+                "calls": tuple(pending_local),
+                "execution_domain": "dense_local_shard",
+                "owner_participation": "all",
+                "lowering": "function_body",
+                "barrier_before": pending_local_barrier,
+                "memory_dependencies": tuple(
+                    memory_barriers.get(pending_local[0], ())
+                ) if pending_local_barrier else (),
             })
             pending_local.clear()
             pending_local_barrier = False
@@ -109,24 +106,31 @@ def describe_function_schedule(
                 flush_local()
                 requires_synchronization = True
                 regions.append({
-                    "kind":
-                    ("collective_kernel" if kind is KernelExecutionKind.COLLECTIVE else "synchronized_local_kernel"),
-                    "call":
-                    call_id,
-                    "semantic_op":
-                    str(call["semantic_op"]),
-                    "execution_domain":
-                    "dense_local_shard",
-                    "owner_participation":
-                    "all",
-                    "lowering":
-                    "function_body",
-                    "barrier_before": (kind is KernelExecutionKind.COLLECTIVE or needs_memory_barrier),
-                    "barrier_owner":
-                    ("function_schedule" if
-                     (kind is KernelExecutionKind.COLLECTIVE or needs_memory_barrier) else "inline_kernel_body"),
-                    "memory_dependencies":
-                    tuple(memory_barriers.get(call_id, ())),
+                    "kind": (
+                        "collective_kernel"
+                        if kind is KernelExecutionKind.COLLECTIVE
+                        else "synchronized_local_kernel"
+                    ),
+                    "call": call_id,
+                    "semantic_op": str(call["semantic_op"]),
+                    "execution_domain": "dense_local_shard",
+                    "owner_participation": "all",
+                    "lowering": "function_body",
+                    "barrier_before": (
+                        kind is KernelExecutionKind.COLLECTIVE
+                        or needs_memory_barrier
+                    ),
+                    "barrier_owner": (
+                        "function_schedule"
+                        if (
+                            kind is KernelExecutionKind.COLLECTIVE
+                            or needs_memory_barrier
+                        )
+                        else "inline_kernel_body"
+                    ),
+                    "memory_dependencies": tuple(
+                        memory_barriers.get(call_id, ())
+                    ),
                 })
                 continue
 
@@ -136,7 +140,9 @@ def describe_function_schedule(
                 flush_local()
                 callee = str(event["callee"])
                 callee_plan = plan(callee, (*active, name))
-                requires_synchronization |= bool(callee_plan["requires_synchronization"])
+                requires_synchronization |= bool(
+                    callee_plan["requires_synchronization"]
+                )
                 regions.append({
                     "kind": "function_schedule_loop",
                     "call": str(event["call"]),
@@ -150,14 +156,18 @@ def describe_function_schedule(
                 continue
 
             if event["kind"] != "function_call":
-                raise CodegenError(f"Function @{name} has unknown executable event "
-                                   f"{event['kind']!r}.")
+                raise CodegenError(
+                    f"Function @{name} has unknown executable event "
+                    f"{event['kind']!r}."
+                )
             flush_local()
             call_id = str(event["call"])
             needs_memory_barrier = call_id in memory_barriers
             callee = str(event["callee"])
             callee_plan = plan(callee, (*active, name))
-            callee_requires_sync = bool(callee_plan["requires_synchronization"])
+            callee_requires_sync = bool(
+                callee_plan["requires_synchronization"]
+            )
             requires_synchronization |= callee_requires_sync
             requires_synchronization |= needs_memory_barrier
             regions.append({
@@ -169,7 +179,9 @@ def describe_function_schedule(
                 "results": event["results"],
                 "memory_pools": event["memory_pools"],
                 "barrier_before": needs_memory_barrier,
-                "memory_dependencies": tuple(memory_barriers.get(call_id, ())),
+                "memory_dependencies": tuple(
+                    memory_barriers.get(call_id, ())
+                ),
             })
         flush_local()
 
@@ -182,14 +194,22 @@ def describe_function_schedule(
             "requested_reuse": requested_reuse,
             "requires_synchronization": requires_synchronization,
             "direct_noinline_safe": True,
-            "physical_strategy": ("direct_noinline" if requested_reuse else "entry_schedule"),
+            "physical_strategy": (
+                "direct_noinline"
+                if requested_reuse
+                else "entry_schedule"
+            ),
             "regions": regions,
         }
         cache[name] = result
         return result
 
     schedule = plan(root, ())
-    reachable = {name: cache[name] for name in cache if name != root}
+    reachable = {
+        name: cache[name]
+        for name in cache
+        if name != root
+    }
     return {
         **schedule,
         "reachable_functions": reachable,
@@ -206,8 +226,10 @@ def _execution_events(module, function_name, abi):
     by_id = {str(value["call"]): value for value in abi["events"]}
     calls = execution_calls_of(function)
     if {call.call_id for call in calls} != set(by_id):
-        raise CodegenError(f"ExecutionFunction @{function_name} call closure differs from its "
-                           "bufferized ABI.")
+        raise CodegenError(
+            f"ExecutionFunction @{function_name} call closure differs from its "
+            "bufferized ABI."
+        )
     events = [by_id[call.call_id] for call in calls]
     # A structured loop is a region marker, not a call, so it has no entry in
     # the per-call ABI. Emit it in place so the schedule descends into its
@@ -253,19 +275,15 @@ def memory_barriers_for_function(
             if not isinstance(item, Barrier):
                 continue
             result.setdefault(item.before, []).append({
-                "function":
-                function_name,
-                "after":
-                item.after[-1],
-                "before":
-                item.before,
-                "scope": (synchronization_scope_name(item.scope)),
-                "hazards":
-                tuple(item.hazards),
-                "axis_group_axes":
-                tuple(item.axis_group_axes),
-                "ranges":
-                tuple({
+                "function": function_name,
+                "after": item.after[-1],
+                "before": item.before,
+                "scope": (
+                    synchronization_scope_name(item.scope)
+                ),
+                "hazards": tuple(item.hazards),
+                "axis_group_axes": tuple(item.axis_group_axes),
+                "ranges": tuple({
                     "storage": value.storage,
                     "physical_id": value.physical_id,
                     "offset": value.offset,
@@ -279,16 +297,22 @@ def memory_barriers_for_function(
         return {}
     raw_events = synchronization.get("events", ())
     if not isinstance(raw_events, (tuple, list)):
-        raise CodegenError("memory_synchronization.events must be a sequence.")
+        raise CodegenError(
+            "memory_synchronization.events must be a sequence."
+        )
     grouped: dict[str, list[dict[str, object]]] = {}
     for raw in raw_events:
         if not isinstance(raw, Mapping):
-            raise CodegenError("memory_synchronization event must be a mapping.")
+            raise CodegenError(
+                "memory_synchronization event must be a mapping."
+            )
         if str(raw.get("function")) != function_name:
             continue
         before = str(raw.get("before", ""))
         if not before:
-            raise CodegenError(f"Memory synchronization in @{function_name} has no before call.")
+            raise CodegenError(
+                f"Memory synchronization in @{function_name} has no before call."
+            )
         grouped.setdefault(before, []).append(dict(raw))
     return {name: tuple(events) for name, events in grouped.items()}
 

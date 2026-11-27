@@ -32,7 +32,9 @@ def test_registry_resolves_exact_kind_and_target_without_model_if_chain():
     spec = registry.register("unit/v1", "test-target", factory)
 
     assert registry.resolve("unit/v1", "test-target") is spec
-    assert registry.create("unit/v1", "test-target", Path("artifact"), {}, object(), object()) == "adapter"
+    assert registry.create(
+        "unit/v1", "test-target", Path("artifact"), {}, object(), object()
+    ) == "adapter"
 
 
 def test_registry_rejects_duplicates_and_reports_available_adapters():

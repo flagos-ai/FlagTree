@@ -23,7 +23,6 @@ from triton.flagmega.ir.tir import ExecutionFunction, PrimFunction, KernelDefini
 
 
 class IRBuilder:
-
     def __init__(self, *, dialect: str, stage: str, metadata: Mapping[str, Any] | None = None) -> None:
         self.dialect = dialect
         self.stage = stage
@@ -143,15 +142,11 @@ class IRBuilder:
             effects.append(node.effect)
             pending.extend(node.inputs)
         summary = combine_effects(effects)
-        return self.function(
-            name, parameters, yields, attrs={
-                **dict(attrs or {}),
-                "region_kind": "for",
-                "iter_count": iter_count,
-                "effect_kind": summary.kind.value,
-                "effect_resource": summary.resource,
-                "reusable": True,
-            })
+        return self.function(name, parameters, yields, attrs={
+            **dict(attrs or {}), "region_kind": "for", "iter_count": iter_count,
+            "effect_kind": summary.kind.value, "effect_resource": summary.resource,
+            "reusable": True,
+        })
 
     def prim_function(self, value: PrimFunction) -> PrimFunction:
         if not isinstance(value, PrimFunction):
@@ -184,13 +179,13 @@ class IRBuilder:
         return tuple(self._nodes)
 
     def build(
-            self,
-            *,
-            entry: str,
-            selection_points: Sequence[SelectionPoint] = (),
-            selections: Sequence[SelectionRecord] = (),
-            provenance: Sequence[ProvenanceRecord] = (),
-            constant_recipes: Sequence[ConstantRecipe] = (),
+        self,
+        *,
+        entry: str,
+        selection_points: Sequence[SelectionPoint] = (),
+        selections: Sequence[SelectionRecord] = (),
+        provenance: Sequence[ProvenanceRecord] = (),
+        constant_recipes: Sequence[ConstantRecipe] = (),
     ) -> IRModule:
         return IRModule(
             dialect=self.dialect,
@@ -337,12 +332,12 @@ class Module:
         return self.builder.kernel_definition(value)
 
     def build(
-            self,
-            *,
-            selection_points: Sequence[SelectionPoint] = (),
-            selections: Sequence[SelectionRecord] = (),
-            provenance: Sequence[ProvenanceRecord] = (),
-            constant_recipes: Sequence[ConstantRecipe] = (),
+        self,
+        *,
+        selection_points: Sequence[SelectionPoint] = (),
+        selections: Sequence[SelectionRecord] = (),
+        provenance: Sequence[ProvenanceRecord] = (),
+        constant_recipes: Sequence[ConstantRecipe] = (),
     ) -> IRModule:
         if self._builder is not None:
             raise IRSchemaError("A Python IR Module instance cannot be built recursively.")

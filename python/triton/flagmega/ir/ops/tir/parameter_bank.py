@@ -66,18 +66,17 @@ class ParameterBank(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost.exact_zero(notes=("parameter-bank-storage", ))
+        return OpCost.exact_zero(notes=("parameter-bank-storage",))
 
     @classmethod
     def python_call(cls, node: Node) -> PythonCall:
         return PythonCall(
             "F.tir.parameter_bank",
             (),
-            {
-                "schema": node.attrs["schema"], "source": node.attrs["source"], "rows": node.attrs["rows"],
-                **({} if node.type == node.attrs["schema"].type else {"result_type": node.type}), "name": node.id,
-                **({"metadata": node.metadata} if node.metadata else {})
-            },
+            {"schema": node.attrs["schema"], "source": node.attrs["source"],
+             "rows": node.attrs["rows"],
+             **({} if node.type == node.attrs["schema"].type else {"result_type": node.type}),
+             "name": node.id, **({"metadata": node.metadata} if node.metadata else {})},
         )
 
 
@@ -108,7 +107,7 @@ class BankGet(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost.exact_zero(notes=("parameter-bank-byte-offset", ))
+        return OpCost.exact_zero(notes=("parameter-bank-byte-offset",))
 
     @classmethod
     def python_call(cls, node: Node) -> PythonCall:

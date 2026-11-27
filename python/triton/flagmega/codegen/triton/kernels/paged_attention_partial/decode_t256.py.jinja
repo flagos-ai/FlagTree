@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{# BI-V150 long-context candidate: amortize loop/address overhead over 256 KV rows. #}
+{# BI-V150 long-context candidate: amortize loop/address overhead over 256 KV rows. #}
 {% set paged_attention_partial_variant = "decode_t256" %}
 {% include "kernels/paged_attention_partial/decode.py.jinja" %}
 {% if render_calls is defined %}

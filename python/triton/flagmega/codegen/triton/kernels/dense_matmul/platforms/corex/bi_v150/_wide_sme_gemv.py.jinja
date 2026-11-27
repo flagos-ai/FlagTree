@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{{ entry.kernel_decorator(call, prefer_inline=true) }}
+{{ entry.kernel_decorator(call, prefer_inline=true) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
     ce: tl.constexpr=tle.gpu.BlockEncoding([1,1],[1,64],[16,1],[1,0])

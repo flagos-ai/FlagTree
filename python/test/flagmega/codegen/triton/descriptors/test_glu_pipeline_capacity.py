@@ -13,9 +13,8 @@ from triton.flagmega.errors import CodegenError
 
 def _raw(module, capacity):
     binding = describe_function_runtime_binding(module)
-    call = deepcopy(
-        next(value for value in binding["call_abi"]["kernel_calls"]
-             if value["semantic_op"] == "nn.packed_dense_matmul_glu"))
+    call = deepcopy(next(value for value in binding["call_abi"]["kernel_calls"]
+                         if value["semantic_op"] == "nn.packed_dense_matmul_glu"))
     call["transfer_pipeline"]["capacity"] = capacity
     for workspace in call["shared_workspaces"][:2]:
         workspace["shape"] = (capacity, *workspace["shape"][1:])
@@ -23,8 +22,7 @@ def _raw(module, capacity):
 
 
 @pytest.mark.parametrize("capacity", (1, 2, 3))
-def test_paired_glu_uses_exact_selected_pipe_capacity(packed_glu_paired_table_inline_descriptor_pipeline_module,
-                                                      capacity):
+def test_paired_glu_uses_exact_selected_pipe_capacity(packed_glu_paired_table_inline_descriptor_pipeline_module, capacity):
     raw = _raw(packed_glu_paired_table_inline_descriptor_pipeline_module, capacity)
     call = _dense_matmul_glu_call(raw)
     assert call["pipeline_contract"]["capacity"] == capacity

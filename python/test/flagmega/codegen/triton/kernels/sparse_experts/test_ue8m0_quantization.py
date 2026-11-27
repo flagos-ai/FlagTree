@@ -47,9 +47,9 @@ def test_actual_expert_preserves_ue8m0_and_projection_rounding(tmp_path, definit
 @pytest.mark.parametrize("packed", (False, True))
 def test_packed_and_ragged_grouped_experts_preserve_ue8m0(tmp_path, definition, block, packed):
     require_sm90()
-    module = stage_module(definition, dtype="bfloat16", weight_dtype="float8_e4m3fn", block_scaled=True,
-                          weight_block=block, hidden=144, intermediate=136, tokens=1, packed=packed,
-                          activation_quantization=MODE)
+    module = stage_module(definition, dtype="bfloat16", weight_dtype="float8_e4m3fn",
+                          block_scaled=True, weight_block=block, hidden=144, intermediate=136,
+                          tokens=1, packed=packed, activation_quantization=MODE)
     actual, expected, runtime = execute_and_reference(module, tmp_path, torch)
     try:
         torch.testing.assert_close(actual, expected, atol=1e-4, rtol=.005)
@@ -68,7 +68,6 @@ def test_readonly_weights_keep_the_quantization_contract(tmp_path, definition):
     names = {name for name in stage.inputs if name.endswith(("_weight", "_proj_scale"))}
 
     class Graph(fm.Module):
-
         def forward(self):
             inputs, operands = [], []
             for name in stage.inputs:
@@ -80,20 +79,15 @@ def test_readonly_weights_keep_the_quantization_contract(tmp_path, definition):
                     inputs.append(operand)
                 operands.append(operand)
             result = definition.construct(*operands, **stage.attrs, name=stage.id)
-            self.function("main", inputs, (result, ))
+            self.function("main", inputs, (result,))
 
     module = Graph(dialect="nn", stage="imported", entry="main").build()
     weights = {name: values[name] for name in names}
-    infos = {
-        name: TensorInfo(name, base.node_map[name].type.dtype, tuple(value.shape), "memory")
-        for name, value in weights.items()
-    }
+    infos = {name: TensorInfo(name, base.node_map[name].type.dtype, tuple(value.shape), "memory")
+             for name, value in weights.items()}
     checkpoint = MemoryCheckpoint({}, infos, weights)
-    actual, expected, runtime = execute_and_reference(
-        module, tmp_path, torch, checkpoint=checkpoint,
-        overrides={name: value
-                   for name, value in values.items()
-                   if name not in names})
+    actual, expected, runtime = execute_and_reference(module, tmp_path, torch, checkpoint=checkpoint,
+        overrides={name: value for name, value in values.items() if name not in names})
     try:
         torch.testing.assert_close(actual, expected, atol=0, rtol=0)
         assert runtime.resource_report["spill_bytes"] == 0
@@ -103,8 +97,8 @@ def test_readonly_weights_keep_the_quantization_contract(tmp_path, definition):
         runtime.close()
 
 
-@pytest.mark.parametrize("definition,split_k",
-                         ((SparseExpertsGateUp, False), (SparseExpertsDown, False), (SparseExpertsDown, True)))
+@pytest.mark.parametrize("definition,split_k", ((SparseExpertsGateUp, False),
+                                               (SparseExpertsDown, False), (SparseExpertsDown, True)))
 @pytest.mark.parametrize("block,cyclic", ((16, False), (128, True)))
 def test_ue8m0_preserves_sharded_weight_scale_coordinates(tmp_path, definition, split_k, block, cyclic):
     require_sm90()
@@ -128,7 +122,8 @@ def test_ue8m0_preserves_sharded_weight_scale_coordinates(tmp_path, definition, 
 
 
 @pytest.mark.parametrize("definition", (SparseExpertsGateUp, SparseExpertsDown))
-@pytest.mark.parametrize("mode,implementation", (("dynamic_fp8", "simt"), (MODE, "simt"), ("dynamic_fp8", "pipeline")))
+@pytest.mark.parametrize("mode,implementation", (("dynamic_fp8", "simt"), (MODE, "simt"),
+                                                ("dynamic_fp8", "pipeline")))
 def test_quantization_group_can_span_multiple_compute_tiles(tmp_path, monkeypatch, definition, mode, implementation):
     require_sm90()
     if implementation == "pipeline":
@@ -138,10 +133,9 @@ def test_quantization_group_can_span_multiple_compute_tiles(tmp_path, monkeypatc
         compiler = Compiler()
         compiler.target = pipeline_target()
         monkeypatch.setattr(helpers, "Compiler", lambda: compiler)
-    module = stage_module(definition, dtype="bfloat16",
-                          weight_dtype="bfloat16" if implementation == "pipeline" else "float8_e4m3fn",
-                          block_scaled=True, weight_block=256, hidden=264, intermediate=264, tokens=1,
-                          activation_quantization=mode)
+    module = stage_module(definition, dtype="bfloat16", weight_dtype="bfloat16" if implementation == "pipeline" else "float8_e4m3fn",
+                          block_scaled=True, weight_block=256, hidden=264, intermediate=264,
+                          tokens=1, activation_quantization=mode)
     activation = definition.input_parameters[0].name
     values = {}
     for name in module.function_map[module.entry].parameters:
@@ -188,10 +182,9 @@ def quantize(X, Q, S, ROWS: tl.constexpr, GROUPS: tl.constexpr):
     values = bf16_domain()
     expected_codes, expected_scale = ue8m0_quantize(values)
     codes = torch.empty(values.shape, device="cuda", dtype=torch.float8_e4m3fn)
-    scale = torch.empty((len(values), ), device="cuda")
-    kernel = module.quantize[((len(values) + groups - 1) // groups, )](values.cuda(), codes, scale, len(values), groups,
-                                                                       num_warps=4)
+    scale = torch.empty((len(values),), device="cuda")
+    kernel = module.quantize[((len(values) + groups - 1) // groups,)](
+        values.cuda(), codes, scale, len(values), groups, num_warps=4)
     torch.testing.assert_close(codes.cpu().view(torch.uint8), expected_codes.view(torch.uint8), atol=0, rtol=0)
-    torch.testing.assert_close(scale.cpu().view(torch.int32),
-                               expected_scale.flatten().view(torch.int32), atol=0, rtol=0)
+    torch.testing.assert_close(scale.cpu().view(torch.int32), expected_scale.flatten().view(torch.int32), atol=0, rtol=0)
     assert kernel.n_spills == 0

@@ -9,6 +9,7 @@ entry points and filesystem scanning.
 
 from __future__ import annotations
 
+
 _REGISTERED = False
 
 
@@ -31,9 +32,11 @@ def ensure_registered() -> None:
 
     # Keep explicit references so static analyzers see these as intentional
     # side-effect imports rather than removable discovery machinery.
-    assert (_builtin and _control and _distributed and _math and _nn and _shapes and _ntt and _tensors and _tir)
+    assert (_builtin and _control and _distributed and _math and _nn and _shapes
+            and _ntt and _tensors and _tir)
 
 
 ensure_registered()
+
 
 __all__ = ["ensure_registered"]

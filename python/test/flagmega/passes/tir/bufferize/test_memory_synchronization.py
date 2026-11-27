@@ -20,29 +20,17 @@ def _workspace_options(scope: MemorySharingScope) -> BufferizationOptions:
     maximum = (1 << 31) - 1
     return BufferizationOptions((
         MemorySpace(
-            "workspace",
-            "device",
-            64,
-            maximum,
-            AllocationStrategy.SAT,
+            "workspace", "device", 64, maximum, AllocationStrategy.SAT,
             allocation_scope=MemoryAllocationScope.FUNCTION,
             sharing_scope=scope,
         ),
         MemorySpace(
-            "rdata",
-            "readonly_device",
-            64,
-            maximum,
-            AllocationStrategy.LINEAR,
+            "rdata", "readonly_device", 64, maximum, AllocationStrategy.LINEAR,
             allocation_scope=MemoryAllocationScope.MODULE,
             sharing_scope=MemorySharingScope.CHIP,
         ),
         MemorySpace(
-            "external",
-            "external",
-            1,
-            maximum,
-            AllocationStrategy.EXTERNAL,
+            "external", "external", 1, maximum, AllocationStrategy.EXTERNAL,
             allocation_scope=MemoryAllocationScope.EXTERNAL,
             sharing_scope=MemorySharingScope.CHIP,
         ),
@@ -63,7 +51,7 @@ def test_memory_synchronization_is_derived_from_concrete_raw_ranges():
     assert len(synchronization.events) == 1
     event = synchronization.events[0]
     assert (event.after, event.before, event.scope) == ("produced", "output", "block")
-    assert event.hazards == ("WRITE->READ", )
+    assert event.hazards == ("WRITE->READ",)
     assert event.ranges[0].storage == "workspace"
     assert event.ranges[0].nbytes == 256
 
@@ -151,13 +139,17 @@ def test_collective_result_in_replicated_block_storage_needs_only_block_barrier(
             "facts": {"collective_semantics": "tensor_load"},
         },
     )
-    consumed = builder.call("tir.kernel", [collective], value_type, id="consumed")
+    consumed = builder.call(
+        "tir.kernel", [collective], value_type, id="consumed"
+    )
     builder.function("main", [source], [consumed])
     module = builder.build(entry="main")
 
     synchronization = plan_memory_synchronization(
         module,
-        make_buffer_plan(module, options=_workspace_options(MemorySharingScope.BLOCK)),
+        make_buffer_plan(
+            module, options=_workspace_options(MemorySharingScope.BLOCK)
+        ),
     )
 
     assert len(synchronization.events) == 1
@@ -214,7 +206,9 @@ def test_materialized_collective_dispatch_keeps_chip_scope():
 
 def test_reference_effect_keeps_chip_scope():
     builder = IRBuilder(dialect="tir", stage="selected_tir")
-    state_type = fm.RefType("state", (("cache", tensor_type(DType.BFLOAT16, [2, 8])), ))
+    state_type = fm.RefType(
+        "state", (("cache", tensor_type(DType.BFLOAT16, [2, 8])),)
+    )
     state = builder.var("state", state_type, id="state")
     first = builder.call(
         "tir.kernel",

@@ -11,9 +11,7 @@ from triton.flagmega.errors import IRVerificationError
 
 
 def _add_module() -> fm.IRModule:
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
@@ -22,7 +20,7 @@ def _add_module() -> fm.IRModule:
             lhs = self.input("lhs", value_type, id="lhs")
             rhs = self.input("rhs", value_type, id="rhs")
             output = fm.F.math.add(lhs, rhs, name="output")
-            self.function("main", (lhs, rhs), (output, ))
+            self.function("main", (lhs, rhs), (output,))
 
     return Graph().build()
 
@@ -32,8 +30,11 @@ def test_bufferize_binds_formal_buffers_and_return_storage():
     assert all(not value.buffers for value in selected.kernel_definitions[0].parameters)
 
     allocated = Compiler().compile(selected, stop_after="bufferize").module
-    function = next(value for value in allocated.kernel_definitions
-                    if fm.kernel_dispatch_of(value).semantic_op == "math.vectorized_binary")
+    function = next(
+        value
+        for value in allocated.kernel_definitions
+        if fm.kernel_dispatch_of(value).semantic_op == "math.vectorized_binary"
+    )
     lhs, rhs, output = function.parameters
 
     assert [value.role for value in function.parameters] == [
@@ -64,14 +65,14 @@ def test_prim_function_verifier_rejects_wrong_formal_role():
     buffer = parameter.buffers[0]
     wrong_physical = replace(buffer.mem_span.buffer, memory_space="output")
     wrong_buffer = replace(buffer, mem_span=fm.MemSpan(wrong_physical))
-    wrong_parameter = replace(parameter, buffers=(wrong_buffer, ))
+    wrong_parameter = replace(parameter, buffers=(wrong_buffer,))
     wrong_function = replace(
         function,
         parameters=(wrong_parameter, *function.parameters[1:]),
     )
 
     with pytest.raises(IRVerificationError, match="wrong ABI role"):
-        fm.verify_module(replace(allocated, kernel_definitions=(wrong_function, )))
+        fm.verify_module(replace(allocated, kernel_definitions=(wrong_function,)))
 
 
 def test_buffer_plan_verifier_matches_serialized_buffers_to_graph_value_types():

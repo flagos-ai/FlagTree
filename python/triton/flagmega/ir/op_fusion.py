@@ -62,8 +62,9 @@ def has_partial_type(value_type):
     """Partial ownership can be encoded in the value or an axis policy."""
     if isinstance(value_type, TupleType):
         return any(has_partial_type(field) for field in value_type.fields)
-    return isinstance(value_type, DistributedType) and (value_type.partial is not None or any(
-        isinstance(policy, SBPPartial) for policy in value_type.axis_policies))
+    return isinstance(value_type, DistributedType) and (
+        value_type.partial is not None
+        or any(isinstance(policy, SBPPartial) for policy in value_type.axis_policies))
 
 
 def post_type(result_type, attrs):
@@ -83,10 +84,8 @@ def _type_node(value):
 
 
 def _semantic_choice_maps(definition, choices, attrs):
-    bodies = {
-        parameter.input_index: attrs.get("pre_ops", {}).get(parameter.name)
-        for parameter in definition.input_parameters
-    }
+    bodies = {parameter.input_index: attrs.get("pre_ops", {}).get(parameter.name)
+              for parameter in definition.input_parameters}
     maps = []
     for index, values in enumerate(choices):
         by_type = {}
@@ -119,7 +118,7 @@ def _inverse_fusion_types(body, output_type):
             return None
         path.append(node)
         value_id = node.inputs[0]
-    values = (output_type, )
+    values = (output_type,)
     for node in path:
         original_input = nodes[node.inputs[0]].type
         results = []
@@ -127,34 +126,34 @@ def _inverse_fusion_types(body, output_type):
             try:
                 if node.op == "tensors.cast":
                     kind = get_definition(node.op).infer_call_type(
-                        (_type_node(requested), ), {"dtype": data_type_to_data(tensor_of(original_input).dtype)})
-                    inverse = ((kind, ), )
+                        (_type_node(requested),), {"dtype": data_type_to_data(tensor_of(original_input).dtype)})
+                    inverse = ((kind,),)
                 elif node.op == "ntt.vectorized_cast":
                     kind = get_definition(node.op).infer_call_type(
-                        (_type_node(requested), ),
-                        {**node.attrs, "new_type": data_type_to_data(tensor_of(original_input).dtype)})
-                    inverse = ((kind, ), )
+                        (_type_node(requested),), {**node.attrs,
+                        "new_type": data_type_to_data(tensor_of(original_input).dtype)})
+                    inverse = ((kind,),)
                 elif node.op == "tensors.pack":
                     from triton.flagmega.ir.ops.tensors.pack import _pack_axes
                     axes = _pack_axes(node.attrs, len(node.attrs["lanes"]), tensor_of(original_input).rank)
-                    kind = get_definition("tensors.unpack").infer_call_type((_type_node(requested), ), {"axes": axes})
-                    inverse = ((kind, ), )
+                    kind = get_definition("tensors.unpack").infer_call_type((_type_node(requested),), {"axes": axes})
+                    inverse = ((kind,),)
                 elif node.op == "tensors.unpack":
                     from triton.flagmega.ir.ops.tensors.unpack import _unpack_axes
                     source = tensor_of(original_input)
                     axes = _unpack_axes(node.attrs, source)
                     kind = get_definition("tensors.pack").infer_call_type(
-                        (_type_node(requested), ), {"axes": axes, "lanes": source.dtype.lanes[:len(axes)]})
-                    inverse = ((kind, ), )
+                        (_type_node(requested),), {"axes": axes, "lanes": source.dtype.lanes[:len(axes)]})
+                    inverse = ((kind,),)
                 else:
-                    inverse = get_definition(node.op).infer_distributed_input_types(requested, (original_input, ),
-                                                                                    node.attrs)
+                    inverse = get_definition(node.op).infer_distributed_input_types(
+                        requested, (original_input,), node.attrs)
                 if inverse is None:
                     return None
                 for inputs in inverse:
                     if (len(inputs) == 1 and logical_type(inputs[0]) == logical_type(original_input)
                             and get_definition(node.op).infer_call_type(
-                                (_type_node(inputs[0]), ), node.attrs) == requested):
+                                (_type_node(inputs[0]),), node.attrs) == requested):
                         results.append(inputs[0])
             except IRSchemaError:
                 continue
@@ -168,14 +167,15 @@ def _inverse_post_types(result_type, attrs):
     fields = result_fields(result_type)
     post = attrs.get("post_ops", ())
     if not post:
-        return (result_type, )
+        return (result_type,)
     if len(post) != len(fields):
         return ()
-    choices = tuple(
-        _inverse_fusion_types(body, field) if body is not None else (field, ) for body, field in zip(post, fields))
+    choices = tuple(_inverse_fusion_types(body, field) if body is not None else (field,)
+                    for body, field in zip(post, fields))
     if any(value is None for value in choices):
         return None
-    return tuple(TupleType(values) if isinstance(result_type, TupleType) else values[0] for values in product(*choices))
+    return tuple(TupleType(values) if isinstance(result_type, TupleType) else values[0]
+                 for values in product(*choices))
 
 
 def install_op_fusion(definition):
@@ -223,8 +223,7 @@ def install_op_fusion(definition):
             # apply a PostOp to one. Both storage and effective input types
             # matter because Fusion may change the latter's representation.
             if attrs.get("post_ops") or any(has_partial_type(value.type) for value in (*inputs, *operands)):
-                raise IRSchemaError(
-                    "Partial-result PreOps require materialized original/effective inputs and no PostOps.")
+                raise IRSchemaError("Partial-result PreOps require materialized original/effective inputs and no PostOps.")
         elif any(
                 isinstance(value, DistributedType) and value.partial is not None
                 for value in (*[operand.type for operand in inputs], *result_fields(result))):
@@ -388,10 +387,8 @@ def install_op_fusion(definition):
         bases = _inverse_post_types(output_type, attrs)
         if bases is None:
             return None
-        bodies = {
-            parameter.input_index: attrs.get("pre_ops", {}).get(parameter.name)
-            for parameter in cls.input_parameters
-        }
+        bodies = {parameter.input_index: attrs.get("pre_ops", {}).get(parameter.name)
+                  for parameter in cls.input_parameters}
         results = []
         for base in bases:
             tuples = inverse_inputs(cls, base, tuple(value.type for value in operands), split_ops(attrs))
@@ -400,15 +397,13 @@ def install_op_fusion(definition):
             for effective in tuples:
                 if len(effective) != len(logical_inputs):
                     continue
-                choices = tuple(
-                    _inverse_fusion_types(bodies[index], value) if bodies.get(index) is not None else (value, )
-                    for index, value in enumerate(effective))
+                choices = tuple(_inverse_fusion_types(bodies[index], value) if bodies.get(index) is not None
+                                else (value,) for index, value in enumerate(effective))
                 if any(value is None for value in choices):
                     return None
                 for storage in product(*choices):
-                    if any(
-                            logical_type(value) != logical_type(original)
-                            for value, original in zip(storage, logical_inputs)):
+                    if any(logical_type(value) != logical_type(original)
+                           for value, original in zip(storage, logical_inputs)):
                         continue
                     try:
                         if cls.infer_call_type(tuple(_type_node(value) for value in storage), attrs) == output_type:

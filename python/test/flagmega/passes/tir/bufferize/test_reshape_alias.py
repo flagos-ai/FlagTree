@@ -12,12 +12,12 @@ def test_reshape_view_preserves_memspan_with_new_dense_shape():
     source = builder.var("source", source_type, id="source")
     result = builder.call(
         "tir.buffer_view",
-        (source, ),
+        (source,),
         result_type,
         id="result",
         attrs={"alias_kind": "reshape"},
     )
-    builder.function("main", (source, ), (result, ))
+    builder.function("main", (source,), (result,))
 
     plan = fm.make_buffer_plan(builder.build(entry="main"))
     source_buffer = plan.buffer_map[dict(plan.entry_inputs)["source"][0]]

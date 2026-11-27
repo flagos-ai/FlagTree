@@ -36,9 +36,7 @@ def _run_rotary(tmp_path, tokens, past, lanes, output_dtype="float32"):
     state = create_paged_attention_state(config, device="cuda")
     state.seq_lens.fill_(past)
     reference = torch.zeros((tokens, 17), dtype=torch.bfloat16, device="cuda")
-    outputs = [
-        torch.full((tokens, 1, 32), float("nan"), device="cuda", dtype=getattr(torch, output_dtype)) for _ in range(2)
-    ]
+    outputs = [torch.full((tokens, 1, 32), float("nan"), device="cuda", dtype=getattr(torch, output_dtype)) for _ in range(2)]
     buffers = {}
     binding = runtime.buffer_plan.function_map[module.entry]
     for value, names in binding.parameters:
@@ -59,7 +57,7 @@ def _run_rotary(tmp_path, tokens, past, lanes, output_dtype="float32"):
 
 
 @pytest.mark.parametrize("tokens,past", ((1, 3), (3, 0), (9, 13)))
-@pytest.mark.parametrize("lanes", [(), (8, ), (2, 4)])
+@pytest.mark.parametrize("lanes", [(), (8,), (2, 4)])
 def test_rotary_chunk_positions(tmp_path, tokens, past, lanes):
     outputs = _run_rotary(tmp_path, tokens, past, lanes)
     torch = pytest.importorskip("torch")
@@ -69,7 +67,7 @@ def test_rotary_chunk_positions(tmp_path, tokens, past, lanes):
         torch.testing.assert_close(actual.cpu(), expected, rtol=2e-5, atol=2e-6)
 
 
-@pytest.mark.parametrize("lanes", [(8, ), (2, 4), (4, 2)])
+@pytest.mark.parametrize("lanes", [(8,), (2, 4), (4, 2)])
 @pytest.mark.parametrize("tokens,past", [(1, 3), (9, 13)])
 def test_vector_output_is_bitwise_equal_to_scalar_kernel(tmp_path, lanes, tokens, past):
     torch = pytest.importorskip("torch")
@@ -79,7 +77,7 @@ def test_vector_output_is_bitwise_equal_to_scalar_kernel(tmp_path, lanes, tokens
         assert torch.equal(actual.view(torch.int32), expected.view(torch.int32))
 
 
-@pytest.mark.parametrize("lanes", [(), (8, ), (2, 8)])
+@pytest.mark.parametrize("lanes", [(), (8,), (2, 8)])
 @pytest.mark.parametrize("tokens,past", [(1, 17), (3, 81)])
 def test_rotary_bf16_store_equals_explicit_fp32_table_cast(tmp_path, lanes, tokens, past):
     torch = pytest.importorskip("torch")

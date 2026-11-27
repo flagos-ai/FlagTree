@@ -23,15 +23,12 @@ from triton.flagmega.errors import ArtifactError
 _SCHEMA = 'flagmega.frozen-native-specializations/v1'
 _SEAL = object()
 
-
 def _error(message):
     raise ArtifactError('Frozen native specialization: ' + message)
-
 
 def _object(value, fields, label):
     if type(value) is not dict or set(value) != set(fields):
         _error(f'invalid {label} fields.')
-
 
 def _canonical(value):
     try:
@@ -39,11 +36,9 @@ def _canonical(value):
     except (TypeError, ValueError) as error:
         raise ArtifactError('Frozen native input requires finite JSON data.') from error
 
-
 def _sha(value):
     if type(value) is not str or re.fullmatch('[0-9a-f]{64}', value) is None:
         _error('requires complete SHA256 identities.')
-
 
 def _pin(value):
     _object(value, {'path', 'sha256', 'nbytes'}, 'file identity')
@@ -53,11 +48,9 @@ def _pin(value):
     if type(value['nbytes']) is not int or value['nbytes'] < 0:
         _error('file byte counts require nonnegative integers.')
 
-
 def _stat(path):
     value = path.stat()
     return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
-
 
 @lru_cache(maxsize=128)
 def _digest(path, identity):
@@ -68,7 +61,6 @@ def _digest(path, identity):
     if _stat(Path(path)) != identity:
         _error('file changed while verifying its digest.')
     return digest.hexdigest()
-
 
 def _verify_file(value):
     _pin(value)
@@ -83,7 +75,6 @@ def _verify_file(value):
         raise ArtifactError(f'Cannot read frozen native identity {path}.') from error
     return path
 
-
 def _json_file(value):
     path = _verify_file(value)
     try:
@@ -95,11 +86,9 @@ def _json_file(value):
         _error('JSON identity must contain an object.')
     return data
 
-
 def _runtime_library_path():
     from triton._C import libtriton
     return Path(libtriton.__file__).resolve()
-
 
 def _mapped_library_identity(path):
     for line in Path('/proc/self/maps').read_text().splitlines():
@@ -110,7 +99,6 @@ def _mapped_library_identity(path):
             major, minor = (int(value, 16) for value in fields[3].split(':'))
             yield os.makedev(major, minor), int(fields[4])
 
-
 def _verify_runtime_driver(value):
     path = _verify_file(value).resolve()
     if _runtime_library_path() != path:
@@ -120,19 +108,14 @@ def _verify_runtime_driver(value):
         _error('expected runtime library inode/device is not mapped in this process.')
     _verify_file(value)
 
-
 def _indices(value, label):
     if (type(value) is not list or any(type(item) is not int or item < 0 for item in value)
             or len(set(value)) != len(value)):
         _error(f'invalid {label}.')
 
-
 def _validate(data):
-    _object(
-        data, {
-            'schema', 'artifact_identity', 'semantic_hash', 'target', 'codegen_backend',
-            'expected_runtime_driver_identity', 'compiler_provenance', 'entries'
-        }, 'bundle')
+    _object(data, {'schema', 'artifact_identity', 'semantic_hash', 'target', 'codegen_backend',
+                   'expected_runtime_driver_identity', 'compiler_provenance', 'entries'}, 'bundle')
     if data['schema'] != _SCHEMA or data['target'] != 'nvidia-sm90' or data['codegen_backend'] != 'triton':
         _error('unsupported schema, target or backend.')
     _pin(data['artifact_identity'])
@@ -151,11 +134,8 @@ def _validate(data):
     if type(data['entries']) is not list or len(data['entries']) != 1:
         _error('requires exactly the supported single entry, with no missing or extra specialization.')
     for entry in data['entries']:
-        _object(
-            entry, {
-                'symbol', 'source_identity', 'native_key', 'ast', 'native_metadata_identity', 'metadata_group',
-                'program_binding'
-            }, 'entry')
+        _object(entry, {'symbol', 'source_identity', 'native_key', 'ast', 'native_metadata_identity',
+                        'metadata_group', 'program_binding'}, 'entry')
         if type(entry['symbol']) is not str or not entry['symbol'].isidentifier():
             _error('invalid entry symbol.')
         _sha(entry['native_key'])
@@ -204,7 +184,6 @@ def _validate(data):
         if group[entry['symbol'] + '.json'] != entry['native_metadata_identity']:
             _error('raw metadata identity differs from the group member.')
 
-
 @dataclass(frozen=True)
 class FrozenNativeSpecializations:
     """Verified JSON value; edits to caller input cannot change this binding."""
@@ -233,8 +212,9 @@ class FrozenNativeSpecializations:
             _error('loaded artifact metadata differs from its exact identity.')
         codegen = manifest.get('codegen', {})
         if (manifest.get('semantic_hash') != data['semantic_hash'] or manifest.get('target') != data['target']
-                or manifest.get('codegen_backend', 'triton') != 'triton' or codegen.get('kind') != 'tir_call_graph/v1'
-                or codegen.get('kernels') is not None or codegen.get('kernel_program_schema') is not None):
+                or manifest.get('codegen_backend', 'triton') != 'triton'
+                or codegen.get('kind') != 'tir_call_graph/v1' or codegen.get('kernels') is not None
+                or codegen.get('kernel_program_schema') is not None):
             _error('unsupported artifact/package/program sequence or semantic identity.')
         entry = data['entries'][0]
         if codegen.get('symbol') != entry['symbol']:
@@ -253,9 +233,7 @@ class FrozenNativeSpecializations:
         result.verify_artifact(path, manifest, codegen)
         return result
 
-
 class BoundFrozenNative:
-
     def __init__(self, data, artifact, manifest, seal):
         if seal is not _SEAL:
             _error('requires an authenticated bundle binding.')
@@ -282,13 +260,12 @@ class BoundFrozenNative:
             _error('native key/entry differs from raw metadata.')
         if metadata.get('target') != {'backend': 'cuda', 'arch': 90, 'warp_size': 32}:
             _error('raw native target differs from the selected target.')
-        if (type(metadata['target']['arch']) is not int or type(metadata['target']['warp_size']) is not int):
+        if (type(metadata['target']['arch']) is not int
+                or type(metadata['target']['warp_size']) is not int):
             _error('raw native target requires exact integer architecture/warp size.')
-        for key in [
-                'num_warps', 'num_ctas', 'shared', 'global_scratch_size', 'global_scratch_align',
-                'profile_scratch_size', 'profile_scratch_align', 'ptxas_stack_frame_bytes', 'ptxas_spill_store_bytes',
-                'ptxas_spill_load_bytes'
-        ]:
+        for key in ['num_warps', 'num_ctas', 'shared', 'global_scratch_size', 'global_scratch_align',
+                    'profile_scratch_size', 'profile_scratch_align', 'ptxas_stack_frame_bytes',
+                    'ptxas_spill_store_bytes', 'ptxas_spill_load_bytes']:
             if type(metadata.get(key)) is not int or metadata[key] < 0:
                 _error(f'raw native {key} requires exact integer metadata.')
         if metadata['num_warps'] <= 0 or metadata['num_ctas'] <= 0:
@@ -318,23 +295,21 @@ class BoundFrozenNative:
         if list(kernel.arg_names) != ast['function_argument_names']:
             _error('source argument names differ from captured AST.')
         source = ASTSource(kernel, signature=ast['signature'],
-                           attrs={tuple(row['key']): row['value']
-                                  for row in ast['attrs']},
-                           constexprs={tuple(row['key']): row['value']
-                                       for row in ast['constexprs']})
+                           attrs={tuple(row['key']): row['value'] for row in ast['attrs']},
+                           constexprs={tuple(row['key']): row['value'] for row in ast['constexprs']})
         if source.hash() != ast['hash']:
             _error('source/signature/attrs/constexpr AST hash differs.')
         if self._compiled is not None and self._compiled.src.fn is kernel:
             return
-        compiled = CompiledKernel(source, {name: item['path']
-                                           for name, item in entry['metadata_group'].items()}, entry['native_key'])
+        compiled = CompiledKernel(source, {name: item['path'] for name, item in entry['metadata_group'].items()},
+                                  entry['native_key'])
         if hashlib.sha256(compiled.kernel).hexdigest() != entry['metadata_group'][entry['symbol'] + '.cubin']['sha256']:
             _error('constructed binary differs from its frozen CUBIN identity.')
         self._compiled = compiled
 
     def prepare(self, kernel, arguments, dynamic_indices, *, grid, contract, allocation_device=None, **options):
         self.verify_artifact(self._artifact, json.loads(self._manifest), json.loads(self._manifest)['codegen'])
-        self.validate_kernels((kernel, ))
+        self.validate_kernels((kernel,))
         entry = self._data['entries'][0]
         binding = entry['program_binding']
         if (list(grid) != binding['grid'] or list(dynamic_indices) != binding['dynamic_argument_indices']
@@ -366,7 +341,7 @@ class BoundFrozenNative:
         if live.hash() != entry['ast']['hash']:
             _error('projected live arguments do not match the captured specialization.')
         from triton.flagmega.runtime.prepared import prepare_compiled_kernel
-        result = prepare_compiled_kernel(self._compiled, arguments, dynamic_indices, grid=grid, contract=contract,
-                                         allocation_device=allocation_device)
+        result = prepare_compiled_kernel(self._compiled, arguments, dynamic_indices, grid=grid,
+                                         contract=contract, allocation_device=allocation_device)
         self.verify_artifact(self._artifact, json.loads(self._manifest), json.loads(self._manifest)['codegen'])
         return result

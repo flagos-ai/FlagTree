@@ -59,7 +59,7 @@ class Buffer(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         size = tensor_nbytes(node.type) if hasattr(node.type, "shape") else None
-        return OpCost(bytes_read=size, notes=(str(node.attrs["storage"]), ))
+        return OpCost(bytes_read=size, notes=(str(node.attrs["storage"]),))
 
     @classmethod
     def python_call(cls, node: Node) -> PythonCall:
@@ -73,4 +73,4 @@ class Buffer(OpDefinition):
         }
         if node.metadata:
             keywords["metadata"] = node.metadata
-        return PythonCall("F.tir.buffer", (node.type, ), keywords)
+        return PythonCall("F.tir.buffer", (node.type,), keywords)

@@ -12,6 +12,7 @@ from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType
 from triton.flagmega.runtime import load
 
+
 BASE = "tir.dense_matmul.packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats"
 
 
@@ -29,12 +30,13 @@ def test_shared_lhs_matches_direct_lhs_exactly_with_capacity_padding(tmp_path, r
     weight[:16, 1] = 1 / 256
     weights = {
         "weight": weight,
-        "scale": torch.ones((2048, ), dtype=torch.bfloat16),
-        "bias": torch.zeros((2048, ), dtype=torch.bfloat16),
+        "scale": torch.ones((2048,), dtype=torch.bfloat16),
+        "bias": torch.zeros((2048,), dtype=torch.bfloat16),
     }
-    checkpoint = MemoryCheckpoint(
-        {}, {name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
-             for name, value in weights.items()}, weights)
+    checkpoint = MemoryCheckpoint({}, {
+        name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
+        for name, value in weights.items()
+    }, weights)
     value = torch.randn((1, reduction_extent), dtype=torch.bfloat16, generator=generator).cuda() / 8
     value[:, :2] = 1
     residual = torch.randn((1, 2048), dtype=torch.bfloat16, generator=generator).cuda() / 8
@@ -44,15 +46,13 @@ def test_shared_lhs_matches_direct_lhs_exactly_with_capacity_padding(tmp_path, r
         from triton.flagmega.compiler import Compiler
         from triton.flagmega.targets import NvidiaSm90Target
         base = NvidiaSm90Target().triton_implementation_model
-        model = replace(
-            base, implementations=tuple(
-                replace(i, parameters={**i.parameters, "accumulation_mode": accumulation_mode, "mma_block_k": 128}
-                        ) if i.id in {BASE, BASE + "_lhs8192"} else i for i in base.implementations))
+        model = replace(base, implementations=tuple(
+            replace(i, parameters={**i.parameters, "accumulation_mode": accumulation_mode, "mma_block_k": 128})
+            if i.id in {BASE, BASE + "_lhs8192"} else i for i in base.implementations))
         compiler = Compiler()
         compiler.target = NvidiaSm90Target(triton_implementation_model=model)
         module = _packed_norm_stats_pipeline_module(BASE + suffix, reduction_extent=reduction_extent, compiler=compiler)
-        artifact = write_artifact(module, tmp_path / (suffix or "direct"), target="nvidia-sm90", checkpoint=checkpoint,
-                                  emit_executable=True)
+        artifact = write_artifact(module, tmp_path / (suffix or "direct"), target="nvidia-sm90", checkpoint=checkpoint, emit_executable=True)
         runtime = load(artifact, device="cuda:0")
         output = runtime.create_outputs()
         runtime.prepare(value, residual, output=output)
@@ -65,6 +65,5 @@ def test_shared_lhs_matches_direct_lhs_exactly_with_capacity_padding(tmp_path, r
     torch.testing.assert_close(outputs[1], outputs[0], rtol=0, atol=0)
     assert torch.count_nonzero(outputs[1][:, :16]) == 0
     expected_value = value @ weight.cuda().T + residual
-    expected = (expected_value.float() * torch.rsqrt(expected_value.float().square().mean(-1, keepdim=True) + 1e-6)).to(
-        torch.bfloat16)
+    expected = (expected_value.float() * torch.rsqrt(expected_value.float().square().mean(-1, keepdim=True) + 1e-6)).to(torch.bfloat16)
     torch.testing.assert_close(outputs[1], expected, rtol=4e-2, atol=4e-2)

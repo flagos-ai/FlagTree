@@ -41,13 +41,15 @@ class Buffer(TIRNode):
         )
         if not self.name:
             raise IRSchemaError("TIR Buffer requires a non-empty name.")
-        if self.owner_stride_bytes is not None and (type(self.owner_stride_bytes) is not int
-                                                    or self.owner_stride_bytes < (self.mem_span.size.maximum or 0)
-                                                    or self.owner_stride_bytes % self.elem_type.itemsize
-                                                    or self.distributed_storage_kind not in {
-                                                        DistributedBufferStorageKind.COMPACT_PER_OWNER,
-                                                        DistributedBufferStorageKind.COMPACT_PER_CHIP,
-                                                    }):
+        if self.owner_stride_bytes is not None and (
+            type(self.owner_stride_bytes) is not int
+            or self.owner_stride_bytes < (self.mem_span.size.maximum or 0)
+            or self.owner_stride_bytes % self.elem_type.itemsize
+            or self.distributed_storage_kind not in {
+                DistributedBufferStorageKind.COMPACT_PER_OWNER,
+                DistributedBufferStorageKind.COMPACT_PER_CHIP,
+            }
+        ):
             raise IRSchemaError("TIR Buffer owner stride requires aligned compact-per-owner storage.")
         if len(self.dimensions) != len(self.strides):
             raise IRSchemaError("TIR Buffer dimensions and element strides must have equal rank.")
@@ -59,62 +61,102 @@ class Buffer(TIRNode):
             logical = self.distributed_type.tensor
             if logical.dtype != self.elem_type or logical.shape != self.dimensions:
                 raise IRSchemaError("TIR Buffer DistributedType must match its dtype and dimensions.")
-        elif (self.distributed_storage_kind is not DistributedBufferStorageKind.COMPACT_LOCAL
-              or self.distributed_backing_type is not None):
+        elif (
+            self.distributed_storage_kind is not DistributedBufferStorageKind.COMPACT_LOCAL
+            or self.distributed_backing_type is not None
+        ):
             raise IRSchemaError("Non-local distributed buffer storage requires a DistributedType.")
-        if (self.distributed_storage_kind is DistributedBufferStorageKind.CANONICAL_GLOBAL
-                and self.mem_span.buffer.memory_space in {"shared", "block_local_data", "block_local_rdata"}):
+        if (
+            self.distributed_storage_kind is DistributedBufferStorageKind.CANONICAL_GLOBAL
+            and self.mem_span.buffer.memory_space in {"shared", "block_local_data", "block_local_rdata"}
+        ):
             raise IRSchemaError("Canonical-global buffers cannot use block-local/shared storage.")
-        if (self.distributed_storage_kind is DistributedBufferStorageKind.REPLICATED_LOCAL
-                and (self.distributed_type is None or self.distributed_type.partial is not None)):
-            raise IRSchemaError("Replicated-local buffers require a non-partial distributed tensor.")
+        if (
+            self.distributed_storage_kind
+            is DistributedBufferStorageKind.REPLICATED_LOCAL
+            and (
+                self.distributed_type is None
+                or self.distributed_type.partial is not None
+            )
+        ):
+            raise IRSchemaError(
+                "Replicated-local buffers require a non-partial distributed tensor."
+            )
         if self.distributed_storage_kind is DistributedBufferStorageKind.EXCLUSIVE_LOCAL:
             if self.distributed_type is None or self.distributed_type.exclusive is None or any(
-                    not self.distributed_type.placement.is_physical_block_axis(axis)
-                    for axis in self.distributed_type.exclusive.axes):
+                not self.distributed_type.placement.is_physical_block_axis(axis)
+                for axis in self.distributed_type.exclusive.axes
+            ):
                 raise IRSchemaError("Exclusive-local buffers require physical block E axes.")
         if self.distributed_backing_type is not None:
             backing = self.distributed_backing_type
             if self.distributed_storage_kind not in {
-                    DistributedBufferStorageKind.COMPACT_LOCAL,
-                    DistributedBufferStorageKind.COMPACT_PER_OWNER,
-                    DistributedBufferStorageKind.COMPACT_PER_CHIP,
-            }:
-                raise IRSchemaError("A parent-shard backing is valid only for compact distributed storage.")
-            if (self.distributed_type is None or backing.tensor != self.distributed_type.tensor
-                    or backing.placement != self.distributed_type.placement
-                    or not is_component_shard_subview(backing, self.distributed_type)):
-                raise IRSchemaError("A parent-shard backing must contain every target local shard.")
-        if (self.distributed_type is not None and self.distributed_storage_kind in {
+                DistributedBufferStorageKind.COMPACT_LOCAL,
                 DistributedBufferStorageKind.COMPACT_PER_OWNER,
                 DistributedBufferStorageKind.COMPACT_PER_CHIP,
-        } and self.mem_span.buffer.size.minimum is not None and self.mem_span.size.maximum is not None
-                and self.mem_span.end.maximum is not None and self.mem_span.buffer.size.minimum
-                < (self.owner_stride_bytes if self.owner_stride_bytes is not None else self.mem_span.size.maximum) *
-            ((placement_owner_count(self.distributed_backing_type or self.distributed_type)
-              if self.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER else block_owner_count(
-                  self.distributed_backing_type or self.distributed_type)) - 1) + self.mem_span.end.maximum):
-            raise IRSchemaError("Compact-per-owner Buffer backing must contain one component per placement owner.")
-        if (all(value.is_fixed for value in self.dimensions) and all(value.is_fixed for value in self.strides)
-                and self.mem_span.size.is_fixed):
+            }:
+                raise IRSchemaError(
+                    "A parent-shard backing is valid only for compact distributed storage."
+                )
+            if (
+                self.distributed_type is None
+                or backing.tensor != self.distributed_type.tensor
+                or backing.placement != self.distributed_type.placement
+                or not is_component_shard_subview(backing, self.distributed_type)
+            ):
+                raise IRSchemaError(
+                    "A parent-shard backing must contain every target local shard."
+                )
+        if (
+            self.distributed_type is not None
+            and self.distributed_storage_kind in {
+                DistributedBufferStorageKind.COMPACT_PER_OWNER,
+                DistributedBufferStorageKind.COMPACT_PER_CHIP,
+            }
+            and self.mem_span.buffer.size.minimum is not None
+            and self.mem_span.size.maximum is not None
+            and self.mem_span.end.maximum is not None
+            and self.mem_span.buffer.size.minimum
+            < (self.owner_stride_bytes if self.owner_stride_bytes is not None else self.mem_span.size.maximum)
+            * ((placement_owner_count(self.distributed_backing_type or self.distributed_type)
+                if self.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
+                else block_owner_count(self.distributed_backing_type or self.distributed_type)) - 1) + self.mem_span.end.maximum
+        ):
+            raise IRSchemaError(
+                "Compact-per-owner Buffer backing must contain one component per placement owner."
+            )
+        if (
+            all(value.is_fixed for value in self.dimensions)
+            and all(value.is_fixed for value in self.strides)
+            and self.mem_span.size.is_fixed
+        ):
             storage_dimensions = (
-                local_shape(self.distributed_backing_type or self.distributed_type) if self.distributed_type is not None
-                and not self.distributed_storage_kind.exposes_logical_coordinates else self.dimensions)
+                local_shape(
+                    self.distributed_backing_type or self.distributed_type
+                )
+                if self.distributed_type is not None
+                and not self.distributed_storage_kind.exposes_logical_coordinates
+                else self.dimensions
+            )
             if any(value.fixed_value == 0 for value in storage_dimensions):
                 required = 0
             else:
-                last_element = sum((dimension.fixed_value - 1) * stride.fixed_value
-                                   for dimension, stride in zip(storage_dimensions, self.strides))
+                last_element = sum(
+                    (dimension.fixed_value - 1) * stride.fixed_value
+                    for dimension, stride in zip(storage_dimensions, self.strides)
+                )
                 required = (last_element + 1) * self.elem_type.itemsize
             if required > self.mem_span.size.fixed_value:
-                raise IRSchemaError(f"TIR Buffer {self.name!r} needs {required} bytes but its MemSpan has "
-                                    f"{self.mem_span.size.fixed_value}.")
+                raise IRSchemaError(
+                    f"TIR Buffer {self.name!r} needs {required} bytes but its MemSpan has "
+                    f"{self.mem_span.size.fixed_value}."
+                )
 
     @property
     def component_stride_bytes(self) -> int:
         if self.distributed_storage_kind not in {
-                DistributedBufferStorageKind.COMPACT_PER_OWNER,
-                DistributedBufferStorageKind.COMPACT_PER_CHIP,
+            DistributedBufferStorageKind.COMPACT_PER_OWNER,
+            DistributedBufferStorageKind.COMPACT_PER_CHIP,
         }:
             return 0
         stride = self.owner_stride_bytes if self.owner_stride_bytes is not None else self.mem_span.size.maximum

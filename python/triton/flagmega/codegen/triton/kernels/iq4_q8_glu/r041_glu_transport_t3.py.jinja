@@ -1,0 +1,9 @@
+{# R031 t3 arithmetic; static recipe and checked ROWS. #}
+from triton.flagmega.codegen.triton.iq4_q8_static_t3 import transport_t3
+{% for call in render_calls %}
+{% if call.variant == "r041_glu_transport_t3" and call.family == "iq4_q8_glu" %}
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+    transport_t3({{ call.pointers | join(', ') }}{% for name,value in call.constexprs.items() %},{{ name }}={{ value }}{% endfor %})
+{% endif %}
+{% endfor %}

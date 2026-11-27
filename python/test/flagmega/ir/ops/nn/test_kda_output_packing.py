@@ -32,15 +32,15 @@ def operands(gated):
 
 
 @pytest.mark.parametrize("gated", [False, True])
-@pytest.mark.parametrize("lanes", [(), (4, ), (2, 2), (1, )])
+@pytest.mark.parametrize("lanes", [(), (4,), (2, 2), (1,)])
 def test_kda_packed_activation_preserves_rounding_state_and_serialization(tmp_path, gated, lanes):
     definition, types, values, attrs = operands(gated)
     scalar = primitive_module(definition, types, **attrs)
     packed = primitive_module(definition, types, **attrs, output_lanes=lanes)
     pair = packed.node_map["output"].type
     assert pair.fields[1] == scalar.node_map["output"].type.fields[1]
-    assert pair.fields[0] == fm.tensor_type(
-        fm.vector_type("bfloat16", lanes) if lanes else "bfloat16", (1, 2, 4 // prod(lanes)))
+    assert pair.fields[0] == fm.tensor_type(fm.vector_type("bfloat16", lanes) if lanes else "bfloat16",
+                                          (1, 2, 4 // prod(lanes)))
     evaluator = TorchEvaluator(DictWeightResolver({}))
     expected, state = evaluator.run(scalar, values)[0]
     actual, packed_state = evaluator.run(packed, values)[0]
@@ -53,7 +53,7 @@ def test_kda_packed_activation_preserves_rounding_state_and_serialization(tmp_pa
 
 
 @pytest.mark.parametrize("gated", [False, True])
-@pytest.mark.parametrize("lanes", [None, 4, (0, ), (-1, ), (True, ), (2.0, )])
+@pytest.mark.parametrize("lanes", [None, 4, (0,), (-1,), (True,), (2.0,)])
 def test_kda_rejects_invalid_output_lanes(gated, lanes):
     definition, types, _, attrs = operands(gated)
     with pytest.raises(IRSchemaError, match="output_lanes"):
@@ -64,4 +64,4 @@ def test_kda_rejects_invalid_output_lanes(gated, lanes):
 def test_kda_rejects_output_lanes_crossing_a_head_value_boundary(gated):
     definition, types, _, attrs = operands(gated)
     with pytest.raises(IRSchemaError, match="head_v must be divisible"):
-        primitive_module(definition, types, **attrs, output_lanes=(8, ))
+        primitive_module(definition, types, **attrs, output_lanes=(8,))

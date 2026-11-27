@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""PrimFunction-scoped pass and mutator fixed point."""
+"""PrimFunction-scoped pass and nncase-style mutator fixed point."""
 
 from __future__ import annotations
 
@@ -22,8 +22,7 @@ class PrimFunctionPass(Protocol):
         function: PrimFunction,
         module: IRModule,
         context: RunPassContext,
-    ) -> PrimFunction:
-        ...
+    ) -> PrimFunction: ...
 
 
 PrimFunctionTransform = Callable[[PrimFunction, IRModule, RunPassContext], PrimFunction]
@@ -48,17 +47,17 @@ class FunctionalPrimFunctionPass:
 class PrimFuncPass:
     """Run ordered, freshly-created TIR rewriters until none mutates.
 
-    Like reference, one successful mutator restarts the ordered list so rules can
+    Like nncase, one successful mutator restarts the ordered list so rules can
     expose earlier canonicalizations.  Fresh instances prevent rewriter memo
     and mutation state from leaking across iterations or PrimFunctions.
     """
 
     def __init__(
-            self,
-            name: str,
-            *,
-            max_iterations: int = 128,
-            preserves: frozenset[str] = frozenset(),
+        self,
+        name: str,
+        *,
+        max_iterations: int = 128,
+        preserves: frozenset[str] = frozenset(),
     ) -> None:
         if not name or max_iterations <= 0:
             raise ValueError("PrimFuncPass requires a name and positive max_iterations.")
@@ -88,14 +87,17 @@ class PrimFuncPass:
                 rewritten = mutator.rewrite(current)
                 if not isinstance(rewritten, PrimFunction):
                     raise IRVerificationError(
-                        f"PrimFuncPass {self.name!r} mutator changed the root into {type(rewritten).__name__}.")
+                        f"PrimFuncPass {self.name!r} mutator changed the root into {type(rewritten).__name__}."
+                    )
                 if mutator.is_mutated:
                     current = rewritten
                     break
             else:
                 return current
-        raise IRVerificationError(f"PrimFuncPass {self.name!r} did not converge for @{function.name} "
-                                  f"after {self.max_iterations} mutations.")
+        raise IRVerificationError(
+            f"PrimFuncPass {self.name!r} did not converge for @{function.name} "
+            f"after {self.max_iterations} mutations."
+        )
 
 
 __all__ = [

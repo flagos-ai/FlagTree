@@ -34,7 +34,9 @@ class DistributedReshardCostModel:
     def __post_init__(self) -> None:
         value = self.grid_synchronization_cost
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            raise ValueError("grid_synchronization_cost must be a non-negative integer.")
+            raise ValueError(
+                "grid_synchronization_cost must be a non-negative integer."
+            )
 
     def realization_cost(
         self,
@@ -46,7 +48,7 @@ class DistributedReshardCostModel:
         if realization == DistributedReshardRealization.BOXING:
             if self.operation_cost_model is not None:
                 source = Node("<collective-source>", "builtin.var", (), context.source_type)
-                factors = Boxing.cost_factors((source, ), {"new_type": context.target_type}, context.target_type)
+                factors = Boxing.cost_factors((source,), {"new_type": context.target_type}, context.target_type)
                 if factors is not None:
                     return self.operation_cost_model.get_latency(factors, context.target_type)
             return reshard_step_cost(context.source_type, context.target_type)
@@ -68,7 +70,10 @@ class DistributedReshardCostModel:
             # Constants enter unified storage during materialization rather
             # than through a runtime producer/consumer edge.
             return 0
-        if (isinstance(target, DistributedType) and is_local_shard_subview(source, target)):
+        if (
+            isinstance(target, DistributedType)
+            and is_local_shard_subview(source, target)
+        ):
             return 0
         return self.grid_synchronization_cost
 
@@ -80,18 +85,22 @@ class DistributedReshardCostModel:
         A Partial reduction also needs that producer completion. Only its
         input barrier is shareable; transfer and arithmetic work are not.
         """
-        if (context.source_kind is not DistributedReshardSourceKind.INTERNAL or context.usage_kind not in {
+        if (
+            context.source_kind is not DistributedReshardSourceKind.INTERNAL
+            or context.usage_kind not in {
                 DistributedReshardUsageKind.INTERNAL,
                 DistributedReshardUsageKind.FUNCTION_BOUNDARY,
-        } or not isinstance(context.source_type, DistributedType)
-                or not isinstance(context.target_type, DistributedType)
-                or context.source_type.exclusive != context.target_type.exclusive):
+            }
+            or not isinstance(context.source_type, DistributedType)
+            or not isinstance(context.target_type, DistributedType)
+            or context.source_type.exclusive != context.target_type.exclusive
+        ):
             return 0
         if realization is DistributedReshardRealization.SHARDED_VIEW:
             return self.realization_cost(context, realization)
         if realization is DistributedReshardRealization.BOXING and self.operation_cost_model is not None:
             source = Node("<collective-source>", "builtin.var", (), context.source_type)
-            factors = Boxing.cost_factors((source, ), {"new_type": context.target_type}, context.target_type)
+            factors = Boxing.cost_factors((source,), {"new_type": context.target_type}, context.target_type)
             if factors is not None and factors.grid_synchronizations == 1:
                 return self.operation_cost_model.grid_synchronization_cycles
         return 0

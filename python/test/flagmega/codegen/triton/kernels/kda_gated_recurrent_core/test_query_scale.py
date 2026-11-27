@@ -9,7 +9,8 @@ from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 
 from python.test.flagmega.codegen.triton.kernels.kda_gated_recurrent_core.test_kda_gated_recurrent_runtime import (
-    _module, )
+    _module,
+)
 
 
 @pytest.mark.parametrize("gated", (False, True))
@@ -26,22 +27,23 @@ def test_scaled_readout_keeps_the_same_state_after_optional_normalization(tmp_pa
     if gated:
         # The saturated forget sigmoid makes exp(decay) round to one. Beta's
         # sigmoid is exactly 1/2, leaving a nonzero state to test independently.
-        host.update(gate=torch.full_like(vector, -100), decay_rate=torch.ones(1, 2, 4), gate_bias=torch.zeros(1, 2, 4),
-                    beta=torch.zeros(1, 2, dtype=torch.bfloat16))
+        host.update(gate=torch.full_like(vector, -100), decay_rate=torch.ones(1, 2, 4),
+                    gate_bias=torch.zeros(1, 2, 4), beta=torch.zeros(1, 2, dtype=torch.bfloat16))
     else:
         host.update(decay=torch.zeros(1, 2, 4), beta=torch.full((1, 2), .5))
-    packing_attrs = ({"output_lanes": (2, )} if packing == "direct" else {"consumer_lanes":
-                                                                          (2, )} if packing == "demand" else {})
+    packing_attrs = ({"output_lanes": (2,)} if packing == "direct" else
+                     {"consumer_lanes": (2,)} if packing == "demand" else {})
     module = _module(gated=gated, l2norm=l2norm, query_scale=.5, **packing_attrs)
-    path = write_artifact(Compiler().compile(module).module, tmp_path / "scaled", target="nvidia-sm90",
-                          emit_executable=True)
+    path = write_artifact(Compiler().compile(module).module, tmp_path / "scaled",
+                          target="nvidia-sm90", emit_executable=True)
     assert "# flagmega-kernel: pack/" not in (path / "generated_kernels.py").read_text()
     runtime = load(path, device="cuda:0")
     try:
         values = {name: tensor.cuda() for name, tensor in host.items()}
         expected = torch.tensor([[[.5625, 1., 1.5, 2.]]]).repeat(1, 2, 1).bfloat16()
         shape = (1, 2, 4) if packing == "scalar" else (1, 2, 2, 2)
-        buffers = (torch.empty(shape, dtype=torch.bfloat16, device="cuda"), torch.empty_like(state, device="cuda"))
+        buffers = (torch.empty(shape, dtype=torch.bfloat16, device="cuda"),
+                   torch.empty_like(state, device="cuda"))
         specs = [spec for spec in runtime.external_arguments if spec["role"] == "result"]
         outputs = {spec["value"]: buffer for spec, buffer in zip(specs, buffers, strict=True)}
         arguments = tuple(outputs[spec["value"]] if spec["role"] == "result" else values[spec["value"]]

@@ -38,15 +38,10 @@ def execute_coefficients(tmp_path, key, beta, *, block_size=64, split_axes=(), l
         from dataclasses import replace
         from triton.flagmega.passes.functions import function_nodes
         source = compiler.compile(source, stop_after="select-microkernels").module
-        calls = tuple(n.id
-                      for n in function_nodes(source, source.function_map[source.entry])
+        calls = tuple(n.id for n in function_nodes(source, source.function_map[source.entry])
                       if n.op in {"tir.call", "builtin.call", "tir.kernel"})
-        source = fm.verify_module(
-            replace(
-                source, metadata={
-                    **source.metadata, "kernel_program_partition":
-                    ({"symbol": "coefficients_program", "calls": calls, "num_warps": num_warps}, )
-                }))
+        source = fm.verify_module(replace(source, metadata={**source.metadata,
+            "kernel_program_partition": ({"symbol": "coefficients_program", "calls": calls, "num_warps": num_warps},)}))
     compiled = compiler.compile(source).module
     artifact = write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     runtime = load(artifact, device="cuda:0")

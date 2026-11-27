@@ -19,14 +19,17 @@ def configure_joint_shared_carveout(prepared, required_bytes, physical_capacity)
     enqueue order or reserving all shared capacity for every DAG.
     """
     if physical_capacity <= 0 or required_bytes > physical_capacity:
-        raise RuntimeContractError("Joint program residency exceeds or lacks a physical shared-memory capacity.")
+        raise RuntimeContractError(
+            "Joint program residency exceeds or lacks a physical shared-memory capacity."
+        )
     percentage = -(-required_bytes * 100 // physical_capacity)
     try:
         library = ctypes.CDLL("libcuda.so.1")
         setter = library.cuFuncSetAttribute
     except (OSError, AttributeError) as error:
         raise RuntimeContractError(
-            "The CUDA driver must expose cuFuncSetAttribute for concurrent program cache configuration.") from error
+            "The CUDA driver must expose cuFuncSetAttribute for concurrent program cache configuration."
+        ) from error
     setter.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_int)
     setter.restype = ctypes.c_int
     for index, kernel in enumerate(prepared):
@@ -37,5 +40,6 @@ def configure_joint_shared_carveout(prepared, required_bytes, physical_capacity)
         )
         if status != 0:
             raise RuntimeContractError(
-                f"cuFuncSetAttribute failed for concurrent program {index}: CUDA error {status}.")
+                f"cuFuncSetAttribute failed for concurrent program {index}: CUDA error {status}."
+            )
     return percentage

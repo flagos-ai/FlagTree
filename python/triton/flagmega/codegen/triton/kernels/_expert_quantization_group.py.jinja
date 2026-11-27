@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% macro complete_group(call, pointer, offset, mask, output) -%}
+{% macro complete_group(call, pointer, offset, mask, output) -%}
 # The quantization group is semantic; a smaller compute tile still needs
 # the maximum of the entire group before selecting its own FP8 lanes.
 _fm_group_k = (_fm_k_start // {{ call.weight_block_k }}) * {{ call.weight_block_k }} + tl.arange(0, {{ call.weight_block_k }})

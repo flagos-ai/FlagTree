@@ -1,0 +1,20 @@
+{% include "kernels/_iq4_streaming.py.jinja" %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "iq4_streaming_interleaved" %}
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    interleaved_m = 0
+    interleaved_offsets = tl.program_id(0).to(tl.int64) * {{ call.tile_n }} + _iq4_erow(tl.arange(0, {{ call.tile_n }}))
+    active = _iq4_erow({{ call.n_mask }})
+    rows = _iq4_erow(({{ call.weight_row_offset }}) // {{ (call.k // 256) * 136 }})
+    value, _ = _iq4_stream_dot({{ call.value }} + ({{ call.source_row_offset }}), {{ call.weight }}, {{ call.weight }}, rows, active, {{ call.k }}, {{ call.tile_n }}, False)
+    destination0 = _iq4_e32({{ call.result_0 }} + _iq4_broadcast_row({{ call.destination_0_offset }}))
+    destination1 = _iq4_e32({{ call.result_1 }} + _iq4_broadcast_row({{ call.destination_1_offset }}))
+    writer = _iq4_broadcast_row(active) & (_iq4_lanes() == 0)
+    field = _iq4_broadcast_row({{ call.field }})
+    tl.store(destination0, _iq4_e32(value.to(tl.bfloat16)), mask=writer & (field == 0))
+    tl.store(destination1, _iq4_e32(value.to(tl.bfloat16)), mask=writer & (field == 1))
+{% endif %}
+{% endfor %}

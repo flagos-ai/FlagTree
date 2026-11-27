@@ -67,7 +67,7 @@ class NvidiaSm90Target(PyNttTarget):
         """
         if not isinstance(placement, Placement):
             raise TypeError("placement must be a Placement")
-        options = replace(self.options, placements=(placement, ))
+        options = replace(self.options, placements=(placement,))
         return type(self)(
             self.machine.capability,
             options=options,

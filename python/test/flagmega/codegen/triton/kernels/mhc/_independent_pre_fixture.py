@@ -29,7 +29,9 @@ def compile_graph(graph, independent=None, *, declared=None):
                 **i.facts,
                 "internal_grid_barriers": declared if declared is not None else 1 if independent is True else 2,
             },
-        ) for i in extra)
+        )
+        for i in extra
+    )
     target.triton_implementation_model = replace(
         base,
         implementations=(*base.implementations, *extra),

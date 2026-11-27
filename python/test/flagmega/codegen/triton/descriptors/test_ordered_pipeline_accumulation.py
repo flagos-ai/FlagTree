@@ -35,16 +35,13 @@ def test_ordered_pipeline_preserves_mma_bits_across_slots(tmp_path, identity, bl
     for implementation in base.implementations:
         if implementation.id == identity:
             indices = {i for c in implementation.transfer_pipeline.channels for i in c.shared_workspace_indices}
-            workspaces = tuple(
-                replace(w, type=fm.tensor_type(w.type.dtype, (w.type.shape[0], block_k // 16,
-                                                              *w.type.shape[2:]))) if i in indices else w
-                for i, w in enumerate(implementation.shared_workspaces))
-            parameters = {
-                **implementation.parameters, "block_k": block_k, "accumulation_mode": "ordered_mma", "mma_block_k": 128
-            }
+            workspaces = tuple(replace(w, type=fm.tensor_type(
+                w.type.dtype, (w.type.shape[0], block_k // 16, *w.type.shape[2:])))
+                if i in indices else w for i, w in enumerate(implementation.shared_workspaces))
+            parameters = {**implementation.parameters, "block_k": block_k,
+                          "accumulation_mode": "ordered_mma", "mma_block_k": 128}
             if "reduction_unroll" in parameters:
-                parameters["reduction_unroll"] = min(parameters["reduction_unroll"],
-                                                     block_k // parameters["reduction_group"])
+                parameters["reduction_unroll"] = min(parameters["reduction_unroll"], block_k // parameters["reduction_group"])
             implementation = replace(implementation, parameters=parameters, shared_workspaces=workspaces,
                                      facts={**implementation.facts, "ordered_mma_accumulation": True})
         entries.append(implementation)
@@ -54,9 +51,10 @@ def test_ordered_pipeline_preserves_mma_bits_across_slots(tmp_path, identity, bl
         for index, implementation in enumerate(("tir.dense_matmul.packed_k_major_mma", identity)):
             compiler = Compiler()
             compiler.target = NvidiaSm90Target(triton_implementation_model=model)
-            module = _packed_descriptor_pipeline_module(
-                implementation, compiler=compiler, k=k, n=n, reduction_order="mma_k16",
-                output_policy=fm.SBP.split_contiguous((1, ), 16) if "table" in identity else None)
+            module = _packed_descriptor_pipeline_module(implementation, compiler=compiler, k=k, n=n,
+                                                       reduction_order="mma_k16",
+                                                       output_policy=fm.SBP.split_contiguous((1,), 16)
+                                                       if "table" in identity else None)
             path = write_artifact(module, tmp_path / str(index), target="nvidia-sm90", checkpoint=checkpoint,
                                   emit_executable=True)
             runtimes.append(load(path, device="cuda:0"))

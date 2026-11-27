@@ -9,7 +9,6 @@ from triton.flagmega.targets import NvidiaSm90Target
 
 
 class QKVPatternModule(fm.Module):
-
     def __init__(self):
         super().__init__(dialect="high_level", stage="imported", entry="main")
 
@@ -21,7 +20,9 @@ class QKVPatternModule(fm.Module):
                 fm.tensor_type("bfloat16", (32, size)),
                 source="memory",
                 key=f"{role}_weight",
-            ) for role, size in (("q", 64), ("k", 32), ("v", 32)))
+            )
+            for role, size in (("q", 64), ("k", 32), ("v", 32))
+        )
         none = fm.F.builtin.none(name="none")
         qkv = fm.F.nn.qkv_parallel_linear(
             value,
@@ -40,7 +41,7 @@ class QKVPatternModule(fm.Module):
             output_data_type="bfloat16",
             name="qkv",
         )
-        self.function("main", (value, ), (qkv, ))
+        self.function("main", (value,), (qkv,))
 
 
 def test_qkv_pattern_uses_named_parameter_info_before_and_after_packing():
@@ -83,4 +84,6 @@ def test_none_and_variadic_tuple_patterns_are_first_class():
     module = QKVPatternModule().build()
     none = module.node_map["none"]
     assert pm.try_match_root(none, pm.F.builtin.is_none(call_name="none"), module)
-    assert pm.F.builtin.is_tuple(pm.wildcard(), pm.wildcard()).target.op_name == ("builtin.tuple")
+    assert pm.F.builtin.is_tuple(pm.wildcard(), pm.wildcard()).target.op_name == (
+        "builtin.tuple"
+    )

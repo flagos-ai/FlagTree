@@ -11,7 +11,8 @@ from triton.flagmega.ir import DType, IRModule, Node, TensorType, TupleType, Vec
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.ops.nn._norm import normalize_axis
 from triton.flagmega.ir.ops.nn._paged_attention_state import (
-    paged_attention_state_config_from_type, )
+    paged_attention_state_config_from_type,
+)
 from triton.flagmega.ir.ops.tensors.pack import Pack
 from triton.flagmega.rules import RewriteResult
 from triton.flagmega.rules.ntt.vectorize.base import VectorizeCandidate
@@ -31,12 +32,14 @@ class _PackingPlan:
 
 
 class VectorizeQKVRoPEWithCache:
-    """Port reference ``VectorizeQKVRoPEWithCache`` without model policy."""
+    """Port nncase ``VectorizeQKVRoPEWithCache`` without model policy."""
 
     name = "VectorizeQKVRoPEWithCache"
     op_names = frozenset({"nn.qkv_rope_with_cache"})
 
-    def candidates(self, node: Node, module: IRModule) -> tuple[VectorizeCandidate, ...]:
+    def candidates(
+        self, node: Node, module: IRModule
+    ) -> tuple[VectorizeCandidate, ...]:
         plan = _try_plan(node, module)
         if plan is None:
             return ()
@@ -47,24 +50,26 @@ class VectorizeQKVRoPEWithCache:
             return ()
         if inferred != node.type:
             return ()
-        return (VectorizeCandidate(
-            "vectorization.qkv_rope_with_cache.cache_layout",
-            self.name,
-            (plan.tensor_axis, ),
-            (plan.lane, ),
-            {
-                "tensor_axis": plan.tensor_axis,
-                "q_parameter_axis": plan.q_parameter_axis,
-                "k_parameter_axis": plan.k_parameter_axis,
-                "trig_axis": plan.trig_axis,
-                "lane": plan.lane,
-            },
-            {
-                "cache_abi": True,
-                "egraph_equivalent": True,
-                "boundary_type_preserved": True,
-            },
-        ), )
+        return (
+            VectorizeCandidate(
+                "vectorization.qkv_rope_with_cache.cache_layout",
+                self.name,
+                (plan.tensor_axis,),
+                (plan.lane,),
+                {
+                    "tensor_axis": plan.tensor_axis,
+                    "q_parameter_axis": plan.q_parameter_axis,
+                    "k_parameter_axis": plan.k_parameter_axis,
+                    "trig_axis": plan.trig_axis,
+                    "lane": plan.lane,
+                },
+                {
+                    "cache_abi": True,
+                    "egraph_equivalent": True,
+                    "boundary_type_preserved": True,
+                },
+            ),
+        )
 
     def rewrite(
         self,
@@ -82,7 +87,9 @@ class VectorizeQKVRoPEWithCache:
         helpers, packed_inputs = _build_packed_inputs(node, module, plan)
         result_type = module_definition(node).infer_type(packed_inputs, node.attrs)
         if result_type != node.type:
-            raise IRSchemaError("VectorizeQKVRoPEWithCache changed the semantic boundary type.")
+            raise IRSchemaError(
+                "VectorizeQKVRoPEWithCache changed the semantic boundary type."
+            )
         replacement = Node(
             node.id,
             node.op,
@@ -96,17 +103,25 @@ class VectorizeQKVRoPEWithCache:
 
 
 def _try_plan(node: Node, module: IRModule) -> _PackingPlan | None:
+    if node.attrs.get("norm_compute_profile", "default") != "default" or "query_output_lanes" in node.attrs:
+        return None
     if node.op != "nn.qkv_rope_with_cache" or len(node.inputs) != 12:
         return None
     qkv = module.node_map[node.inputs[0]]
     if qkv.op != "builtin.tuple" or len(qkv.inputs) != 3:
         return None
     fields = tuple(module.node_map[value].type for value in qkv.inputs)
-    if any(not isinstance(value, TensorType) or isinstance(value.dtype, VectorType) or value.dtype != DType.BFLOAT16
-           for value in fields):
+    if any(
+        not isinstance(value, TensorType)
+        or isinstance(value.dtype, VectorType)
+        or value.dtype != DType.BFLOAT16
+        for value in fields
+    ):
         return None
     try:
-        config = paged_attention_state_config_from_type(module.node_map[node.inputs[7]].type)
+        config = paged_attention_state_config_from_type(
+            module.node_map[node.inputs[7]].type
+        )
         layout = tuple(node.attrs["qkv_layout"])
         tensor_axis = layout.index("dim")
         q_axis = normalize_axis(int(node.attrs["q_axis"]), fields[0].rank)
@@ -117,7 +132,12 @@ def _try_plan(node: Node, module: IRModule) -> _PackingPlan | None:
     q_parameter_axis = tensor_axis - q_axis
     k_parameter_axis = tensor_axis - k_axis
     trig_axis = tensor_axis - (fields[0].rank - trig.rank)
-    if (q_parameter_axis < 0 or k_parameter_axis < 0 or trig_axis < 0 or trig_axis >= trig.rank):
+    if (
+        q_parameter_axis < 0
+        or k_parameter_axis < 0
+        or trig_axis < 0
+        or trig_axis >= trig.rank
+    ):
         return None
     return _PackingPlan(
         config.lanes,
@@ -139,8 +159,8 @@ def _build_packed_inputs(
     for role, value_id in zip(("q", "k", "v"), qkv.inputs, strict=True):
         packed = _pack(
             module.node_map[value_id],
-            (plan.lane, ),
-            (plan.tensor_axis, ),
+            (plan.lane,),
+            (plan.tensor_axis,),
             f"{node.id}.vectorized.{role}",
             node.id,
         )
@@ -167,8 +187,8 @@ def _build_packed_inputs(
     ):
         packed = _pack(
             module.node_map[node.inputs[index]],
-            (plan.lane, ),
-            (axis, ),
+            (plan.lane,),
+            (axis,),
             f"{node.id}.vectorized.{role}",
             node.id,
         )
@@ -209,8 +229,8 @@ def _pack(
     return Node(
         node_id,
         "tensors.pack",
-        (value.id, ),
-        Pack.infer_type((value, ), attrs),
+        (value.id,),
+        Pack.infer_type((value,), attrs),
         attrs=attrs,
         metadata=internal_metadata(root_id, "pack"),
     )

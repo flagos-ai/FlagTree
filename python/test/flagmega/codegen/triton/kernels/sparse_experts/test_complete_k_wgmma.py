@@ -27,13 +27,12 @@ from python.test.flagmega.codegen.triton.kernels.sparse_experts.test_cooperative
 def complete_target(task_n, stages=1, warps=8):
     target = NvidiaSm90Target()
     model = target.triton_implementation_model
-    implementations = tuple(
-        replace(value, parameters={**value.parameters, "num_stages": stages, "compute_num_warps": warps})
-        for value in sparse_experts_complete_k_implementations())
-    target.triton_implementation_model = replace(
-        model, implementations=(*model.implementations, *implementations), preferences={
-            **model.preferences, "sparse_experts_gate_up": (f"tir.sparse_experts_gate_up.complete_k_wgmma_n{task_n}", )
-        })
+    implementations = tuple(replace(value, parameters={**value.parameters, "num_stages": stages, "compute_num_warps": warps})
+                            for value in sparse_experts_complete_k_implementations())
+    target.triton_implementation_model = replace(model,
+        implementations=(*model.implementations, *implementations),
+        preferences={**model.preferences, "sparse_experts_gate_up":
+                     (f"tir.sparse_experts_gate_up.complete_k_wgmma_n{task_n}",)})
     return target
 
 
@@ -48,8 +47,8 @@ def complete_raw():
     from triton.flagmega.codegen.triton.call_abi import describe_kernel_call_abis
 
     mesh = fm.Placement((4, 8, 16), "cyx", "cbb")
-    module = compile_complete(stage_graph(placement=mesh, packed=True, readonly=True, rows=2048, reduction=512), mesh,
-                              64)
+    module = compile_complete(stage_graph(placement=mesh, packed=True, readonly=True,
+        rows=2048, reduction=512), mesh, 64)
     raw = next(call for call in describe_kernel_call_abis(module) if call["family"] == "sparse_experts_gate_up")
     for section in ("inputs", "outputs", "workspaces"):
         for parameter in raw[section]:
@@ -68,20 +67,18 @@ def test_complete_k_peer_output_retains_chip_route_row_and_lanes(complete_raw, c
     abi = raw["outputs"][0]["buffers"][0]["abi"]
     assert abi["storage_kind"] == "compact_per_chip"
     if storage == "canonical_global":
-        abi.update(storage_kind=storage, coordinate_space="canonical_global", storage_strides=(2048, 256, 1),
-                   scalar_storage_strides=(16384, 2048, 8), component_stride_elements=0,
-                   component_stride_scalar_elements=0)
+        abi.update(storage_kind=storage, coordinate_space="canonical_global",
+                   storage_strides=(2048, 256, 1), scalar_storage_strides=(16384, 2048, 8),
+                   component_stride_elements=0, component_stride_scalar_elements=0)
     call = sparse_experts_gate_up_call(raw)
 
     class Pointer(int):
-
         def to(self, dtype):
             return self
 
-    env = {
-        "tl": SimpleNamespace(pointer_type=lambda dtype: None, uint8=None, bfloat16=None), "shard_coord0": chip,
-        "shard_coord1": 7, "shard_coord2": 9, "_fm_token": 0, "_fm_route_owner": 6, "_fm_local_route": 0
-    }
+    env = {"tl": SimpleNamespace(pointer_type=lambda dtype: None, uint8=None, bfloat16=None),
+           "shard_coord0": chip, "shard_coord1": 7, "shard_coord2": 9,
+           "_fm_token": 0, "_fm_route_owner": 6, "_fm_local_route": 0}
     for parameter in complete_raw["outputs"]:
         for binding in parameter["buffers"]:
             env[binding["runtime_argument"]] = Pointer(0)
@@ -100,9 +97,8 @@ def test_complete_k_internal_output_substitutes_full_owner_coordinates(chip):
     from triton.flagmega.codegen.triton.sparse_experts.gate_up import sparse_experts_gate_up_call
 
     mesh = fm.Placement((4, 8, 16), "cyx", "cbb")
-    module = compile_complete(
-        stage_graph(placement=mesh, packed=True, readonly=True, rows=2048, reduction=256, publish_result=True), mesh,
-        32, stages=3)
+    module = compile_complete(stage_graph(placement=mesh, packed=True, readonly=True,
+        rows=2048, reduction=256, publish_result=True), mesh, 32, stages=3)
     raw = next(call for call in describe_kernel_call_abis(module) if call["family"] == "sparse_experts_gate_up")
     for section in ("inputs", "outputs", "workspaces"):
         for parameter in raw[section]:
@@ -114,14 +110,12 @@ def test_complete_k_internal_output_substitutes_full_owner_coordinates(chip):
     call = sparse_experts_gate_up_call(raw)
 
     class Pointer(int):
-
         def to(self, dtype):
             return self
 
-    env = {
-        "tl": SimpleNamespace(pointer_type=lambda dtype: None, uint8=None, bfloat16=None), "shard_coord0": chip,
-        "shard_coord1": 7, "shard_coord2": 9, "_fm_token": 0, "_fm_route_owner": 6, "_fm_local_route": 0
-    }
+    env = {"tl": SimpleNamespace(pointer_type=lambda dtype: None, uint8=None, bfloat16=None),
+           "shard_coord0": chip, "shard_coord1": 7, "shard_coord2": 9,
+           "_fm_token": 0, "_fm_route_owner": 6, "_fm_local_route": 0}
     for parameter in raw["outputs"]:
         for binding in parameter["buffers"]:
             env[binding["runtime_argument"]] = Pointer(0)
@@ -188,14 +182,11 @@ def test_complete_k_retains_mma_accumulator_through_k_loop(tmp_path, task_n, war
     graph = stage_graph(placement=mesh, readonly=True, rows=512, reduction=4096)
     module = compile_complete(graph, mesh, task_n, stages=3, warps=warps)
     values = stage_values(torch, graph)
-    runtime = load(
-        write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True,
-                       checkpoint=TensorCheckpoint(values)), device="cuda:0")
+    runtime = load(write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True,
+        checkpoint=TensorCheckpoint(values)), device="cuda:0")
     inputs = {name: value.cuda() for name, value in values.items() if not name.endswith("_weight")}
-    results = [
-        torch.empty((1, 8, 512), device="cuda", dtype=torch.bfloat16),
-        torch.empty((128, ), device="cuda", dtype=torch.float32)
-    ]
+    results = [torch.empty((1, 8, 512), device="cuda", dtype=torch.bfloat16),
+               torch.empty((128,), device="cuda", dtype=torch.float32)]
     result_specs = [spec for spec in runtime.external_arguments if spec["role"] == "result"]
     inputs.update((spec["value"], value) for spec, value in zip(result_specs, results, strict=True))
     try:
@@ -225,9 +216,8 @@ def test_complete_k_retains_mma_accumulator_through_k_loop(tmp_path, task_n, war
         assert re.search(r"tensor<\d+x16xf32, #mma", header), header
         conversions = [line for line in body.splitlines() if "ttg.convert_layout" in line]
         assert not any(re.search(r": tensor<[^>]+, #mma\w*> ->", line) for line in conversions), conversions
-        assert any(
-            re.search(r"ttg.async_copy_global_to_local .*-> <128x16xf8E4M3FN", line)
-            for line in body.splitlines()), "FP8 activation matrix must participate in the K prefetch pipeline"
+        assert any(re.search(r"ttg.async_copy_global_to_local .*-> <128x16xf8E4M3FN", line)
+                   for line in body.splitlines()), "FP8 activation matrix must participate in the K prefetch pipeline"
         assert runtime.resource_report["spill_bytes"] == 0
     finally:
         runtime.close()
@@ -240,8 +230,7 @@ def test_complete_k_retains_mma_accumulator_through_k_loop(tmp_path, task_n, war
     (1, 8, 512, 4096, False, True),
     (2, 16, 640, 1536, True, True),
 ])
-def test_complete_k_matches_ordered_cooperative_bytes(tmp_path, task_n, stages, tokens, routes, rows, reduction, packed,
-                                                      distributed):
+def test_complete_k_matches_ordered_cooperative_bytes(tmp_path, task_n, stages, tokens, routes, rows, reduction, packed, distributed):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("requires SM90")
@@ -251,26 +240,25 @@ def test_complete_k_matches_ordered_cooperative_bytes(tmp_path, task_n, stages, 
     # Both implementations execute on an explicit physical mesh. The small
     # tail case retains one CTA and all 72 rows.
     mesh = fm.Placement((8, 16) if distributed else (1, 1), "yx", "bb")
-    graph = stage_graph(tokens=tokens, routes=routes, rows=rows, reduction=reduction, packed=packed, placement=mesh,
-                        readonly=True, experts=max(17, routes + 1))
+    graph = stage_graph(tokens=tokens, routes=routes, rows=rows, reduction=reduction,
+        packed=packed, placement=mesh, readonly=True, experts=max(17, routes + 1))
     values = stage_values(torch, graph)
     modules = [compile_stage(graph, mesh, True), compile_complete(graph, mesh, task_n, stages)]
     runtimes, arguments, outputs, guards = [], [], [], []
     inputs = {name: value.cuda() for name, value in values.items() if not name.endswith("_weight")}
     try:
         for label, module in zip(("reference", "complete"), modules, strict=True):
-            runtime = load(
-                write_artifact(module, tmp_path / label, target="nvidia-sm90", emit_executable=True,
-                               checkpoint=TensorCheckpoint(values)), device="cuda:0")
+            runtime = load(write_artifact(module, tmp_path / label, target="nvidia-sm90", emit_executable=True,
+                checkpoint=TensorCheckpoint(values)), device="cuda:0")
             runtimes.append(runtime)
-            shapes = [(tokens, routes, rows // 8, 8) if packed else (tokens, routes, rows), (128, )]
+            shapes = [(tokens, routes, rows // 8, 8) if packed else (tokens, routes, rows), (128,)]
             result = {}
             for spec in runtime.external_arguments:
                 if spec["role"] != "result":
                     continue
                 shape = shapes[len(result)]
                 dtype = torch.bfloat16 if not result else torch.float32
-                storage = torch.full((prod(shape) + 64, ), -123., device="cuda", dtype=dtype)
+                storage = torch.full((prod(shape) + 64,), -123., device="cuda", dtype=dtype)
                 result[spec["value"]] = storage[32:-32].reshape(shape)
                 guards.extend((storage[:32], storage[-32:]))
             outputs.append(tuple(result.values()))

@@ -5,12 +5,13 @@
 from __future__ import annotations
 
 from triton.flagmega.errors import IRSchemaError
-from triton.flagmega.ir import DistributedType, IRModule, Node, VectorType, get_definition
+from triton.flagmega.ir import DistributedType, IRModule, Node, TensorType, VectorType, get_definition
 from triton.flagmega.ir.distributed_inference import all_broadcast, tensor_of
 from triton.flagmega.ir.ops.nn.norm_apply import NormApply
 from triton.flagmega.pattern_match import F, wildcard
 from triton.flagmega.rules import RewriteRule
 from triton.flagmega.rules.neutral._utility import decomposition_metadata
+
 
 _TRANSPARENT = frozenset({"distributed.boxing", "distributed.sharded_view"})
 
@@ -40,8 +41,7 @@ def fuse_norm_stats_apply_rule() -> RewriteRule:
             return source
         value_tensor = tensor_of(value.type)
         input_dtype = source.attrs.get("input_dtype")
-        scalar_dtype = value_tensor.dtype.elem_type if isinstance(value_tensor.dtype,
-                                                                  VectorType) else value_tensor.dtype
+        scalar_dtype = value_tensor.dtype.elem_type if isinstance(value_tensor.dtype, VectorType) else value_tensor.dtype
         if input_dtype is not None and input_dtype != scalar_dtype.value:
             # RMSNorm derives statistics from the same value it normalizes.
             # A converted numerator with original external stats is different.
@@ -51,10 +51,15 @@ def fuse_norm_stats_apply_rule() -> RewriteRule:
         if normalized_axis != value_tensor.rank - 1:
             return source
         stats_source = _strip_adapters(stats, module)
-        if (stats_source.op != "nn.norm_stats" or bool(stats_source.attrs["use_mean"])
-                or stats_source.attrs.get("reduction_group_size", 1) != 1
-                or stats_source.attrs.get("reduction_order", "unspecified") != "unspecified"
-                or _normalized_axis(stats_source, module) != normalized_axis):
+        if source.attrs.get("compute_profile", "default") != stats_source.attrs.get("compute_profile", "default"):
+            return source
+        if (
+            stats_source.op != "nn.norm_stats"
+            or bool(stats_source.attrs["use_mean"])
+            or stats_source.attrs.get("reduction_group_size", 1) != 1
+            or stats_source.attrs.get("reduction_order", "unspecified") != "unspecified"
+            or _normalized_axis(stats_source, module) != normalized_axis
+        ):
             return source
         stats_input = _strip_adapters(module.node_map[stats_source.inputs[0]], module)
         value_input = _strip_adapters(value, module)
@@ -71,7 +76,8 @@ def fuse_norm_stats_apply_rule() -> RewriteRule:
         try:
             prepared = definition.prepare(
                 (value, scale),
-                {"epsilon": float(source.attrs["epsilon"]), "weight_bias": 0.0},
+                {"epsilon": float(source.attrs["epsilon"]), "weight_bias": 0.0,
+                 **({"compute_profile": source.attrs["compute_profile"]} if "compute_profile" in source.attrs else {})},
             )
         except IRSchemaError:
             return source

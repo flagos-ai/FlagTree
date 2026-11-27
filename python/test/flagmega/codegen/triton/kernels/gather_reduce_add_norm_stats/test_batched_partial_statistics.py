@@ -10,7 +10,9 @@ from triton.flagmega.runtime import load
 
 
 @pytest.mark.parametrize("rows", [3, 32])
-def test_prefill_partial_combine_retains_each_row_statistics(tmp_path, rows):
+
+def test_prefill_partial_combine_retains_each_row_statistics(
+        tmp_path, rows):
     private_result = False
     dtype = "float32"
     torch = pytest.importorskip("torch")
@@ -67,10 +69,8 @@ def test_prefill_partial_combine_retains_each_row_statistics(tmp_path, rows):
     assert plan.buffer_map["combine.0"].distributed_storage_kind == expected_storage
     artifact = write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     runtime = load(artifact, device="cuda:0")
-    source = ((torch.arange(rows * 256, device="cuda").reshape(rows, 32, 8) % 17 - 8).float() / 4).to(
-        getattr(torch, dtype))
-    residual = ((torch.arange(rows * 32, device="cuda").reshape(rows, 32) % 13 - 6).float() / 4).to(
-        getattr(torch, dtype))
+    source = ((torch.arange(rows * 256, device="cuda").reshape(rows, 32, 8) % 17 - 8).float() / 4).to(getattr(torch, dtype))
+    residual = ((torch.arange(rows * 32, device="cuda").reshape(rows, 32) % 13 - 6).float() / 4).to(getattr(torch, dtype))
     expected = source.sum(-1) + residual
     expected_stats = expected.float().square().sum(-1, keepdim=True).unsqueeze(0)
     if private_result:

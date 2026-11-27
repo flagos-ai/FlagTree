@@ -16,8 +16,12 @@ from triton.flagmega.rules.ntt.vectorize.utility import (
 
 
 def _pack_unary_matches(node: Node, module: IRModule) -> bool:
-    return (node.op == "tensors.pack" and node.effect.is_pure and module.node_map[node.inputs[0]].op in _scalar_ops()
-            and module.node_map[node.inputs[0]].effect.is_pure)
+    return (
+        node.op == "tensors.pack"
+        and node.effect.is_pure
+        and module.node_map[node.inputs[0]].op in _scalar_ops()
+        and module.node_map[node.inputs[0]].effect.is_pure
+    )
 
 
 def _scalar_ops():
@@ -29,12 +33,12 @@ def _pack_unary(node: Node, module: IRModule) -> RewriteResult:
     source = module.node_map[scalar.inputs[0]]
     attrs = dict(node.attrs)
     lanes = tuple(int(value) for value in attrs["lanes"])
-    axes = tuple(int(value) for value in attrs["axes"]) if "axes" in attrs else (int(attrs["axis"]), ) * len(lanes)
-    packed_type = Pack.infer_type((source, ), attrs)
+    axes = tuple(int(value) for value in attrs["axes"]) if "axes" in attrs else (int(attrs["axis"]),) * len(lanes)
+    packed_type = Pack.infer_type((source,), attrs)
     pack = Node(
         f"{node.id}.propagated.pack",
         "tensors.pack",
-        (source.id, ),
+        (source.id,),
         packed_type,
         attrs=attrs,
         metadata=propagation_helper_metadata(node, node.id, "propagated-pack"),
@@ -42,7 +46,7 @@ def _pack_unary(node: Node, module: IRModule) -> RewriteResult:
     replacement = Node(
         node.id,
         "math.vectorized_unary",
-        (pack.id, ),
+        (pack.id,),
         node.type,
         attrs={"unary_op": scalar.op.removeprefix("math."), **scalar.attrs},
         metadata=propagation_result_metadata(
@@ -54,7 +58,7 @@ def _pack_unary(node: Node, module: IRModule) -> RewriteResult:
             internal_role="propagated-compute",
         ),
     )
-    return RewriteResult(replacement, (pack, ))
+    return RewriteResult(replacement, (pack,))
 
 
 def _unary_unpack_matches(node: Node, module: IRModule) -> bool:
@@ -69,12 +73,15 @@ def _unary_unpack(node: Node, module: IRModule) -> RewriteResult:
     vector = module.node_map[unpack.inputs[0]]
     dtype = tensor_of(vector.type).dtype
     assert isinstance(dtype, VectorType)
-    axes = (tuple(int(value) for value in unpack.attrs["axes"]) if "axes" in unpack.attrs else
-            (int(unpack.attrs["axis"]), ) * len(dtype.lanes))
+    axes = (
+        tuple(int(value) for value in unpack.attrs["axes"])
+        if "axes" in unpack.attrs
+        else (int(unpack.attrs["axis"]),) * len(dtype.lanes)
+    )
     compute = Node(
         f"{node.id}.propagated.compute",
         "math.vectorized_unary",
-        (vector.id, ),
+        (vector.id,),
         vector.type,
         attrs={"unary_op": node.op.removeprefix("math."), **node.attrs},
         metadata=propagation_result_metadata(
@@ -89,7 +96,7 @@ def _unary_unpack(node: Node, module: IRModule) -> RewriteResult:
     replacement = Node(
         node.id,
         "tensors.unpack",
-        (compute.id, ),
+        (compute.id,),
         node.type,
         attrs=dict(unpack.attrs),
         metadata=propagation_result_metadata(
@@ -100,12 +107,12 @@ def _unary_unpack(node: Node, module: IRModule) -> RewriteResult:
             rule="UnaryDevectorizePropagation",
         ),
     )
-    return RewriteResult(replacement, (compute, ))
+    return RewriteResult(replacement, (compute,))
 
 
 def unary_propagation_rules() -> tuple[RewriteRule, ...]:
     return (
-        RewriteRule("VectorizeUnaryPropagation", _pack_unary_matches, _pack_unary, root_ops=("tensors.pack", )),
+        RewriteRule("VectorizeUnaryPropagation", _pack_unary_matches, _pack_unary, root_ops=("tensors.pack",)),
         RewriteRule("UnaryDevectorizePropagation", _unary_unpack_matches, _unary_unpack, root_ops=_scalar_ops()),
     )
 

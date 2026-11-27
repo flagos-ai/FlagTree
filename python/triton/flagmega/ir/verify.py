@@ -59,25 +59,17 @@ def _sequence_definitions(operators):
         definition = get_definition(operator)
         method = getattr(definition.verify, "__func__", definition.verify)
         definitions[operator] = (
-            definition,
-            _local_verification_signature(definition),
+            definition, _local_verification_signature(definition),
             bool(getattr(method, "_flagmega_context_independent", False)),
         )
     return definitions
 
 
 def _local_verification_signature(definition):
-    methods = tuple(
-        getattr(getattr(definition, name), "__func__", getattr(definition, name)) for name in (
-            "verify",
-            "verify_arity",
-            "normalize_attrs",
-            "verify_parameter_types",
-            "infer_call_type",
-            "infer_type",
-            "infer_effect",
-            "ir_attrs",
-        ))
+    methods = tuple(getattr(getattr(definition, name), "__func__", getattr(definition, name)) for name in (
+        "verify", "verify_arity", "normalize_attrs", "verify_parameter_types",
+        "infer_call_type", "infer_type", "infer_effect", "ir_attrs",
+    ))
     return (definition, _verify_type, *methods)
 
 
@@ -87,18 +79,17 @@ def _verify_local_node(node, module, definition, signature):
     inputs = tuple(module.node_map[value] for value in node.inputs)
     identity = id(node)
     proof = _VERIFIED_NODES.get(identity) if independent else None
-    if (proof is not None and proof[0]() is node and proof[1] == signature and len(proof[2]) == len(inputs)
+    if (proof is not None and proof[0]() is node and proof[1] == signature
+            and len(proof[2]) == len(inputs)
             and all(reference() is value for reference, value in zip(proof[2], inputs))):
         return
     _verify_type(node.type, module.stage, node.id)
     definition.verify(node, module)
     if independent:
-
         def discard(reference):
             current = _VERIFIED_NODES.get(identity)
             if current is not None and current[0] is reference:
                 _VERIFIED_NODES.pop(identity, None)
-
         _VERIFIED_NODES[identity] = (ref(node, discard), signature, tuple(ref(value) for value in inputs))
 
 
@@ -108,11 +99,14 @@ def verify_module(
     expected_stage: str | None = None,
     expected_dialect: str | None = None,
 ) -> IRModule:
+    if 'r004_native_model_request' in module.metadata:
+        from triton.flagmega.rules.ntt.r004_native_model import native_model_request
+        native_model_request(module)
     try:
         phase = ConstantPhase(str(module.metadata.get("constant_phase", ConstantPhase.OPEN.value)))
     except ValueError as error:
-        raise IRVerificationError(f"Unknown constant phase {module.metadata.get('constant_phase')!r}.",
-                                  stage=module.stage) from error
+        raise IRVerificationError(
+            f"Unknown constant phase {module.metadata.get('constant_phase')!r}.", stage=module.stage) from error
     if expected_stage is not None and module.stage != expected_stage:
         raise IRVerificationError(
             f"Expected stage {expected_stage!r}, got {module.stage!r}.",
@@ -176,10 +170,12 @@ def verify_module(
 
     assets = tuple(
         node for node in module.nodes
-        if node.op == "builtin.const_asset" or (node.op == "tir.buffer" and "constant_recipe" in node.metadata))
+        if node.op == "builtin.const_asset"
+        or (node.op == "tir.buffer" and "constant_recipe" in node.metadata)
+    )
     if phase == ConstantPhase.OPEN and (assets or module.constant_recipes):
-        raise IRVerificationError("constants_open IR cannot contain constant recipes or builtin.const_asset.",
-                                  stage=module.stage)
+        raise IRVerificationError(
+            "constants_open IR cannot contain constant recipes or builtin.const_asset.", stage=module.stage)
     if phase == ConstantPhase.FROZEN:
         _verify_constant_recipes(module, assets)
 
@@ -239,10 +235,12 @@ def verify_module(
         elif (prim_function := module.kernel_callable_map.get(callee_name)) is not None:
             parameter_types = prim_function.runtime_parameter_types
             return_type = prim_function.runtime_return_type
-            output_types = return_type.fields if isinstance(return_type, TupleType) else (return_type, )
+            output_types = return_type.fields if isinstance(return_type, TupleType) else (return_type,)
             dispatch = kernel_dispatch_of(prim_function)
-            if dispatch is not None and (node.effect.kind.value != dispatch.effect_kind
-                                         or node.effect.resource != dispatch.effect_resource):
+            if dispatch is not None and (
+                node.effect.kind.value != dispatch.effect_kind
+                or node.effect.resource != dispatch.effect_resource
+            ):
                 raise IRVerificationError(
                     f"Call {node.id!r} effect does not match KernelDispatch @{callee_name}.",
                     stage=module.stage,
@@ -250,7 +248,10 @@ def verify_module(
                 )
             if dispatch is not None:
                 selection = module.selection_map.get(f"tir.{node.id}")
-                if (selection is not None and selection.candidate_id != dispatch.semantic_candidate):
+                if (
+                    selection is not None
+                    and selection.candidate_id != dispatch.semantic_candidate
+                ):
                     raise IRVerificationError(
                         f"TIR selection {selection.candidate_id!r} does not match materialized "
                         f"KernelDispatch semantic candidate {dispatch.semantic_candidate!r} "
@@ -261,7 +262,11 @@ def verify_module(
                         node_id=node.id,
                     )
         else:
-            signature = (external_signatures.get(callee_name) if hasattr(external_signatures, "get") else None)
+            signature = (
+                external_signatures.get(callee_name)
+                if hasattr(external_signatures, "get")
+                else None
+            )
             if signature is None:
                 raise IRVerificationError(
                     f"Call {node.id!r} references missing function {callee_name!r}.",
@@ -310,8 +315,8 @@ def verify_module(
         records.add(record.point_id)
         point = point_map.get(record.point_id)
         if point is None:
-            raise IRVerificationError(f"Selection record references unknown point {record.point_id!r}.",
-                                      stage=module.stage)
+            raise IRVerificationError(
+                f"Selection record references unknown point {record.point_id!r}.", stage=module.stage)
         if record.candidate_id not in {candidate.id for candidate in point.candidates}:
             raise IRVerificationError(
                 f"Selection {record.candidate_id!r} is not valid for point {record.point_id!r}.",
@@ -339,9 +344,8 @@ def _verify_recipe_graph(recipe, dialect: str, stage: str, entry: str) -> None:
     parent changes stage. Other verifiers remain keyed by the ambient context.
     """
 
-    verifiers = tuple(
-        getattr(method, "__func__", method)
-        for method in (get_definition(op).verify for op in dict.fromkeys(node.op for node in recipe.nodes)))
+    verifiers = tuple(getattr(method, "__func__", method) for method in (
+        get_definition(op).verify for op in dict.fromkeys(node.op for node in recipe.nodes)))
     context_independent = all(getattr(method, "_flagmega_context_independent", False) for method in verifiers)
     context = () if context_independent else (dialect, stage, entry)
     key = (id(recipe), verifiers, context)
@@ -370,8 +374,13 @@ def _verify_recipe_graph(recipe, dialect: str, stage: str, entry: str) -> None:
         definition = get_definition(node.op)
         definition.verify(node, recipe_view)
         is_source = definition.constant_source and not node.inputs and node.effect.is_pure
-        is_expression = (definition.const_evaluable and definition.deterministic and node.effect.is_pure
-                         and bool(node.inputs) and all(value in local for value in node.inputs))
+        is_expression = (
+            definition.const_evaluable
+            and definition.deterministic
+            and node.effect.is_pure
+            and bool(node.inputs)
+            and all(value in local for value in node.inputs)
+        )
         if not is_source and not is_expression:
             raise IRVerificationError(
                 f"Constant recipe {recipe.id!r} contains non-constant op {node.op!r}.",
@@ -383,7 +392,8 @@ def _verify_recipe_graph(recipe, dialect: str, stage: str, entry: str) -> None:
         raise IRVerificationError(f"Constant recipe {recipe.id!r} has duplicate outputs.", stage=stage)
     for output in recipe.outputs:
         if output not in local:
-            raise IRVerificationError(f"Constant recipe {recipe.id!r} output {output!r} does not exist.", stage=stage)
+            raise IRVerificationError(
+                f"Constant recipe {recipe.id!r} output {output!r} does not exist.", stage=stage)
     _VERIFIED_RECIPES[key] = recipe
 
 
@@ -391,12 +401,13 @@ def _verify_constant_recipes(module: IRModule, assets) -> None:
     recipe_map = {recipe.id: recipe for recipe in module.constant_recipes}
     if len(recipe_map) != len(module.constant_recipes):
         raise IRVerificationError("Constant recipe ids must be unique.", stage=module.stage)
-    asset_map = {(
-        str(node.attrs["recipe"]) if node.op == "builtin.const_asset" else str(node.metadata["constant_recipe"]),
-        str(node.attrs["output"]) if node.op == "builtin.const_asset" else str(node.metadata["constant_output"]),
-    ):
-                 node
-                 for node in assets}
+    asset_map = {
+        (
+            str(node.attrs["recipe"]) if node.op == "builtin.const_asset" else str(node.metadata["constant_recipe"]),
+            str(node.attrs["output"]) if node.op == "builtin.const_asset" else str(node.metadata["constant_output"]),
+        ): node
+        for node in assets
+    }
     if len(asset_map) != len(assets):
         raise IRVerificationError("Constant asset recipe/output bindings must be unique.", stage=module.stage)
 
@@ -405,10 +416,13 @@ def _verify_constant_recipes(module: IRModule, assets) -> None:
         for output in recipe.outputs:
             asset = asset_map.get((recipe.id, output))
             if asset is None:
-                raise IRVerificationError(f"Constant recipe {recipe.id!r} output {output!r} has no main-graph asset.",
-                                          stage=module.stage)
+                raise IRVerificationError(
+                    f"Constant recipe {recipe.id!r} output {output!r} has no main-graph asset.", stage=module.stage)
             recipe_output_type = recipe.node_map[output].type
-            if (asset.type != recipe_output_type and logical_type(asset.type) != logical_type(recipe_output_type)):
+            if (
+                asset.type != recipe_output_type
+                and logical_type(asset.type) != logical_type(recipe_output_type)
+            ):
                 raise IRVerificationError(
                     f"Constant asset {asset.id!r} type does not match recipe output {output!r}.",
                     stage=module.stage,
@@ -426,14 +440,16 @@ def _verify_constant_recipes(module: IRModule, assets) -> None:
 
 def _verify_type(value, stage: str, node_id: str) -> None:
     if isinstance(value, InvalidType):
-        raise IRVerificationError(f"IR contains invalid type: {value.reason}", stage=stage, node_id=node_id)
+        raise IRVerificationError(
+            f"IR contains invalid type: {value.reason}", stage=stage, node_id=node_id
+        )
     if isinstance(value, (AnyType, NoneType)):
         return
     if isinstance(value, TensorType):
         for dimension in value.shape:
             if dimension.minimum is not None and dimension.minimum < 0:
-                raise IRVerificationError(f"Tensor dimension {dimension} may be negative.", stage=stage,
-                                          node_id=node_id)
+                raise IRVerificationError(
+                    f"Tensor dimension {dimension} may be negative.", stage=stage, node_id=node_id)
         if isinstance(value.dtype, VectorType) and any(lane <= 0 for lane in value.dtype.lanes):
             raise IRVerificationError("Vector type lanes must be positive.", stage=stage, node_id=node_id)
         if isinstance(value.dtype, PointerType) and value.rank != 0:
@@ -463,9 +479,9 @@ def _verify_type(value, stage: str, node_id: str) -> None:
     if isinstance(value, DistributedType):
         _verify_type(value.tensor, stage, node_id)
         if not is_distributable(value.tensor, value.axis_policies, value.placement):
-            raise IRVerificationError("Distributed policies are not legal for the tensor and placement.", stage=stage,
-                                      node_id=node_id)
+            raise IRVerificationError(
+                "Distributed policies are not legal for the tensor and placement.", stage=stage, node_id=node_id)
         if value.partial is not None and any(axis >= value.placement.rank for axis in value.partial.axes):
-            raise IRVerificationError("Distributed partial references an invalid placement axis.", stage=stage,
-                                      node_id=node_id)
+            raise IRVerificationError(
+                "Distributed partial references an invalid placement axis.", stage=stage, node_id=node_id)
         return

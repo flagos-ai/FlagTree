@@ -44,10 +44,8 @@ def test_local_rounding_then_global_partition_sum(tmp_path, lanes):
     try:
         inputs = {name: value.cuda() for name, value in values.items()}
         result_specs = [spec for spec in runtime.external_arguments if spec["role"] == "result"]
-        outputs = {
-            spec["value"]: torch.empty_like(value, device="cuda")
-            for spec, value in zip(result_specs, expected, strict=True)
-        }
+        outputs = {spec["value"]: torch.empty_like(value, device="cuda")
+                   for spec, value in zip(result_specs, expected, strict=True)}
         arguments = tuple(outputs[spec["value"]] if spec["role"] == "result" else inputs[spec["value"]]
                           for spec in runtime.external_arguments)
         runtime.prepare(*arguments)
@@ -65,8 +63,8 @@ def test_local_rounding_then_global_partition_sum(tmp_path, lanes):
 def test_partitioned_ragged_axes_and_multiple_quantization_groups(tmp_path, packed, mode):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
-    graph = PartitionedProjection(packed=packed, lanes=(2, 2), mode=mode, partitions=3, tokens=2, hidden=20,
-                                  reduction=136, block=16)
+    graph = PartitionedProjection(packed=packed, lanes=(2, 2), mode=mode, partitions=3, tokens=2,
+                                  hidden=20, reduction=136, block=16)
     values = operands(graph)
     values["router_expert_ids"] = torch.tensor(((0, 1), (2, 0)), dtype=torch.int32)
     values["down_proj_scale"] *= torch.arange(1, 4).float()[:, None, None, None]
@@ -89,16 +87,11 @@ def test_partitioned_readonly_fp8_weights_keep_their_representation(tmp_path, pa
     module, values = graph.build(), operands(graph)
     names = {"down_weight", "down_proj_scale", "down_input_scale"}
     weights = {name: values[name] for name in names}
-    infos = {
-        name: TensorInfo(name, module.node_map[name].type.dtype, tuple(value.shape), "memory")
-        for name, value in weights.items()
-    }
+    infos = {name: TensorInfo(name, module.node_map[name].type.dtype, tuple(value.shape), "memory")
+             for name, value in weights.items()}
     checkpoint = MemoryCheckpoint({}, infos, weights)
-    actual, expected, runtime = execute_and_reference(
-        module, tmp_path, torch, checkpoint=checkpoint,
-        overrides={name: value
-                   for name, value in values.items()
-                   if name not in names})
+    actual, expected, runtime = execute_and_reference(module, tmp_path, torch, checkpoint=checkpoint,
+        overrides={name: value for name, value in values.items() if name not in names})
     try:
         torch.testing.assert_close(actual, expected, atol=0, rtol=0)
         assert runtime.resource_report["spill_bytes"] == 0
@@ -113,31 +106,29 @@ def test_partitioned_readonly_fp8_weights_keep_their_representation(tmp_path, pa
 def test_partition_and_hidden_owners_index_global_scale_tables(tmp_path, packed, cyclic):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
-    graph = PartitionedProjection(packed=packed, lanes=(2, 2), partitions=3 if cyclic else 4, tokens=2, hidden=64,
-                                  reduction=128, block=16)
+    graph = PartitionedProjection(packed=packed, lanes=(2, 2), partitions=3 if cyclic else 4, tokens=2,
+                                  hidden=64, reduction=128, block=16)
     base = graph.build()
     placement = fm.Placement((2, 2), "yx", "bb")
     b = fm.SBP.broadcast()
-    p = fm.SBP.split_block_cyclic((0, ), 1) if cyclic else fm.SBP.split_contiguous((0, ))
-    h = fm.SBP.split_block_cyclic((1, ), 8) if cyclic else fm.SBP.split_contiguous((1, ), 32)
+    p = fm.SBP.split_block_cyclic((0,), 1) if cyclic else fm.SBP.split_contiguous((0,))
+    h = fm.SBP.split_block_cyclic((1,), 8) if cyclic else fm.SBP.split_contiguous((1,), 32)
     policies = {"activations": (b, b, p, b), "down_weight": (b, p, h, b)}
 
     class DistributedProjection(fm.Module):
-
         def forward(self):
             inputs = {}
             for name in base.function_map[base.entry].parameters:
                 tensor = base.node_map[name].type
-                kind = fm.DistributedType(tensor, policies.get(name, (b, ) * tensor.rank), placement)
+                kind = fm.DistributedType(tensor, policies.get(name, (b,) * tensor.rank), placement)
                 inputs[name] = self.input(name, kind, id=name)
             result = fm.F.nn.partitioned_sparse_experts_down(**inputs, weight_block_n=16, weight_block_k=16,
-                                                             activation_quantization="dynamic_fp8_ue8m0",
-                                                             output_lanes=(2, 2))
+                activation_quantization="dynamic_fp8_ue8m0", output_lanes=(2, 2))
             result = fm.F.distributed.boxing(result, result.type.tensor)
-            self.function("main", tuple(inputs.values()), (result, ))
+            self.function("main", tuple(inputs.values()), (result,))
 
     module = DistributedProjection(dialect="nn", stage="frozen_constants", entry="main",
-                                   metadata={"auto_distribution": {"placement": placement.to_data()}}).build()
+        metadata={"auto_distribution": {"placement": placement.to_data()}}).build()
     values = operands(graph)
     values["router_expert_ids"] = torch.tensor(((0, 1), (2, 0)), dtype=torch.int32)
     values["down_proj_scale"] *= torch.arange(1, 5).float()[None, None, :, None]

@@ -20,11 +20,11 @@ def _shared_island_module():
     value_type = fm.tensor_type("float32", (2, 8))
     runtime = builder.var("runtime", value_type, id="runtime")
     weight = builder.weight("weight", value_type, source="memory", key="weight", id="weight")
-    weight_silu = builder.call("math.silu", (weight, ), value_type, id="weight_silu")
+    weight_silu = builder.call("math.silu", (weight,), value_type, id="weight_silu")
     weight_square = builder.call("math.mul", (weight, weight_silu), value_type, id="weight_square")
     first = builder.call("math.add", (runtime, weight_silu), value_type, id="first")
     output = builder.call("math.add", (first, weight_square), value_type, id="output")
-    builder.function("main", (runtime, ), (output, ))
+    builder.function("main", (runtime,), (output,))
     return builder.build(entry="main")
 
 
@@ -32,12 +32,9 @@ def test_freeze_outlines_one_maximal_island_with_multiple_assets():
     frozen = freeze_constant_islands(_shared_island_module())
 
     assert frozen.metadata["constant_phase"] == "frozen"
-    assert {node.id
-            for node in frozen.nodes
-            if node.op == "builtin.const_asset"} == {
-                "weight_silu",
-                "weight_square",
-            }
+    assert {node.id for node in frozen.nodes if node.op == "builtin.const_asset"} == {
+        "weight_silu", "weight_square",
+    }
     assert "weight" not in frozen.node_map
     assert len(frozen.constant_recipes) == 1
     recipe = frozen.constant_recipes[0]
@@ -50,8 +47,11 @@ def test_freeze_outlines_one_maximal_island_with_multiple_assets():
 def test_freeze_absorbs_materialized_constant_decisions_into_the_editable_recipe():
     module = _shared_island_module()
     nodes = tuple(
-        replace(node, metadata={**dict(node.metadata), "realized_choice": node.id}) if node.id in
-        {"weight_silu", "weight_square"} else node for node in module.nodes)
+        replace(node, metadata={**dict(node.metadata), "realized_choice": node.id})
+        if node.id in {"weight_silu", "weight_square"}
+        else node
+        for node in module.nodes
+    )
     candidates = (fm.Candidate("scalar"), fm.Candidate("selected"))
     points = (
         fm.SelectionPoint(
@@ -75,8 +75,10 @@ def test_freeze_absorbs_materialized_constant_decisions_into_the_editable_recipe
             "selected",
             "unit-test",
             "unit-test",
-            evidence=("choice already materialized in recipe IR", ),
-        ) for point in points)
+            evidence=("choice already materialized in recipe IR",),
+        )
+        for point in points
+    )
 
     frozen = freeze_constant_islands(replace(
         module,
@@ -106,19 +108,21 @@ def test_frozen_distributed_constant_pad_materializes_the_logical_tensor():
         (fm.SBP.broadcast(), fm.SBP.broadcast()),
         placement,
     )
-    weight = builder.weight("weight", distributed, source="memory", key="weight", id="weight")
+    weight = builder.weight(
+        "weight", distributed, source="memory", key="weight", id="weight")
     padded = builder.call(
         "tensors.pad",
-        (weight, ),
+        (weight,),
         padded_type,
         attrs={"pad_end": (0, 1), "pad_value": 0.0},
         id="padded",
     )
-    builder.function("main", (), (padded, ))
+    builder.function("main", (), (padded,))
     frozen = freeze_constant_islands(builder.build(entry="main"))
 
     source = torch.arange(6, dtype=torch.bfloat16).reshape(2, 3)
-    values = materialize_constant_assets(frozen, DictWeightResolver({"weight": source}))
+    values = materialize_constant_assets(
+        frozen, DictWeightResolver({"weight": source}))
 
     torch.testing.assert_close(
         values["padded"],
@@ -133,13 +137,14 @@ def test_dataflow_and_egraph_see_normal_ops_before_freeze_and_reject_after_it():
     commute = RewriteRule(
         "CommuteWeightSquare",
         lambda node, _module: node.id == "weight_square" and "commuted" not in node.metadata,
-        lambda node, _module: replace(node, inputs=tuple(reversed(node.inputs)), metadata={"commuted": True}),
+        lambda node, _module: replace(
+            node, inputs=tuple(reversed(node.inputs)), metadata={"commuted": True}),
     )
-    dataflow = DataflowPass("Dataflow", (commute, )).run(module)
+    dataflow = DataflowPass("Dataflow", (commute,)).run(module)
     assert dataflow.node_map["weight_square"].inputs == ("weight_silu", "weight")
     egraph = EGraphRulesPass(
         "EGraph",
-        (commute, ),
+        (commute,),
         selector=lambda _original, alternatives, _module: alternatives[0].node,
     ).run(module)
     assert egraph.node_map["weight_square"].inputs == ("weight_silu", "weight")
@@ -182,14 +187,16 @@ def test_thaw_retains_metadata_edits_that_python_equality_considers_equal():
     from triton.flagmega.passes.constants import thaw_constant_islands
 
     original = _shared_island_module()
-    original = replace(
-        original, nodes=tuple(
-            replace(node, metadata={"flag": True}) if node.id == "weight_square" else node for node in original.nodes))
+    original = replace(original, nodes=tuple(
+        replace(node, metadata={"flag": True}) if node.id == "weight_square" else node
+        for node in original.nodes
+    ))
     frozen = freeze_constant_islands(original)
-    edited = replace(
-        frozen, nodes=tuple(
-            replace(node, metadata={"flag": 1, "frozen_constant": node.metadata["frozen_constant"]}) if node.id ==
-            "weight_square" else node for node in frozen.nodes))
+    edited = replace(frozen, nodes=tuple(
+        replace(node, metadata={"flag": 1, "frozen_constant": node.metadata["frozen_constant"]})
+        if node.id == "weight_square" else node
+        for node in frozen.nodes
+    ))
     result = thaw_constant_islands(edited)
     assert type(result.node_map["weight_square"].metadata["flag"]) is int
     assert type(original.node_map["weight_square"].metadata["flag"]) is bool
@@ -202,11 +209,11 @@ def test_multi_function_frozen_dump_remains_mergeable(tmp_path):
     main_weight = builder.weight("main_weight", value_type, source="memory", key="main_weight", id="main_weight")
     main_output = builder.call("math.add", (main_input, main_weight), value_type, id="main_output")
     helper_input = builder.var("helper_input", value_type, id="helper_input")
-    helper_weight = builder.weight("helper_weight", value_type, source="memory", key="helper_weight",
-                                   id="helper_weight")
+    helper_weight = builder.weight(
+        "helper_weight", value_type, source="memory", key="helper_weight", id="helper_weight")
     helper_output = builder.call("math.add", (helper_input, helper_weight), value_type, id="helper_output")
-    builder.function("main", (main_input, ), (main_output, ))
-    builder.function("helper", (helper_input, ), (helper_output, ))
+    builder.function("main", (main_input,), (main_output,))
+    builder.function("helper", (helper_input,), (helper_output,))
     frozen = freeze_constant_islands(builder.build(entry="main"))
     dumper = DumpManager(tmp_path, DumpFlags.PASS_IR).root
 
@@ -216,12 +223,9 @@ def test_multi_function_frozen_dump_remains_mergeable(tmp_path):
     for name in ("main", "helper"):
         view = fm.load_module(tmp_path / "Frozen" / f"{name}.py")
         assert len(view.constant_recipes) == 2
-        assert {node.id
-                for node in view.nodes
-                if node.op == "builtin.const_asset"} == {
-                    "main_weight",
-                    "helper_weight",
-                }
+        assert {node.id for node in view.nodes if node.op == "builtin.const_asset"} == {
+            "main_weight", "helper_weight",
+        }
     assert fm.load_module(tmp_path / "Frozen") == frozen
 
 
@@ -231,12 +235,12 @@ def test_freeze_handles_independent_weight_and_non_weight_islands():
     value_type = fm.tensor_type("float32", (2, 8))
     runtime = builder.var("runtime", value_type, id="runtime")
     weight = builder.weight("weight", value_type, source="memory", key="weight", id="weight")
-    weight_scaled = builder.call("math.silu", (weight, ), value_type, id="weight_scaled")
+    weight_scaled = builder.call("math.silu", (weight,), value_type, id="weight_scaled")
     splat = builder.call("builtin.splat_const", (), value_type, attrs={"value": 0.0}, id="splat")
     scaled = builder.call("math.mul", (splat, splat), value_type, id="scaled")
     mixed = builder.call("math.add", (runtime, weight_scaled), value_type, id="mixed")
     output = builder.call("math.add", (mixed, scaled), value_type, id="output")
-    builder.function("main", (runtime, ), (output, ))
+    builder.function("main", (runtime,), (output,))
     module = builder.build(entry="main")
 
     frozen = freeze_constant_islands(module)

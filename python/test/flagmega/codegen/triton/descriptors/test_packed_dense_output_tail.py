@@ -9,6 +9,7 @@ import pytest
 from triton.flagmega import ir as fm
 from triton.flagmega.targets import NvidiaSm90Target
 
+
 IMPLEMENTATION = "tir.dense_matmul.packed_tensor_descriptor_table_smem_pipeline_gemv_tn64_bk512"
 
 
@@ -16,20 +17,17 @@ def _projection(n, *, k=2048, cyclic=False):
     placement = fm.Placement((2, 4), "yx", "bb")
     broadcast = fm.SBP.broadcast()
     split = fm.SBP.split_block_cyclic((0, 1), 1) if cyclic else fm.SBP.split_contiguous((0, 1), (n // 8 + 7) // 8)
-    lhs = fm.Node("lhs", "builtin.var", (),
-                  fm.DistributedType(fm.tensor_type("bfloat16", (1, k)), (broadcast, broadcast), placement))
-    rhs = fm.Node(
-        "rhs", "builtin.var", (),
-        fm.DistributedType(fm.tensor_type(fm.vector_type("bfloat16", (8, 2, 8)), (k // 16, n // 8)), (broadcast, split),
-                           placement))
-    result = fm.Node(
-        "result", "ntt.packed_matmul", (lhs.id, rhs.id),
-        fm.DistributedType(fm.tensor_type(fm.vector_type("bfloat16", (8, )), (1, n // 8)), (broadcast, split),
-                           placement), metadata={
-                               "selected_vectorization": "vectorization.matmul.n",
-                               "selected_vector_axes": (1, ),
-                               "selected_vector_lanes": (8, ),
-                           })
+    lhs = fm.Node("lhs", "builtin.var", (), fm.DistributedType(
+        fm.tensor_type("bfloat16", (1, k)), (broadcast, broadcast), placement))
+    rhs = fm.Node("rhs", "builtin.var", (), fm.DistributedType(
+        fm.tensor_type(fm.vector_type("bfloat16", (8, 2, 8)), (k // 16, n // 8)),
+        (broadcast, split), placement))
+    result = fm.Node("result", "ntt.packed_matmul", (lhs.id, rhs.id), fm.DistributedType(
+        fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, n // 8)),
+        (broadcast, split), placement), metadata={
+            "selected_vectorization": "vectorization.matmul.n",
+            "selected_vector_axes": (1,), "selected_vector_lanes": (8,),
+        })
     return fm.IRModule(dialect="distributed", stage="distributed", nodes=(lhs, rhs, result), functions=(), entry="main")
 
 

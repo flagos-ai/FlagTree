@@ -1,0 +1,9 @@
+{# Copyright 2026 FlagOS Contributors; SPDX-License-Identifier: MIT #}
+from triton.flagmega.codegen.triton.iq4_q8_pair_columns import dp4a_pair_columns as _r040_down
+{% for call in render_calls %}
+{% if call.family == "iq4_q8_projection" and call.variant == "r040_down_pair_columns_v1" %}
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+    _r040_down({{ call.pointers | join(', ') }}{% for name, value in call.constexprs.items() %}, {{ name }}={{ value }}{% endfor %})
+{% endif %}
+{% endfor %}

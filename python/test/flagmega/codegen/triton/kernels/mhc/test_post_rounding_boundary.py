@@ -23,7 +23,7 @@ def test_post_product_rounding_survives_cancellation_before_bf16_output(tmp_path
     value = torch.full((TOKENS, HIDDEN), 129 / 128, dtype=torch.bfloat16)
     residual = torch.zeros((TOKENS, HC, HIDDEN), dtype=torch.bfloat16)
     residual[:, 0] = -1
-    post = torch.full((TOKENS, HC), 1 + 2**-23, dtype=torch.float32)
+    post = torch.full((TOKENS, HC), 1 + 2 ** -23, dtype=torch.float32)
     diagonal = 0.9999696016311646
     comb = torch.full((TOKENS, HC, HC), (1 - diagonal) / (HC - 1), dtype=torch.float32)
     for index in range(HC):
@@ -32,8 +32,8 @@ def test_post_product_rounding_survives_cancellation_before_bf16_output(tmp_path
     expected = (mixed + post.unsqueeze(-1) * value.float().unsqueeze(-2)).bfloat16()
     # The separately rounded sum is exactly the midpoint; RNE selects the
     # lower BF16 value. Fusing the product into the add crosses that midpoint.
-    assert torch.equal(expected[:, 0], torch.full((TOKENS, HIDDEN), 2**-7, dtype=torch.bfloat16))
-    torch.testing.assert_close(comb.sum(-1), torch.ones((TOKENS, HC)), rtol=0, atol=2**-23)
+    assert torch.equal(expected[:, 0], torch.full((TOKENS, HIDDEN), 2 ** -7, dtype=torch.bfloat16))
+    torch.testing.assert_close(comb.sum(-1), torch.ones((TOKENS, HC)), rtol=0, atol=2 ** -23)
     host = {"value": value, "residual": residual, "post": post, "comb": comb}
     values = {name: host[name].cuda() for name in POST_INPUTS}
     outputs = {"mixed": torch.empty_like(expected, device="cuda")}

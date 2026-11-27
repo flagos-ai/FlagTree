@@ -18,7 +18,9 @@ from triton.flagmega.importer import Qwen35Layer0Importer, TensorInfo
 from triton.flagmega.ir import DType
 from triton.flagmega.runtime import load as load_runtime
 
+
 torch = pytest.importorskip("torch")
+
 
 _PREFIX = "model.language_model.layers.0."
 _EMBEDDING_KEY = "model.language_model.embed_tokens.weight"
@@ -29,7 +31,6 @@ def _device_wrapper(source: str, symbol: str) -> str:
 
 
 class _ZeroFullShapeCheckpoint:
-
     def __init__(self) -> None:
         self._config = {
             "model_type": "qwen3_5",
@@ -57,7 +58,7 @@ class _ZeroFullShapeCheckpoint:
         self._infos = {
             _PREFIX + name: TensorInfo(_PREFIX + name, dtype, shape, "synthetic-full-shape.safetensors")
             for name, shape, dtype in (
-                ("input_layernorm.weight", (5120, ), DType.BFLOAT16),
+                ("input_layernorm.weight", (5120,), DType.BFLOAT16),
                 ("linear_attn.in_proj_qkv.weight", (10240, 5120), DType.FLOAT8_E4M3FN),
                 ("linear_attn.in_proj_qkv.weight_scale_inv", (80, 40), DType.FLOAT32),
                 ("linear_attn.in_proj_z.weight", (6144, 5120), DType.FLOAT8_E4M3FN),
@@ -65,12 +66,12 @@ class _ZeroFullShapeCheckpoint:
                 ("linear_attn.in_proj_b.weight", (48, 5120), DType.BFLOAT16),
                 ("linear_attn.in_proj_a.weight", (48, 5120), DType.BFLOAT16),
                 ("linear_attn.conv1d.weight", (10240, 1, 4), DType.BFLOAT16),
-                ("linear_attn.A_log", (48, ), DType.FLOAT32),
-                ("linear_attn.dt_bias", (48, ), DType.FLOAT32),
-                ("linear_attn.norm.weight", (128, ), DType.BFLOAT16),
+                ("linear_attn.A_log", (48,), DType.FLOAT32),
+                ("linear_attn.dt_bias", (48,), DType.FLOAT32),
+                ("linear_attn.norm.weight", (128,), DType.BFLOAT16),
                 ("linear_attn.out_proj.weight", (5120, 6144), DType.FLOAT8_E4M3FN),
                 ("linear_attn.out_proj.weight_scale_inv", (40, 48), DType.FLOAT32),
-                ("post_attention_layernorm.weight", (5120, ), DType.BFLOAT16),
+                ("post_attention_layernorm.weight", (5120,), DType.BFLOAT16),
                 ("mlp.gate_proj.weight", (17408, 5120), DType.FLOAT8_E4M3FN),
                 ("mlp.gate_proj.weight_scale_inv", (136, 40), DType.FLOAT32),
                 ("mlp.up_proj.weight", (17408, 5120), DType.FLOAT8_E4M3FN),
@@ -110,11 +111,16 @@ class _ZeroFullShapeCheckpoint:
 
 
 def test_qwen3_8_27b_sharded_codegen_uses_local_call_abi_and_explicit_boxing():
-    compiled = Compiler().compile(Qwen35Layer0Importer(_ZeroFullShapeCheckpoint()).import_module()).module
+    compiled = Compiler().compile(
+        Qwen35Layer0Importer(_ZeroFullShapeCheckpoint()).import_module()
+    ).module
 
     assert compiled.metadata["launch_contract"]["cooperative_grid"] is True
-    assert compiled.selection_map["tir.input_norm.vectorized.compute"].candidate_id == (
-        "semantic.ntt.gather_reduce_norm_apply")
+    assert compiled.selection_map[
+        "tir.input_norm.vectorized.compute"
+    ].candidate_id == (
+        "semantic.ntt.gather_reduce_norm_apply"
+    )
     package = compiled.metadata["codegen_package_plan"]
     assert package["kind"] == "tir_call_graph"
 
@@ -138,13 +144,19 @@ def test_qwen3_8_27b_sharded_codegen_uses_local_call_abi_and_explicit_boxing():
     assert source.count("# tir.call ") == 15
     # Each selected PrimFunction is a real device function.  The entry does
     # not reinterpret DistributedType as an owner-selection predicate.
-    entry = source[source.index("def flagmega_main("):]
+    entry = source[source.index("def flagmega_main(") :]
     assert "shard_id(" not in entry
-    collective_calls = sum(call["execution_kind"] == "collective" for call in calls)
-    scheduled_grid_barriers = sum(event["kind"] == "barrier" and event["scope"] == "grid"
-                                  for event in descriptor["entry_events"])
-    scheduled_block_barriers = sum(event["kind"] == "barrier" and event["scope"] == "block"
-                                   for event in descriptor["entry_events"])
+    collective_calls = sum(
+        call["execution_kind"] == "collective" for call in calls
+    )
+    scheduled_grid_barriers = sum(
+        event["kind"] == "barrier" and event["scope"] == "grid"
+        for event in descriptor["entry_events"]
+    )
+    scheduled_block_barriers = sum(
+        event["kind"] == "barrier" and event["scope"] == "block"
+        for event in descriptor["entry_events"]
+    )
     assert entry.count("distributed_barrier(") == scheduled_grid_barriers
     assert entry.count("tl.debug_barrier()") == scheduled_block_barriers
     # Only Boxing owns a separate collective launch.  The two fused
@@ -155,18 +167,23 @@ def test_qwen3_8_27b_sharded_codegen_uses_local_call_abi_and_explicit_boxing():
     for call in calls:
         symbol = "_flagmega_main_call_" + str(calls.index(call)) + "_" + "".join(
             character.lower() if character.isalnum() or character == "_" else "_"
-            for character in call["call"]).strip("_")
+            for character in call["call"]
+        ).strip("_")
         wrapper = _device_wrapper(source, symbol)
         if call["execution_kind"] != "local_shard":
             continue
         assert "if shard_index == 0" not in wrapper
-    embedding_wrapper = _device_wrapper(source, "_flagmega_main_call_1_token_embedding")
+    embedding_wrapper = _device_wrapper(
+        source, "_flagmega_main_call_1_token_embedding"
+    )
     # The embedding result is split over the 8x16 mesh and therefore writes
     # only its 5120 / 128 owner-local elements.
     assert "tl.range(0, 40, 16)" in embedding_wrapper
     assert "shard_index * 16" not in embedding_wrapper
     assert "distributed_barrier(" not in embedding_wrapper
-    output_wrapper = _device_wrapper(source, "_flagmega_main_call_14_output_vectorized_compute")
+    output_wrapper = _device_wrapper(
+        source, "_flagmega_main_call_14_output_vectorized_compute"
+    )
     assert "tl.range(0, 40, 256)" in output_wrapper
     assert "tl.program_id" not in output_wrapper
     assert "distributed_barrier(" not in output_wrapper

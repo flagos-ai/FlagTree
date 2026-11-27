@@ -6,19 +6,23 @@ import torch
 from triton.flagmega import ir as fm
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.passes.functions import (
-    propagate_function_boundary_layouts, )
+    propagate_function_boundary_layouts,
+)
 
 
 class _PackedIdentity(fm.Module):
-
     def __init__(self):
         super().__init__(dialect="ntt", stage="packed", entry="main")
 
     def forward(self):
         logical_type = fm.tensor_type("float32", (2, 16))
         parameter = self.input("parameter", logical_type, id="parameter")
-        packed = fm.F.tensors.pack(parameter, (8, ), axes=(1, ), name="packed")
-        restored = fm.F.tensors.unpack(packed, axes=(1, ), name="restored")
+        packed = fm.F.tensors.pack(
+            parameter, (8,), axes=(1,), name="packed"
+        )
+        restored = fm.F.tensors.unpack(
+            packed, axes=(1,), name="restored"
+        )
         value = self.input("value", logical_type, id="value")
         call = fm.F.builtin.call(
             value,
@@ -26,8 +30,8 @@ class _PackedIdentity(fm.Module):
             callee="identity",
             name="call",
         )
-        self.function("main", (value, ), (call, ))
-        self.function("identity", (parameter, ), (restored, ))
+        self.function("main", (value,), (call,))
+        self.function("identity", (parameter,), (restored,))
 
 
 def test_pack_unpack_identity_becomes_a_typed_vector_function_boundary():

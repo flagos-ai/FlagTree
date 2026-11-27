@@ -1,5 +1,3 @@
-# Copyright 2026 FlagOS Contributors
-# SPDX-License-Identifier: MIT
 from triton.flagmega import ir as fm
 from triton.flagmega.passes import (
     FunctionTraversalOrder,
@@ -36,21 +34,22 @@ def test_function_pass_uses_module_order_and_scoped_context():
         seen.append(function.name)
         return module
 
-    result = PassManager("functions").add(FunctionalFunctionPass("visit", visit)).run(_two_function_module())
+    result = PassManager("functions").add(
+        FunctionalFunctionPass("visit", visit)
+    ).run(_two_function_module())
 
     assert seen == ["main", "callee"]
-    assert result.executed == ("visit", )
+    assert result.executed == ("visit",)
 
 
 def test_function_pass_can_request_callee_first_traversal():
     seen = []
 
-    result = PassManager("functions").add(
-        FunctionalFunctionPass(
-            "visit",
-            lambda function, module, _context: seen.append(function.name) or module,
-            traversal_order=FunctionTraversalOrder.CALLEE_FIRST,
-        )).run(_two_function_module())
+    result = PassManager("functions").add(FunctionalFunctionPass(
+        "visit",
+        lambda function, module, _context: seen.append(function.name) or module,
+        traversal_order=FunctionTraversalOrder.CALLEE_FIRST,
+    )).run(_two_function_module())
 
     assert seen == ["callee", "main"]
-    assert result.module.function_map["main"].outputs == ("call", )
+    assert result.module.function_map["main"].outputs == ("call",)

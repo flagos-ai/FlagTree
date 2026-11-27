@@ -25,17 +25,15 @@ def test_fused_packed_projection_keeps_bf16_rounding_before_cancellation(tmp_pat
     weight[:, 1] = 1 / 256
     weights = {
         "weight": weight,
-        "scale": torch.ones((2048, ), dtype=torch.bfloat16),
-        "bias": torch.zeros((2048, ), dtype=torch.bfloat16),
+        "scale": torch.ones((2048,), dtype=torch.bfloat16),
+        "bias": torch.zeros((2048,), dtype=torch.bfloat16),
     }
-    checkpoint = MemoryCheckpoint(
-        {}, {name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
-             for name, value in weights.items()}, weights)
+    checkpoint = MemoryCheckpoint({}, {
+        name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
+        for name, value in weights.items()
+    }, weights)
     artifact = write_artifact(
-        module,
-        tmp_path / "rounding",
-        target="nvidia-sm90",
-        checkpoint=checkpoint,
+        module, tmp_path / "rounding", target="nvidia-sm90", checkpoint=checkpoint,
         emit_executable=True,
     )
     runtime = load(artifact, device="cuda:0")

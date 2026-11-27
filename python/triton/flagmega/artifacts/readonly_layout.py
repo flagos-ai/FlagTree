@@ -27,8 +27,8 @@ def relocate_readonly(module, offsets, *, nbytes):
             delta = offset - buffer.offset
             if group_deltas.setdefault(buffer.rdata_group, delta) != delta:
                 raise ArtifactError("Readonly relocation must preserve all parameter-bank row offsets.")
-    physical = tuple(
-        replace(p, start=dim(physical_offsets[p.id])) if p.id in physical_offsets else p for p in plan.physical_buffers)
+    physical = tuple(replace(p, start=dim(physical_offsets[p.id]))
+                     if p.id in physical_offsets else p for p in plan.physical_buffers)
     occupied = sorted((p.offset, p.offset + p.nbytes) for p in physical if p.memory_space == "rdata")
     if any(b > c for (_, b), (c, _) in zip(occupied, occupied[1:])):
         raise ArtifactError("Readonly relocation has overlapping allocations.")

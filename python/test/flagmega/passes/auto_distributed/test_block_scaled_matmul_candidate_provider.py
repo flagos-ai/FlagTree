@@ -18,7 +18,7 @@ def _candidates(size: int):
         module,
         node,
         placement,
-        tuple((module.node_map[value].type, ) for value in node.inputs),
+        tuple((module.node_map[value].type,) for value in node.inputs),
         PyNttDistributedSplitCandidateProvider(block_bytes=128),
     )
     return MatMulCandidateProvider().get_candidates(context)
@@ -26,8 +26,11 @@ def _candidates(size: int):
 
 def test_block_fp8_reduction_candidates_are_contiguous_scale_group_aligned():
     reductions = tuple(
-        candidate for candidate in _candidates(1024)
-        if isinstance(candidate.return_type, fm.DistributedType) and candidate.return_type.partial is not None)
+        candidate
+        for candidate in _candidates(1024)
+        if isinstance(candidate.return_type, fm.DistributedType)
+        and candidate.return_type.partial is not None
+    )
 
     assert reductions
     for candidate in reductions:
@@ -40,8 +43,10 @@ def test_block_fp8_reduction_candidates_are_contiguous_scale_group_aligned():
 
 def test_block_fp8_does_not_offer_partial_sum_when_local_k_is_subgroup():
     assert not any(
-        isinstance(candidate.return_type, fm.DistributedType) and candidate.return_type.partial is not None
-        for candidate in _candidates(128))
+        isinstance(candidate.return_type, fm.DistributedType)
+        and candidate.return_type.partial is not None
+        for candidate in _candidates(128)
+    )
 
 
 def test_packed_fp8_output_candidates_scale_n_and_preserve_scalar_work():
@@ -49,20 +54,18 @@ def test_packed_fp8_output_candidates_scale_n_and_preserve_scalar_work():
 
     costs = []
     for lanes in ((), (2, 4)):
-        module = Fp8Consumers(n=1024, k=1024, output_lanes=lanes, lanes=(1, )).build()
+        module = Fp8Consumers(n=1024, k=1024, output_lanes=lanes, lanes=(1,)).build()
         node = module.node_map["projection"]
         placement = fm.Placement((8, 16), "yx", "bb")
         context = DistributedCandidateContext(module, node, placement,
-                                              tuple((module.node_map[name].type, ) for name in node.inputs),
+                                              tuple((module.node_map[name].type,) for name in node.inputs),
                                               PyNttDistributedSplitCandidateProvider(block_bytes=128))
         candidates = MatMulCandidateProvider().get_candidates(context)
         assert candidates
-        costs.append(
-            next(candidate.operation_cost for candidate in candidates if candidate.reason == "broadcast-replicated"))
+        costs.append(next(candidate.operation_cost for candidate in candidates if candidate.reason == "broadcast-replicated"))
         for candidate in candidates:
-            inputs = tuple(
-                fm.Node(str(index), "builtin.var", (), value, attrs={"name": str(index)})
-                for index, value in enumerate(candidate.input_types))
+            inputs = tuple(fm.Node(str(index), "builtin.var", (), value, attrs={"name": str(index)})
+                           for index, value in enumerate(candidate.input_types))
             assert fm.get_definition(node.op).infer_call_type(inputs, node.attrs) == candidate.return_type
             policy = candidate.return_type.axis_policies[-1]
             if isinstance(policy, fm.SBPSplit):

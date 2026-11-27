@@ -1,0 +1,2063 @@
+{% set named = call_dummy | default(false) %}
+{# Generated from the accepted numerical AST by the r006 transport lowering. #}
+from triton.flagmega.codegen.triton.iq4_q8_kernels import E
+{% if render_calls | selectattr('packet_mode','defined') | selectattr('packet_mode', 'equalto', 'cached_tables') | list %}
+from triton.flagmega.codegen.triton.iq4_q8_kernels import packets_cached_tables as packets
+{% else %}
+from triton.flagmega.codegen.triton.iq4_q8_kernels import packets
+{% endif %}
+from triton.flagmega.codegen.triton.iq4_q8_persistent_reduce import persistent_typed_reduce as typed_reduce
+{% if render_calls | selectattr('barrier_batch_g', 'defined') | list %}
+from triton.flagmega.codegen.triton.iq4_q8_batch_reduce import batch_partial_store,batch_typed_reduce
+{% endif %}
+import triton.experimental.tle.language.gpu as gpu
+{% set _XQ='_XQ' %}{% set _GATE='_GATE' %}{% set _UP='_UP' %}{% set _Y='_Y' %}{% set _DQ='_DQ' %}{% set _DOWN='_DOWN' %}{% set _Z='_Z' %}
+{% for call in render_calls %}
+{% if call.cross_layers | default(0) %}{% set _XQ=call.symbol+'__xq(_prefetch_progress, _layer)' %}{% set _DQ=call.symbol+'__dq(_prefetch_progress, _layer)' %}{% endif %}
+{% if call.cross_layers | default(0) %}{% set _Z=call.symbol+'__bank(_prefetch_progress, _layer, 4, tl.bfloat16)' %}{% endif %}
+{% if call.cross_layers | default(0) %}{% set _DOWN=call.symbol+'__bank(_prefetch_progress, _layer, 3, tl.uint8)' %}{% endif %}
+{% if call.cross_layers | default(0) %}{% set _Y=call.symbol+'__bank(_prefetch_progress, _layer, 2, tl.bfloat16)' %}{% endif %}
+{% if call.cross_layers | default(0) %}{% set _UP=call.symbol+'__bank(_prefetch_progress, _layer, 1, tl.uint8)' %}{% endif %}
+{% if call.cross_layers | default(0) %}{% set _GATE=call.symbol+'__bank(_prefetch_progress, _layer, 0, tl.uint8)' %}{% endif %}
+{% if not call.q8_rows_per_cta is defined %}{% set _unused = call.update(q8_rows_per_cta=0) %}{% endif %}
+{% if call.continuous_stream | default(false) %}
+from triton.flagmega.codegen.triton.iq4_q8_kernels import q8_quantize_lanes
+{% if not call.q8_aligned | default(false) %}
+_grid = tl.constexpr(tle.device_mesh({'block': [('block_x', {{ call.grid[0] }})]}))
+{% endif %}
+{% endif %}
+{% set named = call.transport_kind | default("tma") in ("vector_named","cp_named","global_named","global_idle") %}
+{% if call.variant in ('r006_glu_transport_t2','r006_glu_transport_t3') and call.family in ('iq4_q8_glu','iq4_q8_projection') %}
+@triton.jit
+def {{ call.symbol }}__row_ptr(W, byte, row=0):
+{% if call.q8_aligned | default(false) and not call.no_shared_staging | default(false) %}
+    byte = byte + 32*(row%4-tl.program_id(0)%4)
+{% endif %}
+{% if call.rows_per_transaction > 1 %}
+    phase_base = (tl.program_id(0) * {{ call.rows_per_transaction }} % 4) * 32
+    phase_row = ((tl.program_id(0) * {{ call.rows_per_transaction }} + W[1]) % 4) * 32
+    byte = byte + phase_row - phase_base
+    return gpu.local_ptr(W[0],(W[1],byte // 16,byte % 16),shape=(4,32))
+{% else %}
+{% if call.transport_kind in ('global_named','global_idle') %}
+    return W[0] + byte
+{% else %}
+    return gpu.local_ptr(W[0],(0,byte // 16,byte % 16),shape=(4,32))
+{% endif %}
+{% endif %}
+
+{% if call.consumer_mode == 'load_only' %}
+@triton.jit
+def {{ call.symbol }}__load_group_stage(W, kbx, g, active):
+    base = kbx.to(tl.int32) * 34
+    header = gpu.set_layout(tl.load({{ call.symbol }}__row_ptr(W,4*base).to(tl.pointer_type(tl.uint64,3)),active,0,volatile=True),E)
+    packed0 = gpu.set_layout(tl.load({{ call.symbol }}__row_ptr(W,4*(base+2+4*g)).to(tl.pointer_type(tl.uint64,3)),active,0,volatile=True),E)
+    packed1 = gpu.set_layout(tl.load({{ call.symbol }}__row_ptr(W,4*(base+2+4*g+2)).to(tl.pointer_type(tl.uint64,3)),active,0,volatile=True),E)
+    sentinel = header ^ packed0 ^ packed1
+    return (sentinel.to(tl.uint32) ^ (sentinel >> 32).to(tl.uint32)).to(tl.float32,bitcast=True)
+{% else %}
+@triton.jit
+def {{ call.symbol }}__dot_group_stage(W, Q, row, kbx, g, active, K: tl.constexpr, WEIGHT_BASE = 0):
+    base = (kbx.to(tl.int32) - WEIGHT_BASE) * 34
+    QP = Q.to(tl.pointer_type(tl.uint32))
+    I = gpu.set_layout(tl.full((4, 32), 0, tl.int32), E)
+    for pair_index in tl.static_range(2):
+        pair = gpu.set_layout(tl.load({{ call.symbol }}__row_ptr(W, 4 * (base + 2 + 4 * g + 2 * pair_index), row).to(tl.pointer_type(tl.uint64, 1)), active, 0, eviction_policy='evict_first'), E)
+        for half in tl.static_range(2):
+            j = 2 * pair_index + half
+            word = gpu.set_layout((pair >> (32 * half)).to(tl.uint32), E)
+            q0 = gpu.set_layout(tl.load(QP + (8 * kbx.to(tl.int32) + g) * 9 + 1 + j, active, 0).to(tl.int32, bitcast=True), E)
+            q1 = gpu.set_layout(tl.load(QP + (8 * kbx.to(tl.int32) + g) * 9 + 5 + j, active, 0).to(tl.int32, bitcast=True), E)
+            (a, b) = packets(word)
+            I = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[a, q0, I], dtype=tl.int32, is_pure=True, pack=1)
+            I = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[b, q1, I], dtype=tl.int32, is_pure=True, pack=1)
+    header = gpu.set_layout(tl.load({{ call.symbol }}__row_ptr(W, 4 * base, row).to(tl.pointer_type(tl.uint64, 1)), active, 0, eviction_policy='evict_first'), E)
+    h = (header & 0xffffffff).to(tl.uint32)
+    s = (header >> 32).to(tl.uint32)
+    sg = s >> 8 * (g // 2) + 4 * (g % 2) & 15 | (h >> 16 + 2 * g & 3) << 4
+    sg = sg.to(tl.int32) - 32
+    dq = gpu.set_layout(tl.load(QP + (8 * kbx.to(tl.int32) + g) * 9, active, 0, eviction_policy='evict_last'), E)
+    dw = (h & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    dx = (dq & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    D = tl.inline_asm_elementwise('mul.rn.f32 $0,$1,$2;', constraints='=f,f,f', args=[dw, dx], dtype=tl.float32, is_pure=True, pack=1)
+    return (gpu.set_layout((I * sg).to(tl.float32), E), gpu.set_layout(D, E))
+
+{% if call.prefetch_depth | default(0) %}
+@triton.jit
+def {{ call.symbol }}__dot_group_prefetched(H, P0, P1, Q, row, kbx, g, active, K: tl.constexpr):
+    base = kbx.to(tl.int32) * 34
+    QP = Q.to(tl.pointer_type(tl.uint32))
+    header = H
+    h = (header & 0xffffffff).to(tl.uint32)
+    s = (header >> 32).to(tl.uint32)
+    sg = s >> 8 * (g // 2) + 4 * (g % 2) & 15 | (h >> 16 + 2 * g & 3) << 4
+    sg = sg.to(tl.int32) - 32
+    dq = gpu.set_layout(tl.load(QP + (8 * kbx.to(tl.int32) + g) * 9, active, 0), E)
+    I = tl.full((4, 32), 0, tl.int32)
+    I = gpu.set_layout(I, E)
+    packed0 = P0
+    packed1 = P1
+    for j in tl.static_range(4):
+        pair = packed0 if j < 2 else packed1
+        word = gpu.set_layout((pair >> (32 * (j % 2))).to(tl.uint32), E)
+        (a, b) = packets(word)
+        q0 = gpu.set_layout(tl.load(QP + (8 * kbx.to(tl.int32) + g) * 9 + 1 + j, active, 0).to(tl.int32, bitcast=True), E)
+        q1 = gpu.set_layout(tl.load(QP + (8 * kbx.to(tl.int32) + g) * 9 + 5 + j, active, 0).to(tl.int32, bitcast=True), E)
+        I = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[a, q0, I], dtype=tl.int32, is_pure=True, pack=1)
+        I = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[b, q1, I], dtype=tl.int32, is_pure=True, pack=1)
+    dw = (h & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    dx = (dq & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    D = tl.inline_asm_elementwise('mul.rn.f32 $0,$1,$2;', constraints='=f,f,f', args=[dw, dx], dtype=tl.float32, is_pure=True, pack=1)
+    return (gpu.set_layout((I * sg).to(tl.float32), E), gpu.set_layout(D, E))
+{% endif %}
+
+{% endif %}
+
+{% if call.padding_prefetch | default(false) %}
+{% for nw in (2,1) %}
+@triton.jit
+def {{ call.symbol }}__producer_prefetch{{ nw }}({{ (call.pipeline_producer_parameters + (call.signature,) + (('_prefetch_progress',) if call.bounded_prefetch | default(false) else ())) | join(', ') }}):
+    # Independent future epochs, no shared access or collective participants.
+{% if call.payload_observe | default(false) %}
+    gpu.trace_event(272, {{ 302 if nw == 2 else 301 }}, 0)
+{% endif %}
+{% if call.cross_layers | default(0) %}
+    _serial = 1
+    _done = 0
+    for _layer in range({{ call.cross_layers }}):
+{% filter indent(4, true) %}
+{% if call.cross_layers | default(0) %}
+{% if call.cross_trace %}
+    _TRACE = {{ "_prefetch_progress" if call.cross_lookahead_rows | default(0) or call.no_shared_staging | default(false) else "workspace + " ~ call.cross_trace_base }}
+{% endif %}
+{% endif %}
+    lane = gpu.set_layout(tl.arange(0,{{ nw*32 }}), gpu.BlockEncoding([1],[32],[{{ nw }}],[0]))
+{% if call.cross_layers | default(0) %}
+    lane=tl.inline_asm_elementwise('mov.u32 $0,%tid.x;',constraints='=r,r',args=[lane],dtype=tl.int32,is_pure=False,pack=1)%{{ nw*32 }}
+{% endif %}
+{% if call.bounded_prefetch | default(false) %}
+    _progress_ptr = gpu.local_ptr(_prefetch_progress,(tl.full((),0,tl.int32),))
+{% endif %}
+    _group_ptr = gpu.local_ptr(_prefetch_progress,(tl.full((),1,tl.int32),))
+    _serial_ptr = gpu.local_ptr(_prefetch_progress,(tl.full((),2,tl.int32),))
+    while tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '2+4*((_serial-1)%2)' if call.cross_layers | default(0) else '2' }},tl.int32),)),volatile=True) < _serial:
+        tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+    _group = tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '1+4*((_serial-1)%2)' if call.cross_layers | default(0) else '1' }},tl.int32),)),volatile=True)
+    while _group >= 0:
+        for _f in range(2,32):
+            while tl.load(_progress_ptr,volatile=True) < _done+_f-{{ call.prefetch_window }}:
+                tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+            future_row = 32*_group + _f
+{% for bank in (0,1) %}
+            for sector in range(0, {{ call.transport_row_bytes }} // 128 + 1, 96):
+                byte = (sector + (lane % 32) * 3 + {{ 'lane // 32' if nw == 2 else '2' }}) * 128
+                ptr = {{ (_GATE if bank==0 else _UP) if call.cross_layers | default(0) else call.pointers[bank+1] }} + future_row.to(tl.int64) * {{ call.transport_row_bytes }} + byte
+                tl.inline_asm_elementwise("{ .reg .pred p; setp.ne.u32 p,$1,0; @p prefetch.global.L2 [$2]; mov.u32 $0,0; }", constraints="=r,r,l", args=[byte < {{ call.transport_row_bytes }},ptr],dtype=tl.int32,is_pure=False,pack=1)
+{% endfor %}
+        _done += 32
+        _serial += 1
+        while tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '2+4*((_serial-1)%2)' if call.cross_layers | default(0) else '2' }},tl.int32),)),volatile=True) < _serial:
+            tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+        _group = tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '1+4*((_serial-1)%2)' if call.cross_layers | default(0) else '1' }},tl.int32),)),volatile=True)
+    _glu_epochs = _done
+    for _di in range(tl.where(tl.program_id(0)<160,32,0)*3):
+{% if call.cross_layers | default(0) %}
+        if _layer<{{ call.cross_layers-1 }} and _di==tl.where(tl.program_id(0)<160,32,0)*3-8:
+{% for b in (1,2) %}
+            _nextW=tl.load(({{ call.symbol }}__workspace(_prefetch_progress)+{{ call.cross_table_base }}).to(tl.pointer_type(tl.uint64))+(_layer+1)*5+{{ 0 if b==1 else 1 }}).to(tl.pointer_type(tl.uint8))
+            for _f in range({{ call.cross_prefetch_rows }}):
+                for _sector in range(0,22,96):
+                    _byte=(_sector+(lane%32)*3+{{ 'lane//32' if nw==2 else '2' }})*128
+                    _ptr=_nextW+(32*tl.program_id(0)+_f).to(tl.int64)*2720+_byte
+                    tl.inline_asm_elementwise('{ .reg .pred p; setp.ne.u32 p,$1,0; @p prefetch.global.L2 [$2]; mov.u32 $0,0; }',constraints='=r,r,l',args=[_byte<2720,_ptr],dtype=tl.int32,is_pure=False,pack=1)
+{% endfor %}
+{% endif %}
+        _future = _glu_epochs + _di
+        while tl.load(_progress_ptr,volatile=True) < _future - {{ call.prefetch_window }}:
+            tl.inline_asm_elementwise("nanosleep.u32 32; mov.u32 $0,0;",constraints="=r",args=[],dtype=tl.int32,is_pure=False,pack=1)
+        _dr = 32*tl.program_id(0)+_di//3
+        for _bank in tl.static_range(2):
+            _ks = (_di%3)*32+_bank*16
+            for _sector in range(0,17,96):
+                _byte = (_sector + (lane%32)*3 + {{ 'lane // 32' if nw == 2 else '2' }})*128
+                _ptr = {{ _DOWN }} + _dr.to(tl.int64)*9248+_ks*136+_byte
+                tl.inline_asm_elementwise("{ .reg .pred p; setp.ne.u32 p,$1,0; @p prefetch.global.L2 [$2]; mov.u32 $0,0; }", constraints="=r,r,l",args=[_byte<tl.minimum(16,68-_ks)*136,_ptr],dtype=tl.int32,is_pure=False,pack=1)
+{% if call.payload_observe | default(false) %}
+    gpu.trace_event(273, {{ 302 if nw == 2 else 301 }}, 0)
+{% endif %}
+    _done += tl.where(tl.program_id(0)<160,32,0)*3
+    _serial += 1
+{% endfilter %}
+{% else %}
+    lane = gpu.set_layout(tl.arange(0,{{ nw*32 }}), gpu.BlockEncoding([1],[32],[{{ nw }}],[0]))
+{% if call.cross_layers | default(0) %}
+    lane=tl.inline_asm_elementwise('mov.u32 $0,%tid.x;',constraints='=r,r',args=[lane],dtype=tl.int32,is_pure=False,pack=1)%{{ nw*32 }}
+{% endif %}
+{% if call.bounded_prefetch | default(false) %}
+    _progress_ptr = gpu.local_ptr(_prefetch_progress,(tl.full((),0,tl.int32),))
+{% endif %}
+    _group_ptr = gpu.local_ptr(_prefetch_progress,(tl.full((),1,tl.int32),))
+    _serial_ptr = gpu.local_ptr(_prefetch_progress,(tl.full((),2,tl.int32),))
+    _serial = 1
+    _done = 0
+    while tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '2+4*((_serial-1)%2)' if call.cross_layers | default(0) else '2' }},tl.int32),)),volatile=True) < _serial:
+        tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+    _group = tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '1+4*((_serial-1)%2)' if call.cross_layers | default(0) else '1' }},tl.int32),)),volatile=True)
+    while _group >= 0:
+        for _f in range(2,32):
+            while tl.load(_progress_ptr,volatile=True) < _done+_f-{{ call.prefetch_window }}:
+                tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+            future_row = 32*_group + _f
+{% for bank in (0,1) %}
+            for sector in range(0, {{ call.transport_row_bytes }} // 128 + 1, 96):
+                byte = (sector + (lane % 32) * 3 + {{ 'lane // 32' if nw == 2 else '2' }}) * 128
+                ptr = {{ (_GATE if bank==0 else _UP) if call.cross_layers | default(0) else call.pointers[bank+1] }} + future_row.to(tl.int64) * {{ call.transport_row_bytes }} + byte
+                tl.inline_asm_elementwise("{ .reg .pred p; setp.ne.u32 p,$1,0; @p prefetch.global.L2 [$2]; mov.u32 $0,0; }", constraints="=r,r,l", args=[byte < {{ call.transport_row_bytes }},ptr],dtype=tl.int32,is_pure=False,pack=1)
+{% endfor %}
+        _done += 32
+        _serial += 1
+        while tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '2+4*((_serial-1)%2)' if call.cross_layers | default(0) else '2' }},tl.int32),)),volatile=True) < _serial:
+            tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+        _group = tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '1+4*((_serial-1)%2)' if call.cross_layers | default(0) else '1' }},tl.int32),)),volatile=True)
+    _glu_epochs = _done
+    for _di in range(tl.cdiv(5120-tl.program_id(0),tl.num_programs(0))*3):
+        _future = _glu_epochs + _di
+        while tl.load(_progress_ptr,volatile=True) < _future - {{ call.prefetch_window }}:
+            tl.inline_asm_elementwise("nanosleep.u32 32; mov.u32 $0,0;",constraints="=r",args=[],dtype=tl.int32,is_pure=False,pack=1)
+        _dr = tl.program_id(0)+(_di//3)*tl.num_programs(0)
+        for _bank in tl.static_range(2):
+            _ks = (_di%3)*32+_bank*16
+            for _sector in range(0,17,96):
+                _byte = (_sector + (lane%32)*3 + {{ 'lane // 32' if nw == 2 else '2' }})*128
+                _ptr = {{ call.continuous_down_pointers[1] }} + _dr.to(tl.int64)*9248+_ks*136+_byte
+                tl.inline_asm_elementwise("{ .reg .pred p; setp.ne.u32 p,$1,0; @p prefetch.global.L2 [$2]; mov.u32 $0,0; }", constraints="=r,r,l",args=[_byte<tl.minimum(16,68-_ks)*136,_ptr],dtype=tl.int32,is_pure=False,pack=1)
+{% if call.payload_observe | default(false) %}
+    gpu.trace_event(273, {{ 302 if nw == 2 else 301 }}, 0)
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endif %}
+
+{% if call.no_shared_trace | default(false) %}
+@triton.jit
+def {{ call.symbol }}__role_stamp(W, role:tl.constexpr, field:tl.constexpr):
+    tl.inline_asm_elementwise('{ .reg .u32 i,t,sm; .reg .u64 a,v; .reg .pred p; mov.u32 t,%tid.x; setp.eq.u32 p,t,$2; @!p bra DONE; mov.u32 i,%ctaid.x; mul.wide.u32 a,i,64; add.u64 a,a,$1; cvt.u64.u32 v,$3; add.u64 a,a,v; mov.u64 v,%globaltimer; st.global.u64 [a],v; cvt.u64.u32 v,$4; add.u64 a,a,v; mov.u32 sm,%smid; cvt.u64.u32 v,sm; st.global.u64 [a],v; DONE: mov.u32 $0,0; }',constraints='=r,l,r,r,r',args=[W.to(tl.uint64),role*128,8192+role*24+field*8,16-field*8],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+{% if call.cross_trace | default(false) %}
+@triton.jit
+def {{ call.symbol }}__clock():
+    return tl.inline_asm_elementwise('mov.u64 $0,%globaltimer;',constraints='=l',args=[],dtype=tl.uint64,is_pure=False,pack=1)
+@triton.jit
+def {{ call.symbol }}__trace(T, layer, record, field, value):
+{% if call.cross_lookahead_rows | default(0) or call.no_shared_staging | default(false) %}
+    offset=((((layer*{{ call.grid[0] if call.no_shared_staging | default(false) else 216 }}+tl.program_id(0))*24+record)*8+field)*8+{{ call.cross_trace_base }}).to(tl.uint64)
+    tl.inline_asm_elementwise('{ .reg .u32 t; .reg .u64 a; .reg .pred p; mov.u32 t,%tid.x; and.b32 t,t,127; setp.eq.u32 p,t,0; @!p bra DONE; ld.volatile.shared.u64 a,[$1]; add.u64 a,a,$2; st.global.u64 [a],$3; DONE: mov.u32 $0,0; }',constraints='=r,r,l,l',args=[gpu.local_ptr(T,(tl.full((),8,tl.int32),)).to(tl.uint64).to(tl.uint32),offset,value.to(tl.uint64)],dtype=tl.int32,is_pure=False,pack=1)
+{% else %}
+    tl.inline_asm_elementwise('{ .reg .u32 t; .reg .pred p; mov.u32 t,%tid.x; and.b32 t,t,127; setp.eq.u32 p,t,0; @p st.global.u64 [$1],$2; mov.u32 $0,0; }',constraints='=r,l,l',args=[T.to(tl.pointer_type(tl.uint64))+((layer*{{ call.grid[0] if call.no_shared_staging | default(false) else 216 }}+tl.program_id(0))*24+record)*8+field,value.to(tl.uint64)],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+{% endif %}
+
+{% if call.cross_layers | default(0) or call.no_shared_staging | default(false) %}
+@triton.jit
+def {{ call.symbol }}__lease_acquire_2(S):
+    tl.inline_asm_elementwise('{ .reg .u32 t,v; .reg .pred p,b; mov.u32 t,%tid.x; and.b32 t,t,127; setp.eq.u32 p,t,0; @!p bra DONE; LOOP: atom.shared.cas.b32 v,[$1],0,2; setp.ne.u32 b,v,0; @!b bra DONE; nanosleep.u32 32; bra LOOP; DONE: bar.sync 2,128; mov.u32 $0,0; }',constraints='=r,r',args=[gpu.local_ptr(S,(tl.full((),10,tl.int32),)).to(tl.uint64).to(tl.uint32)],dtype=tl.int32,is_pure=False,pack=1)
+@triton.jit
+def {{ call.symbol }}__lease_release_2(S):
+    tl.inline_asm_elementwise('{ .reg .u32 t,v; .reg .pred p; mov.u32 t,%tid.x; and.b32 t,t,127; setp.eq.u32 p,t,0; @!p bra DONE; ld.volatile.shared.u32 v,[$1]; setp.eq.u32 p,v,2; @p st.volatile.shared.u32 [$1],0; DONE: mov.u32 $0,0; }',constraints='=r,r',args=[gpu.local_ptr(S,(tl.full((),10,tl.int32),)).to(tl.uint64).to(tl.uint32)],dtype=tl.int32,is_pure=False,pack=1)
+@triton.jit
+def {{ call.symbol }}__lease_acquire_1(S):
+    tl.inline_asm_elementwise('{ .reg .u32 t,v; .reg .pred p,b; mov.u32 t,%tid.x; and.b32 t,t,127; setp.eq.u32 p,t,0; @!p bra DONE; LOOP: atom.shared.cas.b32 v,[$1],0,1; setp.ne.u32 b,v,0; @!b bra DONE; nanosleep.u32 32; bra LOOP; DONE: bar.sync {{ 0 if call.no_shared_staging | default(false) else 3 }},128; mov.u32 $0,0; }',constraints='=r,r',args=[gpu.local_ptr(S,(tl.full((),10,tl.int32),)).to(tl.uint64).to(tl.uint32)],dtype=tl.int32,is_pure=False,pack=1)
+@triton.jit
+def {{ call.symbol }}__lease_release_1(S):
+    tl.inline_asm_elementwise('{ .reg .u32 t,v; .reg .pred p; mov.u32 t,%tid.x; and.b32 t,t,127; setp.eq.u32 p,t,0; @!p bra DONE; ld.volatile.shared.u32 v,[$1]; setp.eq.u32 p,v,1; @p st.volatile.shared.u32 [$1],0; DONE: mov.u32 $0,0; }',constraints='=r,r',args=[gpu.local_ptr(S,(tl.full((),10,tl.int32),)).to(tl.uint64).to(tl.uint32)],dtype=tl.int32,is_pure=False,pack=1)
+{% if call.cross_lookahead_rows | default(0) %}
+@triton.jit
+def {{ call.symbol }}__lookahead_ready(S, index:tl.constexpr):
+    return tl.inline_asm_elementwise('{ .reg .u32 t,v; .reg .pred p; bar.sync 2,128; mov.u32 t,%tid.x; and.b32 t,t,127; setp.eq.u32 p,t,0; @!p bra SYNC; ld.volatile.shared.u32 v,[$1]; st.volatile.shared.u32 [$2],v; SYNC: bar.sync 2,128; ld.volatile.shared.u32 $0,[$2]; }',constraints='=r,r,r',args=[gpu.local_ptr(S,(tl.full((),index,tl.int32),)).to(tl.uint64).to(tl.uint32),gpu.local_ptr(S,(tl.full((),13,tl.int32),)).to(tl.uint64).to(tl.uint32)],dtype=tl.int32,is_pure=False,pack=1)
+@triton.jit
+def {{ call.symbol }}__lookahead_once(S, layer, group, step):
+    lane=gpu.set_layout(tl.arange(0,128),gpu.BlockEncoding([1],[32],[4],[0]))
+    # Worker warp 6 remains the copy warp; physical warps 4/5/7 issue PF2.
+    pos=step*96+tl.where(lane<64,lane,lane-32)
+    row=32*group+pos//22
+    byte=(pos%22)*128
+    active=(pos<{{ call.cross_lookahead_rows }}*22)&(row<17408)&((lane<64)|(lane>=96))
+    G={{ call.symbol }}__bank(S,layer,0,tl.uint8)+(row.to(tl.int32)*2720).to(tl.int64)+byte
+    tl.inline_asm_elementwise('{ .reg .pred p; setp.ne.u32 p,$1,0; @p prefetch.global.L2 [$2]; mov.u32 $0,0; }',constraints='=r,r,l',args=[active,G],dtype=tl.int32,is_pure=False,pack=1)
+    U={{ call.symbol }}__bank(S,layer,1,tl.uint8)+(row.to(tl.int32)*2720).to(tl.int64)+byte
+    tl.inline_asm_elementwise('{ .reg .pred p; setp.ne.u32 p,$1,0; @p prefetch.global.L2 [$2]; mov.u32 $0,0; }',constraints='=r,r,l',args=[active,U],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+{% if call.cross_trace and call.cross_lookahead_rows | default(0) %}
+@triton.jit
+def {{ call.symbol }}__pftrace(S, layer, batch, begin, end, hints, row):
+    offset=({{ call.cross_pftrace_base }}+((layer*{{ call.grid[0] if call.no_shared_staging | default(false) else 216 }}+tl.program_id(0))*8192+batch)*32).to(tl.uint64)
+    tl.inline_asm_elementwise('{ .reg .u32 t; .reg .u64 a; .reg .pred p,q; mov.u32 t,%tid.x; and.b32 t,t,127; setp.eq.u32 p,t,0; setp.lt.u32 q,$7,8192; and.pred p,p,q; @!p bra DONE; ld.volatile.shared.u64 a,[$1]; add.u64 a,a,$2; st.global.u64 [a],$3; st.global.u64 [a+8],$4; st.global.u32 [a+16],$5; st.global.u32 [a+20],$6; DONE: mov.u32 $0,0; }',constraints='=r,r,l,l,l,r,r,r',args=[gpu.local_ptr(S,(tl.full((),8,tl.int32),)).to(tl.uint64).to(tl.uint32),offset,begin,end,hints,row,batch],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+@triton.jit
+def {{ call.symbol }}__workspace(S):
+    return tl.load(gpu.local_ptr(S,(tl.full((),8,tl.int32),)).to(tl.pointer_type(tl.uint64,3)),volatile=True).to(tl.pointer_type(tl.uint8))
+@triton.jit
+def {{ call.symbol }}__bank(S, layer, col:tl.constexpr, dtype:tl.constexpr):
+    W={{ call.symbol }}__workspace(S)
+    p=tl.inline_asm_elementwise('ld.volatile.global.u64 $0,[$1];',constraints='=l,l',args=[(W+{{ call.cross_table_base }}).to(tl.pointer_type(tl.uint64))+layer*5+col],dtype=tl.uint64,is_pure=False,pack=1)
+    return tl.multiple_of(p.to(tl.pointer_type(dtype)),16 if dtype==tl.uint8 else 2)
+@triton.jit
+def {{ call.symbol }}__xq(S, layer):
+    W={{ call.symbol }}__workspace(S)
+    return tl.where(layer==0,W,W+32768+(layer-1)*32768+21776)
+@triton.jit
+def {{ call.symbol }}__dq(S, layer):
+    return {{ call.symbol }}__workspace(S)+32768+layer*32768
+{% endif %}
+{% for producer_bank in range(call.producer_warps) %}
+@triton.jit
+def {{ call.symbol }}__producer{% if call.producer_warps == 2 %}_{{ "gate" if producer_bank == 0 else "up" }}{% endif %}({{ (call.pipeline_producer_parameters + (call.signature,) + (('_prefetch_progress',) if call.bounded_prefetch | default(false) else ())) | join(', ') }}):
+{% if call.no_shared_staging | default(false) %}
+{% if call.no_shared_trace | default(false) %}
+    {{ call.symbol }}__role_stamp(workspace,1,0)
+{% endif %}
+{% if call.continuous_stream | default(false) %}
+    # Follow the consumer's two-slot CTA mailbox. No weight slot or copy.
+    lane=gpu.set_layout(tl.arange(0,32),gpu.BlockEncoding([1],[32],[1],[0]))
+    _serial=tl.full((),1,tl.int32)
+    _epoch_base=tl.full((),0,tl.int32)
+    for _layer in range({{ call.cross_layers | default(1) or 1 }}):
+{% if call.cross_trace | default(false) %}
+        _TRACE=_prefetch_progress
+        {{ call.symbol }}__trace(_TRACE,_layer,20,0,{{ call.symbol }}__clock())
+{% endif %}
+        _serial_ptr=gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '2+4*((_serial-1)%2)' if call.cross_layers | default(0) else '2' }},tl.int32),))
+        while tl.load(_serial_ptr,volatile=True)<_serial:
+            tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+        _group=tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '1+4*((_serial-1)%2)' if call.cross_layers | default(0) else '1' }},tl.int32),)),volatile=True)
+{% if call.cross_trace | default(false) %}
+        {{ call.symbol }}__trace(_TRACE,_layer,20,1,{{ call.symbol }}__clock())
+        {{ call.symbol }}__trace(_TRACE,_layer,18,6,_group)
+{% endif %}
+        while _group>=0:
+            for _local_row in range(32):
+{% if call.cross_trace | default(false) %}
+                if _epoch_base==tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),13,tl.int32),)),volatile=True) and _local_row<3:
+                    {{ call.symbol }}__trace(_TRACE,_layer,_local_row,3,{{ call.symbol }}__clock())
+                    {{ call.symbol }}__trace(_TRACE,_layer,_local_row,1,32*_group+_local_row)
+{% endif %}
+                while _epoch_base+_local_row>=tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),0,tl.int32),)),volatile=True)+{{ call.prefetch_window }}:
+                    tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+{% if call.cross_trace | default(false) %}
+                if _epoch_base==tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),13,tl.int32),)),volatile=True) and _local_row<3:
+                    {{ call.symbol }}__trace(_TRACE,_layer,_local_row,4,{{ call.symbol }}__clock())
+                    {{ call.symbol }}__trace(_TRACE,_layer,_local_row,5,{{ call.symbol }}__clock())
+{% endif %}
+                _row=32*_group+_local_row
+{% for bank in (0,1) %}
+                _W={{ (_GATE if bank==0 else _UP) if call.cross_layers | default(0) else call.pointers[bank+1] }}
+                _ptr=_W+(_row.to(tl.int32)*2720).to(tl.int64)+lane*128
+                tl.inline_asm_elementwise('{ .reg .pred p; setp.ne.u32 p,$1,0; @p prefetch.global.L2 [$2]; mov.u32 $0,0; }',constraints='=r,r,l',args=[lane<22,_ptr],dtype=tl.int32,is_pure=False,pack=1)
+{% endfor %}
+{% if call.cross_trace | default(false) %}
+                if _epoch_base==tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),13,tl.int32),)),volatile=True) and _local_row<3:
+                    {{ call.symbol }}__trace(_TRACE,_layer,_local_row,6,{{ call.symbol }}__clock())
+{% endif %}
+            tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),12,tl.int32),)),_serial)
+            _epoch_base+=32
+            _serial+=1
+            while tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '2+4*((_serial-1)%2)' if call.cross_layers | default(0) else '2' }},tl.int32),)),volatile=True)<_serial:
+                tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+            _group=tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '1+4*((_serial-1)%2)' if call.cross_layers | default(0) else '1' }},tl.int32),)),volatile=True)
+        _down_rows=tl.where(tl.program_id(0)<160,32,0) if {{ 'True' if call.cross_layers | default(0) else 'False' }} else tl.cdiv(5120-tl.program_id(0),tl.num_programs(0))
+        for _di in range(_down_rows):
+            while _epoch_base+3*_di>=tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),0,tl.int32),)),volatile=True)+{{ call.prefetch_window }}:
+                tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+            _dr=32*tl.program_id(0)+_di if {{ 'True' if call.cross_layers | default(0) else 'False' }} else tl.program_id(0)+_di*tl.num_programs(0)
+            _W={{ _DOWN if call.cross_layers | default(0) else call.continuous_down_pointers[1] }}
+            for _chunk in range(3):
+                _ptr=_W+_dr.to(tl.int64)*9248+(_chunk*32+lane)*128
+                tl.inline_asm_elementwise('{ .reg .pred p; setp.ne.u32 p,$1,0; @p prefetch.global.L2 [$2]; mov.u32 $0,0; }',constraints='=r,r,l',args=[_chunk*32+lane<73,_ptr],dtype=tl.int32,is_pure=False,pack=1)
+{% if call.cross_trace | default(false) %}
+        _hints=(_epoch_base-tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),13,tl.int32),)),volatile=True))*44+_down_rows*73
+{% endif %}
+        _epoch_base+=3*_down_rows
+{% if call.cross_trace | default(false) %}
+        {{ call.symbol }}__trace(_TRACE,_layer,18,2,_hints)
+        {{ call.symbol }}__trace(_TRACE,_layer,20,4,{{ call.symbol }}__clock())
+        tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),13,tl.int32),)),_epoch_base)
+{% endif %}
+        _serial+=1
+{% else %}
+    # One prefetch warp; bounded issue once per row, never cyclic refresh.
+    lane=gpu.set_layout(tl.arange(0,32),gpu.BlockEncoding([1],[32],[1],[0]))
+    for row_iteration in range({{ (17408 // call.grid[0]) if 17408 % call.grid[0] == 0 else "tl.cdiv(17408-tl.program_id(0),tl.num_programs(0))" }}):
+        while row_iteration >= tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),0,tl.int32),)),volatile=True)+{{ call.prefetch_window }}:
+            tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+        row=tl.program_id(0)+row_iteration*tl.num_programs(0)
+{% for bank in (1,2) %}
+        ptr={{ call.pointers[bank] }}+(row.to(tl.int32)*2720).to(tl.int64)+lane*128
+        tl.inline_asm_elementwise('{ .reg .pred p; setp.ne.u32 p,$1,0; @p prefetch.global.L2 [$2]; mov.u32 $0,0; }',constraints='=r,r,l',args=[lane<22,ptr],dtype=tl.int32,is_pure=False,pack=1)
+{% endfor %}
+{% if call.no_shared_trace | default(false) %}
+    {{ call.symbol }}__role_stamp(workspace,1,1)
+{% endif %}
+{% endif %}
+{% else %}
+{% for d in call.transport_descriptors %}{% if call.producer_warps == 1 or loop.index0 == producer_bank %}
+{% if call.transport_kind == 'tma' %}
+    tle.gpu.tensor_map_fenceproxy_acquire({{ d }})
+{% endif %}
+{% endif %}{% endfor %}
+    _group_epoch = 0
+    row_count = 0
+    _serial = 1
+{% if call.cross_layers | default(0) %}
+    for _layer in range({{ call.cross_layers }}):
+{% filter indent(4, true) %}
+{% if call.cross_layers | default(0) %}
+{% if call.cross_trace %}
+    _TRACE = {{ "_prefetch_progress" if call.cross_lookahead_rows | default(0) or call.no_shared_staging | default(false) else "workspace + " ~ call.cross_trace_base }}
+{% endif %}
+{% endif %}
+    tl.inline_asm_elementwise('setmaxnreg.dec.sync.aligned.u32 24; bar.sync 2,128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+    {{ call.symbol }}__lease_release_2(_prefetch_progress)
+    _serial_ptr = gpu.local_ptr(_prefetch_progress,(tl.full((),2,tl.int32),))
+    _group_ptr = gpu.local_ptr(_prefetch_progress,(tl.full((),1,tl.int32),))
+{% if call.cross_trace | default(false) %}
+    {{ call.symbol }}__trace(_TRACE,_layer,20,0,{{ call.symbol }}__clock())
+{% endif %}
+    while tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '2+4*((_serial-1)%2)' if call.cross_layers | default(0) else '2' }},tl.int32),)),volatile=True) < _serial:
+        tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+    _group = tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '1+4*((_serial-1)%2)' if call.cross_layers | default(0) else '1' }},tl.int32),)),volatile=True)
+{% if call.cross_trace | default(false) %}
+    {{ call.symbol }}__trace(_TRACE,_layer,20,1,{{ call.symbol }}__clock())
+{% endif %}
+{% if call.cross_layers | default(0) %}
+    _first_group = True
+    _rec = 0
+{% endif %}
+    while _group >= 0:
+        row_count = 32
+{% if call.cross_lookahead_rows | default(0) %}
+        if _layer>0 and _first_group:
+{% if call.cross_trace %}
+            {{ call.symbol }}__trace(_TRACE,_layer,18,0,{{ call.symbol }}__clock())
+{% endif %}
+            _pfstep=0
+            _pfready={{ call.symbol }}__lookahead_ready(_prefetch_progress,11)
+            while _pfready<_layer.to(tl.int32)+1:
+{% if call.cross_trace %}
+                _pfbegin={{ call.symbol }}__clock()
+{% endif %}
+                {{ call.symbol }}__lookahead_once(_prefetch_progress,_layer,_group,_pfstep%tl.cdiv({{ call.cross_lookahead_rows }}*22,96))
+{% if call.cross_trace %}
+                {{ call.symbol }}__pftrace(_prefetch_progress,_layer,_pfstep+0,_pfbegin,{{ call.symbol }}__clock(),tl.minimum(96,{{ call.cross_lookahead_rows }}*22-(_pfstep%tl.cdiv({{ call.cross_lookahead_rows }}*22,96))*96)*2,32*_group)
+{% endif %}
+                _pfstep+=1
+                _pfready={{ call.symbol }}__lookahead_ready(_prefetch_progress,11)
+{% if call.cross_trace %}
+            {{ call.symbol }}__trace(_TRACE,_layer,18,1,{{ call.symbol }}__clock())
+            {{ call.symbol }}__trace(_TRACE,_layer,18,2,_pfstep)
+{% endif %}
+{% endif %}
+{% if call.producer_pipeline == 'prime' %}
+{% if call.cross_trace | default(false) %}
+        if _first_group:
+            {{ call.symbol }}__trace(_TRACE,_layer,20,2,{{ call.symbol }}__clock())
+{% endif %}
+        for initial_epoch in range(tl.minimum(row_count, {{ call.reserve_depth or call.num_stages }})):
+            {{ call.pipeline_channels[0].writer_parameter }}[0].reserve((_group_epoch+initial_epoch).to(tl.int32))
+{% endif %}
+{% if call.cross_trace | default(false) %}
+        if _first_group:
+            {{ call.symbol }}__trace(_TRACE,_layer,20,3,{{ call.symbol }}__clock())
+{% endif %}
+        for row_iteration in range(row_count):
+{% if call.producer_pipeline == 'batch' %}
+            if row_iteration % {{ call.reserve_depth or call.num_stages }} == 0:
+                for reserve_offset in range(tl.minimum({{ call.reserve_depth or call.num_stages }}, row_count - row_iteration)):
+                    {{ call.pipeline_channels[0].writer_parameter }}[0].reserve((row_iteration + reserve_offset).to(tl.int32))
+{% endif %}
+            epoch = (_group_epoch+row_iteration).to(tl.int32)
+{% if call.cross_layers | default(0) %}
+{% if call.cross_trace and call.cross_trace_diagnostics | default(false) %}
+            {{ call.symbol }}__trace(_TRACE,_layer,23,2,tl.full((),4,tl.int32))
+{% endif %}
+            {{ call.symbol }}__lease_acquire_2(_prefetch_progress)
+            tl.inline_asm_elementwise('setmaxnreg.inc.sync.aligned.u32 48; bar.sync 2,128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+            row_index = 32*tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),1+4*((_serial-1)%2),tl.int32),)),volatile=True) + row_iteration
+{% if call.cross_trace and call.cross_trace_diagnostics | default(false) %}
+            {{ call.symbol }}__trace(_TRACE,_layer,23,0,_group)
+            {{ call.symbol }}__trace(_TRACE,_layer,23,1,row_iteration)
+            {{ call.symbol }}__trace(_TRACE,_layer,23,2,tl.full((),1,tl.int32))
+{% endif %}
+            _gateWeight = {{ _GATE }}
+            _upWeight = {{ _UP }}
+{% endif %}
+{% if call.cross_trace | default(false) %}
+            if row_iteration<4 and _first_group:
+                {{ call.symbol }}__trace(_TRACE,_layer,row_iteration,0,tl.full((),1,tl.int32))
+                {{ call.symbol }}__trace(_TRACE,_layer,row_iteration,1,row_index)
+                {{ call.symbol }}__trace(_TRACE,_layer,row_iteration,2,epoch)
+                {{ call.symbol }}__trace(_TRACE,_layer,row_iteration,3,{{ call.symbol }}__clock())
+{% endif %}
+{% for channel in call.pipeline_channels %}{% if call.producer_warps == 1 or loop.index0 == producer_bank %}
+{% if named %}
+            _slot{{ loop.index0 }} = {{ channel.writer_parameter }}[0].slot(epoch % {{ call.num_stages }})
+{% else %}
+{% if call.single_epoch and loop.first and call.issue_credits and call.issue_credits < call.num_stages %}
+            if epoch >= {{ call.issue_credits }}:
+                {{ channel.writer_parameter }}[0].credit_wait(epoch, {{ call.issue_credits }})
+{% endif %}
+{% if call.producer_pipeline != 'serial' %}
+            _slot{{ loop.index0 }}={{ channel.writer_parameter }}[0].reserved_slot(epoch)
+{% else %}
+            _slot{{ loop.index0 }}={{ channel.writer_parameter }}{{ '[0]' if call.cp_aligned_carrier else '' }}.acquire(epoch)
+{% endif %}
+{% if call.cp_aligned_carrier %}
+            _copy_slot{{ loop.index0 }} = {{ channel.writer_parameter }}[1].slot(epoch % {{ call.num_stages }})
+            _copy_rows = tl.arange(0,1)[:,None,None]
+{% endif %}
+{% endif %}
+{% if call.cross_trace | default(false) and loop.first %}
+            if row_iteration<4 and _first_group:
+                {{ call.symbol }}__trace(_TRACE,_layer,row_iteration,4,{{ call.symbol }}__clock())
+                {{ call.symbol }}__trace(_TRACE,_layer,row_iteration,5,{{ call.symbol }}__clock())
+{% endif %}
+{% set bank=loop.index0 %}
+{% for field in channel.fields %}
+{% if not (call.cross_shape_down | default(false)) or bank == 0 %}
+{% if call.rows_per_transaction > 1 %}
+            _destination{{ bank }} = _slot{{ bank }}{% if not named %}.{{ field.name }}{% endif %}.subslice(0,{{ call.transport_row_vectors | default(170) }},dim=1)
+{% else %}
+            _destination{{ bank }} = _slot{{ bank }}{% if not named %}.{{ field.name }}{% endif %}.subslice(0,{{ call.transport_row_vectors | default(170) }},dim=1)
+{% endif %}
+{% if call.transport_kind in ('global_named','global_idle') %}
+            control_ptr = gpu.local_ptr(_slot{{ bank }},(0,175,15))
+            tl.store(control_ptr,0)
+{% elif call.transport_kind == 'tma' %}
+            _map{{ bank }}_{{ loop.index0 }}=tle.gpu.reinterpret_tensor_map({{ call.transport_descriptors[bank*(call.transport_segments | length)+loop.index0] }},_destination{{ bank }})
+            tle.gpu.copy(_map{{ bank }}_{{ loop.index0 }},_destination{{ bank }},[{{ call.rows_per_transaction }},170,16],[row_index.to(tl.int32),0,0])
+{% else %}
+{% if call.rows_per_transaction == 8 %}
+            for copy_row in range(8):
+                _copy_phase = ((row_index + copy_row) % 4) * 32
+{% for begin,size in (((0,32),(32,32),(64,32),(96,32),(128,32),(160,8),(168,8)) if call.transport_kind == "vector_chunk" else ((0,128),(128,32),(160,16)) if call.cp_merged_tail else (call.transport_copy_tiles | default(((0,128),(128,32),(160,8),(168,8))))) %}
+                tile{{ loop.index0 }} = {% if call.cp_aligned_carrier %}_copy_slot{{ bank }}.slot(copy_row.to(tl.int32)).reshape((1,176,16)){% else %}_slot{{ bank }}{% if not named %}.{{ field.name }}{% endif %}{% endif %}.subslice({{ begin }},{{ size }},dim=1)
+                rr{{ loop.index0 }} = tl.arange(0,{{ size }})[None,:,None]
+                bb{{ loop.index0 }} = tl.arange(0,16)[None,None,:]
+                offs{{ loop.index0 }} = gpu.set_layout(tl.broadcast_to((rr{{ loop.index0 }}+{{ begin }})*16+bb{{ loop.index0 }}{{ "-_copy_phase" if call.cp_aligned_carrier else "" }},(1,{{ size }},16)),gpu.BlockEncoding([1,1,16],[1,32,1],[{{ call.cross_worker_warps | default(1) }},1,1],[2,1,0]))
+                source{{ loop.index0 }} = {{ ('_gateWeight' if bank == 0 else '_upWeight') if call.cross_layers | default(0) else call.pointers[1 if bank == 0 else 2] }} + (row_index + copy_row).to(tl.int64) * {{ call.transport_row_bytes | default(2720) }} + offs{{ loop.index0 }}
+{% if call.transport_kind in ('vector_direct','vector_chunk','vector_named') %}
+                dst_ptr{{ loop.index0 }} = gpu.local_ptr(tile{{ loop.index0 }},(tl.full((1,{{ size }},16),0,tl.int32),tl.broadcast_to(rr{{ loop.index0 }},(1,{{ size }},16)),tl.broadcast_to(bb{{ loop.index0 }},(1,{{ size }},16))))
+                dst_ptr{{ loop.index0 }} = gpu.set_layout(dst_ptr{{ loop.index0 }},gpu.BlockEncoding([1,1,16],[1,32,1],[{{ call.cross_worker_warps | default(1) }},1,1],[2,1,0]))
+                data{{ loop.index0 }} = tl.load(source{{ loop.index0 }},offs{{ loop.index0 }}<{{ call.transport_row_bytes | default(2720) }},0)
+                tl.store(dst_ptr{{ loop.index0 }},data{{ loop.index0 }})
+{% else %}
+                tle.gpu.copy(source{{ loop.index0 }},tile{{ loop.index0 }},[1,{{ size }},16],mask=((row_index + copy_row)<{{ call.transport_n }}) & (offs{{ loop.index0 }}<{{ call.transport_row_bytes | default(2720) }}){{ " & (offs" ~ loop.index0 ~ ">=0)" if call.cp_aligned_carrier else "" }},is_async={{ 'True' if call.transport_kind in ('cp_async','cp_mbarrier','cp_named') else 'False' }},cache_modifier={{ call.cp_cache_modifier | tojson }})
+{% endif %}
+{% endfor %}
+{% else %}
+{% for copy_row in range(call.rows_per_transaction) %}
+            _copy_phase = ((row_index + {{ copy_row }}) % 4) * 32
+{% for begin,size in (((0,32),(32,32),(64,32),(96,32),(128,32),(160,8),(168,8)) if call.transport_kind == "vector_chunk" else ((0,128),(128,32),(160,16)) if call.cp_merged_tail else (call.transport_copy_tiles | default(((0,128),(128,32),(160,8),(168,8))))) %}
+            tile{{ loop.index0 }} = {% if call.cp_aligned_carrier %}_copy_slot{{ bank }}.subslice({{ copy_row }},1,dim=0){% else %}_slot{{ bank }}{% if not named %}.{{ field.name }}{% endif %}{% endif %}.subslice({{ begin }},{{ size }},dim=1)
+            rr{{ loop.index0 }} = tl.arange(0,{{ size }})[None,:,None]
+            bb{{ loop.index0 }} = tl.arange(0,16)[None,None,:]
+            offs{{ loop.index0 }} = gpu.set_layout(tl.broadcast_to((rr{{ loop.index0 }}+{{ begin }})*16+bb{{ loop.index0 }}{{ "-_copy_phase" if call.cp_aligned_carrier else "" }},(1,{{ size }},16)),gpu.BlockEncoding([1,1,16],[1,32,1],[{{ call.cross_worker_warps | default(1) }},1,1],[2,1,0]))
+            source{{ loop.index0 }} = {{ ('_gateWeight' if bank == 0 else '_upWeight') if call.cross_layers | default(0) else call.pointers[1 if bank == 0 else 2] }} + (row_index + {{ copy_row }}).to(tl.int64) * {{ call.transport_row_bytes | default(2720) }} + offs{{ loop.index0 }}
+{% if call.transport_kind in ('vector_direct','vector_chunk','vector_named') %}
+            dst_ptr{{ loop.index0 }} = gpu.local_ptr(tile{{ loop.index0 }},(tl.full((1,{{ size }},16),0,tl.int32),tl.broadcast_to(rr{{ loop.index0 }},(1,{{ size }},16)),tl.broadcast_to(bb{{ loop.index0 }},(1,{{ size }},16))))
+            dst_ptr{{ loop.index0 }} = gpu.set_layout(dst_ptr{{ loop.index0 }},gpu.BlockEncoding([1,1,16],[1,32,1],[{{ call.cross_worker_warps | default(1) }},1,1],[2,1,0]))
+            data{{ loop.index0 }} = tl.load(source{{ loop.index0 }},offs{{ loop.index0 }}<{{ call.transport_row_bytes | default(2720) }},0)
+            tl.store(dst_ptr{{ loop.index0 }},data{{ loop.index0 }})
+{% else %}
+            tle.gpu.copy(source{{ loop.index0 }},tile{{ loop.index0 }},[1,{{ size }},16],mask=((row_index + {{ copy_row }})<{{ call.transport_n }}) & (offs{{ loop.index0 }}<{{ call.transport_row_bytes | default(2720) }}){{ " & (offs" ~ loop.index0 ~ ">=0)" if call.cp_aligned_carrier else "" }},is_async={{ 'True' if call.transport_kind in ('cp_async','cp_mbarrier','cp_named') else 'False' }},cache_modifier={{ call.cp_cache_modifier | tojson }})
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% if call.transport_kind in ('cp_async','cp_mbarrier','cp_named') %}
+{% if call.cp_commit_group and (not call.cp_group_per_stage or bank == 1) %}
+            gpu.async_commit_group()
+{% endif %}
+{% if call.transport_kind in ('cp_async','cp_named') %}
+            gpu.async_wait_group(0)
+{% endif %}
+{% endif %}
+{% endif %}
+{% else %}
+            # Empty second endpoint: zero-fill its carrier; no global read occurs.
+            _empty_offsets = gpu.set_layout((tl.arange(0,32)[None,:,None]*16+tl.arange(0,16)[None,None,:]),gpu.BlockEncoding([1,1,16],[1,32,1],[{{ call.cross_worker_warps | default(1) }},1,1],[2,1,0]))
+            _empty_source = _gateWeight + _empty_offsets
+            tle.gpu.copy(_empty_source,_copy_slot{{ bank }},[1,32,16],mask=False,is_async=True,cache_modifier={{ call.cp_cache_modifier | tojson }})
+            gpu.async_commit_group()
+{% endif %}
+{% endfor %}
+{% if not named %}
+            {{ channel.writer_parameter }}{{ '[0]' if call.cp_aligned_carrier else '' }}.commit(epoch)
+{% endif %}
+{% endif %}{% endfor %}
+{% if call.cross_trace | default(false) %}
+            if row_iteration<4 and _first_group:
+                {{ call.symbol }}__trace(_TRACE,_layer,row_iteration,6,{{ call.symbol }}__clock())
+{% endif %}
+{% if call.cross_trace and call.cross_trace_diagnostics | default(false) %}
+            {{ call.symbol }}__trace(_TRACE,_layer,23,2,tl.full((),2,tl.int32))
+{% endif %}
+            tl.inline_asm_elementwise('setmaxnreg.dec.sync.aligned.u32 24; bar.sync 2,128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+            {{ call.symbol }}__lease_release_2(_prefetch_progress)
+{% if call.cross_trace and call.cross_trace_diagnostics | default(false) %}
+            {{ call.symbol }}__trace(_TRACE,_layer,23,2,tl.full((),3,tl.int32))
+{% endif %}
+{% if call.cross_lookahead_rows | default(0) %}
+            if _layer>0 and row_iteration==1 and _first_group:
+{% if call.cross_trace %}
+                {{ call.symbol }}__trace(_TRACE,_layer,19,0,{{ call.symbol }}__clock())
+{% endif %}
+                _pfstep=0
+                _pfready={{ call.symbol }}__lookahead_ready(_prefetch_progress,0)
+                while _pfready<_group_epoch+1:
+{% if call.cross_trace %}
+                    _pfbegin={{ call.symbol }}__clock()
+{% endif %}
+                    {{ call.symbol }}__lookahead_once(_prefetch_progress,_layer,_group,_pfstep%tl.cdiv({{ call.cross_lookahead_rows }}*22,96))
+{% if call.cross_trace %}
+                    {{ call.symbol }}__pftrace(_prefetch_progress,_layer,_pfstep+4096,_pfbegin,{{ call.symbol }}__clock(),tl.minimum(96,{{ call.cross_lookahead_rows }}*22-(_pfstep%tl.cdiv({{ call.cross_lookahead_rows }}*22,96))*96)*2,32*_group)
+{% endif %}
+                    _pfstep+=1
+                    _pfready={{ call.symbol }}__lookahead_ready(_prefetch_progress,0)
+{% if call.cross_trace %}
+                {{ call.symbol }}__trace(_TRACE,_layer,19,1,{{ call.symbol }}__clock())
+                {{ call.symbol }}__trace(_TRACE,_layer,19,2,_pfstep)
+{% endif %}
+{% endif %}
+{% if call.producer_pipeline == 'prime' %}
+            next_epoch = row_iteration + 1
+            if next_epoch >= {{ call.reserve_depth or call.num_stages }} and next_epoch < row_count:
+{% if call.cross_trace %}
+                if _layer>0 and row_iteration==1 and _first_group:
+                    {{ call.symbol }}__trace(_TRACE,_layer,19,3,{{ call.symbol }}__clock())
+{% endif %}
+                {{ call.pipeline_channels[0].writer_parameter }}[0].reserve((_group_epoch+next_epoch).to(tl.int32))
+{% if call.cross_trace %}
+                if _layer>0 and row_iteration==1 and _first_group:
+                    {{ call.symbol }}__trace(_TRACE,_layer,19,4,{{ call.symbol }}__clock())
+{% endif %}
+{% endif %}
+{% if named and call.transport_kind != "global_idle" %}
+            gpu.barrier_wait({{ call.pipeline_channels[0].writer_parameter }}[1])
+            gpu.barrier_wait({{ call.pipeline_channels[0].writer_parameter }}[2])
+{% endif %}
+{% if call.cross_layers | default(0) %}
+        _first_group = False
+{% endif %}
+{% if call.no_shared_staging | default(false) %}
+        while tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),12,tl.int32),)),volatile=True)<{{ '_serial' if call.cross_layers | default(0) else '_group_epoch//32+1' }}:
+            tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+        _group_epoch += 32
+        _serial += 1
+        while tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '2+4*((_serial-1)%2)' if call.cross_layers | default(0) else '2' }},tl.int32),)),volatile=True) < _serial:
+            tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+        _group = tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '1+4*((_serial-1)%2)' if call.cross_layers | default(0) else '1' }},tl.int32),)),volatile=True)
+    row_count = _group_epoch
+{% if call.continuous_stream | default(false) %}
+{% if call.down_pair_pack | default(false) %}
+    # Fill both existing banks with two consecutive down chunks; no new slot.
+    down_rows = tl.where(tl.program_id(0)<160,32,0)
+    for down_iteration in range(down_rows * 3):
+        epoch = (row_count + down_iteration).to(tl.int32)
+        down_row = 32*tl.program_id(0) + down_iteration // 3
+{% if call.cross_trace | default(false) %}
+        if down_iteration>=down_rows*3-8:
+            _rec = 8+down_iteration-(down_rows*3-8)
+            {{ call.symbol }}__trace(_TRACE,_layer,_rec,0,tl.full((),2,tl.int32))
+            {{ call.symbol }}__trace(_TRACE,_layer,_rec,1,down_row)
+            {{ call.symbol }}__trace(_TRACE,_layer,_rec,2,epoch)
+            {{ call.symbol }}__trace(_TRACE,_layer,_rec,3,{{ call.symbol }}__clock())
+{% endif %}
+{% if call.cross_layers | default(0) %}
+{% endif %}
+        tl.inline_asm_elementwise('setmaxnreg.dec.sync.aligned.u32 24; bar.sync 2,128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+        {{ call.symbol }}__lease_release_2(_prefetch_progress)
+        _downWeight = {{ _DOWN }}
+        _slot = {{ call.pipeline_channels[0].writer_parameter }}[0].acquire(epoch)
+        {{ call.symbol }}__lease_acquire_2(_prefetch_progress)
+        tl.inline_asm_elementwise('setmaxnreg.inc.sync.aligned.u32 48; bar.sync 2,128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+{% if call.cross_trace | default(false) %}
+        if down_iteration>=down_rows*3-8:
+            {{ call.symbol }}__trace(_TRACE,_layer,_rec,4,{{ call.symbol }}__clock())
+            {{ call.symbol }}__trace(_TRACE,_layer,_rec,5,{{ call.symbol }}__clock())
+{% endif %}
+        _phase = (down_row % 4) * 32
+{% for bank in (0,1) %}
+        _copy{{ bank }} = {{ call.pipeline_channels[bank].writer_parameter }}[1].slot(epoch % 2)
+        _kstart{{ bank }} = (down_iteration % 3) * 32 + {{ bank*16 }}
+{% for begin,size in ((0,128),(128,16)) %}
+        _tile{{ bank }}_{{ loop.index0 }} = _copy{{ bank }}.subslice({{ begin }},{{ size }},dim=1)
+        _rr{{ bank }}_{{ loop.index0 }} = tl.arange(0,{{ size }})[None,:,None]
+        _bb{{ bank }}_{{ loop.index0 }} = tl.arange(0,16)[None,None,:]
+        _byte{{ bank }}_{{ loop.index0 }} = gpu.set_layout(tl.broadcast_to((_rr{{ bank }}_{{ loop.index0 }}+{{ begin }})*16+_bb{{ bank }}_{{ loop.index0 }}-_phase,(1,{{ size }},16)),gpu.BlockEncoding([1,1,16],[1,32,1],[{{ call.cross_worker_warps | default(1) }},1,1],[2,1,0]))
+        _src{{ bank }}_{{ loop.index0 }} = _downWeight + down_row.to(tl.int64)*9248 + _kstart{{ bank }}*136 + _byte{{ bank }}_{{ loop.index0 }}
+        tle.gpu.copy(_src{{ bank }}_{{ loop.index0 }},_tile{{ bank }}_{{ loop.index0 }},[1,{{ size }},16],mask=(_byte{{ bank }}_{{ loop.index0 }}>=0)&(_byte{{ bank }}_{{ loop.index0 }}<tl.minimum(16,68-_kstart{{ bank }})*136),is_async=True,cache_modifier='.cg')
+{% endfor %}
+{% endfor %}
+        gpu.async_commit_group()
+        {{ call.pipeline_channels[0].writer_parameter }}[0].commit(epoch)
+        {{ call.pipeline_channels[1].writer_parameter }}[0].commit(epoch)
+        tl.inline_asm_elementwise('setmaxnreg.dec.sync.aligned.u32 24; bar.sync 2,128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+        {{ call.symbol }}__lease_release_2(_prefetch_progress)
+
+{% if call.cross_trace | default(false) %}
+        if down_iteration>=down_rows*3-8:
+            {{ call.symbol }}__trace(_TRACE,_layer,_rec,6,{{ call.symbol }}__clock())
+{% endif %}
+    row_count = row_count + down_rows * 3
+{% if call.cross_layers | default(0) %}
+    _group_epoch = row_count
+    _serial += 1
+{% endif %}
+{% else %}
+    # Same paired pipe, monotonic epoch; downstream activation never gates copies.
+    down_rows = tl.where(tl.program_id(0)<160,32,0)
+    for down_iteration in range(down_rows * 5):
+        epoch = (row_count + down_iteration).to(tl.int32)
+        down_row = tl.program_id(0) + (down_iteration // 5) * tl.num_programs(0)
+        k_start = (down_iteration % 5) * 16
+{% if call.cross_trace | default(false) %}
+        if down_iteration>=down_rows*3-8:
+            _rec = 8+down_iteration-(down_rows*3-8)
+            {{ call.symbol }}__trace(_TRACE,_layer,_rec,0,tl.full((),2,tl.int32))
+            {{ call.symbol }}__trace(_TRACE,_layer,_rec,1,down_row)
+            {{ call.symbol }}__trace(_TRACE,_layer,_rec,2,epoch)
+            {{ call.symbol }}__trace(_TRACE,_layer,_rec,3,{{ call.symbol }}__clock())
+{% endif %}
+{% if call.cross_layers | default(0) %}
+{% endif %}
+        tl.inline_asm_elementwise('setmaxnreg.dec.sync.aligned.u32 24; bar.sync 2,128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+        {{ call.symbol }}__lease_release_2(_prefetch_progress)
+        _downWeight = {{ _DOWN }}
+        _slot = {{ call.pipeline_channels[0].writer_parameter }}[0].acquire(epoch)
+        {{ call.symbol }}__lease_acquire_2(_prefetch_progress)
+        tl.inline_asm_elementwise('setmaxnreg.inc.sync.aligned.u32 48; bar.sync 2,128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+{% if call.cross_trace | default(false) %}
+        if down_iteration>=down_rows*3-8:
+            {{ call.symbol }}__trace(_TRACE,_layer,_rec,4,{{ call.symbol }}__clock())
+            {{ call.symbol }}__trace(_TRACE,_layer,_rec,5,{{ call.symbol }}__clock())
+{% endif %}
+        _copy = {{ call.pipeline_channels[0].writer_parameter }}[1].slot(epoch % 2)
+        _phase = (down_row % 4) * 32
+{% for begin,size in ((0,128),(128,16)) %}
+        _tile{{ loop.index0 }} = _copy.subslice({{ begin }},{{ size }},dim=1)
+        _rr{{ loop.index0 }} = tl.arange(0,{{ size }})[None,:,None]
+        _bb{{ loop.index0 }} = tl.arange(0,16)[None,None,:]
+        _byte{{ loop.index0 }} = gpu.set_layout(tl.broadcast_to((_rr{{ loop.index0 }}+{{ begin }})*16+_bb{{ loop.index0 }}-_phase,(1,{{ size }},16)),gpu.BlockEncoding([1,1,16],[1,32,1],[{{ call.cross_worker_warps | default(1) }},1,1],[2,1,0]))
+        _src{{ loop.index0 }} = _downWeight + down_row.to(tl.int64)*9248 + k_start*136 + _byte{{ loop.index0 }}
+        tle.gpu.copy(_src{{ loop.index0 }},_tile{{ loop.index0 }},[1,{{ size }},16],mask=(_byte{{ loop.index0 }}>=0)&(_byte{{ loop.index0 }}<tl.minimum(16,68-k_start)*136),is_async=True,cache_modifier='.cg')
+{% endfor %}
+        _empty_up = {{ call.pipeline_channels[1].writer_parameter }}[1].slot(epoch % 2).subslice(0,32,dim=1)
+        _empty_off = gpu.set_layout(tl.arange(0,32)[None,:,None]*16+tl.arange(0,16)[None,None,:],gpu.BlockEncoding([1,1,16],[1,32,1],[{{ call.cross_worker_warps | default(1) }},1,1],[2,1,0]))
+        tle.gpu.copy({{ _DOWN }}+_empty_off,_empty_up,[1,32,16],mask=tl.full((1,32,16),False,tl.int1),is_async=True,cache_modifier='.cg')
+        gpu.async_commit_group()
+        {{ call.pipeline_channels[0].writer_parameter }}[0].commit(epoch)
+        # Up carries no data in down mode; paired commit publishes gate once.
+        {{ call.pipeline_channels[1].writer_parameter }}[0].commit(epoch)
+        tl.inline_asm_elementwise('setmaxnreg.dec.sync.aligned.u32 24; bar.sync 2,128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+        {{ call.symbol }}__lease_release_2(_prefetch_progress)
+
+{% if call.cross_trace | default(false) %}
+        if down_iteration>=down_rows*3-8:
+            {{ call.symbol }}__trace(_TRACE,_layer,_rec,6,{{ call.symbol }}__clock())
+{% endif %}
+    row_count = row_count + down_rows * 5
+{% endif %}
+{% endif %}
+{% endfilter %}
+{% else %}
+    _group_epoch = tl.full((),0,tl.int32)
+    _serial = tl.full((),1,tl.int32)
+    _serial_ptr = gpu.local_ptr(_prefetch_progress,(tl.full((),2,tl.int32),))
+    _group_ptr = gpu.local_ptr(_prefetch_progress,(tl.full((),1,tl.int32),))
+    while tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '2+4*((_serial-1)%2)' if call.cross_layers | default(0) else '2' }},tl.int32),)),volatile=True) < _serial:
+        tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+    _group = tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '1+4*((_serial-1)%2)' if call.cross_layers | default(0) else '1' }},tl.int32),)),volatile=True)
+    while _group >= 0:
+        row_count = 32
+{% if call.producer_pipeline == 'prime' %}
+        for initial_epoch in range(tl.minimum(row_count, {{ call.reserve_depth or call.num_stages }})):
+            {{ call.pipeline_channels[0].writer_parameter }}[0].reserve((_group_epoch+initial_epoch).to(tl.int32))
+{% endif %}
+        for row_iteration in range(row_count):
+{% if call.producer_pipeline == 'batch' %}
+            if row_iteration % {{ call.reserve_depth or call.num_stages }} == 0:
+                for reserve_offset in range(tl.minimum({{ call.reserve_depth or call.num_stages }}, row_count - row_iteration)):
+                    {{ call.pipeline_channels[0].writer_parameter }}[0].reserve((row_iteration + reserve_offset).to(tl.int32))
+{% endif %}
+            row_index = 32*_group + row_iteration
+            epoch = (_group_epoch+row_iteration).to(tl.int32)
+{% if call.cross_layers | default(0) %}
+            _gateWeight = {{ _GATE }}
+            _upWeight = {{ _UP }}
+{% endif %}
+{% for channel in call.pipeline_channels %}{% if call.producer_warps == 1 or loop.index0 == producer_bank %}
+{% if named %}
+            _slot{{ loop.index0 }} = {{ channel.writer_parameter }}[0].slot(epoch % {{ call.num_stages }})
+{% else %}
+{% if call.single_epoch and loop.first and call.issue_credits and call.issue_credits < call.num_stages %}
+            if epoch >= {{ call.issue_credits }}:
+                {{ channel.writer_parameter }}[0].credit_wait(epoch, {{ call.issue_credits }})
+{% endif %}
+{% if call.producer_pipeline != 'serial' %}
+            _slot{{ loop.index0 }}={{ channel.writer_parameter }}[0].reserved_slot(epoch)
+{% else %}
+            _slot{{ loop.index0 }}={{ channel.writer_parameter }}{{ '[0]' if call.cp_aligned_carrier else '' }}.acquire(epoch)
+{% endif %}
+{% if call.cp_aligned_carrier %}
+            _copy_slot{{ loop.index0 }} = {{ channel.writer_parameter }}[1].slot(epoch % {{ call.num_stages }})
+            _copy_rows = tl.arange(0,1)[:,None,None]
+{% endif %}
+{% endif %}
+{% set bank=loop.index0 %}
+{% for field in channel.fields %}
+{% if not (call.cross_shape_down | default(false)) or bank == 0 %}
+{% if call.rows_per_transaction > 1 %}
+            _destination{{ bank }} = _slot{{ bank }}{% if not named %}.{{ field.name }}{% endif %}.subslice(0,{{ call.transport_row_vectors | default(170) }},dim=1)
+{% else %}
+            _destination{{ bank }} = _slot{{ bank }}{% if not named %}.{{ field.name }}{% endif %}.subslice(0,{{ call.transport_row_vectors | default(170) }},dim=1)
+{% endif %}
+{% if call.transport_kind in ('global_named','global_idle') %}
+            control_ptr = gpu.local_ptr(_slot{{ bank }},(0,175,15))
+            tl.store(control_ptr,0)
+{% elif call.transport_kind == 'tma' %}
+            _map{{ bank }}_{{ loop.index0 }}=tle.gpu.reinterpret_tensor_map({{ call.transport_descriptors[bank*(call.transport_segments | length)+loop.index0] }},_destination{{ bank }})
+            tle.gpu.copy(_map{{ bank }}_{{ loop.index0 }},_destination{{ bank }},[{{ call.rows_per_transaction }},170,16],[row_index.to(tl.int32),0,0])
+{% else %}
+{% if call.rows_per_transaction == 8 %}
+            for copy_row in range(8):
+                _copy_phase = ((row_index + copy_row) % 4) * 32
+{% for begin,size in (((0,32),(32,32),(64,32),(96,32),(128,32),(160,8),(168,8)) if call.transport_kind == "vector_chunk" else ((0,128),(128,32),(160,16)) if call.cp_merged_tail else (call.transport_copy_tiles | default(((0,128),(128,32),(160,8),(168,8))))) %}
+                tile{{ loop.index0 }} = {% if call.cp_aligned_carrier %}_copy_slot{{ bank }}.slot(copy_row.to(tl.int32)).reshape((1,176,16)){% else %}_slot{{ bank }}{% if not named %}.{{ field.name }}{% endif %}{% endif %}.subslice({{ begin }},{{ size }},dim=1)
+                rr{{ loop.index0 }} = tl.arange(0,{{ size }})[None,:,None]
+                bb{{ loop.index0 }} = tl.arange(0,16)[None,None,:]
+                offs{{ loop.index0 }} = gpu.set_layout(tl.broadcast_to((rr{{ loop.index0 }}+{{ begin }})*16+bb{{ loop.index0 }}{{ "-_copy_phase" if call.cp_aligned_carrier else "" }},(1,{{ size }},16)),gpu.BlockEncoding([1,1,16],[1,32,1],[1,1,1],[2,1,0]))
+                source{{ loop.index0 }} = {{ ('_gateWeight' if bank == 0 else '_upWeight') if call.cross_layers | default(0) else call.pointers[1 if bank == 0 else 2] }} + (row_index + copy_row).to(tl.int64) * {{ call.transport_row_bytes | default(2720) }} + offs{{ loop.index0 }}
+{% if call.transport_kind in ('vector_direct','vector_chunk','vector_named') %}
+                dst_ptr{{ loop.index0 }} = gpu.local_ptr(tile{{ loop.index0 }},(tl.full((1,{{ size }},16),0,tl.int32),tl.broadcast_to(rr{{ loop.index0 }},(1,{{ size }},16)),tl.broadcast_to(bb{{ loop.index0 }},(1,{{ size }},16))))
+                dst_ptr{{ loop.index0 }} = gpu.set_layout(dst_ptr{{ loop.index0 }},gpu.BlockEncoding([1,1,16],[1,32,1],[1,1,1],[2,1,0]))
+                data{{ loop.index0 }} = tl.load(source{{ loop.index0 }},offs{{ loop.index0 }}<{{ call.transport_row_bytes | default(2720) }},0)
+                tl.store(dst_ptr{{ loop.index0 }},data{{ loop.index0 }})
+{% else %}
+                tle.gpu.copy(source{{ loop.index0 }},tile{{ loop.index0 }},[1,{{ size }},16],mask=((row_index + copy_row)<{{ call.transport_n }}) & (offs{{ loop.index0 }}<{{ call.transport_row_bytes | default(2720) }}){{ " & (offs" ~ loop.index0 ~ ">=0)" if call.cp_aligned_carrier else "" }},is_async={{ 'True' if call.transport_kind in ('cp_async','cp_mbarrier','cp_named') else 'False' }},cache_modifier={{ call.cp_cache_modifier | tojson }})
+{% endif %}
+{% endfor %}
+{% else %}
+{% for copy_row in range(call.rows_per_transaction) %}
+            _copy_phase = ((row_index + {{ copy_row }}) % 4) * 32
+{% for begin,size in (((0,32),(32,32),(64,32),(96,32),(128,32),(160,8),(168,8)) if call.transport_kind == "vector_chunk" else ((0,128),(128,32),(160,16)) if call.cp_merged_tail else (call.transport_copy_tiles | default(((0,128),(128,32),(160,8),(168,8))))) %}
+            tile{{ loop.index0 }} = {% if call.cp_aligned_carrier %}_copy_slot{{ bank }}.subslice({{ copy_row }},1,dim=0){% else %}_slot{{ bank }}{% if not named %}.{{ field.name }}{% endif %}{% endif %}.subslice({{ begin }},{{ size }},dim=1)
+            rr{{ loop.index0 }} = tl.arange(0,{{ size }})[None,:,None]
+            bb{{ loop.index0 }} = tl.arange(0,16)[None,None,:]
+            offs{{ loop.index0 }} = gpu.set_layout(tl.broadcast_to((rr{{ loop.index0 }}+{{ begin }})*16+bb{{ loop.index0 }}{{ "-_copy_phase" if call.cp_aligned_carrier else "" }},(1,{{ size }},16)),gpu.BlockEncoding([1,1,16],[1,32,1],[1,1,1],[2,1,0]))
+            source{{ loop.index0 }} = {{ ('_gateWeight' if bank == 0 else '_upWeight') if call.cross_layers | default(0) else call.pointers[1 if bank == 0 else 2] }} + (row_index + {{ copy_row }}).to(tl.int64) * {{ call.transport_row_bytes | default(2720) }} + offs{{ loop.index0 }}
+{% if call.transport_kind in ('vector_direct','vector_chunk','vector_named') %}
+            dst_ptr{{ loop.index0 }} = gpu.local_ptr(tile{{ loop.index0 }},(tl.full((1,{{ size }},16),0,tl.int32),tl.broadcast_to(rr{{ loop.index0 }},(1,{{ size }},16)),tl.broadcast_to(bb{{ loop.index0 }},(1,{{ size }},16))))
+            dst_ptr{{ loop.index0 }} = gpu.set_layout(dst_ptr{{ loop.index0 }},gpu.BlockEncoding([1,1,16],[1,32,1],[1,1,1],[2,1,0]))
+            data{{ loop.index0 }} = tl.load(source{{ loop.index0 }},offs{{ loop.index0 }}<{{ call.transport_row_bytes | default(2720) }},0)
+            tl.store(dst_ptr{{ loop.index0 }},data{{ loop.index0 }})
+{% else %}
+            tle.gpu.copy(source{{ loop.index0 }},tile{{ loop.index0 }},[1,{{ size }},16],mask=((row_index + {{ copy_row }})<{{ call.transport_n }}) & (offs{{ loop.index0 }}<{{ call.transport_row_bytes | default(2720) }}){{ " & (offs" ~ loop.index0 ~ ">=0)" if call.cp_aligned_carrier else "" }},is_async={{ 'True' if call.transport_kind in ('cp_async','cp_mbarrier','cp_named') else 'False' }},cache_modifier={{ call.cp_cache_modifier | tojson }})
+{% endif %}
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% if call.transport_kind in ('cp_async','cp_mbarrier','cp_named') %}
+{% if call.cp_commit_group and (not call.cp_group_per_stage or bank == 1) %}
+            gpu.async_commit_group()
+{% endif %}
+{% if call.transport_kind in ('cp_async','cp_named') %}
+            gpu.async_wait_group(0)
+{% endif %}
+{% endif %}
+{% endif %}
+{% else %}
+            # Empty second endpoint: zero-fill its carrier; no global read occurs.
+            _empty_offsets = gpu.set_layout((tl.arange(0,32)[None,:,None]*16+tl.arange(0,16)[None,None,:]),gpu.BlockEncoding([1,1,16],[1,32,1],[1,1,1],[2,1,0]))
+            _empty_source = {{ call.pointers[1] }} + _empty_offsets
+            tle.gpu.copy(_empty_source,_copy_slot{{ bank }},[1,32,16],mask=False,is_async=True,cache_modifier={{ call.cp_cache_modifier | tojson }})
+            gpu.async_commit_group()
+{% endif %}
+{% endfor %}
+{% if not named %}
+            {{ channel.writer_parameter }}{{ '[0]' if call.cp_aligned_carrier else '' }}.commit(epoch)
+{% endif %}
+{% endif %}{% endfor %}
+{% if call.producer_pipeline == 'prime' %}
+            next_epoch = row_iteration + 1
+            if next_epoch >= {{ call.reserve_depth or call.num_stages }} and next_epoch < row_count:
+                {{ call.pipeline_channels[0].writer_parameter }}[0].reserve((_group_epoch+next_epoch).to(tl.int32))
+{% endif %}
+{% if named and call.transport_kind != "global_idle" %}
+            gpu.barrier_wait({{ call.pipeline_channels[0].writer_parameter }}[1])
+            gpu.barrier_wait({{ call.pipeline_channels[0].writer_parameter }}[2])
+{% endif %}
+{% if call.no_shared_staging | default(false) %}
+        while tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),12,tl.int32),)),volatile=True)<{{ '_serial' if call.cross_layers | default(0) else '_group_epoch//32+1' }}:
+            tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+        _group_epoch += 32
+        _serial += 1
+        while tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '2+4*((_serial-1)%2)' if call.cross_layers | default(0) else '2' }},tl.int32),)),volatile=True) < _serial:
+            tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+        _group = tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '1+4*((_serial-1)%2)' if call.cross_layers | default(0) else '1' }},tl.int32),)),volatile=True)
+    row_count = _group_epoch
+{% if call.continuous_stream | default(false) %}
+{% if call.down_pair_pack | default(false) %}
+    # Fill both existing banks with two consecutive down chunks; no new slot.
+    down_rows = tl.cdiv(5120 - tl.program_id(0), tl.num_programs(0))
+    for down_iteration in range(down_rows * 3):
+        epoch = (row_count + down_iteration).to(tl.int32)
+        down_row = tl.program_id(0) + (down_iteration // 3) * tl.num_programs(0)
+{% if call.cross_layers | default(0) %}
+        _downWeight = {{ _DOWN }}
+{% endif %}
+        _slot = {{ call.pipeline_channels[0].writer_parameter }}[0].acquire(epoch)
+        _phase = (down_row % 4) * 32
+{% for bank in (0,1) %}
+        _copy{{ bank }} = {{ call.pipeline_channels[bank].writer_parameter }}[1].slot(epoch % 2)
+        _kstart{{ bank }} = (down_iteration % 3) * 32 + {{ bank*16 }}
+{% for begin,size in ((0,128),(128,16)) %}
+        _tile{{ bank }}_{{ loop.index0 }} = _copy{{ bank }}.subslice({{ begin }},{{ size }},dim=1)
+        _rr{{ bank }}_{{ loop.index0 }} = tl.arange(0,{{ size }})[None,:,None]
+        _bb{{ bank }}_{{ loop.index0 }} = tl.arange(0,16)[None,None,:]
+        _byte{{ bank }}_{{ loop.index0 }} = gpu.set_layout(tl.broadcast_to((_rr{{ bank }}_{{ loop.index0 }}+{{ begin }})*16+_bb{{ bank }}_{{ loop.index0 }}-_phase,(1,{{ size }},16)),gpu.BlockEncoding([1,1,16],[1,32,1],[1,1,1],[2,1,0]))
+        _src{{ bank }}_{{ loop.index0 }} = {{ call.continuous_down_pointers[1] }} + down_row.to(tl.int64)*9248 + _kstart{{ bank }}*136 + _byte{{ bank }}_{{ loop.index0 }}
+        tle.gpu.copy(_src{{ bank }}_{{ loop.index0 }},_tile{{ bank }}_{{ loop.index0 }},[1,{{ size }},16],mask=(_byte{{ bank }}_{{ loop.index0 }}>=0)&(_byte{{ bank }}_{{ loop.index0 }}<tl.minimum(16,68-_kstart{{ bank }})*136),is_async=True,cache_modifier='.cg')
+{% endfor %}
+{% endfor %}
+        gpu.async_commit_group()
+        {{ call.pipeline_channels[0].writer_parameter }}[0].commit(epoch)
+        {{ call.pipeline_channels[1].writer_parameter }}[0].commit(epoch)
+    row_count = row_count + down_rows * 3
+{% else %}
+    # Same paired pipe, monotonic epoch; downstream activation never gates copies.
+    down_rows = tl.cdiv(5120 - tl.program_id(0), tl.num_programs(0))
+    for down_iteration in range(down_rows * 5):
+        epoch = (row_count + down_iteration).to(tl.int32)
+        down_row = tl.program_id(0) + (down_iteration // 5) * tl.num_programs(0)
+        k_start = (down_iteration % 5) * 16
+{% if call.cross_layers | default(0) %}
+        _downWeight = {{ _DOWN }}
+{% endif %}
+        _slot = {{ call.pipeline_channels[0].writer_parameter }}[0].acquire(epoch)
+        _copy = {{ call.pipeline_channels[0].writer_parameter }}[1].slot(epoch % 2)
+        _phase = (down_row % 4) * 32
+{% for begin,size in ((0,128),(128,16)) %}
+        _tile{{ loop.index0 }} = _copy.subslice({{ begin }},{{ size }},dim=1)
+        _rr{{ loop.index0 }} = tl.arange(0,{{ size }})[None,:,None]
+        _bb{{ loop.index0 }} = tl.arange(0,16)[None,None,:]
+        _byte{{ loop.index0 }} = gpu.set_layout(tl.broadcast_to((_rr{{ loop.index0 }}+{{ begin }})*16+_bb{{ loop.index0 }}-_phase,(1,{{ size }},16)),gpu.BlockEncoding([1,1,16],[1,32,1],[1,1,1],[2,1,0]))
+        _src{{ loop.index0 }} = {{ call.continuous_down_pointers[1] }} + down_row.to(tl.int64)*9248 + k_start*136 + _byte{{ loop.index0 }}
+        tle.gpu.copy(_src{{ loop.index0 }},_tile{{ loop.index0 }},[1,{{ size }},16],mask=(_byte{{ loop.index0 }}>=0)&(_byte{{ loop.index0 }}<tl.minimum(16,68-k_start)*136),is_async=True,cache_modifier='.cg')
+{% endfor %}
+        _empty_up = {{ call.pipeline_channels[1].writer_parameter }}[1].slot(epoch % 2).subslice(0,32,dim=1)
+        _empty_off = gpu.set_layout(tl.arange(0,32)[None,:,None]*16+tl.arange(0,16)[None,None,:],gpu.BlockEncoding([1,1,16],[1,32,1],[1,1,1],[2,1,0]))
+        tle.gpu.copy({{ call.continuous_down_pointers[1] }}+_empty_off,_empty_up,[1,32,16],mask=tl.full((1,32,16),False,tl.int1),is_async=True,cache_modifier='.cg')
+        gpu.async_commit_group()
+        {{ call.pipeline_channels[0].writer_parameter }}[0].commit(epoch)
+        # Up carries no data in down mode; paired commit publishes gate once.
+        {{ call.pipeline_channels[1].writer_parameter }}[0].commit(epoch)
+    row_count = row_count + down_rows * 5
+{% endif %}
+{% endif %}
+{% endif %}
+{% for channel in call.pipeline_channels %}{% if not named and (call.producer_warps == 1 or loop.index0 == producer_bank) %}
+    {{ channel.writer_parameter }}{{ '[0]' if call.cp_aligned_carrier else '' }}.close(row_count.to(tl.int32))
+{% endif %}{% endfor %}
+
+{% endif %}
+{% endfor %}
+@triton.jit
+def {{ call.symbol }}__consumer({{ (call.pipeline_consumer_parameters + (call.signature,) + (('_prefetch_progress',) if call.bounded_prefetch | default(false) else ())) | join(', ') }}):
+{% if call.no_shared_trace | default(false) %}
+    {{ call.symbol }}__role_stamp(workspace,0,0)
+{% endif %}
+{% if call.cross_layers | default(0) %}
+    _group_epoch = tl.full((),0,tl.int32)
+    _serial = tl.full((),1,tl.int32)
+    for _layer in range({{ call.cross_layers }}):
+{% filter indent(4, true) %}
+{% if call.cross_layers | default(0) %}
+{% if call.cross_trace %}
+    _TRACE = {{ "_prefetch_progress" if call.cross_lookahead_rows | default(0) or call.no_shared_staging | default(false) else "workspace + " ~ call.cross_trace_base }}
+{% endif %}
+{% endif %}
+    tl.inline_asm_elementwise('{% if not call.no_shared_staging | default(false) %}setmaxnreg.dec.sync.aligned.u32 32; {% endif %}bar.sync {{ 0 if call.no_shared_staging | default(false) else 3 }},128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+    {{ call.symbol }}__lease_release_1(_prefetch_progress)
+{% if call.no_shared_staging | default(false) and not call.cross_layers | default(0) %}
+    {{ call.symbol }}__lease_acquire_1(_prefetch_progress)
+{% endif %}
+    w = gpu.set_layout(tl.broadcast_to(tl.arange(0, 4)[:, None], (4, 32)), E)
+    l = gpu.set_layout(tl.broadcast_to(tl.arange(0, 32)[None, :], (4, 32)), E)
+    w=tl.inline_asm_elementwise('{ .reg .u32 t; mov.u32 t,%tid.x; shr.u32 $0,t,5; }',constraints='=r,r',args=[w],dtype=tl.int32,is_pure=False,pack=1)
+    l=tl.inline_asm_elementwise('mov.u32 $0,%laneid;',constraints='=r,r',args=[l],dtype=tl.int32,is_pure=False,pack=1)
+    tid = w * 32 + l
+{% if call.q8_aligned | default(false) %}
+    _ready = ({{ _DQ }}+19584).to(tl.pointer_type(tl.int32))
+{% if call.q8_boundary_trace | default(false) %}
+    tl.inline_asm_elementwise('{ .reg .b64 a,t; .reg .b32 i; mov.u32 i,%ctaid.x; mul.wide.u32 a,i,48; add.u64 a,a,$1; add.u64 a,a,8; mov.u64 t,%globaltimer; st.global.u64 [a],t; mov.u32 $0,0; }',constraints='=r,l',args=[_ready+544],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+    _ticket = tl.atomic_add(_ready+544,1,sem='relaxed',scope='gpu')
+    tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),4,tl.int32),)),(_ticket//{{ 544 + call.grid[0] if call.no_shared_staging | default(false) else 760 }}+1).to(tl.int32))
+    _group = (_ticket%{{ 544 + call.grid[0] if call.no_shared_staging | default(false) else 760 }}).to(tl.int32)
+    tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '1+4*((_serial-1)%2)' if call.cross_layers | default(0) else '1' }},tl.int32),)),tl.where(_group<544,_group,-1))
+    tl.inline_asm_elementwise('fence.acq_rel.cta; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+    tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '2+4*((_serial-1)%2)' if call.cross_layers | default(0) else '2' }},tl.int32),)),_serial)
+{% endif %}
+{% if call.no_shared_staging | default(false) and call.continuous_stream | default(false) %}
+    B = gpu.alloc_barrier(arrive_count=128)
+{% endif %}
+    g = tid % 8
+{% if call.no_shared_staging | default(false) and not call.q8_aligned | default(false) and call.transport_n % call.grid[0] == 0 %}
+    row_count: tl.constexpr = {{ call.transport_n // call.grid[0] }}
+{% else %}
+    row_count = {{ call.rows_per_transaction }} * ({{ call.q8_rows_per_cta }} if {{ call.q8_aligned | default(false) }} else tl.cdiv({{ call.transport_n }} - {{ call.rows_per_transaction }} * tl.program_id(0), {{ call.rows_per_transaction }} * tl.num_programs(0)))
+{% endif %}
+{% if call.barrier_batch_g > 1 %}
+    B = gpu.alloc_barrier(arrive_count=128)
+    S = gpu.alloc(({{ 128 if call.g4_recycle else call.barrier_batch_g * 128 }},), tl.uint64, layout=None, nv_mma_shared_layout=False, alignment_bytes=16)
+{% if call.cross_layers | default(0) %}
+    if _layer>0:
+        _generation=(_ticket//{{ 544 + call.grid[0] if call.no_shared_staging | default(false) else 760 }}+1).to(tl.int32)
+        _inputReady=({{ _XQ }}+5760).to(tl.pointer_type(tl.int32))
+        _ix=gpu.set_layout(tl.arange(0,256),gpu.BlockEncoding([1],[32],[4],[0]))
+{% if call.cross_trace %}
+        {{ call.symbol }}__trace(_TRACE,_layer,21,0,{{ call.symbol }}__clock())
+{% endif %}
+        _flag=tl.inline_asm_elementwise('{ .reg .pred p; setp.ne.u32 p,$2,0; mov.u32 $0,$3; @p ld.acquire.gpu.global.u32 $0,[$1]; }',constraints='=r,l,r,r',args=[_inputReady+_ix,_ix<160,_generation],dtype=tl.int32,is_pure=False,pack=1)
+        while tl.sum(((_flag<_generation)&(_ix<160)).to(tl.int32),axis=0)>0:
+            _flag=tl.inline_asm_elementwise('{ .reg .pred p; setp.ne.u32 p,$2,0; mov.u32 $0,$3; @p ld.acquire.gpu.global.u32 $0,[$1]; }',constraints='=r,l,r,r',args=[_inputReady+_ix,_ix<160,_generation],dtype=tl.int32,is_pure=False,pack=1)
+        tl.inline_asm_elementwise('fence.acq_rel.gpu; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+{% if call.cross_trace %}
+        {{ call.symbol }}__trace(_TRACE,_layer,21,1,{{ call.symbol }}__clock())
+{% endif %}
+{% endif %}
+{% if call.cross_lookahead_rows | default(0) %}
+    tl.inline_asm_elementwise('{ .reg .u32 v; add.u32 v,$2,1; st.volatile.shared.u32 [$1],v; mov.u32 $0,0; }',constraints='=r,r,r',args=[gpu.local_ptr(_prefetch_progress,(tl.full((),11,tl.int32),)).to(tl.uint64).to(tl.uint32),_layer.to(tl.int32)],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+    while _group < 544:
+        for batch_base in range(0, row_count, {{ call.barrier_batch_g }}):
+{% set prefix = '      ' %}{% set base = 'batch_base' %}
+{% if call.prefetch_depth | default(0) %}
+{% filter indent(4, true) %}{{ prefix }}pr = tl.arange(0,{{ call.prefetch_depth }})[:,None,None,None] + {{ base }}
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pi = tl.arange(0,2)[None,:,None,None]
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pw = w[None,None,:,:]
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pl = l[None,None,:,:]
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pk = (pw*32+pl)//8 + 16*pi
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pg = pl % 8
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pfmask = (pr < row_count) & (pk < 20)
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pb = (tl.program_id(0) + pr*tl.num_programs(0)).to(tl.int64)*2720 + pk*136
+{% endfilter %}
+{% for bank in (0,1) %}
+{% for field,off in (('h','0'),('p0','8+16*pg'),('p1','16+16*pg')) %}
+{% filter indent(4, true) %}{{ prefix }}pt{{bank}}_{{field}} = tl.broadcast_to({{ (_GATE if bank==0 else _UP) if call.cross_layers | default(0) else call.pointers[bank+1] }} + pb + ({{off}}),({{call.prefetch_depth}},2,4,32))
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pc{{bank}}_{{field}} = tl.load(pt{{bank}}_{{field}}.to(tl.pointer_type(tl.uint64)),pfmask,0)
+{% endfilter %}
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% if call.g4_recycle %}
+          saved_p = gpu.set_layout(tl.full((4,32),0.0,tl.float32),E)
+          saved_u = gpu.set_layout(tl.full((4,32),0.0,tl.float32),E)
+{% endif %}
+          for batch_slot in range({{ call.barrier_batch_g }}):
+            row_iteration = batch_base + batch_slot
+            if row_iteration < row_count:
+{% else %}
+{% if call.no_shared_staging | default(false) and call.barrier_batch_g==1 %}
+    if _layer>0:
+        _generation=(_ticket//{{ 544 + call.grid[0] if call.no_shared_staging | default(false) else 760 }}+1).to(tl.int32)
+        _inputReady=({{ _XQ }}+5760).to(tl.pointer_type(tl.int32))
+        _ix=gpu.set_layout(tl.arange(0,256),gpu.BlockEncoding([1],[32],[4],[0]))
+{% if call.cross_trace %}
+        {{ call.symbol }}__trace(_TRACE,_layer,21,0,{{ call.symbol }}__clock())
+{% endif %}
+        _flag=tl.inline_asm_elementwise('{ .reg .pred p; setp.ne.u32 p,$2,0; mov.u32 $0,$3; @p ld.acquire.gpu.global.u32 $0,[$1]; }',constraints='=r,l,r,r',args=[_inputReady+_ix,_ix<160,_generation],dtype=tl.int32,is_pure=False,pack=1)
+        while tl.sum(((_flag<_generation)&(_ix<160)).to(tl.int32),axis=0)>0:
+            _flag=tl.inline_asm_elementwise('{ .reg .pred p; setp.ne.u32 p,$2,0; mov.u32 $0,$3; @p ld.acquire.gpu.global.u32 $0,[$1]; }',constraints='=r,l,r,r',args=[_inputReady+_ix,_ix<160,_generation],dtype=tl.int32,is_pure=False,pack=1)
+        tl.inline_asm_elementwise('fence.acq_rel.gpu; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+{% if call.cross_trace %}
+        {{ call.symbol }}__trace(_TRACE,_layer,21,1,{{ call.symbol }}__clock())
+{% endif %}
+{% endif %}
+    while _group < 544:
+        for row_iteration in range(row_count):
+{% set prefix = '        ' %}{% set base = 'row_iteration' %}
+{% if call.prefetch_depth | default(0) %}
+{% filter indent(4, true) %}{{ prefix }}pr = tl.arange(0,{{ call.prefetch_depth }})[:,None,None,None] + {{ base }}
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pi = tl.arange(0,2)[None,:,None,None]
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pw = w[None,None,:,:]
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pl = l[None,None,:,:]
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pk = (pw*32+pl)//8 + 16*pi
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pg = pl % 8
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pfmask = (pr < row_count) & (pk < 20)
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pb = (tl.program_id(0) + pr*tl.num_programs(0)).to(tl.int64)*2720 + pk*136
+{% endfilter %}
+{% for bank in (0,1) %}
+{% for field,off in (('h','0'),('p0','8+16*pg'),('p1','16+16*pg')) %}
+{% filter indent(4, true) %}{{ prefix }}pt{{bank}}_{{field}} = tl.broadcast_to({{ (_GATE if bank==0 else _UP) if call.cross_layers | default(0) else call.pointers[bank+1] }} + pb + ({{off}}),({{call.prefetch_depth}},2,4,32))
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pc{{bank}}_{{field}} = tl.load(pt{{bank}}_{{field}}.to(tl.pointer_type(tl.uint64)),pfmask,0)
+{% endfilter %}
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% endif %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        row_index = 32*_group + row_iteration
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        row = gpu.set_layout(tl.full((4, 32), row_index, tl.int32), E)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        p = gpu.set_layout(tl.full((4, 32), 0.0, tl.float32), E)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        u = gpu.set_layout(tl.full((4, 32), 0.0, tl.float32), E)
+{% endfilter %}
+{% if named %}
+{% if call.transport_kind != 'global_idle' %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        gpu.barrier_wait({{ call.pipeline_channels[0].reader_parameter }}[1])
+{% endfilter %}
+{% endif %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        tl.inline_asm_elementwise('{% if not call.no_shared_staging | default(false) %}setmaxnreg.dec.sync.aligned.u32 32; {% endif %}bar.sync {{ 0 if call.no_shared_staging | default(false) else 3 }},128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        {{ call.symbol }}__lease_release_1(_prefetch_progress)
+{% endfilter %}
+{% if not call.no_shared_staging | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        __READY0__ = {{ call.pipeline_channels[0].reader_parameter }}[0].slot(row_iteration % {{ call.num_stages }})
+{% endfilter %}
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        __READY1__ = {{ call.pipeline_channels[1].reader_parameter }}[0].slot(row_iteration % {{ call.num_stages }})
+{% endfilter %}
+{% endif %}
+{% else %}
+{% if call.cross_trace and call.cross_trace_diagnostics | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        {{ call.symbol }}__trace(_TRACE,_layer,23,3,row_iteration)
+{% endfilter %}
+{% endif %}
+{% if call.cross_trace and call.cross_trace_diagnostics | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        {{ call.symbol }}__trace(_TRACE,_layer,23,5,_group)
+{% endfilter %}
+{% endif %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        tl.inline_asm_elementwise('{% if not call.no_shared_staging | default(false) %}setmaxnreg.dec.sync.aligned.u32 32; {% endif %}bar.sync {{ 0 if call.no_shared_staging | default(false) else 3 }},128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        {{ call.symbol }}__lease_release_1(_prefetch_progress)
+{% endfilter %}
+{% if call.cross_trace and call.cross_trace_diagnostics | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        {{ call.symbol }}__trace(_TRACE,_layer,23,4,tl.full((),1,tl.int32))
+{% endfilter %}
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        __READY0__ = {{ call.pipeline_channels[0].reader_parameter }}.wait((_group_epoch+row_iteration).to(tl.int32))
+{% endfilter %}
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        __READY1__ = {{ call.pipeline_channels[1].reader_parameter }}.wait((_group_epoch+row_iteration).to(tl.int32))
+{% endfilter %}
+{% endif %}
+{% endif %}
+{% if call.cross_trace and call.cross_trace_diagnostics | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        {{ call.symbol }}__trace(_TRACE,_layer,23,4,tl.full((),2,tl.int32))
+{% endfilter %}
+{% endif %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        {{ call.symbol }}__lease_acquire_1(_prefetch_progress)
+{{ '    ' if call.barrier_batch_g > 1 else '' }}        tl.inline_asm_elementwise('{% if not call.no_shared_staging | default(false) %}setmaxnreg.inc.sync.aligned.u32 56; {% endif %}bar.sync {{ 0 if call.no_shared_staging | default(false) else 3 }},128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+{% endfilter %}
+{% if call.cross_trace and call.cross_trace_diagnostics | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        {{ call.symbol }}__trace(_TRACE,_layer,23,4,tl.full((),3,tl.int32))
+{% endfilter %}
+{% endif %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        for it in range(tl.cdiv({{ call.transport_k }} // 256, 16)):
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            kbx = tid // 8 + 16 * it
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            active = (row < {{ call.transport_n }}) & (kbx < {{ call.transport_k }} // 256)
+{% endfilter %}
+{% if call.consumer_mode == 'load_only' %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            pv = {{ call.symbol }}__load_group_stage(({% if call.transport_kind in ('global_named','global_idle') %}{{ _GATE }} + (row_index.to(tl.int32)*2720).to(tl.int64){% elif named %}__READY0__{% else %}__READY0__.slot.gate{% endif %}{% if call.rows_per_transaction > 1 %},row_iteration % {{ call.rows_per_transaction }}{% endif %},),kbx,g,active)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            uv = {{ call.symbol }}__load_group_stage(({% if call.transport_kind in ('global_named','global_idle') %}{{ _UP }} + (row_index.to(tl.int32)*2720).to(tl.int64){% elif named %}__READY1__{% else %}__READY1__.slot.up{% endif %}{% if call.rows_per_transaction > 1 %},row_iteration % {{ call.rows_per_transaction }}{% endif %},),kbx,g,active)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            p = (p.to(tl.uint32,bitcast=True) ^ pv.to(tl.uint32,bitcast=True)).to(tl.float32,bitcast=True)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            u = (u.to(tl.uint32,bitcast=True) ^ uv.to(tl.uint32,bitcast=True)).to(tl.float32,bitcast=True)
+{% endfilter %}
+{% else %}
+{% if call.prefetch_depth | default(0) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_h = tl.sum(tl.where(pr == row_iteration,pc0_h,0),axis=0)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_h = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_h,0),axis=0),E)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_p0 = tl.sum(tl.where(pr == row_iteration,pc0_p0,0),axis=0)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_p0 = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_p0,0),axis=0),E)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_p1 = tl.sum(tl.where(pr == row_iteration,pc0_p1,0),axis=0)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_p1 = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_p1,0),axis=0),E)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            (J, D) = {{ call.symbol }}__dot_group_prefetched(v_h,v_p0,v_p1,{{ _XQ }},row,kbx,g,active,{{ call.transport_k }})
+{% endfilter %}
+{% else %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            (J, D) = {{ call.symbol }}__dot_group_stage(({% if call.transport_kind in ('global_named','global_idle') %}{{ _GATE }} + (row_index.to(tl.int32)*2720).to(tl.int64){% elif named %}__READY0__{% else %}__READY0__.slot.gate{% endif %}{% if call.rows_per_transaction > 1 %},row_iteration % {{ call.rows_per_transaction }}{% endif %},), {{ _XQ }}, row, kbx, g, active, {{ call.transport_k }})
+{% endfilter %}
+{% endif %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            pn = tl.inline_asm_elementwise('fma.rn.f32 $0,$1,$2,$3;', constraints='=f,f,f,f', args=[D, J, p], dtype=tl.float32, is_pure=True, pack=1)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            p = tl.where(active, pn, p)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            if {{ call.transport_mode }} == 1:
+{% endfilter %}
+{% if call.prefetch_depth | default(0) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_h = tl.sum(tl.where(pr == row_iteration,pc1_h,0),axis=0)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_h = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_h,0),axis=0),E)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_p0 = tl.sum(tl.where(pr == row_iteration,pc1_p0,0),axis=0)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_p0 = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_p0,0),axis=0),E)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_p1 = tl.sum(tl.where(pr == row_iteration,pc1_p1,0),axis=0)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_p1 = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_p1,0),axis=0),E)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                (J, D) = {{ call.symbol }}__dot_group_prefetched(v_h,v_p0,v_p1,{{ _XQ }},row,kbx,g,active,{{ call.transport_k }})
+{% endfilter %}
+{% else %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                (J, D) = {{ call.symbol }}__dot_group_stage(({% if call.transport_kind in ('global_named','global_idle') %}{{ _UP }} + (row_index.to(tl.int32)*2720).to(tl.int64){% elif named %}__READY1__{% else %}__READY1__.slot.up{% endif %}{% if call.rows_per_transaction > 1 %},row_iteration % {{ call.rows_per_transaction }}{% endif %},), {{ _XQ }}, row, kbx, g, active, {{ call.transport_k }})
+{% endfilter %}
+{% endif %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                un = tl.inline_asm_elementwise('fma.rn.f32 $0,$1,$2,$3;', constraints='=f,f,f,f', args=[D, J, u], dtype=tl.float32, is_pure=True, pack=1)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                u = tl.where(active, un, u)
+{% endfilter %}
+{% endif %}
+{% if call.rows_per_transaction > 1 %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        if row_iteration % {{ call.rows_per_transaction }} == {{ call.rows_per_transaction - 1 }}:
+{% endfilter %}
+{% if not call.no_shared_staging | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            {{ call.pipeline_channels[0].reader_parameter }}.release((row_iteration // {{ call.rows_per_transaction }}).to(tl.int32))
+{% endfilter %}
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            {{ call.pipeline_channels[1].reader_parameter }}.release((row_iteration // {{ call.rows_per_transaction }}).to(tl.int32))
+{% endfilter %}
+{% endif %}
+{% else %}
+{% if named %}
+{% if call.transport_kind != 'global_idle' %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        gpu.barrier_wait({{ call.pipeline_channels[0].reader_parameter }}[2])
+{% endfilter %}
+{% else %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        pass
+{% endfilter %}
+{% endif %}
+{% else %}
+{% if not call.no_shared_staging | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        {{ call.pipeline_channels[0].reader_parameter }}.release((_group_epoch+row_iteration).to(tl.int32))
+{% endfilter %}
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        {{ call.pipeline_channels[1].reader_parameter }}.release((_group_epoch+row_iteration).to(tl.int32))
+{% endfilter %}
+{% endif %}
+{% endif %}
+{% endif %}
+{% if call.bounded_prefetch | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),0,tl.int32),)),_group_epoch+row_iteration+1)
+{% endfilter %}
+{% endif %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        tl.static_assert({{ call.transport_k }} % 256 == 0, 'R003 requires complete original K256 blocks')
+{% endfilter %}
+{% if call.barrier_batch_g > 1 %}
+{% if call.g4_recycle %}
+                batch_partial_store(p,u,S,0,w,l)
+                gpu.barrier_wait(B)
+                selected_owner = tl.where(w == batch_slot,0,1)
+                (rp,ru) = batch_typed_reduce(S,selected_owner,w,l,1)
+                saved_p = tl.where(w == batch_slot,rp,saved_p)
+                saved_u = tl.where(w == batch_slot,ru,saved_u)
+                gpu.barrier_wait(B)
+          for owner_round in tl.static_range(1):
+            owner_slot = w
+{% else %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        batch_partial_store(p,u,S,batch_slot,w,l)
+{% endfilter %}
+{% if call.cross_trace and call.cross_trace_diagnostics | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        {{ call.symbol }}__trace(_TRACE,_layer,23,4,tl.full((),4,tl.int32))
+{% endfilter %}
+{% endif %}
+          gpu.barrier_wait(B)
+          for owner_round in tl.static_range({{ (call.barrier_batch_g + 3) // 4 }}):
+            owner_slot = w + 4 * owner_round
+{% endif %}
+{% if call.g4_recycle %}
+            p = saved_p
+            u = saved_u
+{% elif call.consumer_mode == 'load_only' %}
+            sp = gpu.set_layout(gpu.local_ptr(S,(owner_slot*128+l,),shape=(4,32)),E)
+            pair = tl.load(sp,owner_slot<{{ call.barrier_batch_g }},0,volatile=True)
+            p = ((pair.to(tl.uint32) ^ (pair >> 32).to(tl.uint32)) & 127).to(tl.float32)
+{% else %}
+            (p,u) = batch_typed_reduce(S,owner_slot,w,l,{{ call.barrier_batch_g }})
+{% endif %}
+            owner_iteration = batch_base + owner_slot
+            row = 32*_group + owner_iteration
+            row = gpu.set_layout(row,E)
+{% if call.consumer_mode != 'load_only' and call.transport_mode == 1 %}
+            p = p / (1.0 + tl.exp(-p)) * u
+{% endif %}
+            writer = (row < {{ call.transport_n }}) & (owner_slot < {{ call.barrier_batch_g }}) & (l == 0)
+{% if not call.diagnostic_no_output %}
+            tl.store({{ _Y }} + row,p,writer)
+{% endif %}
+{% if not call.g4_recycle %}
+          gpu.barrier_wait(B)
+{% endif %}
+{% if call.q8_aligned | default(false) and not call.q8_local_end | default(false) %}
+          if (batch_base+4) % 32 == 0:
+            gpu.barrier_wait(B)
+            _qgroup = gpu.set_layout(tl.full((4,32),_group,tl.int32),E)
+            _x = gpu.set_layout(tl.load({{ _Y }}+32*_qgroup+l).to(tl.float32),E)
+            _a,_d,_r,_v,_q,_sq,_header=q8_quantize_lanes(_x)
+            tl.store({{ _DQ }}+36*_qgroup+4+l,_q.to(tl.uint8),w==0)
+            tl.store({{ _DQ }}.to(tl.pointer_type(tl.uint32))+9*_qgroup,_header,(w==0)&(l==0))
+            tl.inline_asm_elementwise('fence.acq_rel.gpu; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+            gpu.barrier_wait(B)
+            tl.atomic_xchg(_ready+_qgroup,tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),4,tl.int32),)),volatile=True),sem='release',scope='gpu',mask=(w==0)&(l==0))
+{% endif %}
+{% else %}
+            (p, u) = typed_reduce(p, u, w, l, {{ call.transport_mode }} == 1)
+            if {{ call.transport_mode }} == 1:
+                p = p / (1.0 + tl.exp(-p)) * u
+            writer = (row < {{ call.transport_n }}) & (w == 0) & (l == 0)
+            if {{ call.transport_mode }} == 2:
+                out = tl.where(row % 512 // 256 == 0, {{ _Y }}, {{ call.pointers[4] }})
+                offset = row // 512 * 256 + row % 256
+                tl.store(out + offset, p.to(tl.bfloat16), writer)
+            else:
+                tl.store({{ _Y }} + row, p, writer)
+{% if call.no_shared_staging | default(false) and call.q8_aligned | default(false) %}
+            if row_iteration==31:
+                gpu.barrier_wait(B)
+                _qgroup=gpu.set_layout(tl.full((4,32),_group,tl.int32),E)
+                _x=gpu.set_layout(tl.load({{ _Y }}+32*_qgroup+l).to(tl.float32),E)
+                _a,_d,_r,_v,_q,_sq,_header=q8_quantize_lanes(_x)
+                tl.store({{ _DQ }}+36*_qgroup+4+l,_q.to(tl.uint8),w==0)
+                tl.store({{ _DQ }}.to(tl.pointer_type(tl.uint32))+9*_qgroup,_header,(w==0)&(l==0))
+                tl.inline_asm_elementwise('fence.acq_rel.gpu; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+                gpu.barrier_wait(B)
+                tl.atomic_xchg(_ready+_qgroup,tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),4,tl.int32),)),volatile=True),sem='release',scope='gpu',mask=(w==0)&(l==0))
+{% endif %}
+{% endif %}
+{% if call.no_shared_staging | default(false) %}
+        while tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),12,tl.int32),)),volatile=True)<{{ '_serial' if call.cross_layers | default(0) else '_group_epoch//32+1' }}:
+            tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+        _group_epoch += 32
+        _serial += 1
+        _ticket = tl.atomic_add(_ready+544,1,sem='relaxed',scope='gpu')
+        _group = (_ticket%{{ 544 + call.grid[0] if call.no_shared_staging | default(false) else 760 }}).to(tl.int32)
+        tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '1+4*((_serial-1)%2)' if call.cross_layers | default(0) else '1' }},tl.int32),)),tl.where(_group<544,_group,-1))
+        tl.inline_asm_elementwise('fence.acq_rel.cta; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+        tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '2+4*((_serial-1)%2)' if call.cross_layers | default(0) else '2' }},tl.int32),)),_serial)
+    tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),3,tl.int32),)),_group_epoch)
+{% if call.q8_boundary_trace | default(false) %}
+    tl.inline_asm_elementwise('{ .reg .b64 a,v; .reg .b32 i,sm; mov.u32 i,%ctaid.x; mul.wide.u32 a,i,48; add.u64 a,a,$1; add.u64 a,a,32; mov.u32 sm,%smid; cvt.u64.u32 v,sm; st.global.u64 [a],v; add.u64 a,a,8; cvt.u64.u32 v,$2; st.global.u64 [a],v; mov.u32 $0,0; }',constraints='=r,l,r',args=[_ready+544,_group_epoch//32],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+
+{% if call.continuous_stream | default(false) %}
+{% if call.q8_boundary_trace | default(false) %}
+    tl.inline_asm_elementwise('{ .reg .b64 a,t; .reg .b32 i; mov.u32 i,%ctaid.x; mul.wide.u32 a,i,48; add.u64 a,a,$1; add.u64 a,a,16; mov.u64 t,%globaltimer; st.global.u64 [a],t; mov.u32 $0,0; }',constraints='=r,l',args=[_ready+544],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+{% if call.payload_observe | default(false) %}
+    gpu.trace_event(272, 201, 0)
+{% endif %}
+{% if call.q8_local_end | default(false) %}
+    gpu.barrier_wait(B)
+    for q_local_base in range(0,{{ call.q8_groups_per_cta }},4):
+        _local_group=q_local_base+w
+        _group=(tl.program_id(0)+_local_group*tl.num_programs(0)) if {{ call.q8_cyclic | default(false) }} else tl.program_id(0)*{{ call.q8_groups_per_cta }}+_local_group
+        _mask=_local_group<{{ call.q8_groups_per_cta }}
+        _x=gpu.set_layout(tl.load({{ _Y }}+32*_group+l,_mask,0).to(tl.float32),E)
+        _a,_d,_r,_v,_q,_sq,_header=q8_quantize_lanes(_x)
+        tl.store({{ _DQ }}+36*_group+4+l,_q.to(tl.uint8),_mask)
+        tl.store({{ _DQ }}.to(tl.pointer_type(tl.uint32))+9*_group,_header,_mask&(l==0))
+        tl.inline_asm_elementwise('fence.acq_rel.gpu; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+        gpu.barrier_wait(B)
+        tl.atomic_xchg(_ready+_group,_generation,sem='release',scope='gpu',mask=_mask&(l==0))
+{% endif %}
+{% if not call.q8_aligned | default(false) %}
+    tle.distributed_barrier(_grid)
+{% if call.payload_observe | default(false) %}
+    gpu.trace_event(273, 201, 0)
+    gpu.trace_event(272, 202, 0)
+{% endif %}
+    for q_base in range(tl.program_id(0)*4,544,tl.num_programs(0)*4):
+        _group = q_base + w
+        _x = gpu.set_layout(tl.load({{ _Y }} + _group*32+l,_group<544,0).to(tl.float32),E)
+        _a,_d,_r,_v,_q,_sq,_header = q8_quantize_lanes(_x)
+        tl.store({{ _DQ }} + 36*_group+4+l,_q.to(tl.uint8),_group<544)
+        tl.store({{ _DQ }}.to(tl.pointer_type(tl.uint32))+9*_group,_header,(_group<544)&(l==0))
+{% if call.payload_observe | default(false) %}
+    gpu.trace_event(273, 202, 0)
+    gpu.trace_event(272, 203, 0)
+{% endif %}
+    tle.distributed_barrier(_grid)
+{% if call.payload_observe | default(false) %}
+    gpu.trace_event(273, 203, 0)
+{% endif %}
+{% endif %}
+{% if call.down_pair_pack | default(false) %}
+    _glu_epochs = _group_epoch
+    for down_row_iteration in range(tl.where(tl.program_id(0)<160,32,0)):
+{% if call.no_shared_staging | default(false) and call.cross_trace | default(false) %}
+        if down_row_iteration==0:
+            {{ call.symbol }}__trace(_TRACE,_layer,8,3,{{ call.symbol }}__clock())
+{% endif %}
+        row = gpu.set_layout(tl.full((4,32),32*tl.program_id(0)+down_row_iteration,tl.int32),E)
+        p = gpu.set_layout(tl.full((4,32),0.,tl.float32),E)
+        u = gpu.set_layout(tl.full((4,32),0.,tl.float32),E)
+        for down_pair in range(3):
+            _epoch = (_glu_epochs + down_row_iteration*3+down_pair).to(tl.int32)
+            tl.inline_asm_elementwise('{% if not call.no_shared_staging | default(false) %}setmaxnreg.dec.sync.aligned.u32 32; {% endif %}bar.sync {{ 0 if call.no_shared_staging | default(false) else 3 }},128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+            {{ call.symbol }}__lease_release_1(_prefetch_progress)
+{% if not call.no_shared_staging | default(false) %}
+            _r0 = {{ call.pipeline_channels[0].reader_parameter }}.wait(_epoch)
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+            _r1 = {{ call.pipeline_channels[1].reader_parameter }}.wait(_epoch)
+{% endif %}
+            {{ call.symbol }}__lease_acquire_1(_prefetch_progress)
+            tl.inline_asm_elementwise('{% if not call.no_shared_staging | default(false) %}setmaxnreg.inc.sync.aligned.u32 56; {% endif %}bar.sync {{ 0 if call.no_shared_staging | default(false) else 3 }},128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+
+            for bank in tl.static_range(2):
+                _kstart = down_pair*32 + bank*16
+                kbx = tid//8 + _kstart
+                active = kbx < 68
+{% if call.q8_aligned | default(false) %}
+                if down_row_iteration == 0:
+                    _generation = tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),4,tl.int32),)),volatile=True)
+                    _flagptr = _ready + 8*kbx+g
+                    _ok = tl.inline_asm_elementwise('{ .reg .pred p; setp.ne.u32 p,$2,0; mov.u32 $0,$3; @p ld.acquire.gpu.global.u32 $0,[$1]; }',constraints='=r,l,r,r',args=[_flagptr,active,_generation],dtype=tl.int32,is_pure=False,pack=1)
+                    while tl.sum(tl.sum(((_ok<_generation)&active).to(tl.int32),axis=1),axis=0)>0:
+                        _ok = tl.inline_asm_elementwise('{ .reg .pred p; setp.ne.u32 p,$2,0; mov.u32 $0,$3; @p ld.acquire.gpu.global.u32 $0,[$1]; }',constraints='=r,l,r,r',args=[_flagptr,active,_generation],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+{% if call.q8_boundary_trace | default(false) %}
+                if down_row_iteration==0 and down_pair==0 and bank==0:
+{% if call.q8_boundary_trace | default(false) %}
+                    tl.inline_asm_elementwise('{ .reg .b64 a,t; .reg .b32 i; mov.u32 i,%ctaid.x; mul.wide.u32 a,i,48; add.u64 a,a,$1; add.u64 a,a,24; mov.u64 t,%globaltimer; st.global.u64 [a],t; mov.u32 $0,0; }',constraints='=r,l',args=[_ready+544],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+{% endif %}
+                J,D = {{ call.symbol }}__dot_group_stage(({% if call.no_shared_staging | default(false) %}{{ (_DOWN if call.cross_layers | default(0) else call.continuous_down_pointers[1]) }} + row.to(tl.int64)*9248{% else %}(_r0.slot.gate if bank == 0 else _r1.slot.up){% endif %},),{{ _DQ }},row,kbx,g,active,17408,{{ 0 if call.no_shared_staging | default(false) else "_kstart" }})
+                pn = tl.inline_asm_elementwise('fma.rn.f32 $0,$1,$2,$3;',constraints='=f,f,f,f',args=[D,J,p],dtype=tl.float32,is_pure=True,pack=1)
+                p = tl.where(active,pn,p)
+{% if not call.no_shared_staging | default(false) %}
+            {{ call.pipeline_channels[0].reader_parameter }}.release(_epoch)
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+            {{ call.pipeline_channels[1].reader_parameter }}.release(_epoch)
+{% endif %}
+{% if call.bounded_prefetch | default(false) %}
+            tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),0,tl.int32),)),_epoch+1)
+{% endif %}
+{% if call.no_shared_staging | default(false) %}
+        p,u = typed_reduce(p,u,w,l,True)
+{% else %}
+        batch_partial_store(p,u,S,0,w,l)
+        gpu.barrier_wait(B)
+        p,u = batch_typed_reduce(S,tl.full((4,32),0,tl.int32),w,l,4)
+{% endif %}
+        tl.store({{ _Z }}+row,p,(w==0)&(l==0))
+{% if call.cross_layers | default(0) %}
+{% if call.cross_layers | default(0) %}
+        if _layer<{{ call.cross_layers-1 }} and down_row_iteration==31:
+            # One CTA owns all 32 rows in a Q8 group; no completion counter.
+            _nextXQ={{ call.symbol }}__workspace(_prefetch_progress)+32768+_layer*32768+21776
+            _x=gpu.set_layout(tl.load({{ _Z }}+32*tl.program_id(0)+l).to(tl.float32),E)
+            _a,_d,_r,_v,_q,_sq,_header=q8_quantize_lanes(_x)
+            tl.store(_nextXQ+36*tl.program_id(0)+4+l,_q.to(tl.uint8),w==0)
+            tl.store(_nextXQ.to(tl.pointer_type(tl.uint32))+9*tl.program_id(0)+0*l,_header,(w==0)&(l==0))
+            tl.inline_asm_elementwise('fence.acq_rel.gpu; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+        gpu.barrier_wait(B)
+{% if call.cross_layers | default(0) %}
+        if _layer<{{ call.cross_layers-1 }} and down_row_iteration==31:
+            _nextReady=({{ call.symbol }}__workspace(_prefetch_progress)+32768+_layer*32768+21776+5760).to(tl.pointer_type(tl.int32))
+            tl.atomic_xchg(_nextReady+tl.program_id(0),tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),4,tl.int32),)),volatile=True),sem='release',scope='gpu')
+{% endif %}
+{% endif %}
+{% else %}
+    _glu_epochs = _group_epoch
+    for down_row_iteration in range(tl.where(tl.program_id(0)<160,32,0)):
+{% if call.no_shared_staging | default(false) and call.cross_trace | default(false) %}
+        if down_row_iteration==0:
+            {{ call.symbol }}__trace(_TRACE,_layer,8,3,{{ call.symbol }}__clock())
+{% endif %}
+        row = gpu.set_layout(tl.full((4,32),32*tl.program_id(0)+down_row_iteration,tl.int32),E)
+        p = gpu.set_layout(tl.full((4,32),0.,tl.float32),E)
+        u = gpu.set_layout(tl.full((4,32),0.,tl.float32),E)
+        for down_chunk in range(5):
+            _epoch = (_glu_epochs + down_row_iteration*5+down_chunk).to(tl.int32)
+            tl.inline_asm_elementwise('{% if not call.no_shared_staging | default(false) %}setmaxnreg.dec.sync.aligned.u32 32; {% endif %}bar.sync {{ 0 if call.no_shared_staging | default(false) else 3 }},128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+            {{ call.symbol }}__lease_release_1(_prefetch_progress)
+{% if not call.no_shared_staging | default(false) %}
+            _r0 = {{ call.pipeline_channels[0].reader_parameter }}.wait(_epoch)
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+            _r1 = {{ call.pipeline_channels[1].reader_parameter }}.wait(_epoch)
+{% endif %}
+            {{ call.symbol }}__lease_acquire_1(_prefetch_progress)
+            tl.inline_asm_elementwise('{% if not call.no_shared_staging | default(false) %}setmaxnreg.inc.sync.aligned.u32 56; {% endif %}bar.sync {{ 0 if call.no_shared_staging | default(false) else 3 }},128; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+
+            _kstart = down_chunk*16
+            kbx = tid//8 + _kstart
+            active = kbx < 68
+            J,D = {{ call.symbol }}__dot_group_stage((_r0.slot.gate,),{{ _DQ }},row,kbx,g,active,17408,{{ 0 if call.no_shared_staging | default(false) else "_kstart" }})
+            pn = tl.inline_asm_elementwise('fma.rn.f32 $0,$1,$2,$3;',constraints='=f,f,f,f',args=[D,J,p],dtype=tl.float32,is_pure=True,pack=1)
+            p = tl.where(active,pn,p)
+{% if not call.no_shared_staging | default(false) %}
+            {{ call.pipeline_channels[0].reader_parameter }}.release(_epoch)
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+            {{ call.pipeline_channels[1].reader_parameter }}.release(_epoch)
+{% endif %}
+{% if call.bounded_prefetch | default(false) %}
+            tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),0,tl.int32),)),_epoch+1)
+{% endif %}
+{% if call.no_shared_staging | default(false) %}
+        p,u = typed_reduce(p,u,w,l,True)
+{% else %}
+        batch_partial_store(p,u,S,0,w,l)
+        gpu.barrier_wait(B)
+        p,u = batch_typed_reduce(S,tl.full((4,32),0,tl.int32),w,l,4)
+{% endif %}
+        tl.store({{ _Z }}+row,p,(w==0)&(l==0))
+{% if call.cross_layers | default(0) %}
+        _nextXQ = {{ call.symbol }}__workspace(_prefetch_progress)+32768+_layer*32768+21776
+        _nextReady = (_nextXQ+5760).to(tl.pointer_type(tl.int32))
+        _rowCount = (_nextXQ+6400).to(tl.pointer_type(tl.int32))
+        _completed=tl.full((),0,tl.int32)
+        _outgroup=tl.full((),0,tl.int32)
+        if _layer<{{ call.cross_layers-1 }}:
+            # This counter tracks rows of one K32 activation group, never CTAs
+            # or whole-grid arrival. acq_rel RMW chains all 32 output stores.
+            tl.inline_asm_elementwise('fence.acq_rel.gpu; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+            _outgroup=(32*tl.program_id(0)+down_row_iteration)//32
+            _completed=tl.atomic_add(_rowCount+_outgroup,1,sem='acq_rel',scope='gpu')
+            if _completed%32==31:
+                _x=gpu.set_layout(tl.load({{ _Z }}+32*_outgroup+l).to(tl.float32),E)
+                _a,_d,_r,_v,_q,_sq,_header=q8_quantize_lanes(_x)
+                tl.store(_nextXQ+36*_outgroup+4+l,_q.to(tl.uint8),w==0)
+                tl.store(_nextXQ.to(tl.pointer_type(tl.uint32))+9*_outgroup+0*l,_header,(w==0)&(l==0))
+                tl.inline_asm_elementwise('fence.acq_rel.gpu; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+        # The original end-of-down-row barrier also publishes quantized lanes.
+{% endif %}
+        gpu.barrier_wait(B)
+{% if call.cross_layers | default(0) %}
+        if _layer<{{ call.cross_layers-1 }} and _completed%32==31:
+            tl.atomic_xchg(_nextReady+_outgroup,tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),4,tl.int32),)),volatile=True),sem='release',scope='gpu')
+{% endif %}
+{% endif %}
+{% if call.q8_boundary_trace | default(false) %}
+    tl.inline_asm_elementwise('{ .reg .b64 a,t; .reg .b32 i; mov.u32 i,%ctaid.x; mul.wide.u32 a,i,48; add.u64 a,a,$1; add.u64 a,a,48; mov.u64 t,%globaltimer; st.global.u64 [a],t; mov.u32 $0,0; }',constraints='=r,l',args=[_ready+544],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+{% endif %}
+{% if call.cross_layers | default(0) %}
+{% if call.cross_trace %}
+    {{ call.symbol }}__trace(_TRACE,_layer,22,0,{{ call.symbol }}__clock())
+{% endif %}
+    _group_epoch = _glu_epochs + tl.where(tl.program_id(0)<160,32,0)*3
+    _serial += 1
+{% endif %}
+{% endfilter %}
+{% else %}
+{% if call.no_shared_staging | default(false) %}
+    _group_epoch = 0
+    {{ call.symbol }}__lease_acquire_1(_prefetch_progress)
+{% endif %}
+    w = gpu.set_layout(tl.broadcast_to(tl.arange(0, 4)[:, None], (4, 32)), E)
+    l = gpu.set_layout(tl.broadcast_to(tl.arange(0, 32)[None, :], (4, 32)), E)
+    tid = w * 32 + l
+{% if call.q8_aligned | default(false) %}
+    _ready = ({{ call.continuous_q8_pointers[1] }}+19584).to(tl.pointer_type(tl.int32))
+{% if call.q8_boundary_trace | default(false) %}
+    tl.inline_asm_elementwise('{ .reg .b64 a,t; .reg .b32 i; mov.u32 i,%ctaid.x; mul.wide.u32 a,i,48; add.u64 a,a,$1; add.u64 a,a,8; mov.u64 t,%globaltimer; st.global.u64 [a],t; mov.u32 $0,0; }',constraints='=r,l',args=[_ready+544],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+    _ticket = tl.atomic_add(_ready+544,1,sem='relaxed',scope='gpu')
+    tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),4,tl.int32),)),(_ticket//{{ 544 + call.grid[0] if call.no_shared_staging | default(false) else 760 }}+1).to(tl.int32))
+    _group = (_ticket%{{ 544 + call.grid[0] if call.no_shared_staging | default(false) else 760 }}).to(tl.int32)
+    _group_epoch = 0
+    tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '1+4*((_serial-1)%2)' if call.cross_layers | default(0) else '1' }},tl.int32),)),tl.where(_group<544,_group,-1))
+    tl.inline_asm_elementwise('fence.acq_rel.cta; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+    tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),2,tl.int32),)),1)
+{% endif %}
+{% if call.no_shared_staging | default(false) and call.continuous_stream | default(false) %}
+    B = gpu.alloc_barrier(arrive_count=128)
+{% endif %}
+    g = tid % 8
+{% if call.no_shared_staging | default(false) and not call.q8_aligned | default(false) and call.transport_n % call.grid[0] == 0 %}
+    row_count: tl.constexpr = {{ call.transport_n // call.grid[0] }}
+{% else %}
+    row_count = {{ call.rows_per_transaction }} * ({{ call.q8_rows_per_cta }} if {{ call.q8_aligned | default(false) }} else tl.cdiv({{ call.transport_n }} - {{ call.rows_per_transaction }} * tl.program_id(0), {{ call.rows_per_transaction }} * tl.num_programs(0)))
+{% endif %}
+{% if call.barrier_batch_g > 1 %}
+    B = gpu.alloc_barrier(arrive_count=128)
+    S = gpu.alloc(({{ 128 if call.g4_recycle else call.barrier_batch_g * 128 }},), tl.uint64, layout=None, nv_mma_shared_layout=False, alignment_bytes=16)
+    while _group < 544:
+        for batch_base in range(0, row_count, {{ call.barrier_batch_g }}):
+{% set prefix = '      ' %}{% set base = 'batch_base' %}
+{% if call.prefetch_depth | default(0) %}
+{% filter indent(4, true) %}{{ prefix }}pr = tl.arange(0,{{ call.prefetch_depth }})[:,None,None,None] + {{ base }}
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pi = tl.arange(0,2)[None,:,None,None]
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pw = w[None,None,:,:]
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pl = l[None,None,:,:]
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pk = (pw*32+pl)//8 + 16*pi
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pg = pl % 8
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pfmask = (pr < row_count) & (pk < 20)
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pb = (tl.program_id(0) + pr*tl.num_programs(0)).to(tl.int64)*2720 + pk*136
+{% endfilter %}
+{% for bank in (0,1) %}
+{% for field,off in (('h','0'),('p0','8+16*pg'),('p1','16+16*pg')) %}
+{% filter indent(4, true) %}{{ prefix }}pt{{bank}}_{{field}} = tl.broadcast_to({{ (_GATE if bank==0 else _UP) if call.cross_layers | default(0) else call.pointers[bank+1] }} + pb + ({{off}}),({{call.prefetch_depth}},2,4,32))
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pc{{bank}}_{{field}} = tl.load(pt{{bank}}_{{field}}.to(tl.pointer_type(tl.uint64)),pfmask,0)
+{% endfilter %}
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% if call.g4_recycle %}
+          saved_p = gpu.set_layout(tl.full((4,32),0.0,tl.float32),E)
+          saved_u = gpu.set_layout(tl.full((4,32),0.0,tl.float32),E)
+{% endif %}
+          for batch_slot in range({{ call.barrier_batch_g }}):
+            row_iteration = batch_base + batch_slot
+            if row_iteration < row_count:
+{% else %}
+    {{ "while _group < 544:" if call.q8_aligned | default(false) else "if True:" }}
+        for row_iteration in range(row_count):
+{% set prefix = '        ' %}{% set base = 'row_iteration' %}
+{% if call.prefetch_depth | default(0) %}
+{% filter indent(4, true) %}{{ prefix }}pr = tl.arange(0,{{ call.prefetch_depth }})[:,None,None,None] + {{ base }}
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pi = tl.arange(0,2)[None,:,None,None]
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pw = w[None,None,:,:]
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pl = l[None,None,:,:]
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pk = (pw*32+pl)//8 + 16*pi
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pg = pl % 8
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pfmask = (pr < row_count) & (pk < 20)
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pb = (tl.program_id(0) + pr*tl.num_programs(0)).to(tl.int64)*2720 + pk*136
+{% endfilter %}
+{% for bank in (0,1) %}
+{% for field,off in (('h','0'),('p0','8+16*pg'),('p1','16+16*pg')) %}
+{% filter indent(4, true) %}{{ prefix }}pt{{bank}}_{{field}} = tl.broadcast_to({{ (_GATE if bank==0 else _UP) if call.cross_layers | default(0) else call.pointers[bank+1] }} + pb + ({{off}}),({{call.prefetch_depth}},2,4,32))
+{% endfilter %}
+{% filter indent(4, true) %}{{ prefix }}pc{{bank}}_{{field}} = tl.load(pt{{bank}}_{{field}}.to(tl.pointer_type(tl.uint64)),pfmask,0)
+{% endfilter %}
+{% endfor %}
+{% endfor %}
+{% endif %}
+{% endif %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        row_index = {{ "32*_group + row_iteration" if call.continuous_stream | default(false) else "tl.program_id(0) + row_iteration*tl.num_programs(0)" }}
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        row = gpu.set_layout(tl.full((4, 32), row_index, tl.int32), E)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        p = gpu.set_layout(tl.full((4, 32), 0.0, tl.float32), E)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        u = gpu.set_layout(tl.full((4, 32), 0.0, tl.float32), E)
+{% endfilter %}
+{% if named %}
+{% if call.transport_kind != 'global_idle' %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        gpu.barrier_wait({{ call.pipeline_channels[0].reader_parameter }}[1])
+{% endfilter %}
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        __READY0__ = {{ call.pipeline_channels[0].reader_parameter }}[0].slot(row_iteration % {{ call.num_stages }})
+{% endfilter %}
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        __READY1__ = {{ call.pipeline_channels[1].reader_parameter }}[0].slot(row_iteration % {{ call.num_stages }})
+{% endfilter %}
+{% endif %}
+{% else %}
+{% if not call.no_shared_staging | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        __READY0__ = {{ call.pipeline_channels[0].reader_parameter }}.wait((_group_epoch+row_iteration).to(tl.int32))
+{% endfilter %}
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        __READY1__ = {{ call.pipeline_channels[1].reader_parameter }}.wait((_group_epoch+row_iteration).to(tl.int32))
+{% endfilter %}
+{% endif %}
+{% endif %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        for it in range(tl.cdiv({{ call.transport_k }} // 256, 16)):
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            kbx = tid // 8 + 16 * it
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            active = (row < {{ call.transport_n }}) & (kbx < {{ call.transport_k }} // 256)
+{% endfilter %}
+{% if call.consumer_mode == 'load_only' %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            pv = {{ call.symbol }}__load_group_stage(({% if call.transport_kind in ('global_named','global_idle') %}{{ call.pointers[1] }} + (row_index.to(tl.int32)*2720).to(tl.int64){% elif named %}__READY0__{% else %}__READY0__.slot.gate{% endif %}{% if call.rows_per_transaction > 1 %},row_iteration % {{ call.rows_per_transaction }}{% endif %},),kbx,g,active)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            uv = {{ call.symbol }}__load_group_stage(({% if call.transport_kind in ('global_named','global_idle') %}{{ call.pointers[2] }} + (row_index.to(tl.int32)*2720).to(tl.int64){% elif named %}__READY1__{% else %}__READY1__.slot.up{% endif %}{% if call.rows_per_transaction > 1 %},row_iteration % {{ call.rows_per_transaction }}{% endif %},),kbx,g,active)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            p = (p.to(tl.uint32,bitcast=True) ^ pv.to(tl.uint32,bitcast=True)).to(tl.float32,bitcast=True)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            u = (u.to(tl.uint32,bitcast=True) ^ uv.to(tl.uint32,bitcast=True)).to(tl.float32,bitcast=True)
+{% endfilter %}
+{% else %}
+{% if call.prefetch_depth | default(0) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_h = tl.sum(tl.where(pr == row_iteration,pc0_h,0),axis=0)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_h = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_h,0),axis=0),E)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_p0 = tl.sum(tl.where(pr == row_iteration,pc0_p0,0),axis=0)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_p0 = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_p0,0),axis=0),E)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_p1 = tl.sum(tl.where(pr == row_iteration,pc0_p1,0),axis=0)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            v_p1 = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_p1,0),axis=0),E)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            (J, D) = {{ call.symbol }}__dot_group_prefetched(v_h,v_p0,v_p1,{{ call.pointers[0] }},row,kbx,g,active,{{ call.transport_k }})
+{% endfilter %}
+{% else %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            (J, D) = {{ call.symbol }}__dot_group_stage(({% if call.transport_kind in ('global_named','global_idle') %}{{ call.pointers[1] }} + (row_index.to(tl.int32)*2720).to(tl.int64){% elif named %}__READY0__{% else %}__READY0__.slot.gate{% endif %}{% if call.rows_per_transaction > 1 %},row_iteration % {{ call.rows_per_transaction }}{% endif %},), {{ call.pointers[0] }}, row, kbx, g, active, {{ call.transport_k }})
+{% endfilter %}
+{% endif %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            pn = tl.inline_asm_elementwise('fma.rn.f32 $0,$1,$2,$3;', constraints='=f,f,f,f', args=[D, J, p], dtype=tl.float32, is_pure=True, pack=1)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            p = tl.where(active, pn, p)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            if {{ call.transport_mode }} == 1:
+{% endfilter %}
+{% if call.prefetch_depth | default(0) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_h = tl.sum(tl.where(pr == row_iteration,pc1_h,0),axis=0)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_h = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_h,0),axis=0),E)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_p0 = tl.sum(tl.where(pr == row_iteration,pc1_p0,0),axis=0)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_p0 = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_p0,0),axis=0),E)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_p1 = tl.sum(tl.where(pr == row_iteration,pc1_p1,0),axis=0)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                v_p1 = gpu.set_layout(tl.sum(tl.where(tl.arange(0,2)[:,None,None] == it,v_p1,0),axis=0),E)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                (J, D) = {{ call.symbol }}__dot_group_prefetched(v_h,v_p0,v_p1,{{ call.pointers[0] }},row,kbx,g,active,{{ call.transport_k }})
+{% endfilter %}
+{% else %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                (J, D) = {{ call.symbol }}__dot_group_stage(({% if call.transport_kind in ('global_named','global_idle') %}{{ call.pointers[2] }} + (row_index.to(tl.int32)*2720).to(tl.int64){% elif named %}__READY1__{% else %}__READY1__.slot.up{% endif %}{% if call.rows_per_transaction > 1 %},row_iteration % {{ call.rows_per_transaction }}{% endif %},), {{ call.pointers[0] }}, row, kbx, g, active, {{ call.transport_k }})
+{% endfilter %}
+{% endif %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                un = tl.inline_asm_elementwise('fma.rn.f32 $0,$1,$2,$3;', constraints='=f,f,f,f', args=[D, J, u], dtype=tl.float32, is_pure=True, pack=1)
+{% endfilter %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}                u = tl.where(active, un, u)
+{% endfilter %}
+{% endif %}
+{% if call.rows_per_transaction > 1 %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        if row_iteration % {{ call.rows_per_transaction }} == {{ call.rows_per_transaction - 1 }}:
+{% endfilter %}
+{% if not call.no_shared_staging | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            {{ call.pipeline_channels[0].reader_parameter }}.release((row_iteration // {{ call.rows_per_transaction }}).to(tl.int32))
+{% endfilter %}
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}            {{ call.pipeline_channels[1].reader_parameter }}.release((row_iteration // {{ call.rows_per_transaction }}).to(tl.int32))
+{% endfilter %}
+{% endif %}
+{% else %}
+{% if named %}
+{% if call.transport_kind != 'global_idle' %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        gpu.barrier_wait({{ call.pipeline_channels[0].reader_parameter }}[2])
+{% endfilter %}
+{% else %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        pass
+{% endfilter %}
+{% endif %}
+{% else %}
+{% if not call.no_shared_staging | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        {{ call.pipeline_channels[0].reader_parameter }}.release((_group_epoch+row_iteration).to(tl.int32))
+{% endfilter %}
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        {{ call.pipeline_channels[1].reader_parameter }}.release((_group_epoch+row_iteration).to(tl.int32))
+{% endfilter %}
+{% endif %}
+{% endif %}
+{% endif %}
+{% if call.bounded_prefetch | default(false) %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),0,tl.int32),)),_group_epoch+row_iteration+1)
+{% endfilter %}
+{% endif %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        tl.static_assert({{ call.transport_k }} % 256 == 0, 'R003 requires complete original K256 blocks')
+{% endfilter %}
+{% if call.barrier_batch_g > 1 %}
+{% if call.g4_recycle %}
+                batch_partial_store(p,u,S,0,w,l)
+                gpu.barrier_wait(B)
+                selected_owner = tl.where(w == batch_slot,0,1)
+                (rp,ru) = batch_typed_reduce(S,selected_owner,w,l,1)
+                saved_p = tl.where(w == batch_slot,rp,saved_p)
+                saved_u = tl.where(w == batch_slot,ru,saved_u)
+                gpu.barrier_wait(B)
+          for owner_round in tl.static_range(1):
+            owner_slot = w
+{% else %}
+{% filter indent(4, true) %}{{ '    ' if call.barrier_batch_g > 1 else '' }}        batch_partial_store(p,u,S,batch_slot,w,l)
+{% endfilter %}
+          gpu.barrier_wait(B)
+          for owner_round in tl.static_range({{ (call.barrier_batch_g + 3) // 4 }}):
+            owner_slot = w + 4 * owner_round
+{% endif %}
+{% if call.g4_recycle %}
+            p = saved_p
+            u = saved_u
+{% elif call.consumer_mode == 'load_only' %}
+            sp = gpu.set_layout(gpu.local_ptr(S,(owner_slot*128+l,),shape=(4,32)),E)
+            pair = tl.load(sp,owner_slot<{{ call.barrier_batch_g }},0,volatile=True)
+            p = ((pair.to(tl.uint32) ^ (pair >> 32).to(tl.uint32)) & 127).to(tl.float32)
+{% else %}
+            (p,u) = batch_typed_reduce(S,owner_slot,w,l,{{ call.barrier_batch_g }})
+{% endif %}
+            owner_iteration = batch_base + owner_slot
+            row = 32*_group + owner_iteration
+            row = gpu.set_layout(row,E)
+{% if call.consumer_mode != 'load_only' and call.transport_mode == 1 %}
+            p = p / (1.0 + tl.exp(-p)) * u
+{% endif %}
+            writer = (row < {{ call.transport_n }}) & (owner_slot < {{ call.barrier_batch_g }}) & (l == 0)
+{% if not call.diagnostic_no_output %}
+            tl.store({{ call.pointers[3] }} + row,p,writer)
+{% endif %}
+{% if not call.g4_recycle %}
+          gpu.barrier_wait(B)
+{% endif %}
+{% if call.q8_aligned | default(false) and not call.q8_local_end | default(false) %}
+          if (batch_base+4) % 32 == 0:
+            gpu.barrier_wait(B)
+            _qgroup = gpu.set_layout(tl.full((4,32),_group,tl.int32),E)
+            _x = gpu.set_layout(tl.load({{ call.continuous_q8_pointers[0] }}+32*_qgroup+l).to(tl.float32),E)
+            _a,_d,_r,_v,_q,_sq,_header=q8_quantize_lanes(_x)
+            tl.store({{ call.continuous_q8_pointers[1] }}+36*_qgroup+4+l,_q.to(tl.uint8),w==0)
+            tl.store({{ call.continuous_q8_pointers[1] }}.to(tl.pointer_type(tl.uint32))+9*_qgroup,_header,(w==0)&(l==0))
+            tl.inline_asm_elementwise('fence.acq_rel.gpu; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+            gpu.barrier_wait(B)
+            tl.atomic_xchg(_ready+_qgroup,tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),4,tl.int32),)),volatile=True),sem='release',scope='gpu',mask=(w==0)&(l==0))
+{% endif %}
+{% else %}
+            (p, u) = typed_reduce(p, u, w, l, {{ call.transport_mode }} == 1)
+            if {{ call.transport_mode }} == 1:
+                p = p / (1.0 + tl.exp(-p)) * u
+            writer = (row < {{ call.transport_n }}) & (w == 0) & (l == 0)
+            if {{ call.transport_mode }} == 2:
+                out = tl.where(row % 512 // 256 == 0, {{ call.pointers[3] }}, {{ call.pointers[4] }})
+                offset = row // 512 * 256 + row % 256
+                tl.store(out + offset, p.to(tl.bfloat16), writer)
+            else:
+                tl.store({{ call.pointers[3] }} + row, p, writer)
+{% if call.no_shared_staging | default(false) and call.q8_aligned | default(false) %}
+            if row_iteration==31:
+                gpu.barrier_wait(B)
+                _qgroup=gpu.set_layout(tl.full((4,32),_group,tl.int32),E)
+                _x=gpu.set_layout(tl.load({{ call.continuous_q8_pointers[0] }}+32*_qgroup+l).to(tl.float32),E)
+                _a,_d,_r,_v,_q,_sq,_header=q8_quantize_lanes(_x)
+                tl.store({{ call.continuous_q8_pointers[1] }}+36*_qgroup+4+l,_q.to(tl.uint8),w==0)
+                tl.store({{ call.continuous_q8_pointers[1] }}.to(tl.pointer_type(tl.uint32))+9*_qgroup,_header,(w==0)&(l==0))
+                tl.inline_asm_elementwise('fence.acq_rel.gpu; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+                gpu.barrier_wait(B)
+                tl.atomic_xchg(_ready+_qgroup,tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),4,tl.int32),)),volatile=True),sem='release',scope='gpu',mask=(w==0)&(l==0))
+{% endif %}
+{% endif %}
+{% if call.q8_aligned | default(false) %}
+{% if call.no_shared_staging | default(false) %}
+        while tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),12,tl.int32),)),volatile=True)<{{ '_serial' if call.cross_layers | default(0) else '_group_epoch//32+1' }}:
+            tl.inline_asm_elementwise('nanosleep.u32 32; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+        _group_epoch += 32
+        _ticket = tl.atomic_add(_ready+544,1,sem='relaxed',scope='gpu')
+        _group = (_ticket%{{ 544 + call.grid[0] if call.no_shared_staging | default(false) else 760 }}).to(tl.int32)
+        tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),{{ '1+4*((_serial-1)%2)' if call.cross_layers | default(0) else '1' }},tl.int32),)),tl.where(_group<544,_group,-1))
+        tl.inline_asm_elementwise('fence.acq_rel.cta; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+        tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),2,tl.int32),)),_group_epoch//32+1)
+    tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),3,tl.int32),)),_group_epoch)
+{% endif %}
+{% if call.q8_boundary_trace | default(false) %}
+    tl.inline_asm_elementwise('{ .reg .b64 a,v; .reg .b32 i,sm; mov.u32 i,%ctaid.x; mul.wide.u32 a,i,48; add.u64 a,a,$1; add.u64 a,a,32; mov.u32 sm,%smid; cvt.u64.u32 v,sm; st.global.u64 [a],v; add.u64 a,a,8; cvt.u64.u32 v,$2; st.global.u64 [a],v; mov.u32 $0,0; }',constraints='=r,l,r',args=[_ready+544,_group_epoch//32],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+
+{% if call.continuous_stream | default(false) %}
+{% if call.q8_boundary_trace | default(false) %}
+    tl.inline_asm_elementwise('{ .reg .b64 a,t; .reg .b32 i; mov.u32 i,%ctaid.x; mul.wide.u32 a,i,48; add.u64 a,a,$1; add.u64 a,a,16; mov.u64 t,%globaltimer; st.global.u64 [a],t; mov.u32 $0,0; }',constraints='=r,l',args=[_ready+544],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+{% if call.payload_observe | default(false) %}
+    gpu.trace_event(272, 201, 0)
+{% endif %}
+{% if call.q8_local_end | default(false) %}
+    gpu.barrier_wait(B)
+    for q_local_base in range(0,{{ call.q8_groups_per_cta }},4):
+        _local_group=q_local_base+w
+        _group=(tl.program_id(0)+_local_group*tl.num_programs(0)) if {{ call.q8_cyclic | default(false) }} else tl.program_id(0)*{{ call.q8_groups_per_cta }}+_local_group
+        _mask=_local_group<{{ call.q8_groups_per_cta }}
+        _x=gpu.set_layout(tl.load({{ call.continuous_q8_pointers[0] }}+32*_group+l,_mask,0).to(tl.float32),E)
+        _a,_d,_r,_v,_q,_sq,_header=q8_quantize_lanes(_x)
+        tl.store({{ call.continuous_q8_pointers[1] }}+36*_group+4+l,_q.to(tl.uint8),_mask)
+        tl.store({{ call.continuous_q8_pointers[1] }}.to(tl.pointer_type(tl.uint32))+9*_group,_header,_mask&(l==0))
+        tl.inline_asm_elementwise('fence.acq_rel.gpu; mov.u32 $0,0;',constraints='=r',args=[],dtype=tl.int32,is_pure=False,pack=1)
+        gpu.barrier_wait(B)
+        tl.atomic_xchg(_ready+_group,_generation,sem='release',scope='gpu',mask=_mask&(l==0))
+{% endif %}
+{% if not call.q8_aligned | default(false) %}
+    tle.distributed_barrier(_grid)
+{% if call.payload_observe | default(false) %}
+    gpu.trace_event(273, 201, 0)
+    gpu.trace_event(272, 202, 0)
+{% endif %}
+    for q_base in range(tl.program_id(0)*4,544,tl.num_programs(0)*4):
+        _group = q_base + w
+        _x = gpu.set_layout(tl.load({{ call.continuous_q8_pointers[0] }} + _group*32+l,_group<544,0).to(tl.float32),E)
+        _a,_d,_r,_v,_q,_sq,_header = q8_quantize_lanes(_x)
+        tl.store({{ call.continuous_q8_pointers[1] }} + 36*_group+4+l,_q.to(tl.uint8),_group<544)
+        tl.store({{ call.continuous_q8_pointers[1] }}.to(tl.pointer_type(tl.uint32))+9*_group,_header,(_group<544)&(l==0))
+{% if call.payload_observe | default(false) %}
+    gpu.trace_event(273, 202, 0)
+    gpu.trace_event(272, 203, 0)
+{% endif %}
+    tle.distributed_barrier(_grid)
+{% if call.payload_observe | default(false) %}
+    gpu.trace_event(273, 203, 0)
+{% endif %}
+{% endif %}
+{% if call.down_pair_pack | default(false) %}
+    _glu_epochs = _group_epoch
+    for down_row_iteration in range(tl.cdiv(5120-tl.program_id(0),tl.num_programs(0))):
+        row = gpu.set_layout(tl.full((4,32),tl.program_id(0)+down_row_iteration*tl.num_programs(0),tl.int32),E)
+        p = gpu.set_layout(tl.full((4,32),0.,tl.float32),E)
+        u = gpu.set_layout(tl.full((4,32),0.,tl.float32),E)
+        for down_pair in range(3):
+            _epoch = (_glu_epochs + down_row_iteration*3+down_pair).to(tl.int32)
+{% if not call.no_shared_staging | default(false) %}
+            _r0 = {{ call.pipeline_channels[0].reader_parameter }}.wait(_epoch)
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+            _r1 = {{ call.pipeline_channels[1].reader_parameter }}.wait(_epoch)
+{% endif %}
+            for bank in tl.static_range(2):
+                _kstart = down_pair*32 + bank*16
+                kbx = tid//8 + _kstart
+                active = kbx < 68
+{% if call.q8_aligned | default(false) %}
+                if down_row_iteration == 0:
+                    _generation = tl.load(gpu.local_ptr(_prefetch_progress,(tl.full((),4,tl.int32),)),volatile=True)
+                    _flagptr = _ready + 8*kbx+g
+                    _ok = tl.inline_asm_elementwise('{ .reg .pred p; setp.ne.u32 p,$2,0; mov.u32 $0,$3; @p ld.acquire.gpu.global.u32 $0,[$1]; }',constraints='=r,l,r,r',args=[_flagptr,active,_generation],dtype=tl.int32,is_pure=False,pack=1)
+                    while tl.sum(tl.sum(((_ok<_generation)&active).to(tl.int32),axis=1),axis=0)>0:
+                        _ok = tl.inline_asm_elementwise('{ .reg .pred p; setp.ne.u32 p,$2,0; mov.u32 $0,$3; @p ld.acquire.gpu.global.u32 $0,[$1]; }',constraints='=r,l,r,r',args=[_flagptr,active,_generation],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+{% if call.q8_boundary_trace | default(false) %}
+                if down_row_iteration==0 and down_pair==0 and bank==0:
+{% if call.q8_boundary_trace | default(false) %}
+                    tl.inline_asm_elementwise('{ .reg .b64 a,t; .reg .b32 i; mov.u32 i,%ctaid.x; mul.wide.u32 a,i,48; add.u64 a,a,$1; add.u64 a,a,24; mov.u64 t,%globaltimer; st.global.u64 [a],t; mov.u32 $0,0; }',constraints='=r,l',args=[_ready+544],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+{% endif %}
+                J,D = {{ call.symbol }}__dot_group_stage(({% if call.no_shared_staging | default(false) %}{{ (_DOWN if call.cross_layers | default(0) else call.continuous_down_pointers[1]) }} + row.to(tl.int64)*9248{% else %}(_r0.slot.gate if bank == 0 else _r1.slot.up){% endif %},),{{ call.continuous_down_pointers[0] }},row,kbx,g,active,17408,{{ 0 if call.no_shared_staging | default(false) else "_kstart" }})
+                pn = tl.inline_asm_elementwise('fma.rn.f32 $0,$1,$2,$3;',constraints='=f,f,f,f',args=[D,J,p],dtype=tl.float32,is_pure=True,pack=1)
+                p = tl.where(active,pn,p)
+{% if not call.no_shared_staging | default(false) %}
+            {{ call.pipeline_channels[0].reader_parameter }}.release(_epoch)
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+            {{ call.pipeline_channels[1].reader_parameter }}.release(_epoch)
+{% endif %}
+{% if call.bounded_prefetch | default(false) %}
+            tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),0,tl.int32),)),_epoch+1)
+{% endif %}
+{% if call.no_shared_staging | default(false) %}
+        p,u = typed_reduce(p,u,w,l,True)
+{% else %}
+        batch_partial_store(p,u,S,0,w,l)
+        gpu.barrier_wait(B)
+        p,u = batch_typed_reduce(S,tl.full((4,32),0,tl.int32),w,l,4)
+{% endif %}
+        tl.store({{ call.continuous_down_pointers[3] }}+row,p,(w==0)&(l==0))
+{% if not call.no_shared_staging | default(false) %}
+        gpu.barrier_wait(B)
+{% endif %}
+{% else %}
+    _glu_epochs = _group_epoch
+    for down_row_iteration in range(tl.cdiv(5120-tl.program_id(0),tl.num_programs(0))):
+        row = gpu.set_layout(tl.full((4,32),tl.program_id(0)+down_row_iteration*tl.num_programs(0),tl.int32),E)
+        p = gpu.set_layout(tl.full((4,32),0.,tl.float32),E)
+        u = gpu.set_layout(tl.full((4,32),0.,tl.float32),E)
+        for down_chunk in range(5):
+            _epoch = (_glu_epochs + down_row_iteration*5+down_chunk).to(tl.int32)
+{% if not call.no_shared_staging | default(false) %}
+            _r0 = {{ call.pipeline_channels[0].reader_parameter }}.wait(_epoch)
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+            _r1 = {{ call.pipeline_channels[1].reader_parameter }}.wait(_epoch)
+{% endif %}
+            _kstart = down_chunk*16
+            kbx = tid//8 + _kstart
+            active = kbx < 68
+            J,D = {{ call.symbol }}__dot_group_stage((_r0.slot.gate,),{{ call.continuous_down_pointers[0] }},row,kbx,g,active,17408,{{ 0 if call.no_shared_staging | default(false) else "_kstart" }})
+            pn = tl.inline_asm_elementwise('fma.rn.f32 $0,$1,$2,$3;',constraints='=f,f,f,f',args=[D,J,p],dtype=tl.float32,is_pure=True,pack=1)
+            p = tl.where(active,pn,p)
+{% if not call.no_shared_staging | default(false) %}
+            {{ call.pipeline_channels[0].reader_parameter }}.release(_epoch)
+{% endif %}
+{% if not call.no_shared_staging | default(false) %}
+            {{ call.pipeline_channels[1].reader_parameter }}.release(_epoch)
+{% endif %}
+{% if call.bounded_prefetch | default(false) %}
+            tl.store(gpu.local_ptr(_prefetch_progress,(tl.full((),0,tl.int32),)),_epoch+1)
+{% endif %}
+{% if call.no_shared_staging | default(false) %}
+        p,u = typed_reduce(p,u,w,l,True)
+{% else %}
+        batch_partial_store(p,u,S,0,w,l)
+        gpu.barrier_wait(B)
+        p,u = batch_typed_reduce(S,tl.full((4,32),0,tl.int32),w,l,4)
+{% endif %}
+        tl.store({{ call.continuous_down_pointers[3] }}+row,p,(w==0)&(l==0))
+        gpu.barrier_wait(B)
+{% endif %}
+{% if call.q8_boundary_trace | default(false) %}
+    tl.inline_asm_elementwise('{ .reg .b64 a,t; .reg .b32 i; mov.u32 i,%ctaid.x; mul.wide.u32 a,i,48; add.u64 a,a,$1; add.u64 a,a,48; mov.u64 t,%globaltimer; st.global.u64 [a],t; mov.u32 $0,0; }',constraints='=r,l',args=[_ready+544],dtype=tl.int32,is_pure=False,pack=1)
+{% endif %}
+{% endif %}
+{% endif %}
+{% endif %}
+{% if call.no_shared_trace | default(false) %}
+    {{ call.symbol }}__role_stamp(workspace,0,1)
+{% endif %}
+{% endfor %}

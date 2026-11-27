@@ -64,11 +64,15 @@ def emit_dimension(value: Dimension, *, symbols: Mapping[str, str] | None = None
     if value.op == "abs":
         return f"tl.abs({operands[0]})"
     if value.op == "clamp":
-        return (f"tl.minimum(tl.maximum({operands[0]}, {operands[1]}), "
-                f"{operands[2]})")
+        return (
+            f"tl.minimum(tl.maximum({operands[0]}, {operands[1]}), "
+            f"{operands[2]})"
+        )
     if value.op == "positive":
-        return (f"tl.where(({operands[0]}) >= 0, {operands[0]}, "
-                f"({operands[0]}) + ({operands[1]}))")
+        return (
+            f"tl.where(({operands[0]}) >= 0, {operands[0]}, "
+            f"({operands[0]}) + ({operands[1]}))"
+        )
     if value.op.startswith("select_"):
         comparison = {
             "select_eq": "==",
@@ -78,8 +82,10 @@ def emit_dimension(value: Dimension, *, symbols: Mapping[str, str] | None = None
             "select_gt": ">",
             "select_ge": ">=",
         }[value.op]
-        return (f"tl.where(({operands[0]}) {comparison} ({operands[1]}), "
-                f"{operands[2]}, {operands[3]})")
+        return (
+            f"tl.where(({operands[0]}) {comparison} ({operands[1]}), "
+            f"{operands[2]}, {operands[3]})"
+        )
     raise CodegenError(f"Unsupported dimension expression op {value.op!r}.")
 
 
@@ -101,7 +107,8 @@ def emit_logical(value: LogicalExpr, *, symbols: Mapping[str, str] | None = None
         return f"(not {emit_logical(value.operand, symbols=symbols)})"
     if isinstance(value, LogicalOp):
         joiner = " and " if value.op == "and" else " or "
-        return "(" + joiner.join(emit_logical(operand, symbols=symbols) for operand in value.operands) + ")"
+        return "(" + joiner.join(
+            emit_logical(operand, symbols=symbols) for operand in value.operands) + ")"
     raise CodegenError(f"Unsupported logical expression node {type(value).__name__}.")
 
 

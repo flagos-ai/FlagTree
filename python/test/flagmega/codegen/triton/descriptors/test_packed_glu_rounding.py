@@ -30,11 +30,12 @@ def test_packed_glu_keeps_all_three_rounding_boundaries(tmp_path, request, fixtu
     up[1::3, 1] = 1 / 256
     up[2::3, 0] = 129 / 128
     weights = {"gate": gate, "up": up}
-    checkpoint = MemoryCheckpoint(
-        {}, {name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
-             for name, value in weights.items()}, weights)
-    artifact = write_artifact(module, tmp_path / "rounding", target="nvidia-sm90", checkpoint=checkpoint,
-                              emit_executable=True)
+    checkpoint = MemoryCheckpoint({}, {
+        name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
+        for name, value in weights.items()
+    }, weights)
+    artifact = write_artifact(module, tmp_path / "rounding", target="nvidia-sm90",
+                              checkpoint=checkpoint, emit_executable=True)
     runtime = load(artifact, device="cuda:0")
     value = torch.zeros((1, 2048), dtype=torch.bfloat16, device="cuda")
     value[:, :2] = 1

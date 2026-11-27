@@ -20,8 +20,8 @@ def _module(*, stage: str = "imported") -> fm.IRModule:
     return fm.IRModule(
         dialect="high_level",
         stage=stage,
-        nodes=(value, ),
-        functions=(fm.Function("main", (value.id, ), (value.id, )), ),
+        nodes=(value,),
+        functions=(fm.Function("main", (value.id,), (value.id,)),),
         entry="main",
     )
 

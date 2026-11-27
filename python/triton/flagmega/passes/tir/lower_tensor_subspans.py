@@ -48,18 +48,18 @@ def lower_tensor_subspans(module):
         raise StageError("Subspan storage planning must precede bufferization; resume from semantic TIR.",
                          stage=module.stage)
     if any(parameter.alignment_bytes is None for function in module.kernel_callable_map.values()
-           if kernel_dispatch_of(function) is not None for parameter in function.parameters
-           if parameter.role.value != "metadata"):
+           if kernel_dispatch_of(function) is not None
+           for parameter in function.parameters if parameter.role.value != "metadata"):
         raise StageError("Subspan planning requires declared TIR alignment contracts; run plan-tir-alignments first.",
                          stage=module.stage)
     validate_storage_alignments(module)
     escapes = {value for function in module.functions for value in function.outputs}
     # Partial graph-function parameters currently have a dense component ABI;
     # non-partial arguments can acquire canonical backing before binding.
-    escapes.update(
-        value for node in module.nodes if node.op == "tir.call" and node.attrs.get("callee") in module.function_map
-        for value in node.inputs
-        if isinstance(module.node_map[value].type, DistributedType) and module.node_map[value].type.partial is not None)
+    escapes.update(value for node in module.nodes if node.op == "tir.call"
+                   and node.attrs.get("callee") in module.function_map for value in node.inputs
+                   if isinstance(module.node_map[value].type, DistributedType)
+                   and module.node_map[value].type.partial is not None)
     pending = list(escapes)
     while pending:
         node = module.node_map[pending.pop()]
@@ -96,11 +96,10 @@ def lower_tensor_subspans(module):
         tensor = getattr(source, "tensor", source)
         shapes = [(tuple(d.fixed_value for d in tensor.shape), attrs["shape"])]
         if isinstance(source, DistributedType):
-            shapes.append((tuple(d.fixed_value
-                                 for d in local_shape(source)), tuple(d.fixed_value for d in local_shape(node.type))))
-        if any(
-                dense_subspan_offset(parent, result, attrs["offsets"], tensor.dtype.itemsize) % alignment
-                for parent, result in shapes):
+            shapes.append((tuple(d.fixed_value for d in local_shape(source)),
+                           tuple(d.fixed_value for d in local_shape(node.type))))
+        if any(dense_subspan_offset(parent, result, attrs["offsets"], tensor.dtype.itemsize) % alignment
+               for parent, result in shapes):
             continue
         replacements[node.id] = view
         retired_callees.add(str(node.attrs["callee"]))
@@ -123,14 +122,12 @@ def lower_tensor_subspans(module):
                    if point.owner not in replacements and point.owner not in retired_callees)
     point_ids = {point.id for point in points}
     # Only retire leaf definitions that belonged to the removed copy calls.
-    return verify_module(
-        replace(
-            current,
-            selection_points=points,
-            selections=tuple(record for record in module.selections if record.point_id in point_ids),
-            kernel_definitions=tuple(kernel for kernel in module.kernel_definitions
-                                     if kernel.name not in retired_callees),
-        ))
+    return verify_module(replace(
+        current, selection_points=points,
+        selections=tuple(record for record in module.selections if record.point_id in point_ids),
+        kernel_definitions=tuple(kernel for kernel in module.kernel_definitions
+                                 if kernel.name not in retired_callees),
+    ))
 
 
 __all__ = ["lower_tensor_subspans"]

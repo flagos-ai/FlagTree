@@ -14,17 +14,15 @@ def _run(module):
 
 
 def test_pack_moves_before_lane_aligned_end_pad():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="vectorized", entry="main")
 
         def forward(self):
             value = self.input("value", fm.tensor_type("bfloat16", (2, 8)), id="value")
             padded = fm.F.tensors.pad(value, (0, 8), name="padded")
-            output = fm.F.tensors.pack(padded, (8, ), axes=(1, ), name="output")
-            self.function("main", (value, ), (output, ))
+            output = fm.F.tensors.pack(padded, (8,), axes=(1,), name="output")
+            self.function("main", (value,), (output,))
 
     original = Graph().build()
     result = _run(original)
@@ -40,18 +38,16 @@ def test_pack_moves_before_lane_aligned_end_pad():
 
 
 def test_pad_moves_before_unpack_when_padding_is_lane_aligned():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="vectorized", entry="main")
 
         def forward(self):
-            value_type = fm.tensor_type(fm.vector_type("bfloat16", (8, )), (2, 1))
+            value_type = fm.tensor_type(fm.vector_type("bfloat16", (8,)), (2, 1))
             value = self.input("value", value_type, id="value")
-            scalar = fm.F.tensors.unpack(value, axes=(1, ), name="scalar")
+            scalar = fm.F.tensors.unpack(value, axes=(1,), name="scalar")
             output = fm.F.tensors.pad(scalar, (0, 8), name="output")
-            self.function("main", (value, ), (output, ))
+            self.function("main", (value,), (output,))
 
     original = Graph().build()
     result = _run(original)
@@ -67,17 +63,15 @@ def test_pad_moves_before_unpack_when_padding_is_lane_aligned():
 
 
 def test_non_lane_aligned_pad_is_not_rewritten():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="vectorized", entry="main")
 
         def forward(self):
             value = self.input("value", fm.tensor_type("bfloat16", (2, 15)), id="value")
             padded = fm.F.tensors.pad(value, (0, 1), name="padded")
-            output = fm.F.tensors.pack(padded, (8, ), axes=(1, ), name="output")
-            self.function("main", (value, ), (output, ))
+            output = fm.F.tensors.pack(padded, (8,), axes=(1,), name="output")
+            self.function("main", (value,), (output,))
 
     original = Graph().build()
     result = _run(original)

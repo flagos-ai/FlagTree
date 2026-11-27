@@ -18,7 +18,8 @@ def _render(spec):
 
 def test_amd_issues_value_before_the_score_math():
     assert TritonTemplateRegistry().resolve(_AMD) == (
-        "kernels/paged_attention_partial/platforms/amd/decode_t32.py.jinja")
+        "kernels/paged_attention_partial/platforms/amd/decode_t32.py.jinja"
+    )
     amd, generic = _render(_AMD), _render(_GENERIC)
     compile(amd, "amd_decode_t32.py", "exec")
     assert amd.index("value_value = tl.load(") < amd.index("score = tl.sum(")
@@ -61,8 +62,9 @@ def test_amd_partial_matches_generic_bitwise(tmp_path):
     block_table = torch.tensor([2, 0, 3, 1], device="cuda", dtype=torch.int32)
     results = []
     for name, spec in (("generic_partial", _GENERIC), ("amd_partial", _AMD)):
-        outputs = (torch.empty(4, device="cuda"), torch.empty(4, device="cuda"), torch.empty(4 * 128, device="cuda"))
-        _module(tmp_path, spec, name).run[(4, )](query, kv_cache, slot_mapping, block_table, *outputs)
+        outputs = (torch.empty(4, device="cuda"), torch.empty(4, device="cuda"),
+                   torch.empty(4 * 128, device="cuda"))
+        _module(tmp_path, spec, name).run[(4,)](query, kv_cache, slot_mapping, block_table, *outputs)
         results.append(outputs)
     torch.cuda.synchronize()
     for generic, amd in zip(*results):
@@ -71,7 +73,7 @@ def test_amd_partial_matches_generic_bitwise(tmp_path):
     cache = kv_cache.view(4, 2, 256, 128)[block_table.long()].float()
     keys = cache[:, 0].reshape(-1, 128)[:context]
     values = cache[:, 1].reshape(-1, 128)[:context]
-    reference = torch.softmax(keys @ query.float() * 128**-.5, 0) @ values
+    reference = torch.softmax(keys @ query.float() * 128 ** -.5, 0) @ values
     maxima, sums, accumulators = results[1]
     weights = torch.exp(maxima - maxima.max())
     combined = (weights[:, None] * accumulators.view(4, 128)).sum(0) / (weights * sums).sum()

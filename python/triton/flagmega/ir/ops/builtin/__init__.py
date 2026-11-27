@@ -13,15 +13,7 @@ from triton.flagmega.ir.ops.builtin.weight import Weight
 from triton.flagmega.ir.ops.builtin.parameter_bank import ParameterBank, BankGet
 
 __all__ = [
-    "ParameterBank",
-    "BankGet",
-    "Call",
-    "ConstAsset",
-    "GetItem",
-    "NoneValue",
-    "ScalarConst",
-    "SplatConst",
-    "TupleValue",
-    "Var",
-    "Weight",
+    "ParameterBank", "BankGet",
+    "Call", "ConstAsset", "GetItem", "NoneValue", "ScalarConst", "SplatConst",
+    "TupleValue", "Var", "Weight",
 ]

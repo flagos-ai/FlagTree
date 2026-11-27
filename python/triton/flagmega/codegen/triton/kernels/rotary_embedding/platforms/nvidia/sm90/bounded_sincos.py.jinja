@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{# NVIDIA libdevice's exact FP32 finite-angle path, with the shared reduction
+{# NVIDIA libdevice's exact FP32 finite-angle path, with the shared reduction
    reused by cos and sin. The renderer proves every active angle is below
    105615 from the configured cache and constant inverse frequencies. #}
 @triton.jit

@@ -41,7 +41,7 @@ def _block_fp8_module():
         id="output",
         attrs={"weight_block_n": 128, "weight_block_k": 128},
     )
-    builder.function("main", (lhs, ), (output, ))
+    builder.function("main", (lhs,), (output,))
     return builder.build(entry="main")
 
 
@@ -52,9 +52,9 @@ def test_target_injected_model_owns_variant_availability_geometry_and_default():
             "block_fp8",
             "simt",
             {"tile_n": 7},
-            requires=("fp8", ),
-        ), ),
-        preferences={"block_fp8": ("tir.block_fp8.simt", )},
+            requires=("fp8",),
+        ),),
+        preferences={"block_fp8": ("tir.block_fp8.simt",)},
         name="unit-machine",
     )
     target = NvidiaSm90Target(triton_implementation_model=model)
@@ -62,13 +62,15 @@ def test_target_injected_model_owns_variant_availability_geometry_and_default():
     proposed = target.propose_tir(_block_fp8_module())
     point = next(value for value in proposed.selection_points if value.id == "tir.output")
 
-    assert tuple(value.id for value in point.candidates) == ("tir.block_fp8.simt", )
+    assert tuple(value.id for value in point.candidates) == ("tir.block_fp8.simt",)
     assert point.default_candidate == "tir.block_fp8.simt"
     assert point.candidates[0].parameters["tile_n"] == 7
 
 
 def test_selected_tir_records_and_revalidates_the_concrete_implementation_model():
-    selected = Compiler().compile(_block_fp8_module(), stop_after="lower-tir").module
+    selected = Compiler().compile(
+        _block_fp8_module(), stop_after="lower-tir"
+    ).module
     default = NvidiaSm90Target().triton_implementation_model
     snapshot = selected.metadata["target_implementation_model"]
 
@@ -83,7 +85,9 @@ def test_selected_tir_records_and_revalidates_the_concrete_implementation_model(
 
 
 def test_selected_tir_records_and_revalidates_target_owned_package_plan():
-    selected = Compiler().compile(_block_fp8_module(), stop_after="lower-tir").module
+    selected = Compiler().compile(
+        _block_fp8_module(), stop_after="lower-tir"
+    ).module
     package_plan = dict(selected.metadata["codegen_package_plan"])
 
     assert package_plan["schema"] == "flagmega.triton-package-plan/v1"
@@ -94,7 +98,7 @@ def test_selected_tir_records_and_revalidates_target_owned_package_plan():
     assert package_plan["kernel_templates"] == ({
         "kernel": "block_fp8",
         "variant": "mma",
-    }, )
+    },)
     assert package_plan["launch"]["num_warps"] == 4
     tampered = replace(
         selected,
@@ -132,10 +136,7 @@ def test_sm90_package_grid_excludes_chip_and_node_axes():
     )
 
     package = sm90_codegen_package_plan(
-        module,
-        (kernel, ),
-        NvidiaSm90Target().machine.capability,
-        None,
+        module, (kernel,), NvidiaSm90Target().machine.capability, None,
     )
 
     assert package["launch"]["grid"] == (8 * 16, 1, 1)
@@ -159,7 +160,7 @@ def test_generic_provider_enumerates_target_contract_without_knowing_candidate_i
         id="output",
         attrs={"transpose_a": False, "transpose_b": True},
     )
-    builder.function("main", (lhs, ), (output, ))
+    builder.function("main", (lhs,), (output,))
     module = builder.build(entry="main")
     model = TritonImplementationModel(
         implementations=(TritonImplementation(
@@ -173,15 +174,17 @@ def test_generic_provider_enumerates_target_contract_without_knowing_candidate_i
                 "vectorization_kind": "scalar",
                 "distribution_kind": "canonical",
             },
-        ), ),
-        preferences={"dense_matmul": ("machine.linear.alpha", )},
+        ),),
+        preferences={"dense_matmul": ("machine.linear.alpha",)},
         name="unit-renamed-catalog",
     )
 
     proposed = NvidiaSm90Target(triton_implementation_model=model).propose_tir(module)
     point = next(value for value in proposed.selection_points if value.id == "tir.output")
 
-    assert tuple(candidate.id for candidate in point.candidates) == ("machine.linear.alpha", )
+    assert tuple(candidate.id for candidate in point.candidates) == (
+        "machine.linear.alpha",
+    )
     assert point.candidates[0].parameters == {
         "family": "dense_matmul",
         "variant": "custom_kernel",
@@ -203,16 +206,14 @@ def test_generic_provider_enumerates_target_contract_without_knowing_candidate_i
 
 def test_model_rejects_preference_that_crosses_family_boundary():
     implementation = TritonImplementation(
-        "machine.add",
-        "elementwise",
-        "add",
+        "machine.add", "elementwise", "add",
         contract={"semantic_op": "math.add"},
     )
 
     with pytest.raises(CodegenError, match="another family"):
         TritonImplementationModel(
-            implementations=(implementation, ),
-            preferences={"dense_matmul": ("machine.add", )},
+            implementations=(implementation,),
+            preferences={"dense_matmul": ("machine.add",)},
             name="invalid",
         )
 

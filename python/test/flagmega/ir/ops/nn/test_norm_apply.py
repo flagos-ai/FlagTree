@@ -17,9 +17,7 @@ def _node(name, value_type):
 
 @pytest.mark.parametrize("use_mean", [False, True])
 def test_norm_apply_dense_type_and_evaluator(use_mean):
-
     class _Module(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="nn", stage="imported", entry="main")
 
@@ -27,7 +25,8 @@ def test_norm_apply_dense_type_and_evaluator(use_mean):
             value = self.input("value", fm.tensor_type("bfloat16", [2, 8]))
             scale = self.input("scale", fm.tensor_type("bfloat16", [8]))
             bias = self.input("bias", fm.tensor_type("bfloat16", [8]))
-            stats = fm.F.nn.norm_stats(value, axis=-1, use_mean=use_mean, name="stats")
+            stats = fm.F.nn.norm_stats(
+                value, axis=-1, use_mean=use_mean, name="stats")
             output = fm.F.nn.norm_apply(
                 value,
                 stats,
@@ -38,13 +37,14 @@ def test_norm_apply_dense_type_and_evaluator(use_mean):
                 use_mean=use_mean,
                 name="output",
             )
-            self.function("main", (value, scale, bias), (output, ))
+            self.function("main", (value, scale, bias), (output,))
 
     module = _Module().build()
     value = torch.randn((2, 8), dtype=torch.bfloat16)
-    scale = torch.randn((8, ), dtype=torch.bfloat16)
-    bias = torch.randn((8, ), dtype=torch.bfloat16)
-    actual = TorchEvaluator(DictWeightResolver({})).run(module, {"value": value, "scale": scale, "bias": bias})[0]
+    scale = torch.randn((8,), dtype=torch.bfloat16)
+    bias = torch.randn((8,), dtype=torch.bfloat16)
+    actual = TorchEvaluator(DictWeightResolver({})).run(
+        module, {"value": value, "scale": scale, "bias": bias})[0]
     source = value.float()
     if use_mean:
         mean = source.mean(dim=-1, keepdim=True)
@@ -57,19 +57,21 @@ def test_norm_apply_dense_type_and_evaluator(use_mean):
 
 
 def test_norm_apply_accepts_materialized_stats_and_matching_suffix_split():
-    placement = fm.Placement((8, ), "x", "b")
+    placement = fm.Placement((8,), "x", "b")
     value_tensor = fm.tensor_type("bfloat16", [2, 64])
     parameter_tensor = fm.tensor_type("bfloat16", [64])
     value_type = fm.DistributedType(
         value_tensor,
-        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ))),
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,))),
         placement,
     )
-    parameter_type = fm.DistributedType(parameter_tensor, (fm.SBP.split_contiguous((0, )), ), placement)
+    parameter_type = fm.DistributedType(
+        parameter_tensor, (fm.SBP.split_contiguous((0,)),), placement)
     value = _node("value", value_type)
-    partial = NormStats.infer_type((value, ), {"axis": 1, "use_mean": False})
+    partial = NormStats.infer_type((value,), {"axis": 1, "use_mean": False})
     assert isinstance(partial, fm.DistributedType)
-    materialized = fm.DistributedType(partial.tensor, partial.axis_policies, partial.placement)
+    materialized = fm.DistributedType(
+        partial.tensor, partial.axis_policies, partial.placement)
 
     result = NormApply.infer_type(
         (

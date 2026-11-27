@@ -27,9 +27,9 @@ def implementation_alignments(function, implementation):
 
 
 def satisfies_alignment_contract(function, implementation):
-    return all(
-        function.parameter_map[name].alignment_bytes is None or required <= function.parameter_map[name].alignment_bytes
-        for name, required in implementation_alignments(function, implementation).items())
+    return all(function.parameter_map[name].alignment_bytes is None
+               or required <= function.parameter_map[name].alignment_bytes
+               for name, required in implementation_alignments(function, implementation).items())
 
 
 def plan_storage_alignments(module, registry, implementation_model, *, capability=None):
@@ -50,30 +50,25 @@ def plan_storage_alignments(module, registry, implementation_model, *, capabilit
         if dispatch.microkernel is not None:
             # These are already concrete semantic-TIR operations, not a later
             # microkernel choice. Their interface is part of the incoming IR.
-            implementations = (dispatch.microkernel, )
+            implementations = (dispatch.microkernel,)
         elif (provider := registry.provider_for(dispatch.semantic_op)) is not None:
             proposal = provider.propose(TIRMicroKernelContext(module, function, dispatch, implementation_model))
             if proposal is not None:
-                implementations = tuple(
-                    implementation_model.implementation(candidate.id) for candidate in proposal.candidates)
+                implementations = tuple(implementation_model.implementation(candidate.id) for candidate in proposal.candidates)
                 if any(value is None for value in implementations):
-                    raise IRVerificationError(
-                        f"Alignment planning for @{function.name} references an unknown implementation.")
-        legal = tuple(value for value in implementations if satisfies_alignment_contract(function, value) and (
-            capability is None or capability.supports(value.requires)))
+                    raise IRVerificationError(f"Alignment planning for @{function.name} references an unknown implementation.")
+        legal = tuple(value for value in implementations if satisfies_alignment_contract(function, value)
+                      and (capability is None or capability.supports(value.requires)))
         if implementations and not legal:
-            raise IRVerificationError(
-                f"No implementation satisfies the declared alignment contract of @{function.name}.")
+            raise IRVerificationError(f"No implementation satisfies the declared alignment contract of @{function.name}.")
         requirements = {}
         for implementation in legal:
             for name, alignment in implementation_alignments(function, implementation).items():
                 requirements[name] = max(requirements.get(name, 1), alignment)
-        functions.append(
-            replace(
-                function, parameters=tuple(
-                    replace(parameter, alignment_bytes=requirements.get(parameter.name, 1)
-                            ) if parameter.role.value != "metadata" and parameter.alignment_bytes is None else parameter
-                    for parameter in function.parameters)))
+        functions.append(replace(function, parameters=tuple(
+            replace(parameter, alignment_bytes=requirements.get(parameter.name, 1))
+            if parameter.role.value != "metadata" and parameter.alignment_bytes is None else parameter
+            for parameter in function.parameters)))
         changed = True
     return verify_module(replace_kernel_callables(module, functions)) if changed else module
 

@@ -35,11 +35,15 @@ class TIRAuxiliaryConsumerContract(TIRNode):
 
 def _indices(values, *, allow_empty: bool, owner: str) -> tuple[int, ...]:
     result = tuple(values)
-    if ((not result and not allow_empty)
-            or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in result)
-            or len(set(result)) != len(result)):
+    if (
+        (not result and not allow_empty)
+        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in result)
+        or len(set(result)) != len(result)
+    ):
         qualifier = "" if allow_empty else "non-empty, "
-        raise IRSchemaError(f"Auxiliary consumer {owner} indexes must be {qualifier}non-negative and unique.")
+        raise IRSchemaError(
+            f"Auxiliary consumer {owner} indexes must be {qualifier}non-negative and unique."
+        )
     return result
 
 

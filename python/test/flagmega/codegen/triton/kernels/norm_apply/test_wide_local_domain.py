@@ -24,18 +24,17 @@ def test_wide_norm_apply_retains_row_stats_tail_and_bf16_rounding(tmp_path, exte
         pytest.skip("SM90 CUDA is required")
     value_type = fm.tensor_type("bfloat16", (2, extent))
     stats_type = fm.tensor_type("float32", (2 if use_mean else 1, 2, 1))
-    parameter_type = fm.tensor_type("bfloat16", (extent, ))
+    parameter_type = fm.tensor_type("bfloat16", (extent,))
 
     class Graph(fm.Module):
-
         def forward(self):
             value = self.input("value", value_type)
             stats = self.input("stats", stats_type)
             scale = self.input("scale", parameter_type)
             bias = self.input("bias", parameter_type)
-            result = fm.F.nn.norm_apply(value, stats, scale, bias, axis=1, epsilon=1e-5, use_mean=use_mean,
-                                        round_before_scale=True)
-            self.function("main", (value, stats, scale, bias), (result, ))
+            result = fm.F.nn.norm_apply(value, stats, scale, bias, axis=1,
+                epsilon=1e-5, use_mean=use_mean, round_before_scale=True)
+            self.function("main", (value, stats, scale, bias), (result,))
 
     module = Compiler().compile(Graph(dialect="high_level", stage="imported", entry="main").build()).module
     artifact = write_artifact(module, tmp_path / "wide", target="nvidia-sm90", emit_executable=True)

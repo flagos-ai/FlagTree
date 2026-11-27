@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache, reduce
-from operator import mul
+from operator import add, mul
 from typing import Any, Iterable, Mapping
 
 from triton.flagmega.errors import IRSchemaError
@@ -228,7 +228,6 @@ class DimVar(Dimension):
 
 @dataclass(frozen=True)
 class UnknownDim(Dimension):
-
     @property
     def kind(self) -> DimensionKind:
         return DimensionKind.UNKNOWN
@@ -440,7 +439,7 @@ def evaluate_dim(value: DimensionLike, bindings: Mapping[str, int]) -> int:
     if value.op == "mod":
         return values[0] % values[1]
     if value.op == "pow":
-        return values[0]**values[1]
+        return values[0] ** values[1]
     if value.op == "min":
         return min(values)
     if value.op == "max":
@@ -513,23 +512,8 @@ def _validate_expression(op: str, operands: tuple[Dimension, ...]) -> None:
     if op in arities and len(operands) != arities[op]:
         raise IRSchemaError(f"Dimension {op} requires {arities[op]} operands, got {len(operands)}.")
     if op not in {
-            "add",
-            "mul",
-            "floor_div",
-            "ceil_div",
-            "mod",
-            "pow",
-            "min",
-            "max",
-            "abs",
-            "clamp",
-            "positive",
-            "select_eq",
-            "select_ne",
-            "select_lt",
-            "select_le",
-            "select_gt",
-            "select_ge",
+        "add", "mul", "floor_div", "ceil_div", "mod", "pow", "min", "max", "abs", "clamp",
+        "positive", "select_eq", "select_ne", "select_lt", "select_le", "select_gt", "select_ge",
     }:
         raise IRSchemaError(f"Unsupported dimension expression op {op!r}.")
     if op in {"floor_div", "ceil_div", "mod"} and isinstance(operands[1], DimConst) and operands[1].fixed == 0:
@@ -553,7 +537,7 @@ def _simplify_local(op: str, operands: tuple[Dimension, ...]) -> Dimension:
             if isinstance(operand, DimExpr) and operand.op == op:
                 nested = operand.operands
             else:
-                nested = (operand, )
+                nested = (operand,)
             for value in nested:
                 if isinstance(value, DimConst):
                     constant = constant + value.fixed if op == "add" else constant * value.fixed
@@ -688,12 +672,10 @@ def _from_sympy(sympy, value, variables: Mapping[str, DimVar]) -> Dimension:
         return _simplify_local("pow", tuple(_from_sympy(sympy, item, variables) for item in value.args))
     if value.func == sympy.floor:
         numerator, denominator = sympy.fraction(value.args[0])
-        return DimExpr("floor_div",
-                       (_from_sympy(sympy, numerator, variables), _from_sympy(sympy, denominator, variables)))
+        return DimExpr("floor_div", (_from_sympy(sympy, numerator, variables), _from_sympy(sympy, denominator, variables)))
     if value.func == sympy.ceiling:
         numerator, denominator = sympy.fraction(value.args[0])
-        return DimExpr("ceil_div",
-                       (_from_sympy(sympy, numerator, variables), _from_sympy(sympy, denominator, variables)))
+        return DimExpr("ceil_div", (_from_sympy(sympy, numerator, variables), _from_sympy(sympy, denominator, variables)))
     if value.func == sympy.Mod:
         return DimExpr("mod", tuple(_from_sympy(sympy, item, variables) for item in value.args))
     if value.func == sympy.Min:
@@ -701,7 +683,7 @@ def _from_sympy(sympy, value, variables: Mapping[str, DimVar]) -> Dimension:
     if value.func == sympy.Max:
         return DimExpr("max", tuple(_from_sympy(sympy, item, variables) for item in value.args))
     if value.func == sympy.Abs:
-        return DimExpr("abs", (_from_sympy(sympy, value.args[0], variables), ))
+        return DimExpr("abs", (_from_sympy(sympy, value.args[0], variables),))
     raise NotImplementedError(f"Unsupported simplified SymPy dimension {value!r}.")
 
 

@@ -34,20 +34,33 @@ class TIRTransferPipelineChannel(TIRNode):
             _indices(self.shared_workspace_indices),
         )
         alignment = self.source_alignment_bytes
-        if (isinstance(alignment, bool) or not isinstance(alignment, int) or alignment <= 0
-                or alignment & (alignment - 1)):
-            raise IRSchemaError("Transfer source alignment must be a positive power of two.")
-        if self.inplace_partition is not None and (not isinstance(self.inplace_partition, TIRInplaceTransferPartition)
-                                                   or len(self.source_argument_indices) != 1
-                                                   or len(self.shared_workspace_indices) != 1):
+        if (
+            isinstance(alignment, bool)
+            or not isinstance(alignment, int)
+            or alignment <= 0
+            or alignment & (alignment - 1)
+        ):
+            raise IRSchemaError(
+                "Transfer source alignment must be a positive power of two."
+            )
+        if self.inplace_partition is not None and (
+            not isinstance(self.inplace_partition, TIRInplaceTransferPartition)
+            or len(self.source_argument_indices) != 1
+            or len(self.shared_workspace_indices) != 1
+        ):
             raise IRSchemaError("Inplace transfer requires a typed partition, one source and one workspace.")
 
 
 def _indices(values) -> tuple[int, ...]:
     result = tuple(values)
-    if (not result or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in result)
-            or len(set(result)) != len(result)):
-        raise IRSchemaError("Pipeline operand indexes must be non-empty, non-negative, and unique.")
+    if (
+        not result
+        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in result)
+        or len(set(result)) != len(result)
+    ):
+        raise IRSchemaError(
+            "Pipeline operand indexes must be non-empty, non-negative, and unique."
+        )
     return result
 
 

@@ -40,9 +40,15 @@ from triton.flagmega.ir.types import (
     display_name="NTT.PagedAttentionCombine",
 )
 class PagedAttentionCombine(OpDefinition):
-    max_state = input_parameter(is_tensor(), memory_effect=MemoryEffect.READ.across_partial_owners())
-    sum_state = input_parameter(is_tensor(), memory_effect=MemoryEffect.READ.across_partial_owners())
-    acc_state = input_parameter(is_tensor(), memory_effect=MemoryEffect.READ.across_partial_owners())
+    max_state = input_parameter(
+        is_tensor(), memory_effect=MemoryEffect.READ.across_partial_owners()
+    )
+    sum_state = input_parameter(
+        is_tensor(), memory_effect=MemoryEffect.READ.across_partial_owners()
+    )
+    acc_state = input_parameter(
+        is_tensor(), memory_effect=MemoryEffect.READ.across_partial_owners()
+    )
     layout = attribute_parameter()
     hidden_size = attribute_parameter()
     output_data_type = attribute_parameter()
@@ -56,15 +62,25 @@ class PagedAttentionCombine(OpDefinition):
         hidden_size = attrs["hidden_size"]
         axis = attrs["split_hierarchy_axis"]
         count = attrs["split_count"]
-        if (isinstance(hidden_size, bool) or not isinstance(hidden_size, int) or hidden_size <= 0):
-            raise IRSchemaError("PagedAttentionCombine hidden_size must be a positive integer.")
+        if (
+            isinstance(hidden_size, bool)
+            or not isinstance(hidden_size, int)
+            or hidden_size <= 0
+        ):
+            raise IRSchemaError(
+                "PagedAttentionCombine hidden_size must be a positive integer."
+            )
         if isinstance(axis, bool) or not isinstance(axis, int) or axis < 0:
-            raise IRSchemaError("PagedAttentionCombine split_hierarchy_axis must be non-negative.")
+            raise IRSchemaError(
+                "PagedAttentionCombine split_hierarchy_axis must be non-negative."
+            )
         if isinstance(count, bool) or not isinstance(count, int) or count <= 1:
             raise IRSchemaError("PagedAttentionCombine split_count must exceed one.")
         output_dtype = data_type(attrs["output_data_type"])
         if not isinstance(output_dtype, (DType, VectorType)):
-            raise IRSchemaError("PagedAttentionCombine output_data_type must be scalar or vector.")
+            raise IRSchemaError(
+                "PagedAttentionCombine output_data_type must be scalar or vector."
+            )
         if not isinstance(attrs["output_type"], IRType):
             raise IRSchemaError("PagedAttentionCombine output_type must be an IRType.")
         return {
@@ -101,13 +117,16 @@ class PagedAttentionCombine(OpDefinition):
     def evaluate(cls, node, arguments, context):
         # Max participates in the real online-softmax collective. The dense
         # evaluator receives already-normalized partial reference states, like
-        # the reference evaluator, so only acc/sum remains here.
+        # nncase's evaluator, so only acc/sum remains here.
         _ = cls.max_state.read(arguments)
         dtype = data_type(node.attrs["output_data_type"])
         scalar_dtype = dtype.elem_type if isinstance(dtype, VectorType) else dtype
-        output = (cls.acc_state.read(arguments) /
-                  cls.sum_state.read(arguments)).to(dtype=context.torch_dtype(scalar_dtype))
-        return pack_dim_from_scalar(output, dtype, tuple(node.attrs["layout"]).index("dim"))
+        output = (
+            cls.acc_state.read(arguments) / cls.sum_state.read(arguments)
+        ).to(dtype=context.torch_dtype(scalar_dtype))
+        return pack_dim_from_scalar(
+            output, dtype, tuple(node.attrs["layout"]).index("dim")
+        )
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
@@ -119,7 +138,7 @@ class PagedAttentionCombine(OpDefinition):
             synchronizations=None,
             kind=CostKind.ANALYTIC,
             model="flagmega.paged-attention-combine/v1",
-            notes=("online-softmax-state-materialization", ),
+            notes=("online-softmax-state-materialization",),
         )
 
 

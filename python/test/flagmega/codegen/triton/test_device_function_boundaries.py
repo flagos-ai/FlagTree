@@ -8,14 +8,13 @@ from triton.flagmega.codegen.triton.templates import TritonTemplateRegistry
 
 
 @pytest.mark.parametrize("execution_kind", [
-    "local_shard",
-    "synchronized_local",
-    "collective",
+    "local_shard", "synchronized_local", "collective",
 ])
 def test_op_without_internal_grid_barrier_has_device_function_boundary(execution_kind):
     template = TritonTemplateRegistry().environment.from_string(
         '{% import "entrypoints/_common.py.jinja" as entry with context %}'
-        '{{ entry.kernel_decorator(call) }}')
+        '{{ entry.kernel_decorator(call) }}'
+    )
     source = template.render(call={
         "execution_kind": execution_kind,
         "internal_grid_barriers": 0,
@@ -29,7 +28,8 @@ def test_internal_grid_barrier_schedule_retains_entry_scratch_scope(execution_ki
     # Triton device function: its implicit scratch ABI is entry-relative.
     template = TritonTemplateRegistry().environment.from_string(
         '{% import "entrypoints/_common.py.jinja" as entry with context %}'
-        '{{ entry.kernel_decorator(call) }}')
+        '{{ entry.kernel_decorator(call) }}'
+    )
     source = template.render(call={
         "execution_kind": execution_kind,
         "internal_grid_barriers": 1,

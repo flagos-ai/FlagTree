@@ -17,8 +17,8 @@ def _down_weight_abi():
     distributed = fm.DistributedType(
         fm.tensor_type(fm.vector_type("bfloat16", (8, 2, 8)), (384, 256)),
         (
-            fm.SBP.split_contiguous((1, ), 24),
-            fm.SBP.split_contiguous((0, ), 32),
+            fm.SBP.split_contiguous((1,), 24),
+            fm.SBP.split_contiguous((0,), 32),
         ),
         fm.Placement((8, 16), "yx", "bb"),
     )
@@ -56,23 +56,23 @@ def test_table_rebases_disjoint_k_and_n_splits_in_mesh_linear_order():
     # sixteen advances N.
     assert entries[1]["offset_bytes"] == 4096 + 24 * 32768 * 2
     assert entries[16]["offset_bytes"] == 4096 + 32 * 128 * 2
-    assert entries[-1]["offset_bytes"] == (4096 + (15 * 24 * 32768 + 7 * 32 * 128) * 2)
+    assert entries[-1]["offset_bytes"] == (
+        4096 + (15 * 24 * 32768 + 7 * 32 * 128) * 2
+    )
 
 
 def test_table_preserves_ragged_owner_extent_for_tma_zero_padding():
     abi = {
         "coordinate_space": "canonical_global",
         "distributed_type": {
-            "kind":
-            "distributed",
+            "kind": "distributed",
             "placement": {
                 "hierarchy": [3],
                 "name": "x",
                 "hierarchy_levels": "b",
             },
             "axis_policies": [{
-                "kind":
-                "split",
+                "kind": "split",
                 "stages": [{
                     "hierarchy_axes": [0],
                     "distribution": {
@@ -82,8 +82,8 @@ def test_table_preserves_ragged_owner_extent_for_tma_zero_padding():
                 }],
             }],
         },
-        "logical_shape": (10, ),
-        "local_capacity_shape": (4, ),
+        "logical_shape": (10,),
+        "local_capacity_shape": (4,),
         "scalar_dtype": "bfloat16",
     }
     request = packed_distributed_tensor_map_table_request(
@@ -173,25 +173,24 @@ def test_owner_prefix_table_rejects_overlapping_owner_payloads():
 
 @pytest.mark.parametrize("packed", (False, True))
 def test_empty_owner_descriptor_stays_inside_backing_storage(packed):
-    shape = (10, ) if packed else (5, 40, 72)
+    shape = (10,) if packed else (5, 40, 72)
     suffix = (2, 64) if packed else ()
-    policies = ((fm.SBP.split_block_cyclic((0, ), 4), ) if packed else
-                (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 16), fm.SBP.broadcast()))
+    policies = ((fm.SBP.split_block_cyclic((0,), 4),) if packed else
+                (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 16), fm.SBP.broadcast()))
     tensor = fm.tensor_type(fm.vector_type("bfloat16", suffix) if packed else "bfloat16", shape)
-    distributed = fm.DistributedType(tensor, policies, fm.Placement((8, ), "x", "b"))
+    distributed = fm.DistributedType(tensor, policies, fm.Placement((8,), "x", "b"))
     physical_shape = (*shape, *suffix)
     strides = tuple(prod(physical_shape[axis + 1:]) for axis in range(len(physical_shape)))
-    abi = {
-        "coordinate_space": "canonical_global", "distributed_type": distributed.to_data(), "logical_shape": shape,
-        "local_capacity_shape": tuple(d.fixed_value for d in fm.local_tensor_type(distributed).shape), "scalar_dtype":
-        "bfloat16"
-    }
-    request = packed_distributed_tensor_map_table_request(abi, parameter="weight", source="source", offset_bytes=4096,
-                                                          descriptor_shape=physical_shape, descriptor_strides=strides,
-                                                          block_shape=(4, 2, 64) if packed else (1, 64, 64))
+    abi = {"coordinate_space": "canonical_global", "distributed_type": distributed.to_data(),
+           "logical_shape": shape, "local_capacity_shape": tuple(d.fixed_value for d in fm.local_tensor_type(distributed).shape),
+           "scalar_dtype": "bfloat16"}
+    request = packed_distributed_tensor_map_table_request(
+        abi, parameter="weight", source="source", offset_bytes=4096,
+        descriptor_shape=physical_shape, descriptor_strides=strides,
+        block_shape=(4, 2, 64) if packed else (1, 64, 64))
     limit = 4096 + prod(physical_shape) * 2
     for entry in request["entries"]:
         span = 1 + sum((extent - 1) * stride for extent, stride in zip(entry["shape"], entry["strides"]))
         assert entry["offset_bytes"] + span * 2 <= limit
     assert request["entries"][-1]["offset_bytes"] == 4096
-    assert request["entries"][-1]["shape"] == (*((1, ) * len(shape)), *suffix)
+    assert request["entries"][-1]["shape"] == (*((1,) * len(shape)), *suffix)

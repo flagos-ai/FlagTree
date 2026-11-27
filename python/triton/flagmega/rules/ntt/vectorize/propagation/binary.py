@@ -31,11 +31,11 @@ def _pack_binary(node: Node, module: IRModule) -> RewriteResult:
     for index, input_id in enumerate(scalar.inputs):
         source = module.node_map[input_id]
         attrs = dict(node.attrs)
-        value_type = Pack.infer_type((source, ), attrs)
+        value_type = Pack.infer_type((source,), attrs)
         helper = Node(
             f"{node.id}.propagated.pack{index}",
             "tensors.pack",
-            (source.id, ),
+            (source.id,),
             value_type,
             attrs=attrs,
             metadata=propagation_helper_metadata(node, node.id, "propagated-pack"),
@@ -68,13 +68,17 @@ def _binary_unpack_matches(node: Node, module: IRModule, operand_index: int) -> 
         return False
     vector = module.node_map[unpack.inputs[0]]
     other = module.node_map[node.inputs[1 - operand_index]]
-    if (not isinstance(vector.type, TensorType) or not isinstance(vector.type.dtype, VectorType)
-            or not isinstance(other.type, TensorType) or isinstance(other.type.dtype, VectorType)):
+    if (
+        not isinstance(vector.type, TensorType)
+        or not isinstance(vector.type.dtype, VectorType)
+        or not isinstance(other.type, TensorType)
+        or isinstance(other.type.dtype, VectorType)
+    ):
         return False
     axes = _unpack_axes(unpack, len(vector.type.dtype.lanes))
-    lanes = vector.type.dtype.lanes[:len(axes)]
+    lanes = vector.type.dtype.lanes[: len(axes)]
     try:
-        packed_type = Pack.infer_type((other, ), {"lanes": lanes, "axes": axes})
+        packed_type = Pack.infer_type((other,), {"lanes": lanes, "axes": axes})
     except (IRSchemaError, TypeError, ValueError):
         return False
     return packed_type == vector.type
@@ -86,13 +90,13 @@ def _binary_unpack(node: Node, module: IRModule, operand_index: int) -> RewriteR
     other = module.node_map[node.inputs[1 - operand_index]]
     assert isinstance(vector.type, TensorType) and isinstance(vector.type.dtype, VectorType)
     axes = _unpack_axes(unpack, len(vector.type.dtype.lanes))
-    lanes = vector.type.dtype.lanes[:len(axes)]
+    lanes = vector.type.dtype.lanes[: len(axes)]
     pack_attrs = {"lanes": lanes, "axes": axes}
     packed_other = Node(
         f"{node.id}.propagated.pack{1 - operand_index}",
         "tensors.pack",
-        (other.id, ),
-        Pack.infer_type((other, ), pack_attrs),
+        (other.id,),
+        Pack.infer_type((other,), pack_attrs),
         attrs=pack_attrs,
         metadata=propagation_helper_metadata(unpack, node.id, "propagated-pack"),
     )
@@ -116,7 +120,7 @@ def _binary_unpack(node: Node, module: IRModule, operand_index: int) -> RewriteR
     replacement = Node(
         node.id,
         "tensors.unpack",
-        (compute.id, ),
+        (compute.id,),
         node.type,
         attrs=dict(unpack.attrs),
         metadata=propagation_result_metadata(
@@ -133,24 +137,25 @@ def _binary_unpack(node: Node, module: IRModule, operand_index: int) -> RewriteR
 def _unpack_axes(unpack: Node, lane_count: int) -> tuple[int, ...]:
     if "axes" in unpack.attrs:
         return tuple(int(value) for value in unpack.attrs["axes"])
-    return (int(unpack.attrs["axis"]), ) * lane_count
+    return (int(unpack.attrs["axis"]),) * lane_count
 
 
 def _pack_axes(pack: Node, lane_count: int) -> tuple[int, ...]:
     if "axes" in pack.attrs:
         return tuple(int(value) for value in pack.attrs["axes"])
-    return (int(pack.attrs["axis"]), ) * lane_count
+    return (int(pack.attrs["axis"]),) * lane_count
 
 
 def binary_propagation_rules() -> tuple[RewriteRule, ...]:
     return (
         RewriteRule('VectorizedBinaryOperandLaneAccess', _operand_pack_matches, _operand_pack,
-                    root_ops=('math.vectorized_binary', )),
+                    root_ops=('math.vectorized_binary',)),
         RewriteRule('VectorizedBinaryOperandTail', _operand_pad_matches, _operand_pad,
-                    root_ops=('math.vectorized_binary', )),
-        RewriteRule('VectorizedBinaryResultLaneAccess', lambda node, _: node.op == 'tensors.slice_to_shape',
-                    _result_lanes, root_ops=('tensors.slice_to_shape', )),
-        RewriteRule("VectorizeBinaryPropagation", _pack_binary_matches, _pack_binary, root_ops=("tensors.pack", )),
+                    root_ops=('math.vectorized_binary',)),
+        RewriteRule('VectorizedBinaryResultLaneAccess',
+                    lambda node, _: node.op == 'tensors.slice_to_shape', _result_lanes,
+                    root_ops=('tensors.slice_to_shape',)),
+        RewriteRule("VectorizeBinaryPropagation", _pack_binary_matches, _pack_binary, root_ops=("tensors.pack",)),
         RewriteRule(
             "BinaryDevectorizeLhsPropagation",
             lambda node, module: _binary_unpack_matches(node, module, 0),
@@ -167,9 +172,9 @@ def binary_propagation_rules() -> tuple[RewriteRule, ...]:
 
 
 def _operand_pack_matches(node, module):
-    return (node.op == 'math.vectorized_binary'
-            and any(module.node_map[value].op == 'tensors.pack' and 'padding' not in (node.attrs.get(name) or {})
-                    for value, name in zip(node.inputs, ('lhs_pack', 'rhs_pack'))))
+    return (node.op == 'math.vectorized_binary' and any(
+        module.node_map[value].op == 'tensors.pack' and 'padding' not in (node.attrs.get(name) or {})
+        for value, name in zip(node.inputs, ('lhs_pack', 'rhs_pack'))))
 
 
 def _operand_pack(node, module):
@@ -184,19 +189,16 @@ def _operand_pack(node, module):
                 from triton.flagmega.ir.ops.math.vectorized_binary import operand_pack_axes
                 rank = tensor_of(boundary.type).rank
                 outer = attrs[name]
-                packing = {
-                    'lanes': (*outer['lanes'], *packing['lanes']), 'axes':
-                    (*operand_pack_axes(outer, rank), *operand_pack_axes(packing, rank))
-                }
+                packing = {'lanes': (*outer['lanes'], *packing['lanes']),
+                           'axes': (*operand_pack_axes(outer, rank), *operand_pack_axes(packing, rank))}
             attrs[name] = packing
     return RewriteResult(replace(node, inputs=tuple(inputs), attrs=attrs))
 
 
 def _operand_pad_matches(node, module):
-    return (node.op == 'math.vectorized_binary'
-            and any(module.node_map[value].op == 'tensors.pad' and isinstance(node.attrs.get(name), Mapping)
-                    and 'padding' not in node.attrs[name]
-                    for value, name in zip(node.inputs, ('lhs_pack', 'rhs_pack'))))
+    return (node.op == 'math.vectorized_binary' and any(
+        module.node_map[value].op == 'tensors.pad' and isinstance(node.attrs.get(name), Mapping)
+        and 'padding' not in node.attrs[name] for value, name in zip(node.inputs, ('lhs_pack', 'rhs_pack'))))
 
 
 def _operand_pad(node, module):
@@ -210,9 +212,8 @@ def _operand_pad(node, module):
         source = module.node_map[boundary.inputs[0]]
         candidate = {**dict(packing), 'padding': dict(boundary.attrs)}
         try:
-            if VectorizedBinary.operand_representation(source.type, index,
-                                                       {name: candidate}) != (VectorizedBinary.operand_representation(
-                                                           boundary.type, index, {name: packing})):
+            if VectorizedBinary.operand_representation(source.type, index, {name: candidate}) != (
+                    VectorizedBinary.operand_representation(boundary.type, index, {name: packing})):
                 continue
         except IRSchemaError:
             continue
@@ -239,22 +240,20 @@ def _result_lanes(node, module):
     else:
         # Bitcast can implement Unpack only when its byte interpretation is
         # exactly the lane expansion proved below. No other cast is absorbed.
-        axes = (tensor.rank - 1, ) * len(tensor.dtype.lanes)
+        axes = (tensor.rank - 1,) * len(tensor.dtype.lanes)
     output = {'lanes': tensor.dtype.lanes[:len(axes)], 'axes': axes, 'shape': tuple(node.attrs['shape'])}
     try:
         axes = operand_pack_axes(output, tensor.rank)
-        if Unpack.infer_type((compute, ), {'axes': axes}) != view.type:
+        if Unpack.infer_type((compute,), {'axes': axes}) != view.type:
             return None
         attrs = {**compute.attrs, 'result_unpack': output}
         if VectorizedBinary.infer_type(tuple(module.node_map[i] for i in compute.inputs), attrs) != node.type:
             return None
     except IRSchemaError:
         return None
-    return RewriteResult(
-        Node(
-            node.id, compute.op, compute.inputs, node.type, compute.effect, attrs,
-            propagation_result_metadata(compute, node, axes=axes, lanes=output['lanes'],
-                                        rule='VectorizedBinaryResultLaneAccess')))
+    return RewriteResult(Node(node.id, compute.op, compute.inputs, node.type, compute.effect, attrs,
+                              propagation_result_metadata(compute, node, axes=axes, lanes=output['lanes'],
+                                  rule='VectorizedBinaryResultLaneAccess')))
 
 
 __all__ = ["binary_propagation_rules"]

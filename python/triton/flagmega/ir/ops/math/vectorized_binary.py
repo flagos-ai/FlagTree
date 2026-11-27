@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""vectorized binary operation."""
+"""nncase-style vectorized binary operation."""
 
 from __future__ import annotations
 
@@ -87,12 +87,11 @@ class VectorizedBinary(SameTypePointwiseOp):
             source = tensor_of(value)
             pads = tuple(packing['padding']['pad_end'])
             products = axis_lane_products(packing['lanes'], operand_pack_axes(packing, source.rank))
-            if (len(pads) != source.rank
-                    or any(pad < 0 or pad >= products.get(axis, 1) or
-                           (pad and (not dim.is_fixed or (dim.fixed_value + pad) % products.get(axis, 1)))
-                           for axis, (pad, dim) in enumerate(zip(pads, source.shape)))):
+            if (len(pads) != source.rank or any(pad < 0 or pad >= products.get(axis, 1)
+                    or (pad and (not dim.is_fixed or (dim.fixed_value + pad) % products.get(axis, 1)))
+                    for axis, (pad, dim) in enumerate(zip(pads, source.shape)))):
                 raise IRSchemaError('Operand padding must be the minimum tail needed to align its lane groups.')
-            padded = Pad.infer_type((_type_node(source), ), packing['padding'])
+            padded = Pad.infer_type((_type_node(source),), packing['padding'])
             if isinstance(value, DistributedType):
                 # A minimum lane tail does not change the number of logical
                 # lane groups. Pack below proves every split boundary scales
@@ -100,7 +99,7 @@ class VectorizedBinary(SameTypePointwiseOp):
                 # Generic Pad cannot establish this representation proof.
                 padded = replace(value, tensor=padded)
             value = padded
-        return Pack.infer_type((_type_node(value), ), packing)
+        return Pack.infer_type((_type_node(value),), packing)
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -122,16 +121,15 @@ class VectorizedBinary(SameTypePointwiseOp):
         if not isinstance(tensor.dtype, VectorType) or tensor.dtype.lanes[:len(lanes)] != lanes:
             raise IRSchemaError('VectorizedBinary result lanes must be a leading arithmetic lane prefix.')
         axes = operand_pack_axes(output, tensor.rank)
-        result = Unpack.infer_type((_type_node(working), ), {'axes': axes})
+        result = Unpack.infer_type((_type_node(working),), {'axes': axes})
         if 'shape' in output:
             source = tensor_of(result)
             shape = tuple(output['shape'])
             products = axis_lane_products(lanes, axes)
-            if (len(shape) != source.rank
-                    or any(not dim.is_fixed or not 0 <= dim.fixed_value - size < products.get(axis, 1)
-                           for axis, (dim, size) in enumerate(zip(source.shape, shape)))):
+            if (len(shape) != source.rank or any(not dim.is_fixed or not 0 <= dim.fixed_value - size
+                    < products.get(axis, 1) for axis, (dim, size) in enumerate(zip(source.shape, shape)))):
                 raise IRSchemaError('VectorizedBinary result shape must trim only its minimum lane tail.')
-            trimmed = SliceToShape.infer_type((_type_node(source), ), {'shape': shape})
+            trimmed = SliceToShape.infer_type((_type_node(source),), {'shape': shape})
             # Complete lane groups keep the same owner origin and grain after
             # trimming their last partial group. Generic Slice cannot prove it.
             result = replace(result, tensor=trimmed) if isinstance(result, DistributedType) else trimmed
@@ -147,12 +145,11 @@ class VectorizedBinary(SameTypePointwiseOp):
         tensor = tensor_of(result)
         products = axis_lane_products(tuple(output['lanes']), operand_pack_axes(output, tensor.rank))
         if 'shape' in output:
-            shape = tuple(
-                ((dim.fixed_value + products.get(axis, 1) - 1) // products.get(axis, 1)) * products.get(axis, 1)
-                for axis, dim in enumerate(tensor.shape))
+            shape = tuple(((dim.fixed_value + products.get(axis, 1) - 1) // products.get(axis, 1))
+                          * products.get(axis, 1) for axis, dim in enumerate(tensor.shape))
             expanded = tensor_type(tensor.dtype, shape, layout=tensor.layout)
             result = replace(result, tensor=expanded) if isinstance(result, DistributedType) else expanded
-        working = Pack.infer_type((_type_node(result), ), output)
+        working = Pack.infer_type((_type_node(result),), output)
         if cls.result_representation(working, attrs) != original:
             raise IRSchemaError('VectorizedBinary result mapping does not round trip.')
         return working
@@ -211,8 +208,8 @@ class VectorizedBinary(SameTypePointwiseOp):
                 lanes = tuple(packing['lanes'])
                 if not isinstance(dtype, VectorType) or dtype.lanes[:len(lanes)] != lanes:
                     return ()
-                value = Unpack.infer_type((_type_node(working), ),
-                                          {'axes': operand_pack_axes(packing, working.tensor.rank)})
+                value = Unpack.infer_type((_type_node(working),), {'axes': operand_pack_axes(packing,
+                                                                                          working.tensor.rank)})
                 if 'padding' in packing:
                     value = replace(value, tensor=tensor_of(logical))
             if tensor_of(value) != tensor_of(logical):
@@ -223,7 +220,7 @@ class VectorizedBinary(SameTypePointwiseOp):
             except IRSchemaError:
                 return ()
             values.append(value)
-        return (tuple(values), )
+        return (tuple(values),)
 
     @classmethod
     def evaluate(cls, node, arguments, context):
@@ -263,10 +260,8 @@ class VectorizedBinary(SameTypePointwiseOp):
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
         from triton.flagmega.ir.distributed_type import local_tensor_type
-
         def local(value):
             return local_tensor_type(value) if isinstance(value, DistributedType) else tensor_of(value)
-
         # Invert lane mappings on the global typed operands before measuring
         # their local shards. The default synthetic local-result adapter loses
         # the shape to which the public result extent contract belongs.
@@ -276,7 +271,8 @@ class VectorizedBinary(SameTypePointwiseOp):
         written = tensor_nbytes(local(return_type))
         if elements is None or any(size is None for size in (*reads, written)):
             return None
-        return OpCostFactors(cpu_cycles=elements, block_local_memory_load_bytes=sum(reads),
+        return OpCostFactors(cpu_cycles=elements,
+                             block_local_memory_load_bytes=sum(reads),
                              block_local_memory_store_bytes=written)
 
 
@@ -286,7 +282,7 @@ def _type_node(value):
 
 def operand_pack_axes(packing, rank):
     lanes = tuple(packing['lanes'])
-    axes = tuple(packing['axes']) if 'axes' in packing else (packing['axis'], ) * len(lanes)
+    axes = tuple(packing['axes']) if 'axes' in packing else (packing['axis'],) * len(lanes)
     return normalize_axes(axes, rank)
 
 

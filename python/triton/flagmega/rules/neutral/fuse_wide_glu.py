@@ -19,8 +19,8 @@ def fuse_wide_glu_rule():
 
     def rewrite(result, module):
         root, gate, up = (result[name] for name in ("root", "gate", "up"))
-        if (not isinstance(gate.type, TensorType) or gate.type != up.type or gate.type.dtype != DType.BFLOAT16
-                or gate.type.rank != 2):
+        if (not isinstance(gate.type, TensorType) or gate.type != up.type
+                or gate.type.dtype != DType.BFLOAT16 or gate.type.rank != 2):
             return root
         order = gate.attrs.get("reduction_order", "relaxed")
         if result["activation"].attrs.get("math_mode", "fast") != "fast":

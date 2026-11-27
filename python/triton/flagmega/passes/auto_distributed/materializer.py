@@ -37,7 +37,6 @@ from triton.flagmega.passes.auto_distributed.search import (
 
 
 class DistributedMaterializer:
-
     def __init__(
         self,
         result: SearchResult,
@@ -70,7 +69,9 @@ class DistributedMaterializer:
                     index,
                     self.result.selected_reshards.get((input_id, source.id, index)),
                     DistributedReshardUsageKind.INTERNAL,
-                ) for index, input_id in enumerate(source.inputs))
+                )
+                for index, input_id in enumerate(source.inputs)
+            )
             metadata = dict(source.metadata)
             if buckets[source.id].executable and len(buckets[source.id].candidates) > 1:
                 metadata.update({
@@ -83,7 +84,11 @@ class DistributedMaterializer:
                 op=candidate.target_op or source.op,
                 inputs=tuple(value.id for value in inputs),
                 type=candidate.return_type,
-                attrs=(source.attrs if candidate.target_attrs is None else candidate.target_attrs),
+                attrs=(
+                    source.attrs
+                    if candidate.target_attrs is None
+                    else candidate.target_attrs
+                ),
                 metadata=metadata,
             )
             self.nodes.append(node)
@@ -113,7 +118,9 @@ class DistributedMaterializer:
                         stage=self.module.stage,
                     )
                 call_type = next(iter(result_types))
-                call_output_types = (call_type.fields if isinstance(call_type, TupleType) else (call_type, ))
+                call_output_types = (
+                    call_type.fields if len(function.outputs) != 1 and isinstance(call_type, TupleType) else (call_type,)
+                )
                 if len(call_output_types) != len(function.outputs):
                     raise IRVerificationError(
                         f"Call result ABI arity does not match @{function.name}.",
@@ -124,12 +131,15 @@ class DistributedMaterializer:
                 source = self.realized[output_id]
                 parameter = function.parameters[1 + output_index] if is_region(function) else None
                 target_type = self.realized[parameter].type if parameter is not None else (
-                    call_output_types[output_index] if call_output_types is not None else function_output_type(
+                    call_output_types[output_index]
+                    if call_output_types is not None
+                    else function_output_type(
                         self.module,
                         function.name,
                         output_id,
                         self.result.graph.placement,
-                    ))
+                    )
+                )
                 realized_id = self._require_type(
                     source,
                     target_type,
@@ -137,9 +147,13 @@ class DistributedMaterializer:
                     output_index,
                     self.result.selected_reshards.get(
                         (output_id, parameter if parameter is not None else function_boundary_id(function.name),
-                         output_index)),
-                    (DistributedReshardUsageKind.PROGRAM_OUTPUT
-                     if function.name == self.module.entry else DistributedReshardUsageKind.FUNCTION_BOUNDARY),
+                         output_index)
+                    ),
+                    (
+                        DistributedReshardUsageKind.PROGRAM_OUTPUT
+                        if function.name == self.module.entry
+                        else DistributedReshardUsageKind.FUNCTION_BOUNDARY
+                    ),
                 ).id
                 if function.name == self.module.entry and realized_id != output_id:
                     entry_output_redirects[output_id] = realized_id
@@ -167,22 +181,24 @@ class DistributedMaterializer:
             },
         })
         entry = next(function for function in functions if function.name == self.module.entry)
-        metadata = dict(
-            redirect_entry_abi(
-                metadata,
-                entry_output_redirects,
-                known_values={*(str(value) for value in entry.parameters), *(str(value) for value in entry.outputs)},
-                stage=self.module.stage,
-            ))
+        metadata = dict(redirect_entry_abi(
+            metadata,
+            entry_output_redirects,
+            known_values={*(str(value) for value in entry.parameters),
+                          *(str(value) for value in entry.outputs)},
+            stage=self.module.stage,
+        ))
         return replace(
             self.module,
             nodes=tuple(self.nodes),
             functions=tuple(functions),
             metadata=metadata,
-            selection_points=tuple(point for point in self.module.selection_points
-                                   if point.id not in old_distribution_ids) + tuple(points),
-            selections=tuple(record for record in self.module.selections if record.point_id not in old_distribution_ids)
-            + tuple(selections),
+            selection_points=tuple(
+                point for point in self.module.selection_points if point.id not in old_distribution_ids
+            ) + tuple(points),
+            selections=tuple(
+                record for record in self.module.selections if record.point_id not in old_distribution_ids
+            ) + tuple(selections),
         )
 
     def _reconcile_function_parameters(self) -> None:
@@ -206,7 +222,10 @@ class DistributedMaterializer:
             calls = calls_by_callee.get(function.name, ())
             if not calls:
                 continue
-            signatures = {tuple(physical_nodes[input_id].type for input_id in call.inputs) for call in calls}
+            signatures = {
+                tuple(physical_nodes[input_id].type for input_id in call.inputs)
+                for call in calls
+            }
             if len(signatures) != 1:
                 raise IRVerificationError(
                     f"AutoDistributed selected incompatible call ABIs for @{function.name}.",
@@ -268,10 +287,17 @@ class DistributedMaterializer:
             return
         self.nodes = rewritten
         self.realized = {
-            node_id: (by_id[resolve(node.id)] if node.id in aliases else by_id[node.id])
+            node_id: (
+                by_id[resolve(node.id)]
+                if node.id in aliases
+                else by_id[node.id]
+            )
             for node_id, node in self.realized.items()
         }
-        self.reshards = {key: by_id[resolve(node.id)] for key, node in self.reshards.items()}
+        self.reshards = {
+            key: by_id[resolve(node.id)]
+            for key, node in self.reshards.items()
+        }
 
     def _require_type(
         self,
@@ -302,8 +328,11 @@ class DistributedMaterializer:
                 node_id=consumer,
             )
         current = source
-        original_source_kind = (DistributedReshardSourceKind.CONSTANT
-                                if source.id in self.result.graph.constant_ids else source_kind_for_node(source))
+        original_source_kind = (
+            DistributedReshardSourceKind.CONSTANT
+            if source.id in self.result.graph.constant_ids
+            else source_kind_for_node(source)
+        )
         for step_index, step in enumerate(plan.step_types):
             self._ordinal += 1
             context = DistributedReshardRealizationContext(
@@ -319,8 +348,11 @@ class DistributedMaterializer:
                     stage=self.module.stage,
                     node_id=consumer,
                 )
-            op = ("distributed.sharded_view"
-                  if realization == DistributedReshardRealization.SHARDED_VIEW else "distributed.boxing")
+            op = (
+                "distributed.sharded_view"
+                if realization == DistributedReshardRealization.SHARDED_VIEW
+                else "distributed.boxing"
+            )
             value_metadata = {}
             if self.reshard_metadata is not None:
                 # Only the target's explicit policy can derive value-level
@@ -334,7 +366,7 @@ class DistributedMaterializer:
             node = Node(
                 id=f"{source.id}.reshard{self._ordinal}",
                 op=op,
-                inputs=(current.id, ),
+                inputs=(current.id,),
                 type=step,
                 attrs={"new_type": step},
                 metadata={
@@ -387,7 +419,8 @@ def distribution_selection_state(
                     {
                         "return_type": _type_summary(candidate.return_type),
                         "reason": candidate.reason,
-                        "target_op": candidate.target_op or result.graph.module.node_map[bucket.node_id].op,
+                        "target_op": candidate.target_op
+                        or result.graph.module.node_map[bucket.node_id].op,
                         "placement": str(result.graph.placement),
                     },
                     {
@@ -398,15 +431,19 @@ def distribution_selection_state(
                             "evidence": candidate.objective_evidence,
                         },
                     },
-                ) for candidate in bucket.candidates),
+                )
+                for candidate in bucket.candidates
+            ),
             default_candidate=selected.id,
             owner=bucket.node_id,
         )
         point = prior_points.get(point_id, generated)
-        if (point.kind != "distribution" or point.owner != bucket.node_id
-                or tuple(candidate.id
-                         for candidate in point.candidates) != tuple(candidate.id
-                                                                     for candidate in generated.candidates)):
+        if (
+            point.kind != "distribution"
+            or point.owner != bucket.node_id
+            or tuple(candidate.id for candidate in point.candidates)
+            != tuple(candidate.id for candidate in generated.candidates)
+        ):
             raise IRVerificationError(
                 f"AutoDistributed proposal {point_id!r} no longer matches the "
                 "reconstructed candidate graph.",

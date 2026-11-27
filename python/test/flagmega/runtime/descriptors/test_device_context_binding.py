@@ -15,19 +15,17 @@ from .test_call_graph_runtime_binding import _Prepared
 
 def _runtime(monkeypatch, abi, *, lite=False, descriptor_name='weight_descriptor'):
     monkeypatch.setattr(runtime_module, 'verify_buffer_plan', lambda module: object())
-    names = ('device_mem_ptr', 'device_comm_ptr') if abi else ('device_dptr', )
+    names = ('device_mem_ptr', 'device_comm_ptr') if abi else ('device_dptr',)
     if abi == 'runtime-handles/v2':
         names = (*names, 'device_context_mode')
     codegen = {
-        'runtime_binding':
-        {'arguments': ({'name': 'source', 'buffer': 'input'}, ), 'pools': (), 'signature': ('source', )},
+        'runtime_binding': {'arguments': ({'name': 'source', 'buffer': 'input'},),
+                            'pools': (), 'signature': ('source',)},
         'distributed_device_dptr': True,
-        'host_tensor_descriptor_specs': (single_spec(source='source', name=descriptor_name), ),
+        'host_tensor_descriptor_specs': (single_spec(source='source', name=descriptor_name),),
         'signature_arguments': ('source', *names, descriptor_name),
         'dynamic_argument_indices': (0, 1 + len(names)),
-        'symbol': 'entry',
-        'num_warps': 1,
-        'grid': (1, 1, 1),
+        'symbol': 'entry', 'num_warps': 1, 'grid': (1, 1, 1),
     }
     if abi:
         codegen['device_context_abi'] = abi

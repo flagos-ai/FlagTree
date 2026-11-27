@@ -32,16 +32,16 @@ def test_route_loop_masks_only_owner_padding(tmp_path, definition, cyclic):
 
 @pytest.mark.parametrize("routes,policy,expected", [
     (9, fm.SBP.broadcast(), True),
-    (4, fm.SBP.split_contiguous((0, )), True),
-    (6, fm.SBP.split_contiguous((0, ), 4), False),
-    (4, fm.SBP.split_contiguous((0, ), 4), False),
-    (8, fm.SBP.split_block_cyclic((0, ), 2), True),
-    (3, fm.SBP.split_block_cyclic((0, ), 2), False),
+    (4, fm.SBP.split_contiguous((0,)), True),
+    (6, fm.SBP.split_contiguous((0,), 4), False),
+    (4, fm.SBP.split_contiguous((0,), 4), False),
+    (8, fm.SBP.split_block_cyclic((0,), 2), True),
+    (3, fm.SBP.split_block_cyclic((0,), 2), False),
     (fm.dim("routes", minimum=1, maximum=9), fm.SBP.broadcast(), False),
 ])
 def test_full_axis_proof_uses_active_extent_not_global_divisibility(routes, policy, expected):
-    value_type = fm.DistributedType(fm.tensor_type("int32", (1, routes)), (fm.SBP.broadcast(), policy),
-                                    fm.Placement((2, ), "x", "b"))
+    value_type = fm.DistributedType(fm.tensor_type("int32", (1, routes)),
+                                   (fm.SBP.broadcast(), policy), fm.Placement((2,), "x", "b"))
     capacity = fm.local_shape(value_type)[1]
     capacity = capacity.fixed_value if capacity.is_fixed else capacity.maximum
     assert _axis_capacity_is_active(value_type, 1, capacity) == expected

@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: elementwise/add platform=generic
+# flagmega-kernel: elementwise/add platform=generic
 {% set elementwise_variant = "add" %}
 {% set physical_block = elementwise_block | default('block') %}
 {% include "kernels/elementwise/packed_axes.py.jinja" %}

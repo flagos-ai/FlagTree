@@ -11,7 +11,7 @@ from triton.flagmega.passes.tir import (
 def _tuple_kernel() -> fm.IRModule:
     builder = fm.IRBuilder(dialect="semantic_tir", stage="selected_tir")
     tensor = fm.tensor_type("bfloat16", (1, 16))
-    state = fm.RefType("state", (("cache", tensor), ))
+    state = fm.RefType("state", (("cache", tensor),))
     scalar_i32 = fm.tensor_type("int32", ())
     scalar_bool = fm.tensor_type("bool", ())
     types = (
@@ -20,7 +20,10 @@ def _tuple_kernel() -> fm.IRModule:
         scalar_i32,
         scalar_bool,
     )
-    arguments = tuple(builder.var(f"arg{index}", value, id=f"arg{index}") for index, value in enumerate(types))
+    arguments = tuple(
+        builder.var(f"arg{index}", value, id=f"arg{index}")
+        for index, value in enumerate(types)
+    )
     output = builder.call(
         "tir.kernel",
         arguments,
@@ -35,7 +38,7 @@ def _tuple_kernel() -> fm.IRModule:
             "semantic_attrs": {},
         },
     )
-    builder.function("main", arguments, (output, ))
+    builder.function("main", arguments, (output,))
     return builder.build(entry="main")
 
 
@@ -48,7 +51,9 @@ def test_tuple_kernel_has_one_named_output_parameter_per_field():
         "result_0",
         "result_1",
     )
-    assert tuple(value.type for value in function.output_parameters) == (module.node_map["attention"].type.fields)
+    assert tuple(value.type for value in function.output_parameters) == (
+        module.node_map["attention"].type.fields
+    )
     assert tuple(value.storage for value in function.results.values) == (
         "result_0",
         "result_1",
@@ -69,4 +74,6 @@ def test_each_multi_output_parameter_binds_only_its_own_buffer_leaves():
 
     assert len(outputs[0].buffers) == 1
     assert outputs[0].buffers[0].name == "result_0"
-    assert tuple(value.name for value in outputs[1].buffers) == ("result_1.cache", )
+    assert tuple(value.name for value in outputs[1].buffers) == (
+        "result_1.cache",
+    )

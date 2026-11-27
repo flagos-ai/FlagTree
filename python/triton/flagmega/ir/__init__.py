@@ -14,11 +14,7 @@ from triton.flagmega.ir.execution_mesh import (
 )
 from triton.flagmega.ir.launch_recipe import TaskLaunchRecipe
 from triton.flagmega.ir.program_execution import (
-    ProgramInvocation,
-    CallInvocation,
-    LoopInvocation,
-    FunctionProgramExecution,
-    ProgramExecution,
+    ProgramInvocation, CallInvocation, LoopInvocation, FunctionProgramExecution, ProgramExecution,
 )
 from triton.flagmega.ir.region import Region, Yield
 from triton.flagmega.ir.parameter_bank import BankField, BankFieldProgram, ParameterBankSchema
@@ -285,20 +281,12 @@ __all__ = [
     "node_execution_mesh",
     "with_execution_mesh",
     "TaskLaunchRecipe",
-    "ProgramInvocation",
-    "CallInvocation",
-    "LoopInvocation",
-    "FunctionProgramExecution",
-    "ProgramExecution",
-    "Region",
-    "Yield",
-    "BankField",
-    "BankFieldProgram",
-    "ParameterBankSchema",
+    "ProgramInvocation", "CallInvocation", "LoopInvocation", "FunctionProgramExecution", "ProgramExecution",
+    "Region", "Yield",
+    "BankField", "BankFieldProgram", "ParameterBankSchema",
     "Fusion",
     "fusion",
-    "KernelDefinition",
-    "KernelInvoke",
+    "KernelDefinition", "KernelInvoke",
     "AnyType",
     "AllocationPolicy",
     "AllocationStrategy",

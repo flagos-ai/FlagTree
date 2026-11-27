@@ -53,9 +53,7 @@ def test_python_ir_is_real_module_builder_source_not_a_serialized_spec():
 
 
 def test_op_decorator_generates_functional_visit_and_cost_contracts():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
@@ -82,7 +80,6 @@ def test_op_decorator_generates_functional_visit_and_cost_contracts():
     assert fm.get_cost(output).bytes_written == 32
 
     class Visitor:
-
         def visit_math_silu(self, node):
             return f"visited:{node.id}"
 
@@ -97,7 +94,7 @@ def test_op_decorator_generates_functional_visit_and_cost_contracts():
     )
 
 
-def test_tir_companion_uses_reference_style_script():
+def test_tir_companion_uses_nncase_style_script():
     module = make_unary_module()
     compiled = Compiler().compile(module).module
     script = fm.script_source(compiled)
@@ -139,8 +136,8 @@ def test_pass_dump_before_after_are_directories_with_one_file_per_function(tmp_p
     assert merged.semantic_hash == module.semantic_hash
     resumed = Compiler().compile_checkpoint(tmp_path / "Before")
     # The directory checkpoint faithfully reconstructs both functions; the
-    # compiler then mirrors reference RemoveUnusedFunctions before distribution.
-    assert tuple(resumed.module.function_map) == ("main", )
+    # compiler then mirrors nncase RemoveUnusedFunctions before distribution.
+    assert tuple(resumed.module.function_map) == ("main",)
     assert resumed.module.stage == "bufferized_tir"
 
 

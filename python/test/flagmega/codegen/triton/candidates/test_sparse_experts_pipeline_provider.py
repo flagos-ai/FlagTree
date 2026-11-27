@@ -24,17 +24,15 @@ def test_pipeline_catalog_declares_shared_alignment_before_injection():
 def test_expert_tma_candidate_has_dynamic_route_dependency(definition, dtype):
     graph = stage_module(definition, dtype=dtype)
     target = NvidiaSm90Target()
-    context = TritonCandidateContext(graph, target, {}, {}, {}, frozenset(), True, target.triton_implementation_model)
+    context = TritonCandidateContext(graph, target, {}, {}, {}, frozenset(), True,
+                                    target.triton_implementation_model)
     proposal = SparseExpertsCandidateProvider().propose(graph.node_map["expert_stage"], context)
-    pipelined = [
-        context.implementation_model.implementation(candidate.id)
-        for candidate in proposal.candidates
-        if "simt_tma_pipeline" in candidate.id
-    ]
+    pipelined = [context.implementation_model.implementation(candidate.id)
+                 for candidate in proposal.candidates if "simt_tma_pipeline" in candidate.id]
     assert len(pipelined) == 1
     implementation = pipelined[0]
     contract = implementation.transfer_pipeline
-    assert contract.producer_read_argument_indices == (1, )
+    assert contract.producer_read_argument_indices == (1,)
     assert 1 not in contract.source_argument_indices
     assert implementation.contract["required_weight_dtype"] == dtype
 
@@ -42,11 +40,13 @@ def test_expert_tma_candidate_has_dynamic_route_dependency(definition, dtype):
 @pytest.mark.parametrize("definition", (SparseExpertsGateUp, SparseExpertsDown))
 @pytest.mark.parametrize("reason", ("nonaffine_owner", "unaligned_row"))
 def test_invalid_weight_transport_is_excluded_before_selection(definition, reason):
-    options = ({"distribution": "token_output"} if reason == "nonaffine_owner" else {"hidden": 74, "intermediate": 42})
+    options = ({"distribution": "token_output"} if reason == "nonaffine_owner" else
+               {"hidden": 74, "intermediate": 42})
     graph = stage_module(definition, **options)
     original_hash = graph.semantic_hash
     target = NvidiaSm90Target()
-    context = TritonCandidateContext(graph, target, {}, {}, {}, frozenset(), True, target.triton_implementation_model)
+    context = TritonCandidateContext(graph, target, {}, {}, {}, frozenset(), True,
+                                    target.triton_implementation_model)
     proposal = SparseExpertsCandidateProvider().propose(graph.node_map["expert_stage"], context)
     assert proposal is not None
     assert all("simt_tma_pipeline" not in candidate.id for candidate in proposal.candidates)

@@ -2,21 +2,22 @@
 # SPDX-License-Identifier: MIT
 
 from triton.flagmega.targets.portable_triton_implementations import (
-    portable_triton_implementation_model, )
+    portable_triton_implementation_model,
+)
 
 
 def test_catalog_exposes_physical_knobs_but_not_semantic_weight_geometry():
     model = portable_triton_implementation_model()
 
     for name in (
-            "tir.block_fp8.simt",
-            "tir.block_fp8.mma",
-            "tir.matmul_glu.simt",
-            "tir.matmul_glu.mma",
+        "tir.block_fp8.simt",
+        "tir.block_fp8.mma",
+        "tir.matmul_glu.simt",
+        "tir.matmul_glu.mma",
     ):
         implementation = model.implementation(name)
         assert implementation is not None
-        assert tuple(implementation.parameters) == ("tile_n", )
+        assert tuple(implementation.parameters) == ("tile_n",)
 
     qkv = model.implementation("tir.qkv_parallel_linear.packed_fused_gemv")
     assert qkv is not None

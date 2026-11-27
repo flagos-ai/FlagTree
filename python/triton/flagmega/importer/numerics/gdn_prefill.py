@@ -22,14 +22,14 @@ def emit_gdn_prefill(source, inputs, emit):
 
     def cast(value, dtype, suffix):
         return value if value.type.dtype == dtype else make("tensors.cast", suffix, (value, ),
-                                                            {"dtype": dtype.value, "rounding_contract": "preserve"})
+            {"dtype": dtype.value, "rounding_contract": "preserve"})
 
     def reshape(value, shape, suffix):
         return make("tensors.reshape", suffix, (value, ), {"shape": shape})
 
     projections = tuple(
-        make("math.matmul", name, (projected,
-                                   parameter.read(inputs)), {"transpose_b": True, "output_data_type": "bfloat16"})
+        make("math.matmul", name, (projected, parameter.read(inputs)),
+             {"transpose_b": True, "output_data_type": "bfloat16"})
         for name, parameter in (("a", Recurrent.a_weight), ("b", Recurrent.b_weight)))
     gates = make("nn.delta_rule_gates", "gates",
                  (*projections, Recurrent.a_log.read(inputs), Recurrent.dt_bias.read(inputs)),
@@ -45,26 +45,23 @@ def emit_gdn_prefill(source, inputs, emit):
         part = reshape(part, (tokens, heads, dimension), name + "_heads")
         if name != "value":
             part = make(
-                "nn.l2_normalization", name, (part, ), {
-                    "axes": (-1, ), "epsilon": 1e-6, "epsilon_mode": "add", "division_mode": "reciprocal_multiply",
-                    "reduction_group_size": gcd(8, dimension)
-                })
+                "nn.l2_normalization", name, (part, ),
+                {"axes": (-1, ), "epsilon": 1e-6, "epsilon_mode": "add", "division_mode": "reciprocal_multiply",
+                 "reduction_group_size": gcd(8, dimension)})
         qkv_parts.append(part)
         start = end
     query, key, value = qkv_parts
     coefficients = make("nn.delta_rule_coefficients", "coefficients", (key, beta), {"block_size": 64})
     prefix_log = make("nn.delta_rule_log_prefix", "log_prefix", (alpha, ),
                       {"block_size": 64, "scan_group_size": 32, "epsilon": 1e-10, "log2_mode": "fast"})
-    state_attrs = {
-        "state_field": "recurrent", "state_layout": ("layer", "head", "value", "key"), "state_vector_axes": ("key", )
-    }
+    state_attrs = {"state_field": "recurrent", "state_layout": ("layer", "head", "value", "key"),
+                   "state_vector_axes": ("key",)}
     update_inputs = (query, key, value, coefficients, prefix_log, state)
     update_op, update_attrs = "nn.delta_rule_block_update", {}
     if tokens > 512:
-        transfer, local = tuple(
-            make("nn.delta_rule_chunk_transfer", name, (key, value, coefficients,
-                                                        prefix_log), {"matrix_kind": kind, "chunk_size": 512})
-            for name, kind in (("chunk_transfer", "transfer"), ("chunk_local_state", "state")))
+        transfer, local = tuple(make("nn.delta_rule_chunk_transfer", name, (key, value, coefficients, prefix_log),
+                                     {"matrix_kind": kind, "chunk_size": 512})
+                                for name, kind in (("chunk_transfer", "transfer"), ("chunk_local_state", "state")))
         fixed = make("nn.delta_rule_chunk_fixup", "chunk_fixed_state", (transfer, local, state), state_attrs)
         update_inputs = (*update_inputs, fixed)
         update_op, update_attrs = "nn.delta_rule_chunked_block_update", {"chunk_size": 512}
@@ -83,13 +80,14 @@ def emit_gdn_prefill(source, inputs, emit):
                 attributes={"result_type": tensor_type("float32", (value_dim, )), "value": 0.})
     # Native's 128-wide row keeps eight adjacent columns per thread and
     # reduces the sixteen thread sums with XOR shuffles.
-    stats = make("nn.norm_stats", "norm_stats", (core, ),
-                 {"axis": -1, "use_mean": False, "reduction_group_size": gcd(8, value_dim), "reduction_order": "tree"})
-    normalized = make(
-        "nn.norm_apply", "norm_apply", (core, stats, weight, bias), {
-            "axis": -1, "epsilon": attrs["epsilon"], "use_mean": False, "round_before_scale": False, "input_dtype":
-            "float32", "output_dtype": "float32", "math_mode": "accurate"
-        })
+    stats = make("nn.norm_stats", "norm_stats", (core, ), {
+        "axis": -1, "use_mean": False, "reduction_group_size": gcd(8, value_dim),
+        "reduction_order": "tree"
+    })
+    normalized = make("nn.norm_apply", "norm_apply", (core, stats, weight, bias), {
+        "axis": -1, "epsilon": attrs["epsilon"], "use_mean": False, "round_before_scale": False,
+        "input_dtype": "float32", "output_dtype": "float32", "math_mode": "accurate"
+    })
     z = reshape(cast(z, DType.FLOAT32, "z_wide"), (tokens, value_heads, value_dim), "z_heads")
     gate = make("math.silu", "z_gate", (z, ), {"math_mode": "accurate"})
     output = cast(make("math.mul", "gated_wide", (normalized, gate)), DType.BFLOAT16, "gated")

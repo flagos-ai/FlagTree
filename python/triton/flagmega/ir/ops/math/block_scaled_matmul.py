@@ -5,7 +5,7 @@
 from math import prod
 from typing import Mapping, Sequence
 
-from triton.flagmega.errors import IRSchemaError
+from triton.flagmega.errors import EvaluationError, IRSchemaError
 from triton.flagmega.ir.dim_expr import try_div_exactly
 from triton.flagmega.ir.distributed_inference import all_broadcast, placement_of, split_policy, tensor_of
 from triton.flagmega.ir.distributed_type import scale_split_units
@@ -55,6 +55,7 @@ class BlockScaledMatMul(OpDefinition):
     output_lanes = attribute_parameter(default=())
     activation_quantization = attribute_parameter(default="dynamic_fp8")
     weight_dequant_dtype = attribute_parameter(default=None)
+    native_compute_profile = attribute_parameter(default="f32")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -63,10 +64,8 @@ class BlockScaledMatMul(OpDefinition):
         block_k = int(attrs["weight_block_k"])
         if block_n <= 0 or block_k <= 0:
             raise IRSchemaError("BlockScaledMatMul block sizes must be positive.")
-        result = {
-            "weight_block_n": block_n, "weight_block_k": block_k, "output_lanes":
-            normalize_output_lanes(attrs["output_lanes"], "BlockScaledMatMul")
-        }
+        result = {"weight_block_n": block_n, "weight_block_k": block_k,
+                  "output_lanes": normalize_output_lanes(attrs["output_lanes"], "BlockScaledMatMul")}
         encoding = attrs.get("weight_encoding")
         if encoding is not None:
             if not isinstance(encoding, str):
@@ -75,6 +74,9 @@ class BlockScaledMatMul(OpDefinition):
         if attrs.get("output_data_type") is not None:
             result["output_data_type"] = DType(attrs["output_data_type"]).value
         result.update(normalize_block_scaled_precision(attrs, "BlockScaledMatMul"))
+        profile = attrs["native_compute_profile"]
+        if not isinstance(profile, str) or profile != "f32":
+            raise IRSchemaError("BlockScaledMatMul native_compute_profile supports only f32 on this branch.")
         return result
 
     @classmethod
@@ -94,8 +96,7 @@ class BlockScaledMatMul(OpDefinition):
         if value.shape[1] != matrix_width(weight, attrs.get("weight_encoding")):
             raise IRSchemaError("BlockScaledMatMul value/weight K dimensions must match.")
         verify_native_scale_type(value, weight, tensor_of(scale_type), encoding=attrs.get("weight_encoding"),
-                                 block_n=attrs["weight_block_n"], block_k=attrs["weight_block_k"],
-                                 opname="BlockScaledMatMul")
+                                 block_n=attrs["weight_block_n"], block_k=attrs["weight_block_k"], opname="BlockScaledMatMul")
         lanes = tuple(attrs.get("output_lanes", ()))
         output_n = try_div_exactly(weight.shape[0], prod(lanes))
         if output_n is None:
@@ -129,6 +130,12 @@ class BlockScaledMatMul(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
+        profile = node.attrs.get("native_compute_profile", "f32")
+        if profile != "f32":
+            raise EvaluationError(
+                f"BlockScaledMatMul native_compute_profile={profile!r} requires a validated hardware reference; "
+                "no software evaluator is registered."
+            )
         dtype = tensor_of(node.type).dtype
         output = block_scaled_linear(
             cls.value.read(arguments),
@@ -147,4 +154,4 @@ class BlockScaledMatMul(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         output_size = tensor_nbytes(node.type) if hasattr(node.type, "shape") else None
-        return OpCost(flops=None, bytes_read=None, bytes_written=output_size, notes=("block-fp8-matmul", ))
+        return OpCost(flops=None, bytes_read=None, bytes_written=output_size, notes=("block-fp8-matmul",))

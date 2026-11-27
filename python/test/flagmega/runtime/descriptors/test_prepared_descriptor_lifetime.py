@@ -14,7 +14,9 @@ from .helpers import single_spec
 
 @pytest.mark.parametrize("pool_count", [1, 218])
 @pytest.mark.parametrize("has_external_descriptor", [False, True])
-def test_prepared_pool_descriptors_do_not_rematerialize_per_launch(monkeypatch, pool_count, has_external_descriptor):
+def test_prepared_pool_descriptors_do_not_rematerialize_per_launch(
+    monkeypatch, pool_count, has_external_descriptor
+):
     torch = pytest.importorskip("torch")
     launches, prepared_arguments = [], []
 
@@ -27,25 +29,21 @@ def test_prepared_pool_descriptors_do_not_rematerialize_per_launch(monkeypatch, 
     specs = [single_spec(name=f"pool_{i}", source="weights") for i in range(pool_count)]
     if has_external_descriptor:
         specs.insert(1, single_spec(name="external", source="source"))
-    dynamic_descriptor_indices = (1, ) if has_external_descriptor else ()
+    dynamic_descriptor_indices = (1,) if has_external_descriptor else ()
     codegen = {
         "runtime_binding": {
-            "arguments": ({"name": "source", "buffer": "source_buffer"}, ),
-            "pools": ({"name": "weights", "storage": "rdata", "nbytes": 48}, ),
+            "arguments": ({"name": "source", "buffer": "source_buffer"},),
+            "pools": ({"name": "weights", "storage": "rdata", "nbytes": 48},),
             "signature": ("source", "weights"),
         },
         "host_tensor_descriptor_specs": tuple(specs),
         "signature_arguments": ("source", "weights", *(spec["name"] for spec in specs)),
         "dynamic_argument_indices": (0, *(2 + i for i in dynamic_descriptor_indices)),
-        "symbol": "entry",
-        "num_warps": 1,
-        "grid": (1, 1, 1),
+        "symbol": "entry", "num_warps": 1, "grid": (1, 1, 1),
     }
     runtime = GeneratedTirCallGraphModule(
-        artifact=None,
-        manifest={"codegen": codegen},
-        ir_module=SimpleNamespace(metadata={}),
-        kernel=object(),
+        artifact=None, manifest={"codegen": codegen},
+        ir_module=SimpleNamespace(metadata={}), kernel=object(),
     )
     pool = torch.empty((3, 4), dtype=torch.float32)
     runtime._pool_values = {"weights": pool}

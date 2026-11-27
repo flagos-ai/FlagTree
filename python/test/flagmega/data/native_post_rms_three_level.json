@@ -1,5 +1,5 @@
 {
-  "source": "python/tutorials/flagmega/02-qwen3-1.7b-bf16/nvidia-h800/.local/runs/20261110T055836Z-qwen3-h800-decode/agents/vector_architect/a0003/evidence/reduction-order-witness.npz",
+  "source": "python/tutorials/flagmega/01-qwen3-1.7b-bf16/nvidia-h800/.local/runs/20261110T055836Z-qwen3-h800-decode/agents/vector_architect/a0003/evidence/reduction-order-witness.npz",
   "source_sha256": "77817c71a47e6173f7bbfad321808b679b2f60347c128033f8dd18a9b1d6bd09",
   "row": 3,
   "schema": "independent-b13-rms-hierarchy/v1",

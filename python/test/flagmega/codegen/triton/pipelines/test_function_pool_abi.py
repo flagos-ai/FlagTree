@@ -21,38 +21,35 @@ def test_reusable_function_passes_one_pool_origin_and_a_call_record(compile_pipe
     assert not bound.intersection(definition["signature_arguments"])
     tree = ast.parse(render_tir_package(package, "unit"))
     functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
-    source_tables = next(node.value for node in tree.body if isinstance(node, ast.Assign) and any(
-        isinstance(target, ast.Name) and target.id == "FLAGMEGA_FUNCTION_OFFSET_TABLES" for target in node.targets))
+    source_tables = next(node.value for node in tree.body if isinstance(node, ast.Assign)
+                         and any(isinstance(target, ast.Name)
+                                 and target.id == "FLAGMEGA_FUNCTION_OFFSET_TABLES" for target in node.targets))
     assert ast.literal_eval(source_tables) == tables
     role = functions[definition["symbol"] + "__consumer"]
-    offset_reads = [
-        node for node in ast.walk(role) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "load" and node.args and any(
-            isinstance(value, ast.Name) and value.id == "_flagmega_function_offsets"
-            for value in ast.walk(node.args[0]))
-    ]
+    offset_reads = [node for node in ast.walk(role)
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "load" and node.args
+                    and any(isinstance(value, ast.Name) and value.id == "_flagmega_function_offsets"
+                            for value in ast.walk(node.args[0]))]
     dynamic = [binding for binding in pointer_abi["bindings"] if "record_column" in binding]
     assert dynamic and all("record_affine" in binding for binding in dynamic)
     assert not offset_reads, "A proven complete affine domain does not need table reads"
     # The scalar record remains dynamic even when its complete offset column
     # can be expressed as signed int64 arithmetic.
-    assert any(
-        isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "cast" and node.args
-        and isinstance(node.args[0], ast.Name) and node.args[0].id == "_flagmega_call_offsets"
-        for node in ast.walk(role))
+    assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+               and node.func.attr == "cast" and node.args
+               and isinstance(node.args[0], ast.Name) and node.args[0].id == "_flagmega_call_offsets"
+               for node in ast.walk(role))
     # Each invocation has its own offset record while sharing the same body.
     caller = functions["flagmega_main__consumer"]
-    calls = [
-        node for node in ast.walk(caller)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == role.name
-    ]
+    calls = [node for node in ast.walk(caller) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name) and node.func.id == role.name]
     assert len(calls) == 2
     assert ast.dump(calls[0].args[-1]) != ast.dump(calls[1].args[-1])
 
 
 def test_function_pool_record_executes_distinct_weights_and_frames_on_sm90(
-    tmp_path,
-    compile_pipeline_module,
+    tmp_path, compile_pipeline_module,
 ):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
@@ -66,19 +63,13 @@ def test_function_pool_record_executes_distinct_weights_and_frames_on_sm90(
     )
 
     torch.manual_seed(109)
-    weights = tuple(
-        (torch.eye(128) * (1 + index / 16) + torch.randn(128, 128) / 200).to(torch.bfloat16) for index in range(8))
-    checkpoint = {
-        f"{prefix}_weight_{index}": weights[group * 4 + index]
-        for group, prefix in enumerate(("first", "second"))
-        for index in range(4)
-    }
+    weights = tuple((torch.eye(128) * (1 + index / 16) + torch.randn(128, 128) / 200)
+                    .to(torch.bfloat16) for index in range(8))
+    checkpoint = {f"{prefix}_weight_{index}": weights[group * 4 + index]
+                  for group, prefix in enumerate(("first", "second")) for index in range(4)}
     artifact = write_artifact(
-        compile_pipeline_module(reusable=True, worker_depth=4),
-        tmp_path / "pool-call-records",
-        target="nvidia-sm90",
-        checkpoint=_checkpoint(checkpoint),
-        emit_executable=True,
+        compile_pipeline_module(reusable=True, worker_depth=4), tmp_path / "pool-call-records",
+        target="nvidia-sm90", checkpoint=_checkpoint(checkpoint), emit_executable=True,
     )
     runtime = load(artifact, device="cuda:0")
     value = torch.randn(1, 128, dtype=torch.bfloat16, device="cuda")
@@ -109,8 +100,7 @@ def test_function_offset_payload_must_match_generated_source():
     specs = validate_function_offset_tables(values, existing_names=())
     verify_function_offset_source(namespace["kernel"], specs, existing_names=())
     changed = validate_function_offset_tables(
-        [dict(values[0], values=[2**33, 128])],
-        existing_names=(),
+        [dict(values[0], values=[2**33, 128])], existing_names=(),
     )
     with pytest.raises(ArtifactError, match="verified generated source"):
         verify_function_offset_source(namespace["kernel"], changed, existing_names=())
@@ -129,16 +119,14 @@ def test_function_offsets_reject_non_i64_values(value):
 
 
 def _row_strided_plan(row_stride_bytes):
-    return {
-        "bindings": [{"formal": "w", "storage": "s0", "row_stride_bytes": row_stride_bytes}], "pools": [],
-        "record_width": 0, "calls": []
-    }
+    return {"bindings": [{"formal": "w", "storage": "s0", "row_stride_bytes": row_stride_bytes}],
+            "pools": [], "record_width": 0, "calls": []}
 
 
 def test_non_loop_call_passes_the_bank_row_as_a_tl_value():
     from triton.flagmega.codegen.triton.function_pool_abi import function_pool_actuals
     caller = {"function": "caller", "pools": []}
-    (row, ) = function_pool_actuals(caller, None, _row_strided_plan(128), {}, has_tables=False)
+    (row,) = function_pool_actuals(caller, None, _row_strided_plan(128), {}, has_tables=False)
     # The callee folds this into ``(row).to(tl.int64) * stride``; a bare Python
     # int literal has no ``.to`` and fails to compile.
     expression = ast.parse(row, mode="eval").body

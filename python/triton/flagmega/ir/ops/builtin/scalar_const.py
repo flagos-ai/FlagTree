@@ -47,7 +47,11 @@ class ScalarConst(OpDefinition):
     @classmethod
     def verify(cls, node: Node, module: IRModule) -> None:
         cls.verify_arity(node)
-        if (set(node.attrs) != {"value"} or not isinstance(node.type, TensorType) or node.type.rank != 0):
+        if (
+            set(node.attrs) != {"value"}
+            or not isinstance(node.type, TensorType)
+            or node.type.rank != 0
+        ):
             raise IRVerificationError(
                 "builtin.scalar_const requires one value and a rank-zero tensor type.",
                 node_id=node.id,
@@ -56,14 +60,13 @@ class ScalarConst(OpDefinition):
     @classmethod
     def evaluate(cls, node, arguments, context):
         return context.torch.tensor(
-            node.attrs["value"],
-            dtype=context.torch_dtype(node.type.dtype),
+            node.attrs["value"], dtype=context.torch_dtype(node.type.dtype),
             device=getattr(context, "device", None),
         )
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(notes=("compile-time-scalar", ))
+        return OpCost(notes=("compile-time-scalar",))
 
     @classmethod
     def python_call(cls, node: Node) -> PythonCall:

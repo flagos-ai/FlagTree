@@ -19,18 +19,25 @@ from triton.flagmega.rules.ntt.vectorize.utility import (
 class VectorizeNormStats:
     name = "VectorizeNormStats"
     op_names = frozenset({"nn.norm_stats"})
-    layout_input_indices = (0, )
+    layout_input_indices = (0,)
     layout_output = False
 
     def __init__(self, *, lane_bytes: int = 16) -> None:
         self.lane_bytes = lane_bytes
 
     def candidates(self, node: Node, module: IRModule) -> tuple[VectorizeCandidate, ...]:
+        if node.attrs.get("compute_profile", "default") != "default":
+            return ()
         if node.op != "nn.norm_stats" or not node.effect.is_pure:
             return ()
         value = module.node_map[node.inputs[0]].type
-        if (not isinstance(value, TensorType) or value.rank == 0 or isinstance(value.dtype, VectorType)
-                or not isinstance(value.dtype, DType) or value.dtype not in {DType.BFLOAT16, DType.FLOAT32}):
+        if (
+            not isinstance(value, TensorType)
+            or value.rank == 0
+            or isinstance(value.dtype, VectorType)
+            or not isinstance(value.dtype, DType)
+            or value.dtype not in {DType.BFLOAT16, DType.FLOAT32}
+        ):
             return ()
         axis = normalize_axis(int(node.attrs["axis"]), value.rank)
         vector_axis = value.rank - 1
@@ -39,19 +46,19 @@ class VectorizeNormStats:
         lane = self.lane_bytes // value.dtype.itemsize
         if lane <= 1:
             return ()
-        pads = padding_for(value, (vector_axis, ), (lane, ))
+        pads = padding_for(value, (vector_axis,), (lane,))
         # Padding a reduction suffix changes its normalization cardinality.
-        # reference accepts this rule only when the vector lane divides exactly.
+        # nncase accepts this rule only when the vector lane divides exactly.
         if pads is None or any(pads[index] for index in range(axis, value.rank)):
             return ()
         return (VectorizeCandidate(
             "vectorization.norm_stats.reduction_axis",
             self.name,
-            (vector_axis, ),
-            (lane, ),
+            (vector_axis,),
+            (lane,),
             {"axis": vector_axis, "lane": lane, "vector_bytes": self.lane_bytes},
             {"padding": list(pads), "egraph_equivalent": True},
-        ), )
+        ),)
 
     def rewrite(self, node: Node, module: IRModule, candidate: VectorizeCandidate) -> RewriteResult:
         axes = candidate.axes
@@ -68,8 +75,8 @@ class VectorizeNormStats:
         replacement = Node(
             node.id,
             "nn.norm_stats",
-            (packed.id, ),
-            NormStats.infer_type((packed, ), attrs),
+            (packed.id,),
+            NormStats.infer_type((packed,), attrs),
             node.effect,
             attrs,
             root_metadata(node, candidate),

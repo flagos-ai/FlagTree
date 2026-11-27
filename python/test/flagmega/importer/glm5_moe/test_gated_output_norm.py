@@ -23,17 +23,17 @@ EPS = 1e-5
 
 
 def _module(scale, *, with_values=False):
-    source = checkpoint(scale, with_values=with_values, full_model=True, expert_layout="separate")
+    source = checkpoint(scale, with_values=with_values, full_model=True,
+                        expert_layout="separate")
     importer = Glm5MoeModelImporter(source, block_size=8, num_blocks=3)
     return source, importer, importer.import_module()
 
 
 def _kda_output_nodes(module):
     marks = ("_o_norm", "_out_gate", "_out_gated", "_out_wide", "_out_flat")
-    return [
-        node for node in module.nodes
-        if node.id.startswith("decode_linear_attention_") and any(mark in node.id for mark in marks)
-    ]
+    return [node for node in module.nodes
+            if node.id.startswith("decode_linear_attention_")
+            and any(mark in node.id for mark in marks)]
 
 
 def test_the_output_gate_is_one_fused_node_per_region():
@@ -52,11 +52,8 @@ def test_the_output_gate_is_one_fused_node_per_region():
 def test_the_expanded_gate_chain_leaves_no_residue():
     """The FP32 round-trip nodes are gone, not merely renamed."""
     _, _, module = _module(dict(REDUCED))
-    residue = [
-        node.id
-        for node in _kda_output_nodes(module)
-        if node.op in {"math.sigmoid", "math.mul", "tensors.cast", "nn.norm_apply"}
-    ]
+    residue = [node.id for node in _kda_output_nodes(module)
+               if node.op in {"math.sigmoid", "math.mul", "tensors.cast", "nn.norm_apply"}]
 
     assert residue == []
     reshapes = [node for node in _kda_output_nodes(module) if node.op == "tensors.reshape"]
@@ -68,16 +65,16 @@ def test_the_fused_gate_matches_fused_rms_norm_gated_bit_for_bit():
     scale = dict(REDUCED)
     source, importer, module = _module(scale, with_values=True)
     text = configuration(scale)["text_config"]
-    inputs = {
-        "input_ids": torch.tensor([11], dtype=torch.int32), "paged_attention_state":
-        create_paged_attention_state(importer.paged_config)
-    }
+    inputs = {"input_ids": torch.tensor([11], dtype=torch.int32),
+              "paged_attention_state": create_paged_attention_state(importer.paged_config)}
     for layer in importer.kda_layers:
-        _qkv = text["kda_num_heads"] * text["kda_head_dim"]
+        qkv = text["kda_num_heads"] * text["kda_head_dim"]
         inputs[f"kda_conv_state_{layer}"] = torch.zeros(
-            (3, text["kda_num_heads"], text["kda_head_dim"], text["kda_conv_kernel_size"] - 1), dtype=torch.bfloat16)
+            (3, text["kda_num_heads"], text["kda_head_dim"], text["kda_conv_kernel_size"] - 1),
+            dtype=torch.bfloat16)
         inputs[f"kda_recurrent_state_{layer}"] = torch.zeros(
-            (1, text["kda_num_heads"], text["kda_head_dim"], text["kda_head_dim"]), dtype=torch.float32)
+            (1, text["kda_num_heads"], text["kda_head_dim"], text["kda_head_dim"]),
+            dtype=torch.float32)
     _, trace = TorchEvaluator(CheckpointWeightResolver(source)).run_with_trace(module, inputs)
 
     prefix = "decode_linear_attention_dense"
@@ -95,17 +92,22 @@ def test_the_fused_gate_matches_fused_rms_norm_gated_bit_for_bit():
 
     # The rejected expansion: prove the fixture separates the two policies, so
     # the bit-exact assertion above cannot pass on a doubly-rounded graph.
-    doubly_rounded = (normalized.to(torch.bfloat16).float() *
-                      torch.sigmoid(gate.float()).to(torch.bfloat16).float()).to(torch.bfloat16)
-    assert torch.count_nonzero(
-        expected != doubly_rounded), ("This fixture no longer distinguishes the FP32 interior from the "
-                                      "norm_apply/sigmoid/mul expansion, so the assertion above is vacuous.")
+    doubly_rounded = (
+        normalized.to(torch.bfloat16).float()
+        * torch.sigmoid(gate.float()).to(torch.bfloat16).float()
+    ).to(torch.bfloat16)
+    assert torch.count_nonzero(expected != doubly_rounded), (
+        "This fixture no longer distinguishes the FP32 interior from the "
+        "norm_apply/sigmoid/mul expansion, so the assertion above is vacuous."
+    )
 
 
 @pytest.mark.parametrize("heads", [2, 8])
 def test_the_gate_view_keeps_the_head_axis(heads):
     _, _, module = _module(dict(REDUCED, num_attention_heads=heads))
     text = configuration(dict(REDUCED, num_attention_heads=heads))["text_config"]
-    view = next(node for node in module.nodes if node.id == "decode_linear_attention_dense_out_gate_heads")
+    view = next(node for node in module.nodes
+                if node.id == "decode_linear_attention_dense_out_gate_heads")
 
-    assert tuple(dim.fixed_value for dim in view.type.shape) == (1, text["kda_num_heads"], text["kda_head_dim"])
+    assert tuple(dim.fixed_value for dim in view.type.shape) == (
+        1, text["kda_num_heads"], text["kda_head_dim"])

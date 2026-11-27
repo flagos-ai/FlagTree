@@ -4,7 +4,8 @@
 from triton.flagmega import ir as fm
 from triton.flagmega.ir.bufferization import AliasKind
 from triton.flagmega.ir.ops.ntt.add_norm_stats import (
-    AddNormStats, )
+    AddNormStats,
+)
 
 
 def _module_with_live_root_behind_a_dead_view():
@@ -16,14 +17,18 @@ def _module_with_live_root_behind_a_dead_view():
     source = builder.call("math.add", (lhs, rhs), tensor, id="source")
     view = builder.call(
         "tir.buffer_view",
-        (source, ),
+        (source,),
         tensor,
         id="source_view",
         attrs={"alias_kind": "reshape"},
     )
-    updated = builder.call("math.add", (view, increment), tensor, id="updated")
-    result = builder.call("math.add", (source, updated), tensor, id="result")
-    builder.function("main", (lhs, rhs, increment), (result, ))
+    updated = builder.call(
+        "math.add", (view, increment), tensor, id="updated"
+    )
+    result = builder.call(
+        "math.add", (source, updated), tensor, id="result"
+    )
+    builder.function("main", (lhs, rhs, increment), (result,))
     return builder.build(entry="main")
 
 
@@ -59,7 +64,9 @@ def _module_with_live_forwarded_tuple_field():
     projection = builder.var("projection", tensor, id="projection")
     increment = builder.var("increment", tensor, id="increment")
     source = builder.call("math.add", (lhs, rhs), tensor, id="source")
-    prepared = AddNormStats.prepare((projection, source), {"axis": 1, "use_mean": False})
+    prepared = AddNormStats.prepare(
+        (projection, source), {"axis": 1, "use_mean": False}
+    )
     combined = builder.call(
         AddNormStats.op_name,
         prepared.inputs,
@@ -68,15 +75,16 @@ def _module_with_live_forwarded_tuple_field():
         attrs=prepared.attrs,
     )
     value = builder.call(
-        "builtin.get_item",
-        (combined, ),
-        tensor,
-        id="value",
-        attrs={"index": 0},
+        "builtin.get_item", (combined,), tensor,
+        id="value", attrs={"index": 0},
     )
-    updated = builder.call("math.add", (value, increment), tensor, id="updated")
-    result = builder.call("math.add", (value, updated), tensor, id="result")
-    builder.function("decode", (lhs, rhs, projection, increment), (result, ))
+    updated = builder.call(
+        "math.add", (value, increment), tensor, id="updated"
+    )
+    result = builder.call(
+        "math.add", (value, updated), tensor, id="result"
+    )
+    builder.function("decode", (lhs, rhs, projection, increment), (result,))
     return builder.build(entry="decode")
 
 

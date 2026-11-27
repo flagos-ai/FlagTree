@@ -18,9 +18,7 @@ from triton.flagmega.targets import NvidiaSm90Target
 
 
 def _module():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="decomposed", entry="main")
 
@@ -29,7 +27,7 @@ def _module():
             lhs = self.input("lhs", value_type, id="lhs")
             rhs = self.input("rhs", value_type, id="rhs")
             root = fm.F.math.add(lhs, rhs, name="root")
-            self.function("main", (lhs, rhs), (root, ))
+            self.function("main", (lhs, rhs), (root,))
 
     return Graph().build()
 
@@ -41,9 +39,7 @@ def test_proposal_is_idempotent_and_records_every_target_executable_candidate():
     assert point.id == "vectorization.root"
     assert point.owner == "root"
     assert [candidate.id for candidate in point.candidates] == [
-        "vectorization.scalar",
-        "vectorization.axes_0",
-        "vectorization.last_axis",
+        "vectorization.scalar", "vectorization.axes_0", "vectorization.last_axis",
     ]
     assert proposed.selection_map[point.id].candidate_id == "vectorization.last_axis"
     assert AutoVectorizePass.propose(proposed, target) == proposed
@@ -54,7 +50,7 @@ def test_scalar_selection_keeps_original_graph():
     proposed = AutoVectorizePass.propose(_module(), target)
     selected = apply_plan(
         proposed,
-        override_plan(proposed, (("vectorization.root", "vectorization.scalar"), )),
+        override_plan(proposed, (("vectorization.root", "vectorization.scalar"),)),
     )
     result = AutoVectorizePass.run(selected, target)
     assert result.node_map["root"].op == "math.add"
@@ -66,14 +62,10 @@ def test_selected_candidate_is_extracted_as_multi_node_egraph_alternative():
     proposed = AutoVectorizePass.propose(_module(), target)
     result = AutoVectorizePass.run(proposed, target)
     assert [node.op for node in result.nodes] == [
-        "builtin.var",
-        "builtin.var",
-        "tensors.pack",
-        "tensors.pack",
-        "math.vectorized_binary",
-        "tensors.unpack",
+        "builtin.var", "builtin.var", "tensors.pack", "tensors.pack",
+        "math.vectorized_binary", "tensors.unpack",
     ]
-    assert result.function_map["main"].outputs == ("root", )
+    assert result.function_map["main"].outputs == ("root",)
     assert result.selection_points[0].owner == "root"
 
 
@@ -87,7 +79,7 @@ def test_apply_requires_a_selection_record():
 def test_apply_rejects_candidate_that_is_no_longer_legal():
     target = NvidiaSm90Target()
     proposed = AutoVectorizePass.propose(_module(), target)
-    vector_type = fm.tensor_type(fm.vector_type("bfloat16", (8, )), (2, 2))
+    vector_type = fm.tensor_type(fm.vector_type("bfloat16", (8,)), (2, 2))
     nodes = tuple(replace(node, type=vector_type) for node in proposed.nodes)
     edited = replace(proposed, nodes=nodes)
     with pytest.raises(IRVerificationError, match="is no longer legal"):
@@ -98,15 +90,10 @@ def test_apply_ignores_non_vectorization_selection_points():
     target = NvidiaSm90Target()
     proposed = AutoVectorizePass.propose(_module(), target)
     unrelated = fm.SelectionPoint(
-        "packing.root",
-        "packing",
-        (fm.Candidate("logical"), ),
-        "logical",
-        owner="root",
+        "packing.root", "packing", (fm.Candidate("logical"),), "logical", owner="root",
     )
     result = AutoVectorizePass.run(
-        replace(proposed, selection_points=(*proposed.selection_points, unrelated)),
-        target,
+        replace(proposed, selection_points=(*proposed.selection_points, unrelated)), target,
     )
     assert result.node_map["root"].op == "tensors.unpack"
 
@@ -115,7 +102,6 @@ def test_apply_rejects_rule_not_registered_by_current_target():
     proposed = AutoVectorizePass.propose(_module(), NvidiaSm90Target())
 
     class MissingBinaryTarget(NvidiaSm90Target):
-
         def register_auto_vectorize_rules(self, registry):
             return None
 
@@ -124,22 +110,20 @@ def test_apply_rejects_rule_not_registered_by_current_target():
 
 
 def test_default_candidate_falls_back_to_registration_order():
-    candidate = VectorizeCandidate("custom", "Rule", (0, ), (8, ), {}, {})
-    assert _default_candidate((candidate, )) == "custom"
+    candidate = VectorizeCandidate("custom", "Rule", (0,), (8,), {}, {})
+    assert _default_candidate((candidate,)) == "custom"
 
 
 def test_normalization_recovers_semantics_after_cast_boundary_propagation():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="decomposed", entry="main")
 
         def forward(self):
-            value = self.input("value", fm.tensor_type("bfloat16", (32, )), id="value")
+            value = self.input("value", fm.tensor_type("bfloat16", (32,)), id="value")
             cast = fm.F.tensors.cast(value, fm.DType.FLOAT32, name="cast")
             root = fm.F.math.silu(cast, name="root")
-            self.function("main", (value, ), (root, ))
+            self.function("main", (value,), (root,))
 
     original = Graph().build()
     target = NvidiaSm90Target()
@@ -163,15 +147,13 @@ def test_normalization_recovers_semantics_after_cast_boundary_propagation():
 
 
 def test_normalization_uses_egraph_canonical_operand_instead_of_stale_provenance():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="decomposed", entry="main")
 
         def forward(self):
             value_type = fm.tensor_type("bfloat16", (2, 16))
-            parameter_type = fm.tensor_type("bfloat16", (16, ))
+            parameter_type = fm.tensor_type("bfloat16", (16,))
             value = self.input("value", value_type, id="value")
             scale = self.input("scale", parameter_type, id="scale")
             first_zero = fm.F.builtin.splat_const(parameter_type, 0.0, name="first_zero")
@@ -212,4 +194,4 @@ def test_normalization_uses_egraph_canonical_operand_instead_of_stale_provenance
     compute = normalized.node_map["output.vectorized.compute"]
     canonical_bias_pack = normalized.node_map[compute.inputs[-1]]
     assert canonical_bias_pack.op == "tensors.pack"
-    assert canonical_bias_pack.inputs == ("first_zero", )
+    assert canonical_bias_pack.inputs == ("first_zero",)

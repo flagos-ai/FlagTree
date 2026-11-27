@@ -12,14 +12,6 @@ from triton.flagmega.ir.ops.tir.scalar_const import ScalarConst
 from triton.flagmega.ir.ops.tir.parameter_bank import BankGet, ParameterBank
 
 __all__ = [
-    "Barrier",
-    "BankGet",
-    "Buffer",
-    "BufferSubspan",
-    "BufferView",
-    "Call",
-    "Kernel",
-    "ParameterBank",
-    "RefSlice",
-    "ScalarConst",
+    "Barrier", "BankGet", "Buffer", "BufferSubspan", "BufferView", "Call", "Kernel",
+    "ParameterBank", "RefSlice", "ScalarConst",
 ]

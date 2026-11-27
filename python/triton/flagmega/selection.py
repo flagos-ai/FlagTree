@@ -52,8 +52,8 @@ def apply_plan(module: IRModule, plan: SelectionPlan) -> IRModule:
         if point is None:
             raise IRVerificationError(f"Selection plan references unknown point {point_id!r}.", stage=module.stage)
         if record.candidate_id not in {candidate.id for candidate in point.candidates}:
-            raise IRVerificationError(f"Candidate {record.candidate_id!r} is invalid for point {point_id!r}.",
-                                      stage=module.stage)
+            raise IRVerificationError(
+                f"Candidate {record.candidate_id!r} is invalid for point {point_id!r}.", stage=module.stage)
     existing = {record.point_id: record for record in module.selections}
     existing.update(replacements)
     from dataclasses import replace

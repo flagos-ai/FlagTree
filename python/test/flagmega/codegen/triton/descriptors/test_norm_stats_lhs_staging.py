@@ -13,8 +13,11 @@ from triton.flagmega.codegen.triton.runtime_binding import describe_function_run
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import emit_module, load_module
 
-IMPLEMENTATION = ("tir.dense_matmul."
-                  "packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats_lhs8192")
+
+IMPLEMENTATION = (
+    "tir.dense_matmul."
+    "packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats_lhs8192"
+)
 
 
 @pytest.fixture(scope="module")
@@ -37,7 +40,7 @@ def test_staging_uses_typed_consumer_resource_and_round_trips(staged_module, tmp
     assert workspace["shape"] == (1, 8192)
     assert workspace["nbytes"] == 16384
     assert workspace["alignment_bytes"] == 1024
-    assert tuple(call["pipeline_contract"]["consumer_shared_workspace_indices"]) == (1, )
+    assert tuple(call["pipeline_contract"]["consumer_shared_workspace_indices"]) == (1,)
     source = render_tir_package(package, "unit")
     compile(source, "bounded_lhs.py", "exec")
     assert "for dense_copy_start in tl.range(0, 6144, 1024)" in source
@@ -49,8 +52,7 @@ def test_staging_uses_typed_consumer_resource_and_round_trips(staged_module, tmp
 @pytest.mark.parametrize("unroll", [0, -1, 3, 16, True, 1.5])
 def test_renderer_rejects_invalid_edited_reduction_unroll(staged_module, unroll):
     binding = describe_function_runtime_binding(staged_module)
-    raw = deepcopy(
-        next(value for value in binding["call_abi"]["kernel_calls"] if value["semantic_op"] == "ntt.matmul_norm_stats"))
+    raw = deepcopy(next(value for value in binding["call_abi"]["kernel_calls"] if value["semantic_op"] == "ntt.matmul_norm_stats"))
     raw["parameters"]["reduction_unroll"] = unroll
     with pytest.raises(CodegenError, match="reduction unroll"):
         _dense_matmul_norm_stats_call(raw)
@@ -59,8 +61,7 @@ def test_renderer_rejects_invalid_edited_reduction_unroll(staged_module, unroll)
 @pytest.mark.parametrize("mutation", ["capacity", "tile", "shape", "dtype", "alignment", "owner"])
 def test_renderer_rejects_invalid_edited_staging_resource(staged_module, mutation):
     binding = describe_function_runtime_binding(staged_module)
-    raw = deepcopy(
-        next(value for value in binding["call_abi"]["kernel_calls"] if value["semantic_op"] == "ntt.matmul_norm_stats"))
+    raw = deepcopy(next(value for value in binding["call_abi"]["kernel_calls"] if value["semantic_op"] == "ntt.matmul_norm_stats"))
     if mutation == "capacity":
         raw["parameters"]["lhs_stage_extent"] = 4096
     elif mutation == "tile":

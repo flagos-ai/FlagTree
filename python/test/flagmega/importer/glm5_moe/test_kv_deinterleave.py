@@ -22,14 +22,14 @@ def _interleaved_scale(**overrides):
 
 
 def _deinterleave_nodes(module):
-    return [
-        node for node in module.nodes
-        if any(mark in node.id for mark in ("_rows_", "_regrouped", "_kv_heads", "_key_heads", "_value_heads"))
-    ]
+    return [node for node in module.nodes
+            if any(mark in node.id for mark in
+                   ("_rows_", "_regrouped", "_kv_heads", "_key_heads", "_value_heads"))]
 
 
 def test_interleaved_projection_updates_both_cache_fields_without_materialized_slices():
-    source = checkpoint(_interleaved_scale(), with_values=False, full_model=True, expert_layout="separate")
+    source = checkpoint(_interleaved_scale(), with_values=False, full_model=True,
+                        expert_layout="separate")
     module = Glm5MoeModelImporter(source, block_size=8, num_blocks=3).import_module()
     assert not [node for node in _deinterleave_nodes(module) if node.op == "tensors.slice"]
     pairs = [node for node in module.nodes if node.op == "nn.update_paged_attention_kv_cache_pair"]
@@ -38,8 +38,8 @@ def test_interleaved_projection_updates_both_cache_fields_without_materialized_s
 
 @pytest.mark.parametrize("heads", [2, 8, 64])
 def test_regrouping_cost_is_independent_of_the_head_count(heads):
-    source = checkpoint(_interleaved_scale(num_attention_heads=heads), with_values=False, full_model=True,
-                        expert_layout="separate")
+    source = checkpoint(_interleaved_scale(num_attention_heads=heads), with_values=False,
+                        full_model=True, expert_layout="separate")
     module = Glm5MoeModelImporter(source, block_size=8, num_blocks=3).import_module()
     nodes = _deinterleave_nodes(module)
     assert [node.op for node in nodes] == ["tensors.reshape"]
@@ -52,11 +52,11 @@ def test_paired_consumer_receives_the_complete_head_major_view():
     module = Glm5MoeModelImporter(source, block_size=8, num_blocks=3).import_module()
     text = configuration(scale)["text_config"]
     view, = _deinterleave_nodes(module)
-    assert tuple(dim.fixed_value
-                 for dim in view.type.shape) == (1, heads, text["qk_nope_head_dim"] + text["v_head_dim"])
+    assert tuple(dim.fixed_value for dim in view.type.shape) == (
+        1, heads, text["qk_nope_head_dim"] + text["v_head_dim"])
     update, = [node for node in module.nodes if node.op == "nn.update_paged_attention_kv_cache_pair"]
     packed = module.node_map[update.inputs[0]]
-    assert packed.op == "tensors.pack" and packed.inputs == (view.id, )
+    assert packed.op == "tensors.pack" and packed.inputs == (view.id,)
     assert not [node for node in module.nodes if node.op == "nn.update_paged_attention_kv_cache"]
 
 
@@ -66,16 +66,16 @@ def test_regrouping_preserves_the_cached_key_and_value_numerics():
     importer = Glm5MoeModelImporter(source, block_size=8, num_blocks=3)
     module = importer.import_module()
     text = configuration(scale)["text_config"]
-    inputs = {
-        "input_ids": torch.tensor([11], dtype=torch.int32), "paged_attention_state":
-        create_paged_attention_state(importer.paged_config)
-    }
+    inputs = {"input_ids": torch.tensor([11], dtype=torch.int32),
+              "paged_attention_state": create_paged_attention_state(importer.paged_config)}
     for layer in importer.kda_layers:
-        _qkv = text["kda_num_heads"] * text["kda_head_dim"]
+        qkv = text["kda_num_heads"] * text["kda_head_dim"]
         inputs[f"kda_conv_state_{layer}"] = torch.zeros(
-            (3, text["kda_num_heads"], text["kda_head_dim"], text["kda_conv_kernel_size"] - 1), dtype=torch.bfloat16)
+            (3, text["kda_num_heads"], text["kda_head_dim"], text["kda_conv_kernel_size"] - 1),
+            dtype=torch.bfloat16)
         inputs[f"kda_recurrent_state_{layer}"] = torch.zeros(
-            (1, text["kda_num_heads"], text["kda_head_dim"], text["kda_head_dim"]), dtype=torch.float32)
+            (1, text["kda_num_heads"], text["kda_head_dim"], text["kda_head_dim"]),
+            dtype=torch.float32)
     _, trace = TorchEvaluator(CheckpointWeightResolver(source)).run_with_trace(module, inputs)
 
     heads = text["num_attention_heads"]

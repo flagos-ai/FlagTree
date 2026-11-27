@@ -63,7 +63,9 @@ class _ChipSplitProjectionNormStats(fm.Module):
         rhs = self.input(
             "rhs",
             fm.DistributedType(
-                fm.tensor_type(fm.vector_type("bfloat16", (8, 2, 8)), (K // 16, N // 8)),
+                fm.tensor_type(
+                    fm.vector_type("bfloat16", (8, 2, 8)), (K // 16, N // 8)
+                ),
                 (broadcast, n_policy),
                 PLACEMENT,
             ),
@@ -112,7 +114,8 @@ def _single_map_candidates(point):
     return {
         candidate.id
         for candidate in point.candidates
-        if "tensor_descriptor" in candidate.id and candidate.parameters.get("descriptor_kind") != "table"
+        if "tensor_descriptor" in candidate.id
+        and candidate.parameters.get("descriptor_kind") != "table"
     }
 
 
@@ -126,8 +129,12 @@ def test_matmul_norm_stats_rejects_a_single_map_over_a_chip_split_weight():
     """
 
     proposed = NvidiaSm90Target().propose_tir(_ChipSplitProjectionNormStats().build())
-    point = next(point for point in proposed.selection_points if point.owner == "projection")
+    point = next(
+        point for point in proposed.selection_points if point.owner == "projection"
+    )
     assert point.candidates, "the chip-split projection must still have candidates"
     offenders = _single_map_candidates(point)
-    assert not offenders, ("a single tensor map forces every chip to store the whole weight: "
-                           f"{sorted(offenders)}")
+    assert not offenders, (
+        "a single tensor map forces every chip to store the whole weight: "
+        f"{sorted(offenders)}"
+    )

@@ -12,33 +12,30 @@ from triton.flagmega.runtime import load
 
 
 def attention_module(config):
-
     class Attention(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="distributed", entry="main",
-                             metadata={"auto_distribution": {"placement": fm.Placement((8, 16), "yx", "bb").to_data()}})
+                             metadata={"auto_distribution": {"placement":
+                                       fm.Placement((8, 16), "yx", "bb").to_data()}})
 
         def forward(self):
-            query_type = fm.tensor_type(fm.vector_type("bfloat16", (8, )), (1, 16, 16))
-            query = self.input(
-                "query",
-                fm.DistributedType(query_type,
-                                   (fm.SBP.broadcast(), fm.SBP.split(fm.SplitStage(
-                                       (1, ), fm.ContiguousSplit(1))), fm.SBP.broadcast()),
-                                   fm.Placement((8, 16), "yx", "bb")))
+            query_type = fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, 16, 16))
+            query = self.input("query", fm.DistributedType(
+                query_type, (fm.SBP.broadcast(), fm.SBP.split(
+                    fm.SplitStage((1,), fm.ContiguousSplit(1))), fm.SBP.broadcast()),
+                fm.Placement((8, 16), "yx", "bb")))
             state = self.input("state", config.ref_type)
             layer = fm.F.builtin.scalar_const(fm.tensor_type("int32", ()), 0)
-            partial = fm.F.ntt.paged_attention_partial(query, state, layer, scale=128**-.5,
-                                                       layout=("seq", "head", "dim"), hidden_size=2048,
-                                                       split_hierarchy_axis=0, split_count=8)
-            value = fm.F.ntt.paged_attention_combine(fm.F.tensors.get_item(partial,
-                                                                           0), fm.F.tensors.get_item(partial, 1),
-                                                     fm.F.tensors.get_item(partial, 2), layout=("seq", "head", "dim"),
-                                                     hidden_size=2048, output_data_type=query_type.dtype,
-                                                     output_type=query.type, split_hierarchy_axis=0, split_count=8)
+            partial = fm.F.ntt.paged_attention_partial(
+                query, state, layer, scale=128 ** -.5, layout=("seq", "head", "dim"),
+                hidden_size=2048, split_hierarchy_axis=0, split_count=8)
+            value = fm.F.ntt.paged_attention_combine(
+                fm.F.tensors.get_item(partial, 0), fm.F.tensors.get_item(partial, 1),
+                fm.F.tensors.get_item(partial, 2), layout=("seq", "head", "dim"),
+                hidden_size=2048, output_data_type=query_type.dtype, output_type=query.type,
+                split_hierarchy_axis=0, split_count=8)
             result = fm.F.builtin.tuple(fm.F.distributed.boxing(value, query_type))
-            self.function("main", (query, state), (result, ))
+            self.function("main", (query, state), (result,))
 
     return Attention().build()
 
@@ -74,10 +71,8 @@ def test_mma_attention_merges_unequal_nonempty_shard_maxima(tmp_path, length):
     buffers = {}
     for value, names in binding.parameters:
         if isinstance(module.node_map[value].type, fm.RefType):
-            buffers.update(
-                zip(names,
-                    (state.kv_caches, state.query_start_loc, state.seq_lens, state.slot_mapping, state.block_table),
-                    strict=True))
+            buffers.update(zip(names, (state.kv_caches, state.query_start_loc, state.seq_lens,
+                                       state.slot_mapping, state.block_table), strict=True))
         else:
             assert len(names) == 1
             buffers[names[0]] = query
@@ -87,9 +82,8 @@ def test_mma_attention_merges_unequal_nonempty_shard_maxima(tmp_path, length):
     arguments = [buffers[str(argument["buffer"])] for argument in runtime.external_arguments]
     runtime.prepare(*arguments)
     runtime.run_into(*arguments)
-    scores = torch.einsum("qhd,khd->hqk",
-                          query.reshape(1, 16, 128).float(),
-                          keys.repeat_interleave(2, dim=1).float()) * 128**-.5
+    scores = torch.einsum("qhd,khd->hqk", query.reshape(1, 16, 128).float(),
+                          keys.repeat_interleave(2, dim=1).float()) * 128 ** -.5
     expected = torch.einsum("hqk,khd->qhd", scores.softmax(-1),
                             values.repeat_interleave(2, dim=1).float()).to(torch.bfloat16)
     torch.testing.assert_close(output.reshape_as(expected), expected, rtol=.01, atol=.005)

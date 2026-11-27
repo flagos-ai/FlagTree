@@ -10,32 +10,39 @@ from triton.flagmega.codegen.triton.kernel_call_renderers import (
     _partial_group_owner_expression_for_axes,
 )
 from triton.flagmega.codegen.triton.physical_access import (
-    emit_local_scalar_offset, )
+    emit_local_scalar_offset,
+)
 from triton.flagmega.codegen.triton.templates import TritonTemplateRegistry
 from triton.flagmega.codegen.triton.tir_package import _local_mesh, _mesh_context
 from triton.flagmega.errors import CodegenError
 
 
 def _distributed_abi(
-        *,
-        hierarchy=(2, 3, 5),
-        partial_axes=None,
-        split_axes=(),
+    *,
+    hierarchy=(2, 3, 5),
+    partial_axes=None,
+    split_axes=(),
 ):
     return {
         "storage": "workspace",
         "storage_kind": "canonical_global",
-        "scalar_storage_strides": (1, ),
+        "scalar_storage_strides": (1,),
         "coordinate_space": "canonical_global",
-        "logical_coordinate_expressions": ("local_coord_0 + shard_coord_2 * 6", ),
-        "active_shape_expressions": ("6", ),
+        "logical_coordinate_expressions": (
+            "local_coord_0 + shard_coord_2 * 6",
+        ),
+        "active_shape_expressions": ("6",),
         "distributed_type": {
             "placement": {"hierarchy": hierarchy},
             "axis_policies": ({
                 "kind": "split",
-                "stages": ({"hierarchy_axes": tuple(split_axes)}, ),
-            }, ) if split_axes else ({"kind": "broadcast"}, ),
-            "partial": (None if partial_axes is None else {"axes": tuple(partial_axes), "reduce_op": "sum"}),
+                "stages": ({"hierarchy_axes": tuple(split_axes)},),
+            },) if split_axes else ({"kind": "broadcast"},),
+            "partial": (
+                None
+                if partial_axes is None
+                else {"axes": tuple(partial_axes), "reduce_op": "sum"}
+            ),
         },
     }
 
@@ -72,7 +79,7 @@ def test_rank_three_mesh_uses_row_major_coordinates_without_2d_aliases():
         {
             **mesh,
             "distributed_entry": True,
-            "render_calls": (_elementwise_call(), ),
+            "render_calls": (_elementwise_call(),),
         },
     )
 
@@ -98,7 +105,7 @@ def test_unit_non_block_axes_are_zero_and_excluded_from_physical_mesh():
         {
             **mesh,
             "distributed_entry": True,
-            "render_calls": (_elementwise_call(), ),
+            "render_calls": (_elementwise_call(),),
         },
     )
 
@@ -119,7 +126,7 @@ def test_chip_axis_lowers_to_device_mesh_and_runtime_rank():
         {
             **mesh,
             "distributed_entry": True,
-            "render_calls": (_elementwise_call(), ),
+            "render_calls": (_elementwise_call(),),
         },
     )
     assert mesh["mesh_topology_repr"] == "{'device': 4, 'block': [('block_y', 8), ('block_x', 16)]}"
@@ -152,7 +159,7 @@ def test_ordinary_entry_retains_logical_mesh_coordinates_as_zero():
         {
             **mesh,
             "distributed_entry": False,
-            "render_calls": (_elementwise_call(), ),
+            "render_calls": (_elementwise_call(),),
         },
     )
 
@@ -172,7 +179,7 @@ def test_mesh_without_block_axis_is_rejected():
 def test_rank_three_physical_access_binds_every_placement_coordinate():
     offset = emit_local_scalar_offset(
         _distributed_abi(),
-        ("lane", ),
+        ("lane",),
     )
 
     assert "shard_coord2" in offset
@@ -183,7 +190,9 @@ def test_rank_three_physical_access_binds_every_placement_coordinate():
 
 def test_rank_three_partial_owner_linearization_handles_non_adjacent_axes():
     abi = _distributed_abi(partial_axes=(0, 2))
-    expression = _partial_group_owner_expression_for_axes(abi, (0, 2), "member")
+    expression = _partial_group_owner_expression_for_axes(
+        abi, (0, 2), "member"
+    )
 
     for member in range(10):
         for shard_coord1 in range(3):
@@ -196,7 +205,7 @@ def test_rank_three_partial_owner_linearization_handles_non_adjacent_axes():
 
 
 def test_rank_three_single_partial_axis_preserves_other_owner_coordinates():
-    abi = _distributed_abi(partial_axes=(2, ))
+    abi = _distributed_abi(partial_axes=(2,))
     expression = _partial_group_owner_expression(abi, "member")
 
     owner = eval(
@@ -217,14 +226,13 @@ def _owner_coordinates(expression, hierarchy):
     """
     import itertools
 
-    names = (("shard_y",
-              "shard_x") if len(hierarchy) == 2 else tuple(f"shard_coord{axis}" for axis in range(len(hierarchy))))
+    names = (("shard_y", "shard_x") if len(hierarchy) == 2
+             else tuple(f"shard_coord{axis}" for axis in range(len(hierarchy))))
     owners = []
     for coordinate in itertools.product(*(range(n) for n in hierarchy)):
         if eval(  # noqa: S307 - rendered predicate over fixed local names
-                expression,
-            {"__builtins__": {}},
-                dict(zip(names, coordinate)),
+            expression, {"__builtins__": {}},
+            dict(zip(names, coordinate)),
         ):
             owners.append(coordinate)
     return owners
@@ -238,18 +246,24 @@ def _writers_per_shard(expression, hierarchy, split_axes):
 
 
 def test_rank_three_unique_writer_keeps_each_distinct_split_shard():
-    abi = _distributed_abi(split_axes=(1, ))
+    abi = _distributed_abi(split_axes=(1,))
 
-    writers = _writers_per_shard(_distributed_unique_writer_active(abi), (2, 3, 5), (1, ))
+    writers = _writers_per_shard(
+        _distributed_unique_writer_active(abi), (2, 3, 5), (1,)
+    )
 
     assert len(writers) == 3 and set(writers.values()) == {1}
 
 
 def test_rank_three_unique_writer_ordinal_uses_redundant_axes_row_major():
-    abi = _distributed_abi(split_axes=(1, ))
+    abi = _distributed_abi(split_axes=(1,))
 
-    first = _owner_coordinates(_distributed_unique_writer_active(abi, writer_ordinal=7), (2, 3, 5))
-    second = _owner_coordinates(_distributed_unique_writer_active(abi, writer_ordinal=8), (2, 3, 5))
+    first = _owner_coordinates(
+        _distributed_unique_writer_active(abi, writer_ordinal=7), (2, 3, 5)
+    )
+    second = _owner_coordinates(
+        _distributed_unique_writer_active(abi, writer_ordinal=8), (2, 3, 5)
+    )
 
     # Consecutive ordinals select different redundant owners of the same shards.
     assert len(first) == len(second) == 3
@@ -257,14 +271,16 @@ def test_rank_three_unique_writer_ordinal_uses_redundant_axes_row_major():
 
 
 def test_rank_three_unique_writer_ordinal_wraps_redundant_owner_count():
-    abi = _distributed_abi(split_axes=(1, ))
+    abi = _distributed_abi(split_axes=(1,))
     # 2 * 5 redundant owners, so ordinal 10 wraps onto ordinal 0.
-    assert (_distributed_unique_writer_active(abi, writer_ordinal=10) == _distributed_unique_writer_active(
-        abi, writer_ordinal=0))
+    assert (
+        _distributed_unique_writer_active(abi, writer_ordinal=10)
+        == _distributed_unique_writer_active(abi, writer_ordinal=0)
+    )
 
 
 def test_canonical_split_writer_preserves_each_block_shard_on_every_chip():
-    abi = _distributed_abi(hierarchy=(4, 8, 16), split_axes=(1, ))
+    abi = _distributed_abi(hierarchy=(4, 8, 16), split_axes=(1,))
     abi["distributed_type"]["placement"]["hierarchy_levels"] = "cbb"
 
     owners = _owner_coordinates(_canonical_writer_active(abi), (4, 8, 16))
@@ -273,11 +289,15 @@ def test_canonical_split_writer_preserves_each_block_shard_on_every_chip():
     # axis is never elected away, because each chip owns a private instance.
     assert len({coordinate[0] for coordinate in owners}) == 4
     assert len(owners) == 4 * 8
-    writers = _writers_per_shard(_canonical_writer_active(abi), (4, 8, 16), (0, 1))
+    writers = _writers_per_shard(
+        _canonical_writer_active(abi), (4, 8, 16), (0, 1)
+    )
     assert set(writers.values()) == {1}
 
 
 def test_canonical_broadcast_writer_reduces_block_axes_but_replicates_chip_axis():
     abi = _distributed_abi(hierarchy=(4, 8, 16))
     abi["distributed_type"]["placement"]["hierarchy_levels"] = "cbb"
-    assert _canonical_writer_active(abi) == ("(shard_coord1 == 0) & (shard_coord2 == 0)")
+    assert _canonical_writer_active(abi) == (
+        "(shard_coord1 == 0) & (shard_coord2 == 0)"
+    )

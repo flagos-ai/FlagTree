@@ -7,13 +7,18 @@ from __future__ import annotations
 from triton.flagmega.errors import IRSchemaError
 import re
 
+
 K_MAJOR_N_LANE = 8
 K_MAJOR_K_LANE = 16
 K_MAJOR_PAYLOAD_GROUPS = 2
 K_MAJOR_PAYLOAD_WIDTH = 64
 
-_LAYOUT = re.compile(r"^k_major_(?P<mesh>mesh_interleaved_)?n(?P<n>[1-9][0-9]*)_k(?P<k>[1-9][0-9]*)$")
-_QKV_SPLIT_K_LAYOUT = re.compile(r"^qkv_split_k_k_major_n(?P<n>[1-9][0-9]*)_k(?P<k>[1-9][0-9]*)$")
+_LAYOUT = re.compile(
+    r"^k_major_(?P<mesh>mesh_interleaved_)?n(?P<n>[1-9][0-9]*)_k(?P<k>[1-9][0-9]*)$"
+)
+_QKV_SPLIT_K_LAYOUT = re.compile(
+    r"^qkv_split_k_k_major_n(?P<n>[1-9][0-9]*)_k(?P<k>[1-9][0-9]*)$"
+)
 
 
 def k_major_layout_name(n_lane: int, k_lane: int, *, mesh_interleaved: bool = False) -> str:
@@ -55,7 +60,9 @@ def unpack_k_major_weight(packed, layout: str, logical_n: int | None = None):
     n_lane, k_lane, mesh_interleaved = parse_k_major_layout(layout)
     if mesh_interleaved:
         if logical_n is None or logical_n <= 0 or logical_n % n_lane:
-            raise IRSchemaError("Mesh-interleaved K-major storage requires aligned logical N.")
+            raise IRSchemaError(
+                "Mesh-interleaved K-major storage requires aligned logical N."
+            )
         k_groups, local_n_groups, mesh_size, *payload = packed.shape
         if _product(payload) != n_lane * k_lane:
             raise IRSchemaError("K-major storage payload does not match its lanes.")
@@ -69,7 +76,11 @@ def unpack_k_major_weight(packed, layout: str, logical_n: int | None = None):
         if _product(payload) != n_lane * k_lane:
             raise IRSchemaError("K-major storage payload does not match its lanes.")
         packed = packed.reshape(k_groups, n_groups, n_lane, k_lane)
-    return (packed.permute(1, 2, 0, 3).reshape(packed.shape[1] * n_lane, packed.shape[0] * k_lane).contiguous())
+    return (
+        packed.permute(1, 2, 0, 3)
+        .reshape(packed.shape[1] * n_lane, packed.shape[0] * k_lane)
+        .contiguous()
+    )
 
 
 def k_major_n8_k16_shape(n: int, k: int) -> tuple[int, int, int, int]:
@@ -102,7 +113,9 @@ def k_major_mesh_interleaved_n8_k16_shape(
 def unpack_k_major_mesh_interleaved_n8_k16_weight(packed, logical_n: int):
     """Invert the padded ``[K/16,local-N/8,mesh,2,64]`` representation."""
 
-    return unpack_k_major_weight(packed, "k_major_mesh_interleaved_n8_k16", logical_n)
+    return unpack_k_major_weight(
+        packed, "k_major_mesh_interleaved_n8_k16", logical_n
+    )
 
 
 def _product(values) -> int:

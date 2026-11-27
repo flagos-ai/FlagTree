@@ -39,13 +39,12 @@ def test_packed_threaded_fma_preserves_fp32_dot_order(tmp_path, m, k, n, warps):
     from safetensors.torch import save_file
 
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("x", fm.tensor_type("bfloat16", (m, k)), id="x")
-            w = self.weight("weight", fm.tensor_type("bfloat16", (n, k)), source="model.safetensors", key="weight",
-                            id="weight")
+            w = self.weight("weight", fm.tensor_type("bfloat16", (n, k)),
+                            source="model.safetensors", key="weight", id="weight")
             y = fm.F.math.matmul(x, w, transpose_b=True, output_data_type="float32")
-            self.function("main", (x, ), (y, ))
+            self.function("main", (x,), (y,))
 
     torch.manual_seed(129)
     weight, value = torch.randn(n, k).bfloat16(), torch.randn(m, k).bfloat16()
@@ -56,16 +55,14 @@ def test_packed_threaded_fma_preserves_fp32_dot_order(tmp_path, m, k, n, warps):
     save_file({"weight": weight}, checkpoint / "model.safetensors")
     base = NvidiaSm90Target().triton_implementation_model
     identity = "tir.dense_matmul.packed_k_major_threaded_fma"
-    model = replace(
-        base, implementations=tuple(
-            replace(i, parameters={**i.parameters, "compute_num_warps": warps}) if i.id == identity else i
-            for i in base.implementations),
-        preferences={**base.preferences, "dense_matmul": (identity, *base.preferences["dense_matmul"])})
+    model = replace(base, implementations=tuple(
+        replace(i, parameters={**i.parameters, "compute_num_warps": warps}) if i.id == identity else i
+        for i in base.implementations), preferences={**base.preferences, "dense_matmul":
+                    (identity, *base.preferences["dense_matmul"])})
     compiler = Compiler()
     compiler.target = CanonicalTarget(triton_implementation_model=model)
-    result = compiler.compile(
-        Graph(dialect="high_level", stage="imported", entry="main", metadata={"floating_point_contract":
-                                                                              "strict"}).build()).module
+    result = compiler.compile(Graph(dialect="high_level", stage="imported", entry="main",
+                                    metadata={"floating_point_contract": "strict"}).build()).module
     artifact = write_artifact(result, tmp_path / "artifact", target="nvidia-sm90",
                               checkpoint=DirectoryCheckpoint(checkpoint), emit_executable=True)
     source = (artifact / "generated_kernels.py").read_text()

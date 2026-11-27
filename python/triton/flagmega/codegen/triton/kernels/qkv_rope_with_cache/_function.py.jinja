@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
 {% import "kernels/qkv_rope_with_cache/_cache_position.py.jinja" as cache %}
 {% import "kernels/gather_reduce_qkv_rope_with_cache/_headwise_partial.py.jinja" as headwise with context %}
 {% set qkv_rope_family = qkv_rope_family | default("qkv_rope_with_cache") %}

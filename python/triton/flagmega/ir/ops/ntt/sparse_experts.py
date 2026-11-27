@@ -16,8 +16,8 @@ from triton.flagmega.ir.ops.nn.sparse_experts_gate_up import SparseExpertsGateUp
 
 def stage(definition, inputs, attrs):
     prepared = definition.prepare(inputs, attrs)
-    return Node("stage", definition.op_name, tuple(n.id for n in inputs), prepared.result_type, prepared.effect,
-                prepared.attrs)
+    return Node("stage", definition.op_name, tuple(n.id for n in inputs), prepared.result_type,
+                prepared.effect, prepared.attrs)
 
 
 @op_definition("ntt.dispatched_experts_gate_up", namespace="ntt", functional_name="dispatched_experts_gate_up",
@@ -62,8 +62,7 @@ class DispatchedExpertsGateUp(OpDefinition):
     @classmethod
     def evaluate(cls, node, arguments, context):
         values = {p.name: p.read(arguments) for p in cls.input_parameters}
-        values["dispatched"] = values["q"].unsqueeze(1).expand(-1, values["router_expert_ids"].shape[1],
-                                                               *values["q"].shape[1:])
+        values["dispatched"] = values["q"].unsqueeze(1).expand(-1, values["router_expert_ids"].shape[1], *values["q"].shape[1:])
         inputs = tuple(Node(n, "builtin.var", (), context.types[n]) for n in node.inputs)
         return evaluate_gate_up(values, cls.gate_inputs(inputs)[0].type, node.type, node.attrs, context)
 
@@ -99,19 +98,15 @@ class SparseExpertsDownCombine(OpDefinition):
     @classmethod
     def normalize_attrs(cls, attrs):
         attrs = super().normalize_attrs(attrs)
-        normalized = SparseExpertsWeightedSum.normalize_attrs(
-            {k: attrs[k]
-             for k in ("output_dtype", "round_weighted_output", "cast_output")})
+        normalized = SparseExpertsWeightedSum.normalize_attrs({k: attrs[k] for k in ("output_dtype", "round_weighted_output", "cast_output")})
         if type(attrs["cast_output"]) is not bool:
             raise IRSchemaError("SparseExpertsDownCombine cast_output must be boolean")
         return {**attrs, **normalized, **SparseExpertsDown.normalize_attrs(cls.down_attrs(attrs))}
 
     @classmethod
     def down_attrs(cls, attrs):
-        return {
-            name: attrs.get(name, "relaxed") if name == "reduction_order" else attrs[name]
-            for name in ("round_projection", "weight_block_n", "weight_block_k", "reduction_order")
-        }
+        return {name: attrs.get(name, "relaxed") if name == "reduction_order" else attrs[name]
+                for name in ("round_projection", "weight_block_n", "weight_block_k", "reduction_order")}
 
     @classmethod
     def combine_inputs(cls, inputs, attrs):

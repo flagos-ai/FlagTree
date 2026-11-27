@@ -1,7 +1,6 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: MIT
-import pytest
-import torch
+import pytest, torch
 from triton.flagmega import ir as fm
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.options import CompileOptions
@@ -17,16 +16,17 @@ from python.test.flagmega.ir.ops.nn._shared_latent_cache_fixtures import SharedM
     "lanes,layout,split_axis,cyclic,heads,advance,reusable",
     [
         ((), ("seq", "head", "dim"), None, False, 4, False, False),
-        ((1, ), ("seq", "head", "dim"), None, False, 4, True, False),
-        ((4, ), ("seq", "head", "dim"), "head", False, 4, True, False),
+        ((1,), ("seq", "head", "dim"), None, False, 4, True, False),
+        ((4,), ("seq", "head", "dim"), "head", False, 4, True, False),
         ((2, 4), ("head", "dim", "seq"), "head", True, 7, False, False),
-        ((16, ), ("dim", "seq", "head"), "dim", False, 4, True, False),
-        ((8, ), ("head", "seq", "dim"), "seq", True, 4, True, False),
-        ((8, ), ("seq", "head", "dim"), "head", False, 4, True, True),
+        ((16,), ("dim", "seq", "head"), "dim", False, 4, True, False),
+        ((8,), ("head", "seq", "dim"), "seq", True, 4, True, False),
+        ((8,), ("seq", "head", "dim"), "head", False, 4, True, True),
     ],
 )
-def test_shared_field_writes_preserve_all_cache_bytes_and_epoch(tmp_path, lanes, layout, split_axis, cyclic, heads,
-                                                                advance, reusable):
+def test_shared_field_writes_preserve_all_cache_bytes_and_epoch(
+    tmp_path, lanes, layout, split_axis, cyclic, heads, advance, reusable
+):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 required")
     config = PagedAttentionStateConfig(3, heads, 32, block_size=16, num_blocks=4)
@@ -37,7 +37,7 @@ def test_shared_field_writes_preserve_all_cache_bytes_and_epoch(tmp_path, lanes,
     semantic, slots = physical(config, 3, lanes, layout, device="cuda")
     # Keep source guards in scalar storage even when the semantic dim is a
     # packed, non-last axis. The physical view retains its actual lane order.
-    storage = torch.full((slots.numel() + 32, ), 123, dtype=slots.dtype, device="cuda")
+    storage = torch.full((slots.numel() + 32,), 123, dtype=slots.dtype, device="cuda")
     guarded = storage[16:-16].reshape(slots.shape)
     guarded.copy_(slots)
     slots = guarded
@@ -96,8 +96,11 @@ def test_shared_field_writes_preserve_all_cache_bytes_and_epoch(tmp_path, lanes,
                     expected[page, 1, kind, (position + row) % 16].copy_(semantic[row].reshape(heads, 4, 8))
             for state in states.values():
                 assert torch.equal(state.kv_caches.view(torch.uint8), expected.view(torch.uint8))
-                assert (state.seq_lens.item() == position + 3 * advance and state.slot_mapping.item() == position
-                        and state.query_start_loc.tolist() == [0, 3])
+                assert (
+                    state.seq_lens.item() == position + 3 * advance
+                    and state.slot_mapping.item() == position
+                    and state.query_start_loc.tolist() == [0, 3]
+                )
             for field in ["kv_caches", "seq_lens", "slot_mapping", "query_start_loc", "block_table"]:
                 assert torch.equal(getattr(states[None], field), getattr(states[True], field))
             assert bool((storage[:16] == 123).all()) and bool((storage[-16:] == 123).all())

@@ -34,20 +34,21 @@ class Cast(OpDefinition):
         dtype = data_type_from_data(attrs["dtype"])
         if tuple(getattr(tensor.dtype, "lanes", ())) != tuple(getattr(dtype, "lanes", ())):
             raise IRSchemaError("Cast must preserve vector lanes; use an explicit vectorized_cast for repacking.")
-        output = tensor_type(dtype, tensor.shape, layout=tensor.layout)
+        output = tensor_type(
+            dtype, tensor.shape, layout=tensor.layout
+        )
         if not isinstance(value, DistributedType):
             return output
         return DistributedType(
-            output,
-            value.axis_policies,
-            value.placement,
-            partial=value.partial,
-            exclusive=value.exclusive,
+            output, value.axis_policies, value.placement,
+            partial=value.partial, exclusive=value.exclusive,
         )
 
     @classmethod
     def evaluate(cls, node, arguments, context):
-        return cls.value.read(arguments).to(dtype=context.torch_dtype(tensor_of(node.type).dtype))
+        return cls.value.read(arguments).to(
+            dtype=context.torch_dtype(tensor_of(node.type).dtype)
+        )
 
     @classmethod
     def python_attrs(cls, node: Node):
@@ -57,7 +58,7 @@ class Cast(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(flops=0, bytes_read=None, bytes_written=tensor_nbytes(node.type), notes=("cast", ))
+        return OpCost(flops=0, bytes_read=None, bytes_written=tensor_nbytes(node.type), notes=("cast",))
 
 
 def rounding_attrs(attrs):

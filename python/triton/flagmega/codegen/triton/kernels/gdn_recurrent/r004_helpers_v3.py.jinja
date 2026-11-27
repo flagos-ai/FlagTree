@@ -1,0 +1,120 @@
+# Copyright 2026 FlagOS Contributors
+# SPDX-License-Identifier: MIT
+# llama.cpp-derived adaptations: MIT; upstream 5ce06fc71f5e938301f7dc51697a59ae308bd6b7.
+# Industry-derived full-P5 matched-precision port, R004-P0 v3.
+# Upstream llama.cpp 5ce06fc71f5e938301f7dc51697a59ae308bd6b7, MIT.
+# Adaptations A1-A9 only; upstream notice retained below.
+# MIT License
+#
+# Copyright (c) 2023-2026 The ggml authors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+import triton
+import triton.language as tl
+from triton.language.extra import libdevice
+import triton.experimental.tle.language as tle
+
+L = tl.constexpr(tle.gpu.BlockEncoding([1,1],[4,8],[4,1],[1,0]))
+L3 = tl.constexpr(tle.gpu.BlockEncoding([1,1,1],[4,1,8],[4,1,1],[2,0,1]))
+R = tl.constexpr(tle.gpu.SlicedEncoding(1, L3.value))
+V = tl.constexpr(tle.gpu.BlockEncoding([4],[32],[1],[0]))
+V2 = tl.constexpr(tle.gpu.BlockEncoding([1,4],[32,1],[1,1],[0,1]))
+VLANE = tl.constexpr(tle.gpu.SlicedEncoding(1,V2.value))
+D = tl.constexpr(tle.gpu.BlockEncoding([1],[32],[4],[0]))
+E = tl.constexpr(tle.gpu.BlockEncoding([1],[32],[8],[0]))
+BIAS = tl.constexpr(tle.gpu.BlockEncoding([1,1],[1,32],[1,1],[1,0]))
+
+@triton.jit
+def gdn_reduce8_xor_v3(x):
+    x = tle.gpu.set_layout(x, R)
+    return tl.inline_asm_elementwise(
+        "{ .reg .f32 t; shfl.sync.bfly.b32 t, $1, 4, 0x1807, 0xffffffff; add.f32 $0, $1, t; "
+        "shfl.sync.bfly.b32 t, $0, 2, 0x1807, 0xffffffff; add.f32 $0, $0, t; "
+        "shfl.sync.bfly.b32 t, $0, 1, 0x1807, 0xffffffff; add.f32 $0, $0, t; }",
+        constraints="=f,f", args=[x], dtype=tl.float32, is_pure=True, pack=1)
+
+@triton.jit
+def reduce32_xor_v3(x):
+    return tl.inline_asm_elementwise(
+        "{ .reg .f32 t; shfl.sync.bfly.b32 t,$1,16,0x1f,0xffffffff; add.f32 $0,$1,t; "
+        "shfl.sync.bfly.b32 t,$0,8,0x1f,0xffffffff; add.f32 $0,$0,t; "
+        "shfl.sync.bfly.b32 t,$0,4,0x1f,0xffffffff; add.f32 $0,$0,t; "
+        "shfl.sync.bfly.b32 t,$0,2,0x1f,0xffffffff; add.f32 $0,$0,t; "
+        "shfl.sync.bfly.b32 t,$0,1,0x1f,0xffffffff; add.f32 $0,$0,t; }",
+        constraints="=f,f",args=[x],dtype=tl.float32,is_pure=True,pack=1)
+
+@triton.jit
+def extract_r(x, r: tl.constexpr):
+    # Same L->L3->static-r extract; split selects register bits and does not
+    # request cross-lane gather transport. This is not a mapping change.
+    x3 = tle.gpu.set_layout(tl.reshape(x,[16,16,8]),L3)
+    v = tl.trans(x3,0,2,1)
+    a0, a1 = tl.split(tl.reshape(v,[16,8,8,2]))
+    if r % 2 == 0:
+        a = a0
+    else:
+        a = a1
+    b0, b1 = tl.split(tl.reshape(a,[16,8,4,2]))
+    if (r//2) % 2 == 0:
+        b = b0
+    else:
+        b = b1
+    c0, c1 = tl.split(tl.reshape(b,[16,8,2,2]))
+    if (r//4) % 2 == 0:
+        c = c0
+    else:
+        c = c1
+    d0, d1 = tl.split(c)
+    if r//8 == 0:
+        d = d0
+    else:
+        d = d1
+    return tle.gpu.set_layout(d,R)
+
+@triton.jit
+def local4_square(x):
+    # Compile-time split of the four registers belonging to this lane.
+    # No gather or change of scalar owner; ascending local accumulation below.
+    x2d = tle.gpu.set_layout(tl.reshape(x,[32,4]),V2)
+    even, odd = tl.split(tl.reshape(x2d,[32,2,2]))
+    x0, x2 = tl.split(even)
+    x1, x3 = tl.split(odd)
+    x0 = tle.gpu.set_layout(x0,VLANE)
+    x1 = tle.gpu.set_layout(x1,VLANE)
+    x2 = tle.gpu.set_layout(x2,VLANE)
+    x3 = tle.gpu.set_layout(x3,VLANE)
+    partial = x0*x0
+    partial = partial + x1*x1
+    partial = partial + x2*x2
+    partial = partial + x3*x3
+    return reduce32_xor_v3(partial)
+
+
+@triton.jit
+def qk_norm(QKV, Out, Offset: tl.constexpr):
+    h = tl.program_id(0)
+    i = tle.gpu.set_layout(tl.arange(0,128),V)
+    x = tl.load(QKV+Offset+h*128+i).to(tl.float32)
+    sumsq = local4_square(x)
+    inv = 1.0/tl.maximum(tl.sqrt(sumsq),1.e-12)
+    inv2 = tle.gpu.set_layout(tl.broadcast_to(inv[:,None],[32,4]),V2)
+    inv1 = tle.gpu.set_layout(tl.reshape(inv2,[128]),V)
+    tl.store(Out+h*128+i,x*inv1)
+

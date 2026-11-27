@@ -22,10 +22,8 @@ def test_output_tail_pipeline_matches_torch(tmp_path, n, cyclic):
     module = _packed_descriptor_pipeline_module(implementation, n=n, output_policy=policy)
     generator = torch.Generator().manual_seed(276)
     weight = torch.randn((n, 2048), dtype=torch.bfloat16, generator=generator) / 32
-    checkpoint = MemoryCheckpoint({}, {"weight": TensorInfo("weight", DType.BFLOAT16, tuple(weight.shape), "memory")},
-                                  {"weight": weight})
-    artifact = write_artifact(module, tmp_path / "tail", target="nvidia-sm90", checkpoint=checkpoint,
-                              emit_executable=True)
+    checkpoint = MemoryCheckpoint({}, {"weight": TensorInfo("weight", DType.BFLOAT16, tuple(weight.shape), "memory")}, {"weight": weight})
+    artifact = write_artifact(module, tmp_path / "tail", target="nvidia-sm90", checkpoint=checkpoint, emit_executable=True)
     runtime = load(artifact, device="cuda:0")
     value = torch.randn((1, 2048), dtype=torch.bfloat16, generator=generator).cuda() / 8
     output = torch.empty((1, n), dtype=torch.bfloat16, device="cuda")

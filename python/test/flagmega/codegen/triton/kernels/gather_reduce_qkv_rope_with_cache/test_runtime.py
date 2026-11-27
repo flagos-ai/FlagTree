@@ -21,13 +21,12 @@ def test_partial_cache_coordinates_are_bound_in_emitted_writer(tmp_path, head_di
     compiled = Compiler().compile(source).module
     artifact = write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     tree = ast.parse((artifact / "generated_kernels.py").read_text())
-    writers = [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name.endswith("__write")]
+    writers = [node for node in ast.walk(tree)
+               if isinstance(node, ast.FunctionDef) and node.name.endswith("__write")]
     assert writers
     for writer in writers:
-        coordinates = [
-            node for node in ast.walk(writer)
-            if isinstance(node, ast.Name) and node.id.startswith(("qkv_k_cache_", "qkv_v_cache_"))
-        ]
+        coordinates = [node for node in ast.walk(writer) if isinstance(node, ast.Name)
+                       and node.id.startswith(("qkv_k_cache_", "qkv_v_cache_"))]
         used = {node.id for node in coordinates if isinstance(node.ctx, ast.Load)}
         defined = {node.id for node in coordinates if isinstance(node.ctx, ast.Store)}
         assert used, writer.name
@@ -41,54 +40,46 @@ def test_fp32_partial_storage_rounds_materialized_bf16_before_all_consumers(tmp_
     artifact = write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     text = (artifact / "generated_kernels.py").read_text()
     tree = ast.parse(text)
-    sums = [
-        node for node in ast.walk(tree) if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id.startswith(('qkv_q', 'qkv_k',
-                                                                   'qkv_v')) and target.id.endswith('_value')
-            for target in node.targets) and 'tl.sum(' in ast.unparse(node.value)
-    ]
+    sums = [node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id.startswith(('qkv_q', 'qkv_k', 'qkv_v'))
+                    and target.id.endswith('_value') for target in node.targets)
+            and 'tl.sum(' in ast.unparse(node.value)]
     assert len(sums) >= 3
     for node in sums:
         assert ').to(tl.bfloat16).to(tl.float32)' in ast.unparse(node.value)
     # External pointers inherit their actual typed argument ABI, so they need
     # no textual pointer cast. Rounding belongs to the complete sum above.
-    assert all(field.tensor.dtype.elem_type == fm.DType.FLOAT32 for field in compiled.node_map['partials'].type.fields)
+    assert all(field.tensor.dtype.elem_type == fm.DType.FLOAT32
+               for field in compiled.node_map['partials'].type.fields)
 
 
 @pytest.mark.parametrize("head_dim,rotary_dim,use_mean,heads_tuple", [
-    (64, None, False, (4, 2, 2)),
-    (64, 48, True, (4, 2, 2)),
-    (256, 64, False, (4, 2, 2)),
+    (64, None, False, (4, 2, 2)), (64, 48, True, (4, 2, 2)), (256, 64, False, (4, 2, 2)),
     (64, 48, True, (5, 3, 3)),
 ])
 def test_compact_partial_qkv_query_cache_and_publication(tmp_path, head_dim, rotary_dim, use_mean, heads_tuple,
-                                                         partial_dtype="bfloat16"):
+                                                       partial_dtype="bfloat16"):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA required")
     source, config = qkv_statistics_graph(head_dim=head_dim, rotary_dim=rotary_dim, use_mean=use_mean,
-                                          heads_tuple=heads_tuple, partial_dtype=partial_dtype)
+                                         heads_tuple=heads_tuple, partial_dtype=partial_dtype)
     compiled = Compiler().compile(source).module
-    assert len([
-        k for k in compiled.kernel_definitions if k.dispatch.semantic_op == "ntt.gather_reduce_qkv_rope_with_cache"
-    ]) == 1
-    assert not [
-        k for k in compiled.kernel_definitions if k.dispatch.semantic_op in {"nn.norm_stats", "distributed.boxing"}
-    ]
+    assert len([k for k in compiled.kernel_definitions
+                if k.dispatch.semantic_op == "ntt.gather_reduce_qkv_rope_with_cache"]) == 1
+    assert not [k for k in compiled.kernel_definitions if k.dispatch.semantic_op in {"nn.norm_stats", "distributed.boxing"}]
     artifact = write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     prototype = load(artifact)
-    runtime = GeneratedTirCallGraphModule(prototype.artifact, prototype.manifest, prototype.ir_module,
-                                          prototype.kernel).load("cuda:0")
+    runtime = GeneratedTirCallGraphModule(prototype.artifact, prototype.manifest,
+                                         prototype.ir_module, prototype.kernel).load("cuda:0")
     for pool in runtime._pool_values.values():
         pool.fill_(0xA5)
     generator = torch.Generator(device="cuda").manual_seed(763)
     dense, compact = [], []
     for heads in heads_tuple:
-        parts = torch.randn((2, heads, head_dim), generator=generator, device="cuda",
-                            dtype=getattr(torch, partial_dtype))
+        parts = torch.randn((2, heads, head_dim), generator=generator, device="cuda", dtype=getattr(torch, partial_dtype))
         dense.append(parts.float().sum(0).bfloat16())
-        storage = torch.full((4, (heads + 1) // 2, head_dim), float("nan"), device="cuda",
-                             dtype=getattr(torch, partial_dtype))
+        storage = torch.full((4, (heads + 1) // 2, head_dim), float("nan"), device="cuda", dtype=getattr(torch, partial_dtype))
         for member in range(2):
             for head_owner in range(2):
                 owned = parts[member, head_owner::2]
@@ -97,8 +88,7 @@ def test_compact_partial_qkv_query_cache_and_publication(tmp_path, head_dim, rot
     values = {
         name: torch.randn(shape, generator=generator, device="cuda").to(dtype)
         for name, shape, dtype in (
-            ("scale", (head_dim, ), torch.bfloat16),
-            ("bias", (head_dim, ), torch.bfloat16),
+            ("scale", (head_dim,), torch.bfloat16), ("bias", (head_dim,), torch.bfloat16),
             ("cos", (1, 1, rotary_dim or head_dim), torch.float32),
             ("sin", (1, 1, rotary_dim or head_dim), torch.float32),
         )
@@ -112,8 +102,7 @@ def test_compact_partial_qkv_query_cache_and_publication(tmp_path, head_dim, rot
         if node_id == "partials":
             bound.update(zip(buffers, compact, strict=True))
         elif isinstance(node.type, fm.RefType):
-            bound.update(
-                (buffer, getattr(state, field)) for buffer, (field, _) in zip(buffers, node.type.fields, strict=True))
+            bound.update((buffer, getattr(state, field)) for buffer, (field, _) in zip(buffers, node.type.fields, strict=True))
         else:
             bound[buffers[0]] = values[node.attrs["name"]]
     for argument in runtime.external_arguments:
@@ -154,4 +143,5 @@ def test_compact_partial_qkv_query_cache_and_publication(tmp_path, head_dim, rot
 
 
 def test_fp32_partial_sum_rounding_on_device(tmp_path):
-    test_compact_partial_qkv_query_cache_and_publication(tmp_path, 64, None, False, (4, 2, 2), partial_dtype="float32")
+    test_compact_partial_qkv_query_cache_and_publication(
+        tmp_path, 64, None, False, (4, 2, 2), partial_dtype="float32")

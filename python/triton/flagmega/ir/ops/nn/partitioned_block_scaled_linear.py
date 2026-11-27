@@ -29,8 +29,8 @@ from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import DType, VectorType
 
 
-@op_definition("nn.partitioned_block_scaled_linear", namespace="nn", functional_name="partitioned_block_scaled_linear",
-               display_name="NN.PartitionedBlockScaledLinear")
+@op_definition("nn.partitioned_block_scaled_linear", namespace="nn",
+               functional_name="partitioned_block_scaled_linear", display_name="NN.PartitionedBlockScaledLinear")
 class PartitionedBlockScaledLinear(OpDefinition):
     """Project BF16 [T,K] and E4M3FN [N,K] into BF16 [P,T,N].
 
@@ -79,21 +79,20 @@ class PartitionedBlockScaledLinear(OpDefinition):
         kinds = tuple(parameter.type_of(inputs) for parameter in cls.input_parameters)
         x, w, scale = map(tensor_of, kinds)
         scalar = x.dtype.elem_type if isinstance(x.dtype, VectorType) else x.dtype
-        if (x.rank != 2 or w.rank != 2 or scale.rank != 2 or scalar != DType.BFLOAT16 or w.dtype != DType.FLOAT8_E4M3FN
-                or scale.dtype != DType.FLOAT32
+        if (x.rank != 2 or w.rank != 2 or scale.rank != 2 or scalar != DType.BFLOAT16
+                or w.dtype != DType.FLOAT8_E4M3FN or scale.dtype != DType.FLOAT32
                 or any(not d.is_fixed or d.fixed_value <= 0 for t in (x, w, scale) for d in t.shape)):
-            raise IRSchemaError(
-                "PartitionedBlockScaledLinear requires fixed positive BF16 [T,K], scalar E4M3FN [N,K] and FP32 scales.")
+            raise IRSchemaError("PartitionedBlockScaledLinear requires fixed positive BF16 [T,K], scalar E4M3FN [N,K] and FP32 scales.")
         t, n, k = x.shape[0].fixed_value, w.shape[0].fixed_value, w.shape[1].fixed_value
         parts, bn, bk = (attrs[name] for name in ("partitions", "weight_block_n", "weight_block_k"))
         in_width, out_width = getattr(x.dtype, "lane_count", 1), prod(attrs.get("output_lanes", ()))
         if x.shape[1].fixed_value * in_width != k or k % (parts * bk) or n % out_width:
-            raise IRSchemaError(
-                "PartitionedBlockScaledLinear K must match complete block-aligned parts and N complete output lanes.")
+            raise IRSchemaError("PartitionedBlockScaledLinear K must match complete block-aligned parts and N complete output lanes.")
         if tuple(d.fixed_value for d in scale.shape) != ((n + bn - 1) // bn, k // bk):
             raise IRSchemaError("PartitionedBlockScaledLinear scales must cover the original global N/K blocks.")
         lanes = attrs.get("output_lanes", ())
-        output = tensor_type(VectorType(DType.BFLOAT16, lanes) if lanes else DType.BFLOAT16, (parts, t, n // out_width))
+        output = tensor_type(VectorType(DType.BFLOAT16, lanes) if lanes else DType.BFLOAT16,
+                             (parts, t, n // out_width))
         if not any(isinstance(kind, DistributedType) for kind in kinds):
             return output
         if not all(isinstance(kind, DistributedType) for kind in kinds):
@@ -106,16 +105,14 @@ class PartitionedBlockScaledLinear(OpDefinition):
                 or x_kind.axis_policies[0] != b or any(policy != b for policy in s_kind.axis_policies)
                 or not all(_chip_policy(policy, placement) for policy in (n_policy, k_policy))
                 or set(getattr(n_policy, "hierarchy_axes", ())) & set(getattr(k_policy, "hierarchy_axes", ()))):
-            raise IRSchemaError(
-                "PartitionedBlockScaledLinear needs complete chip owners, broadcast scales and no input partials.")
+            raise IRSchemaError("PartitionedBlockScaledLinear needs complete chip owners, broadcast scales and no input partials.")
         packed_k = scale_split_units(k_policy, 1, in_width) if isinstance(k_policy, SBPSplit) else k_policy
         if packed_k is None or x_kind.axis_policies[1] != packed_k:
             raise IRSchemaError("PartitionedBlockScaledLinear input and weight must have matching scalar K ownership.")
-        if isinstance(k_policy, SBPSplit) and (prod(placement.hierarchy[axis]
-                                                    for axis in k_policy.hierarchy_axes) != parts or
-                                               (k // parts) % in_width):
-            raise IRSchemaError(
-                "PartitionedBlockScaledLinear K owners must each hold one complete partition and lane group.")
+        if isinstance(k_policy, SBPSplit) and (
+                prod(placement.hierarchy[axis] for axis in k_policy.hierarchy_axes) != parts
+                or (k // parts) % in_width):
+            raise IRSchemaError("PartitionedBlockScaledLinear K owners must each hold one complete partition and lane group.")
         packed_n = scale_split_units(n_policy, 1, out_width) if isinstance(n_policy, SBPSplit) else n_policy
         owners_n = prod(placement.hierarchy[axis] for axis in getattr(n_policy, "hierarchy_axes", ()))
         if packed_n is None or n % (owners_n * out_width):
@@ -131,27 +128,21 @@ class PartitionedBlockScaledLinear(OpDefinition):
         x, w, scale = logical_input_types
         p_policy, _, n_policy = output_type.axis_policies
         b, placement = SBP.broadcast(), output_type.placement
-        k_policy = scale_split_units(p_policy, 1, getattr(x.dtype, "lane_count", 1)) if isinstance(
-            p_policy, SBPSplit) else p_policy
-        n_policy = scale_split_units(n_policy, prod(attrs.get("output_lanes",
-                                                              ())), 1) if isinstance(n_policy, SBPSplit) else n_policy
+        k_policy = scale_split_units(p_policy, 1, getattr(x.dtype, "lane_count", 1)) if isinstance(p_policy, SBPSplit) else p_policy
+        n_policy = scale_split_units(n_policy, prod(attrs.get("output_lanes", ())), 1) if isinstance(n_policy, SBPSplit) else n_policy
         if k_policy is None or n_policy is None:
             return ()
-        return ((DistributedType(x, (b, k_policy),
-                                 placement), DistributedType(w, (n_policy, p_policy),
-                                                             placement), DistributedType(scale, (b, b), placement)), )
+        return ((DistributedType(x, (b, k_policy), placement),
+                 DistributedType(w, (n_policy, p_policy), placement),
+                 DistributedType(scale, (b, b), placement)),)
 
     @classmethod
     def distributed_input_type_tuples(cls, choices, attrs):
-        x_map = {(kind.placement, kind.axis_policies): kind
-                 for kind in choices[0]
+        x_map = {(kind.placement, kind.axis_policies): kind for kind in choices[0]
                  if isinstance(kind, DistributedType) and kind.partial is None and kind.exclusive is None}
-        s_map = {
-            kind.placement: kind
-            for kind in choices[2]
-            if isinstance(kind, DistributedType) and kind.partial is None and kind.exclusive is None and all(
-                policy == SBP.broadcast() for policy in kind.axis_policies)
-        }
+        s_map = {kind.placement: kind for kind in choices[2] if isinstance(kind, DistributedType)
+                 and kind.partial is None and kind.exclusive is None
+                 and all(policy == SBP.broadcast() for policy in kind.axis_policies)}
         sample = next(iter(choices[0]), None)
         if sample is None:
             return
@@ -170,9 +161,7 @@ class PartitionedBlockScaledLinear(OpDefinition):
     def distributed_output_type_candidates(cls, choices, output_type, attrs):
         results = []
         b = SBP.broadcast()
-        for placement in dict.fromkeys(kind.placement
-                                       for options in choices
-                                       for kind in options
+        for placement in dict.fromkeys(kind.placement for options in choices for kind in options
                                        if isinstance(kind, DistributedType)):
             axes = tuple(i for i in range(len(placement.hierarchy)) if not placement.is_physical_block_axis(i))
             groups = [(), *(group for size in range(1, len(axes) + 1) for group in combinations(axes, size))]
@@ -182,9 +171,9 @@ class PartitionedBlockScaledLinear(OpDefinition):
                 for n_axes in groups:
                     if set(p_axes) & set(n_axes):
                         continue
-                    results.append(
-                        DistributedType(output_type, (SBP.split_contiguous(p_axes) if p_axes else b, b,
-                                                      SBP.split_contiguous(n_axes) if n_axes else b), placement))
+                    results.append(DistributedType(output_type,
+                        (SBP.split_contiguous(p_axes) if p_axes else b, b,
+                         SBP.split_contiguous(n_axes) if n_axes else b), placement))
         return tuple(results)
 
     @classmethod
@@ -193,29 +182,26 @@ class PartitionedBlockScaledLinear(OpDefinition):
         value = value.reshape(value.shape[0], -1)
         parts, bk = node.attrs["partitions"], node.attrs["weight_block_k"]
         span = weight.shape[1] // parts
-        values = [
-            block_scaled_linear(value[:, p * span:(p + 1) * span], weight[:, p * span:(p + 1) * span],
-                                scales[:, p * span // bk:(p + 1) * span // bk], block_n=node.attrs["weight_block_n"],
-                                block_k=bk, output_dtype=context.torch.bfloat16,
-                                activation_quantization=node.attrs["activation_quantization"]) for p in range(parts)
-        ]
+        values = [block_scaled_linear(value[:, p * span:(p + 1) * span], weight[:, p * span:(p + 1) * span],
+                    scales[:, p * span // bk:(p + 1) * span // bk], block_n=node.attrs["weight_block_n"], block_k=bk,
+                    output_dtype=context.torch.bfloat16, activation_quantization=node.attrs["activation_quantization"])
+                  for p in range(parts)]
         result = context.torch.stack(values)
         kind = tensor_of(node.type)
         return result.reshape(*(d.fixed_value for d in kind.shape), *getattr(kind.dtype, "lanes", ()))
 
     @classmethod
     def cost(cls, node):
-        return OpCost(bytes_written=tensor_nbytes(node.type), notes=("block-fp8-rounded-k-partitions", ))
+        return OpCost(bytes_written=tensor_nbytes(node.type), notes=("block-fp8-rounded-k-partitions",))
 
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
         del attrs
-        x, weight, scale = (local_tensor_type(v.type) if isinstance(v.type, DistributedType) else v.type
-                            for v in inputs)
+        x, weight, scale = (local_tensor_type(v.type) if isinstance(v.type, DistributedType) else v.type for v in inputs)
         output = local_tensor_type(return_type) if isinstance(return_type, DistributedType) else return_type
         return OpCostFactors(cpu_cycles=2 * x.shape[0].fixed_value * prod(d.fixed_value for d in weight.shape),
-                             chip_aggregate_memory_load_bytes=sum(tensor_nbytes(kind) for kind in (x, weight, scale)),
-                             chip_aggregate_memory_store_bytes=tensor_nbytes(output))
+            chip_aggregate_memory_load_bytes=sum(tensor_nbytes(kind) for kind in (x, weight, scale)),
+            chip_aggregate_memory_store_bytes=tensor_nbytes(output))
 
 
 __all__ = ["PartitionedBlockScaledLinear"]

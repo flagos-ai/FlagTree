@@ -1,0 +1,139 @@
+# flagmega-kernel: gdn_recurrent/r017_split4lut
+# Copyright 2026 FlagOS Contributors
+# SPDX-License-Identifier: MIT
+# H004 standalone: gate/qk -> 384 column CTAs -> head publication.
+# Reuse the faithfully pinned register core including fused libdevice.exp(g).
+{% include "kernels/gdn_recurrent/r004_reference_v4.py.jinja" %}
+{% include "kernels/gdn_recurrent/r004_norm_v6.py.jinja" %}
+
+@triton.jit
+def _r017_signed_lut(code):
+    lo = (tl.where(code < 8, 0xbfad9881, 0x26190d01).to(tl.uint32))
+    hi = (tl.where(code < 8, 0xf6eaddcf, 0x71594535).to(tl.uint32))
+    return (tl.inline_asm_elementwise(
+        "{ .reg .b32 v; prmt.b32 v, $1, $2, $3; shl.b32 v, v, 24; shr.s32 v, v, 24; cvt.rn.f32.s32 $0, v; }",
+        constraints="=f,r,r,r", args=[lo, hi, code & 7], dtype=tl.float32, is_pure=True, pack=1))
+
+@triton.jit
+def _r017_projection_tile(X, BW):
+    h = tl.program_id(0)
+    layout:tl.constexpr=tle.gpu.BlockEncoding([1,1],[1,32],[1,4],[1,0])
+    k0 = tle.gpu.set_layout(tl.arange(0,4)[:,None]*128+tl.arange(0,128)[None,:],layout)
+    start = tl.program_id(2)*512
+    k = start + k0
+    group = (k % 256) // 32
+    lane = k % 32
+    base = h*2720 + (k//256)*136
+    d = tl.load(BW.to(tl.pointer_type(tl.float16))+base//2).to(tl.float32)
+    sl = tl.load(BW+base+4+group//2)
+    sh = tl.load(BW.to(tl.pointer_type(tl.uint16))+(base+2)//2)
+    sc = ((sl >> ((group%2)*4)) & 15) | (((sh >> (group*2)) & 3)*16)
+    packed = tl.load(BW+base+8+group*16+lane%16)
+    code = tl.where(lane//16==0,packed & 15,packed >> 4)
+    cv = _r017_signed_lut(code)
+    decoded = d * (sc.to(tl.float32)-32.0) * cv
+    value = tl.load(X+k).to(tl.float32)
+    return tl.sum(decoded*value,1)
+
+@triton.jit
+def _r017_partials(X,BW,AW,Partials,X_ROW:tl.constexpr=0,POOL_ROW:tl.constexpr=0):
+    # The batch axis carries (row, bank) when the plan is row-widened.
+    row = tl.program_id(1) // 2 if POOL_ROW else 0
+    bank = tl.program_id(1) % 2 if POOL_ROW else tl.program_id(1)
+    weights=tl.where(bank==0,BW,AW)
+    partial=_r017_projection_tile(X + row*X_ROW,weights)
+    tile=tle.gpu.set_layout(tl.arange(0,4),tle.gpu.SlicedEncoding(1,tle.gpu.BlockEncoding([1,1],[1,32],[1,4],[1,0])))
+    tl.store(Partials+row*(POOL_ROW//4)+(bank*48+tl.program_id(0))*40+tl.program_id(2)*4+tile,partial)
+
+
+@triton.jit
+def _r017_ordered_projection(Partials,bank:tl.constexpr):
+    # Caller has already offset Partials to this row's slot.
+    # Read all original 40 tile sums before the scalar accumulator dependency.
+    i=tle.gpu.set_layout(tl.arange(0,64),tle.gpu.BlockEncoding([2],[32],[4],[0]))
+    sums=tl.load(Partials+(bank*48+tl.program_id(0))*40+i,i<40,0)
+    acc=tl.full((),0.0,tl.float32)
+    for j in tl.static_range(40):
+        term=tl.sum(tl.gather(sums,tl.full((1,),j,tl.int32),0),0)
+        acc+=term
+    return acc.to(tl.bfloat16).to(tl.float32)
+
+
+
+@triton.jit
+def _r017_prep_split4lut(QKV,X,BW,AW,ALog,DT,QN,KN,Beta,G,Partials,
+                         QKV_ROW:tl.constexpr=0,X_ROW:tl.constexpr=0,POOL_ROW:tl.constexpr=0):
+    h = tl.program_id(0)
+    row = tl.program_id(1) if POOL_ROW else 0
+    QKV = QKV + row*QKV_ROW
+    QN = QN + row*(POOL_ROW//4); KN = KN + row*(POOL_ROW//4)
+    Beta = Beta + row*(POOL_ROW//4); G = G + row*(POOL_ROW//4)
+    Partials = Partials + row*(POOL_ROW//4)
+    # Two unchanged, independent IQ4_XS tiny projection arithmetic streams.
+    b = _r017_ordered_projection(Partials,0)
+    a = _r017_ordered_projection(Partials,1)
+    beta = tl.sigmoid(b).to(tl.bfloat16).to(tl.float32)
+    biased = a + tl.load(DT+h)
+    softplus = tl.where(biased>20.0,biased,libdevice.log1p(libdevice.exp(biased)))
+    decay_log = -libdevice.exp(tl.load(ALog+h))*softplus
+    tl.store(Beta+h,beta)
+    tl.store(G+h,decay_log)
+    # Independent complete norm replicas; no warp partial enters the tiny-dot D domain.
+    if h < 16:
+        i = tle.gpu.set_layout(tl.arange(0,128),V_T)
+        q = tl.load(QKV+h*128+i).to(tl.float32)
+        k = tl.load(QKV+2048+h*128+i).to(tl.float32)
+        qinv = 1.0/tl.maximum(tl.sqrt(norm128_v6(q)),1.e-12)
+        kinv = 1.0/tl.maximum(tl.sqrt(norm128_v6(k)),1.e-12)
+        qinv = norm_broadcast_v6(qinv)
+        kinv = norm_broadcast_v6(kinv)
+        elected = norm_warp0_v6()
+        tl.store(QN+h*128+i,q*qinv,elected)
+        tl.store(KN+h*128+i,k*kinv,elected)
+
+
+@triton.jit
+def _r017_y_split4lut(Core,Z,Norm,Y,Z_ROW:tl.constexpr=0,Y_ROW:tl.constexpr=0,POOL_ROW:tl.constexpr=0):
+    h = tl.program_id(0)
+    row = tl.program_id(1) if POOL_ROW else 0
+    Core = Core + row*(POOL_ROW//4); Z = Z + row*Z_ROW; Y = Y + row*Y_ROW
+    i = tle.gpu.set_layout(tl.arange(0,128),V_T)
+    core = tl.load(Core+h*128+i)
+    sumsq = norm128_v6(core)
+    arg = tl.inline_asm_elementwise("fma.rn.f32 $0,$1,0f3c000000,0f358637bd;",
+        constraints="=f,f", args=[sumsq], dtype=tl.float32, is_pure=True, pack=1)
+    inv = norm_broadcast_v6(tl.rsqrt(arg))
+    weight = tl.load(Norm+i)
+    z = tl.load(Z+h*128+i).to(tl.float32)
+    weighted = norm_mul_v6(norm_mul_v6(core,inv),weight)
+    pre = norm_mul_v6(weighted,z*tl.sigmoid(z))
+    tl.store(Y+h*128+i,pre.to(tl.bfloat16),norm_warp0_v6())
+
+@triton.jit
+def _r017_core_split4lut(QN,KN,QKV,Beta,G,StateParent,Layer,Core,
+                         QKV_ROW:tl.constexpr=0,POOL_ROW:tl.constexpr=0,ROWS:tl.constexpr=1):
+    # Direct selected-parent source; no gather/clear or additional state staging.
+    # The recurrence is sequential in token order: row r must start from the
+    # state row r-1 published. The grid therefore carries no batch axis here --
+    # concurrent CTAs would race on the one shared parent state -- and the row
+    # loop is a static sequential loop inside this kernel.
+    selected = StateParent + Layer.to(tl.int64)*786432
+    for row in tl.static_range(ROWS):
+        _r004_reference_core_v4(QN + row*(POOL_ROW//4), KN + row*(POOL_ROW//4),
+                                QKV + row*QKV_ROW,
+                                Beta + row*(POOL_ROW//4), G + row*(POOL_ROW//4),
+                                selected,StateParent,Layer, Core + row*(POOL_ROW//4))
+
+{% if render_calls is defined %}
+{% for call in render_calls if call.family == "gdn_recurrent" and call.variant == "r017_split4lut" %}
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+{% if call.phase == "partials" %}
+    _r017_partials({{ call.native_arguments | join(", ") }})
+{% elif call.phase == "core" %}
+    _r017_core_split4lut({{ call.native_arguments | join(", ") }})
+{% else %}
+    _r017_{{ call.phase }}_split4lut({{ call.native_arguments | join(", ") }})
+{% endif %}
+{% endfor %}
+{% endif %}

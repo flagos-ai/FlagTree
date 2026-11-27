@@ -22,8 +22,7 @@ def test_partial_rope_matches_expanded_reference(dtype, head_dim, rotary_dim):
     prefix = value[..., :rotary_dim].float()
     half = rotary_dim // 2
     rotated = torch.cat((-prefix[..., half:], prefix[..., :half]), dim=-1)
-    expected = torch.cat(((prefix * cosine.float() + rotated * sine.float()).to(dtype), value[..., rotary_dim:]),
-                         dim=-1)
+    expected = torch.cat(((prefix * cosine.float() + rotated * sine.float()).to(dtype), value[..., rotary_dim:]), dim=-1)
     result = evaluate(RoPE, (value, cosine, sine), rotary_dim=rotary_dim)
     torch.testing.assert_close(result, expected, rtol=0, atol=0)
 

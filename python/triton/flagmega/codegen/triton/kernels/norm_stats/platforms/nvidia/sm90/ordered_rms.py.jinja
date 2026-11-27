@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# Ordered RMS: tile FMA, serial per-lane additions, then a 64-lane sum.
+# Ordered RMS: tile FMA, serial per-lane additions, then a 64-lane sum.
 import triton.experimental.tle.language as tle
 {{ call.symbol }}__lane_layout = tl.constexpr(tle.gpu.BlockEncoding([1], [32], [{{ num_warps }}], [0]))
 {{ call.symbol }}__matrix_layout = tl.constexpr(tle.gpu.BlockEncoding([1, 16], [32, 1], [2, {{ num_warps // 2 }}], [0, 1]))

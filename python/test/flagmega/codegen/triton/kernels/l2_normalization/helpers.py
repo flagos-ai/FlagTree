@@ -10,17 +10,16 @@ from triton.flagmega.runtime import load
 def execute_l2(tmp_path, value, *, policies=None, local_input=False, local_result=False, **attrs):
     placement = fm.Placement((2, 2), "xy", "bb")
     tensor = fm.tensor_type(str(value.dtype).removeprefix("torch."), value.shape)
-    policies = (fm.SBP.broadcast(), ) * len(value.shape) if policies is None else policies
+    policies = (fm.SBP.broadcast(),) * len(value.shape) if policies is None else policies
     distributed = fm.DistributedType(tensor, policies, placement)
 
     class Graph(fm.Module):
-
         def forward(self):
             source = self.input("value", tensor if local_input else distributed)
             data = fm.F.distributed.force_boxing(source, distributed) if local_input else source
             normalized = fm.F.nn.l2_normalization(data, **attrs)
             output = fm.F.distributed.force_boxing(normalized, tensor) if local_result else normalized
-            self.function("main", (source, ), (output, ))
+            self.function("main", (source,), (output,))
 
     module = Graph(dialect="distributed", stage="frozen_constants", entry="main",
                    metadata={"auto_distribution": {"placement": placement.to_data()}}).build()

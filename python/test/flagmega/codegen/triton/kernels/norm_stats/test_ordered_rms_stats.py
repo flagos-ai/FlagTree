@@ -38,13 +38,11 @@ def _reference(value):
 
 
 def _module(shape=(1, 4096), *, use_mean=False):
-
     class Graph(fm.Module):
-
         def forward(self):
             value = self.input("value", fm.tensor_type("float32", shape), id="value")
             result = fm.F.nn.norm_stats(value, axis=-1, use_mean=use_mean)
-            self.function("main", (value, ), (result, ))
+            self.function("main", (value,), (result,))
 
     return Graph(dialect="high_level", stage="imported", entry="main").build()
 
@@ -54,8 +52,11 @@ def _compile(module, algorithm="fma_1024", warps=8):
     catalog = replace(
         base,
         implementations=tuple(
-            replace(item, parameters={**item.parameters, "compute_num_warps": warps, "reduction_algorithm": algorithm}
-                    ) if item.family == "norm_stats" else item for item in base.implementations),
+            replace(item, parameters={**item.parameters, "compute_num_warps": warps, "reduction_algorithm": algorithm})
+            if item.family == "norm_stats"
+            else item
+            for item in base.implementations
+        ),
     )
     compiler = Compiler()
     compiler.target = NvidiaSm90Target(triton_implementation_model=catalog)

@@ -8,9 +8,7 @@ from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.microkernels.materialization import materialize_shared_workspace_buffers
 from triton.flagmega.ir.tir.kernel_definition import replace_kernel_callables, replace_kernel_dispatch
 from triton.flagmega.passes.tir import (
-    bind_prim_function_buffers,
-    materialize_execution_functions,
-    materialize_kernel_prim_functions,
+    bind_prim_function_buffers, materialize_execution_functions, materialize_kernel_prim_functions,
 )
 from triton.flagmega.passes.tir.bufferize import plan_memory_synchronization
 from triton.flagmega.targets.nvidia import NvidiaSm90Machine
@@ -22,36 +20,29 @@ def gdn_state_calls(*, repeated_recurrent=False, distributed=False):
     config, attrs, types, _ = recurrent_case(tokens=1)
     if distributed:
         placement = fm.Placement((2, 4), "yx", "bb")
-        types = {
-            name: (value if name == "state" else fm.DistributedType(value,
-                                                                    ((fm.SBP.broadcast(), fm.SBP.split_contiguous(
-                                                                        (0, 1))) if name == "z" else
-                                                                     (fm.SBP.broadcast(), ) * value.rank), placement))
-            for name, value in types.items()
-        }
+        types = {name: (value if name == "state" else fm.DistributedType(value, (
+            (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, 1))) if name == "z"
+            else (fm.SBP.broadcast(),) * value.rank), placement)) for name, value in types.items()}
     builder = fm.IRBuilder(dialect="semantic_tir", stage="selected_tir")
     inputs = {name: builder.var(name, value, id=name) for name, value in types.items()}
     weight_type = fm.tensor_type("bfloat16", (config.conv_dim, 1, 4))
     if distributed:
-        weight_type = fm.DistributedType(weight_type, (fm.SBP.broadcast(), ) * 3, placement)
+        weight_type = fm.DistributedType(weight_type, (fm.SBP.broadcast(),) * 3, placement)
     weight = builder.var("conv_weight", weight_type, id="conv_weight")
     calls = []
     for index, family in enumerate(("gdn_recurrent" if repeated_recurrent else "gdn_convolution", "gdn_recurrent")):
         recurrent = family == "gdn_recurrent"
         arguments = tuple(inputs.values()) if recurrent else (inputs["qkv"], inputs["state"], weight)
         result = fm.TupleType((types["z"] if recurrent else types["qkv"], config.ref_type))
-        calls.append(
-            builder.call(
-                "tir.kernel", arguments, result, id=f"call{index}",
-                effect=fm.effect("read_write", "gated_delta_net_state"), attrs={
-                    "semantic_op": "nn.gdn_recurrent_core" if recurrent else "nn.gdn_convolution",
-                    "candidate": f"tir.{family}.persistent",
-                    "parameters": {"family": family, "variant": "persistent"},
-                    "facts": {},
-                    "semantic_attrs": attrs if recurrent else {"conv_kernel_size": 4},
-                }))
-    first_value = builder.call("builtin.get_item", (calls[0], ), calls[0].type.fields[0], id="first_value",
-                               attrs={"index": 0})
+        calls.append(builder.call("tir.kernel", arguments, result, id=f"call{index}",
+            effect=fm.effect("read_write", "gated_delta_net_state"), attrs={
+                "semantic_op": "nn.gdn_recurrent_core" if recurrent else "nn.gdn_convolution",
+                "candidate": f"tir.{family}.persistent",
+                "parameters": {"family": family, "variant": "persistent"},
+                "facts": {}, "semantic_attrs": attrs if recurrent else {"conv_kernel_size": 4},
+            }))
+    first_value = builder.call("builtin.get_item", (calls[0],), calls[0].type.fields[0],
+                               id="first_value", attrs={"index": 0})
     builder.function("main", (*inputs.values(), weight), (first_value, calls[1]))
     return materialize_kernel_prim_functions(builder.build(entry="main"))
 
@@ -104,12 +95,12 @@ def test_state_prefetch_depends_on_only_the_selected_reference_leaf():
     for function in module.kernel_callable_map.values():
         dispatch = fm.kernel_dispatch_of(function)
         if dispatch.semantic_op == "nn.gdn_recurrent_core":
-            partition = fm.T.inplace_transfer_partition(("recurrent", ), 3, 0, 1, 4)
+            partition = fm.T.inplace_transfer_partition(("recurrent",), 3, 0, 1, 4)
             workspace = fm.T.shared_workspace_descriptor("state_stage", fm.tensor_type("float32", (2, 4, 8)), 16)
-            pipeline = fm.T.transfer_pipeline_contract(
-                (fm.T.transfer_pipeline_channel("state", (0, ), (0, ), 16, inplace_partition=partition), ), capacity=2)
+            pipeline = fm.T.transfer_pipeline_contract((fm.T.transfer_pipeline_channel(
+                "state", (0,), (0,), 16, inplace_partition=partition),), capacity=2)
             selection = fm.T.microkernel_selection("test.state", "gdn_recurrent", "test_state",
-                                                   shared_workspaces=(workspace, ), transfer_pipeline=pipeline)
+                                                   shared_workspaces=(workspace,), transfer_pipeline=pipeline)
             dispatch = replace(dispatch, microkernel=selection,
                                shared_workspace_buffers=materialize_shared_workspace_buffers(function, selection))
             function = replace_kernel_dispatch(function, dispatch)
@@ -117,4 +108,4 @@ def test_state_prefetch_depends_on_only_the_selected_reference_leaf():
     module, plan = _scheduled(replace_kernel_callables(module, functions))
     _, recurrent = dict(plan.function_map["main"].parameters)["state"]
     _, invocation = fm.execution_calls_of(module.execution_function_map["main"])
-    assert invocation.transfer_sources == (recurrent, )
+    assert invocation.transfer_sources == (recurrent,)

@@ -23,9 +23,8 @@ def has_remote_rotary_pairs(value_type, rotary_dim=None, dimension_axis=-1):
     if not extent.is_fixed:
         return True
     return _has_remote_pairs(
-        DistributedType(TensorType(tensor.dtype, (extent, )), (policy, ), value_type.placement),
-        lanes,
-        extent.fixed_value * lanes if rotary_dim is None else rotary_dim,
+        DistributedType(TensorType(tensor.dtype, (extent,)), (policy,), value_type.placement),
+        lanes, extent.fixed_value * lanes if rotary_dim is None else rotary_dim,
     )
 
 
@@ -33,8 +32,8 @@ def has_remote_rotary_pairs(value_type, rotary_dim=None, dimension_axis=-1):
 def _has_remote_pairs(dimension_type, lanes, rotary_dim):
     policy = dimension_type.axis_policies[0]
     split_axes = {axis for stage in policy.stages for axis in stage.hierarchy_axes}
-    domains = tuple(
-        range(count) if axis in split_axes else (0, ) for axis, count in enumerate(dimension_type.placement.hierarchy))
+    domains = tuple(range(count) if axis in split_axes else (0,)
+                    for axis, count in enumerate(dimension_type.placement.hierarchy))
     owners = {}
     for owner in product(*domains):
         axis = local_shard_descriptor(dimension_type, owner).axes[0]

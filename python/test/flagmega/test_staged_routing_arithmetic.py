@@ -21,36 +21,28 @@ MODE = "tanh_scaled_reciprocal"
 # Selected logits from a real E288 router, with synthetic biases fixing order.
 # Gold: unmodified vLLM 0.31.0 grouped_topk, E288/k8/renormalize/scale2.5,
 # CUDA 13.0, SM90. No checkpoint or vLLM dependency is needed to reproduce.
-LOGITS = [
-    -0.08202171325683594, -0.7358289361000061, -0.3879976272583008, -1.284753441810608, -1.4504410028457642,
-    -0.8667342066764832, -1.9413106441497803, -2.0344033241271973
-]
-GOLD = [
-    0.5572090148925781, 0.3764069676399231, 0.46969908475875854, 0.2518647611141205, 0.2207120656967163,
-    0.3438898026943207, 0.1458415985107422, 0.13437670469284058
-]
+LOGITS = [-0.08202171325683594, -0.7358289361000061, -0.3879976272583008, -1.284753441810608,
+          -1.4504410028457642, -0.8667342066764832, -1.9413106441497803, -2.0344033241271973]
+GOLD = [0.5572090148925781, 0.3764069676399231, 0.46969908475875854, 0.2518647611141205,
+        0.2207120656967163, 0.3438898026943207, 0.1458415985107422, 0.13437670469284058]
 
 
 def module(arithmetic=None, *, normalize=True, scoring="sigmoid", k=8):
-
     class Graph(fm.Module):
-
         def forward(self):
             value = self.input("logits", fm.tensor_type("float32", (1, 288)), id="logits")
-            bias = self.input("bias", fm.tensor_type("float32", (288, )), id="bias")
+            bias = self.input("bias", fm.tensor_type("float32", (288,)), id="bias")
             attrs = {} if arithmetic is None else {"arithmetic": arithmetic}
             routing = fm.F.nn.staged_routing(value, bias, k=k, index_dtype="int32", scoring=scoring,
                                              normalize=normalize, scaling=2.5, **attrs)
             outputs = fm.F.tensors.get_items(routing, 0, 1)
             self.function("main", (value, bias), outputs)
-
     return Graph(dialect="high_level", stage="imported", entry="main").build()
 
 
 def inputs():
-    return {
-        "logits": torch.tensor([LOGITS + [-100.0] * 280]), "bias": torch.tensor(list(range(8, 0, -1)) + [-100.0] * 280)
-    }
+    return {"logits": torch.tensor([LOGITS + [-100.0] * 280]),
+            "bias": torch.tensor(list(range(8, 0, -1)) + [-100.0] * 280)}
 
 
 def test_default_attributes_and_hash_are_unchanged():
@@ -69,8 +61,8 @@ def test_arithmetic_survives_python_edit_resume(tmp_path):
     assert next(n for n in restored.nodes if n.op == "nn.staged_routing").attrs["arithmetic"] == MODE
 
 
-@pytest.mark.parametrize(
-    "attrs", [{"arithmetic": "unknown"}, {"arithmetic": MODE, "scoring": "softmax"}, {"arithmetic": MODE, "k": 33}])
+@pytest.mark.parametrize("attrs", [{"arithmetic": "unknown"}, {"arithmetic": MODE, "scoring": "softmax"},
+                                  {"arithmetic": MODE, "k": 33}])
 def test_unsupported_arithmetic_is_rejected(attrs):
     with pytest.raises(IRSchemaError, match="arithmetic|sigmoid scoring"):
         module(**attrs)
@@ -97,7 +89,8 @@ def test_explicit_evaluator_formula_and_underflow(normalize):
 def test_candidate_platform_contract(arithmetic, target_type):
     graph, target = module(arithmetic), target_type()
     node = next(n for n in graph.nodes if n.op == "nn.staged_routing")
-    context = TritonCandidateContext(graph, target, {}, {}, {}, frozenset(), True, target.triton_implementation_model)
+    context = TritonCandidateContext(graph, target, {}, {}, {}, frozenset(), True,
+                                    target.triton_implementation_model)
     if arithmetic == MODE and target_type is IluvatarBiV150Target:
         with pytest.raises(CodegenError, match="CUDA 32-lane"):
             StagedRoutingCandidateProvider().propose(node, context)

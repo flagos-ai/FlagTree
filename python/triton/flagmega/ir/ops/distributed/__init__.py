@@ -5,7 +5,8 @@
 from triton.flagmega.ir.ops.distributed.boxing import Boxing
 from triton.flagmega.ir.ops.distributed.force_boxing import ForceBoxing
 from triton.flagmega.ir.ops.distributed.materialize_local_shards import (
-    MaterializeLocalShards, )
+    MaterializeLocalShards,
+)
 from triton.flagmega.ir.ops.distributed.sharded_view import ShardedView
 
 __all__ = [

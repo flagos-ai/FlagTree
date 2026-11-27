@@ -35,7 +35,11 @@ def kernel_execution_kind(
     if semantic_op in {"distributed.boxing", "distributed.force_boxing"}:
         return KernelExecutionKind.COLLECTIVE
     raw_requires = facts.get("requires", ())
-    requires = ((raw_requires, ) if isinstance(raw_requires, str) else tuple(str(value) for value in raw_requires))
+    requires = (
+        (raw_requires,)
+        if isinstance(raw_requires, str)
+        else tuple(str(value) for value in raw_requires)
+    )
     if "grid_sync" in requires or "cooperative_grid" in requires:
         return KernelExecutionKind.SYNCHRONIZED_LOCAL
     return KernelExecutionKind.LOCAL_SHARD
@@ -48,7 +52,9 @@ def kernel_execution_kind_for_call(module, node) -> KernelExecutionKind:
 
     dispatch = kernel_dispatch_for_call(module, node)
     if dispatch is not None:
-        return kernel_execution_kind(dispatch.semantic_op, dispatch.resolved_facts)
+        return kernel_execution_kind(
+            dispatch.semantic_op, dispatch.resolved_facts
+        )
     if node.op == "tir.kernel":
         facts = node.attrs.get("facts", {})
         return kernel_execution_kind(

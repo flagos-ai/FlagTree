@@ -8,13 +8,8 @@ from triton.flagmega.ir.distributed_inference import all_broadcast, tensor_of
 from triton.flagmega.ir.model import DistributedType, Node
 from triton.flagmega.ir.memory_effect import MemoryEffect
 from triton.flagmega.ir.ops.core import (
-    OpCost,
-    OpCostFactors,
-    OpDefinition,
-    attribute_parameter,
-    input_parameter,
-    op_definition,
-    tensor_nbytes,
+    OpCost, OpCostFactors, OpDefinition, attribute_parameter, input_parameter,
+    op_definition, tensor_nbytes,
 )
 from triton.flagmega.ir.ops.nn.norm_apply import NormApply
 from triton.flagmega.ir.ops.nn.norm_stats import NormStats
@@ -23,7 +18,8 @@ from triton.flagmega.ir.type_pattern import has_rank, is_tensor
 from triton.flagmega.ir.types import DType
 
 
-@op_definition('ntt.rms_packed_dense_matmul_glu', namespace='ntt', functional_name='rms_packed_dense_matmul_glu',
+@op_definition('ntt.rms_packed_dense_matmul_glu', namespace='ntt',
+               functional_name='rms_packed_dense_matmul_glu',
                display_name='NTT.RmsPackedDenseMatMulGlu')
 class RmsPackedDenseMatMulGlu(OpDefinition):
     """The raw operand is never the BF16 input of the inner GLU.
@@ -65,18 +61,17 @@ class RmsPackedDenseMatMulGlu(OpDefinition):
             raise IRSchemaError('RmsPackedDenseMatMulGlu epsilon must be finite and positive.')
         norm = NormApply.normalize_attrs(norm_apply_attrs(attrs))
         glu = PackedDenseMatMulGlu.normalize_attrs(glu_attrs(attrs))
-        return {
-            **glu, 'epsilon': epsilon, 'norm_tree_group_size': attrs['norm_tree_group_size'], 'norm_partial_group_size':
-            attrs['norm_partial_group_size'], 'norm_math_mode': norm.get('math_mode', 'fast'), 'round_before_scale':
-            norm['round_before_scale']
-        }
+        return {**glu, 'epsilon': epsilon,
+                'norm_tree_group_size': attrs['norm_tree_group_size'],
+                'norm_partial_group_size': attrs['norm_partial_group_size'],
+                'norm_math_mode': norm.get('math_mode', 'fast'),
+                'round_before_scale': norm['round_before_scale']}
 
     @classmethod
     def infer_type(cls, inputs, attrs):
         raw = tensor_of(cls.raw.type_of(inputs))
         if raw.dtype is not DType.FLOAT32 or raw.rank != 2:
-            raise IRSchemaError(
-                'RmsPackedDenseMatMulGlu raw must be scalar FP32 [M,K]; use a proven byte-preserving view for vectors.')
+            raise IRSchemaError('RmsPackedDenseMatMulGlu raw must be scalar FP32 [M,K]; use a proven byte-preserving view for vectors.')
         k = raw.shape[1].fixed_value
         group = attrs['norm_tree_group_size'] * attrs['norm_partial_group_size']
         if k is None or k <= 0 or k & (k - 1) or k % group:
@@ -86,10 +81,9 @@ class RmsPackedDenseMatMulGlu(OpDefinition):
             if value.dtype is not DType.BFLOAT16 or value.rank != 1 or value.shape != raw.shape[1:]:
                 raise IRSchemaError(f'RmsPackedDenseMatMulGlu {name} must be BF16 [K].')
         for operand in inputs[:3]:
-            if isinstance(operand.type, DistributedType) and (not all_broadcast(operand.type)
-                                                              or operand.type.partial is not None):
-                raise IRSchemaError(
-                    'RmsPackedDenseMatMulGlu raw/affine inputs must be materialized all-broadcast values.')
+            if isinstance(operand.type, DistributedType) and (
+                    not all_broadcast(operand.type) or operand.type.partial is not None):
+                raise IRSchemaError('RmsPackedDenseMatMulGlu raw/affine inputs must be materialized all-broadcast values.')
         _, _, glu = composition_nodes(inputs, attrs)
         return glu.type
 
@@ -105,9 +99,8 @@ class RmsPackedDenseMatMulGlu(OpDefinition):
 
     @classmethod
     def cost(cls, node):
-        return OpCost(
-            flops=None, bytes_read=None, bytes_written=tensor_nbytes(tensor_of(node.type)),
-            notes=('complete-row-rms+bf16-materialization+packed-glu', 'normalization-replicated-per-output-owner'))
+        return OpCost(flops=None, bytes_read=None, bytes_written=tensor_nbytes(tensor_of(node.type)),
+                      notes=('complete-row-rms+bf16-materialization+packed-glu', 'normalization-replicated-per-output-owner'))
 
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
@@ -151,27 +144,24 @@ def hierarchical_square_sum(raw, attrs, torch):
 
 
 def norm_apply_attrs(attrs):
-    return {
-        'axis': -1, 'epsilon': attrs['epsilon'], 'use_mean': False, 'round_before_scale':
-        attrs.get('round_before_scale', False), 'input_dtype': 'float32', 'output_dtype': 'bfloat16', 'math_mode':
-        attrs.get('norm_math_mode', 'fast')
-    }
+    return {'axis': -1, 'epsilon': attrs['epsilon'], 'use_mean': False,
+            'round_before_scale': attrs.get('round_before_scale', False),
+            'input_dtype': 'float32', 'output_dtype': 'bfloat16',
+            'math_mode': attrs.get('norm_math_mode', 'fast')}
 
 
 def glu_attrs(attrs):
-    return {
-        key: attrs[key]
-        for key in ('activation', 'round_activation', 'gate_clamp_max', 'up_clamp', 'packed_layout', 'reduction_order')
-        if key in attrs
-    }
+    return {key: attrs[key] for key in (
+        'activation', 'round_activation', 'gate_clamp_max', 'up_clamp', 'packed_layout', 'reduction_order'
+    ) if key in attrs}
 
 
 def composition_nodes(inputs, attrs):
     """Typed reference composition, also reused by selection's shape proof."""
     raw, scale, bias, gate, up = inputs
     stats_attrs = NormStats.normalize_attrs(norm_stats_attrs(attrs))
-    stats = Node('<rms_glu_stats>', 'builtin.var', (), NormStats.infer_type((raw, ), stats_attrs),
-                 attrs={'name': '<rms_glu_stats>'})
+    stats = Node('<rms_glu_stats>', 'builtin.var', (),
+                 NormStats.infer_type((raw,), stats_attrs), attrs={'name': '<rms_glu_stats>'})
     apply_attrs = NormApply.normalize_attrs(norm_apply_attrs(attrs))
     normalized = Node('<rms_glu_normalized>', NormApply.op_name, (raw.id, stats.id, scale.id, bias.id),
                       NormApply.infer_type((raw, stats, scale, bias), apply_attrs), attrs=apply_attrs)
@@ -181,7 +171,5 @@ def composition_nodes(inputs, attrs):
     return stats, normalized, glu
 
 
-__all__ = [
-    'RmsPackedDenseMatMulGlu', 'composition_nodes', 'glu_attrs', 'norm_apply_attrs', 'norm_stats_attrs',
-    'hierarchical_square_sum'
-]
+__all__ = ['RmsPackedDenseMatMulGlu', 'composition_nodes', 'glu_attrs', 'norm_apply_attrs', 'norm_stats_attrs',
+           'hierarchical_square_sum']

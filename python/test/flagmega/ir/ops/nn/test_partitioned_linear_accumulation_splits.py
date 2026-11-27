@@ -13,16 +13,15 @@ from triton.flagmega.ir.ops.nn.partitioned_linear import PartitionedLinear
 
 
 def graph(*, k=8, n=8, parts=1, splits=2, lanes=(), input_lanes=(), placement=None, **attrs):
-
     class Graph(fm.Module):
-
         def forward(self):
             dtype = fm.vector_type("bfloat16", input_lanes) if input_lanes else fm.DType.BFLOAT16
             x = self.input("x", fm.tensor_type(dtype, (1, k // prod(input_lanes))), id="x")
             w = self.input("w", fm.tensor_type("bfloat16", (n, k)), id="w")
-            out = fm.F.nn.partitioned_linear(x, w, partitions=parts, accumulation_splits=splits, output_lanes=lanes,
-                                             name="projection", **attrs)
-            self.function("main", (x, w), (out, ))
+            out = fm.F.nn.partitioned_linear(
+                x, w, partitions=parts, accumulation_splits=splits, output_lanes=lanes, name="projection", **attrs
+            )
+            self.function("main", (x, w), (out,))
 
     return Graph(dialect="high_level", stage="imported", entry="main").build()
 
@@ -58,8 +57,10 @@ def test_subdots_do_not_round_to_bf16_before_the_part_sum():
     w[0, 4] = 1 / 256
     result = run(module, x, w)
     assert result.item() == 1.0078125
-    premature = ((x[:, :4].float() @ w[:, :4].float().T).bfloat16().float() +
-                 (x[:, 4:].float() @ w[:, 4:].float().T).bfloat16().float()).bfloat16()
+    premature = (
+        (x[:, :4].float() @ w[:, :4].float().T).bfloat16().float()
+        + (x[:, 4:].float() @ w[:, 4:].float().T).bfloat16().float()
+    ).bfloat16()
     assert premature.item() == 1.0
 
 
@@ -86,8 +87,10 @@ def test_pattern_helper_reads_the_explicit_split_contract():
     from triton.flagmega import pattern_match as pm
 
     module = graph()
-    assert (pm.try_match_root(module.node_map["projection"], pm.F.nn.is_partitioned_linear(accumulation_splits=2),
-                              module) is not None)
+    assert (
+        pm.try_match_root(module.node_map["projection"], pm.F.nn.is_partitioned_linear(accumulation_splits=2), module)
+        is not None
+    )
 
 
 def test_split_cost_counts_additions_without_new_global_materialization():
@@ -103,8 +106,9 @@ def test_split_cost_counts_additions_without_new_global_materialization():
     assert a.chip_aggregate_memory_store_bytes == b.chip_aggregate_memory_store_bytes
 
 
-@pytest.mark.parametrize("k,parts,expected_variant", [(320, 4, "mma"), (2048, 4, "mma"), (4096, 4, "wgmma_local"),
-                                                      (12288, 4, "wgmma_local")])
+@pytest.mark.parametrize(
+    "k,parts,expected_variant", [(320, 4, "mma"), (2048, 4, "mma"), (4096, 4, "wgmma_local"), (12288, 4, "wgmma_local")]
+)
 def test_candidate_checks_each_fp32_subdot_geometry(tmp_path, k, parts, expected_variant):
     import ast
 
@@ -112,7 +116,7 @@ def test_candidate_checks_each_fp32_subdot_geometry(tmp_path, k, parts, expected
     from triton.flagmega.compiler import Compiler
 
     module = Compiler().compile(graph(k=k, n=80, parts=parts)).module
-    (definition, ) = (d for d in module.kernel_definitions if d.dispatch.semantic_op == "nn.partitioned_linear")
+    (definition,) = (d for d in module.kernel_definitions if d.dispatch.semantic_op == "nn.partitioned_linear")
     assert definition.dispatch.microkernel.variant == expected_variant
     assert definition.dispatch.semantic_attrs["accumulation_splits"] == 2
     artifact = write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
@@ -134,10 +138,14 @@ def test_device_subdots_round_once_and_keep_guards(tmp_path, k, n, parts, lanes)
     from triton.flagmega.runtime import load
     from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 
-    module = (Compiler(CompileOptions(placement=fm.Placement((8, 16), "yx", "bb"))).compile(
-        graph(k=k, n=n, parts=parts, lanes=lanes, input_lanes=lanes)).module)
-    runtime = load(write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True),
-                   device="cuda:0")
+    module = (
+        Compiler(CompileOptions(placement=fm.Placement((8, 16), "yx", "bb")))
+        .compile(graph(k=k, n=n, parts=parts, lanes=lanes, input_lanes=lanes))
+        .module
+    )
+    runtime = load(
+        write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True), device="cuda:0"
+    )
     generator = torch.Generator().manual_seed(9318)
     x = (torch.randint(-7, 8, (1, k), generator=generator).float() / 128).bfloat16()
     w = (torch.randint(-7, 8, (n, k), generator=generator).float() / 128).bfloat16()
@@ -146,7 +154,7 @@ def test_device_subdots_round_once_and_keep_guards(tmp_path, k, n, parts, lanes)
     for spec in runtime.external_arguments:
         kind = fm.logical_type(module.node_map[spec["value"]].type)
         shape = tuple(d.fixed_value for d in kind.shape) + tuple(getattr(kind.dtype, "lanes", ()))
-        storage = torch.full((prod(shape) + 32, ), 123.0, dtype=torch.bfloat16, device="cuda")
+        storage = torch.full((prod(shape) + 32,), 123.0, dtype=torch.bfloat16, device="cuda")
         storages[spec["value"]] = storage
         values[spec["value"]] = storage[16:-16].reshape(shape)
     result_name = next(spec["value"] for spec in runtime.external_arguments if spec["role"] == "result")
@@ -172,9 +180,10 @@ def test_device_subdots_round_once_and_keep_guards(tmp_path, k, n, parts, lanes)
             expected = torch.zeros((1, n), dtype=torch.float32)
             for part in range(parts):
                 start = part * span
-                subtotal = x[:, start:start + inner].float() @ w[:, start:start + inner].float().T
-                subtotal = (subtotal +
-                            x[:, start + inner:start + span].float() @ w[:, start + inner:start + span].float().T)
+                subtotal = x[:, start : start + inner].float() @ w[:, start : start + inner].float().T
+                subtotal = (
+                    subtotal + x[:, start + inner : start + span].float() @ w[:, start + inner : start + span].float().T
+                )
                 expected = expected + subtotal.bfloat16().float()
             expected = expected.bfloat16()
             torch.testing.assert_close(values[result_name].cpu().reshape(1, n), expected, rtol=0, atol=0)

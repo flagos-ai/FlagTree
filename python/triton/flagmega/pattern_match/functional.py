@@ -17,7 +17,8 @@ from triton.flagmega.ir.ops.builtin.splat_const import SplatConst
 from triton.flagmega.ir.ops.distributed.boxing import Boxing
 from triton.flagmega.ir.ops.distributed.force_boxing import ForceBoxing
 from triton.flagmega.ir.ops.distributed.materialize_local_shards import (
-    MaterializeLocalShards, )
+    MaterializeLocalShards,
+)
 from triton.flagmega.ir.ops.distributed.sharded_view import ShardedView
 from triton.flagmega.ir.ops.math.add import Add
 from triton.flagmega.ir.ops.math.div import Div
@@ -76,20 +77,24 @@ from triton.flagmega.ir.ops.nn.paged_attention import PagedAttention
 from triton.flagmega.ir.ops.nn.rope import RoPE
 from triton.flagmega.ir.ops.nn.rotary_embedding import RotaryEmbedding
 from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache import (
-    UpdatePagedAttentionKVCache, )
+    UpdatePagedAttentionKVCache,
+)
 from triton.flagmega.ir.ops.nn.update_paged_attention_kv_cache_pair import UpdatePagedAttentionKVCachePair
 from triton.flagmega.ir.ops.ntt.vectorized_cast import VectorizedCast
 from triton.flagmega.ir.ops.ntt.vectorized_rope import VectorizedRoPE
 from triton.flagmega.ir.ops.ntt.add_norm_stats import AddNormStats
 from triton.flagmega.ir.ops.ntt.gather_reduce_add_norm_apply import (
-    GatherReduceAddNormApply, )
+    GatherReduceAddNormApply,
+)
 from triton.flagmega.ir.ops.ntt.gather_reduce_norm_apply import (
-    GatherReduceNormApply, )
+    GatherReduceNormApply,
+)
 from triton.flagmega.ir.ops.ntt.matmul_norm_stats import MatMulNormStats
 from triton.flagmega.ir.ops.ntt.packed_matmul import PackedMatMul
 from triton.flagmega.ir.ops.ntt.packed_qkv_parallel_linear import PackedQKVParallelLinear
 from triton.flagmega.ir.ops.ntt.packed_qkv_parallel_linear_combine import (
-    PackedQKVParallelLinearCombine, )
+    PackedQKVParallelLinearCombine,
+)
 from triton.flagmega.ir.ops.ntt.paged_attention_combine import PagedAttentionCombine
 from triton.flagmega.ir.ops.ntt.paged_attention_gated_combine import PagedAttentionGatedCombine
 from triton.flagmega.ir.ops.ntt.paged_attention_partial import PagedAttentionPartial
@@ -114,7 +119,8 @@ from triton.flagmega.pattern_match.call_pattern import CallPattern
 from triton.flagmega.pattern_match.op_pattern import OpPattern
 from triton.flagmega.pattern_match.or_pattern import is_alt
 from triton.flagmega.pattern_match.pattern import ExprPattern, Pattern, wildcard
-from triton.flagmega.pattern_match.vargs_pattern import VArgsPattern
+from triton.flagmega.pattern_match.vargs_pattern import VArgsPattern, is_vargs_repeat
+
 
 PatternInput = Pattern | Node | None
 Condition = Callable[[Node], bool] | None
@@ -153,10 +159,17 @@ def _call_pattern(
     fixed = parameters[:-1] if variadic is not None else parameters
     if len(operands) < len(fixed) or (variadic is None and len(operands) != len(fixed)):
         raise TypeError(f"{definition.op_name} pattern received an invalid operand count.")
-    fields = [_as_pattern(value, parameter) for value, parameter in zip(operands[:len(fixed)], fixed)]
+    fields = [
+        _as_pattern(value, parameter)
+        for value, parameter in zip(operands[:len(fixed)], fixed)
+    ]
     if variadic is not None:
         fields.extend(_as_pattern(value, variadic) for value in operands[len(fixed):])
-    constraints = {name: value for name, value in (attributes or {}).items() if value is not None}
+    constraints = {
+        name: value
+        for name, value in (attributes or {}).items()
+        if value is not None
+    }
     target = OpPattern(
         definition.op_name,
         condition,
@@ -167,15 +180,15 @@ def _call_pattern(
         # An unspecified variadic tail must retain the fixed prefix's
         # patterns and types (for example reference tensor + state ref).
         prefix = tuple(fields)
-        arguments = VArgsPattern(
-            lambda nodes: (*prefix, *(wildcard(type_pattern=variadic.type_pattern) for _ in nodes[len(prefix):])))
+        arguments = VArgsPattern(lambda nodes: (*prefix, *(
+            wildcard(type_pattern=variadic.type_pattern)
+            for _ in nodes[len(prefix):])))
     else:
         arguments = VArgsPattern(fields)
     return CallPattern(target, arguments, call_name)
 
 
 def _op_pattern_function(definition):
-
     def decorate(function):
         function.__flagmega_op_definition__ = definition
         return function
@@ -184,7 +197,6 @@ def _op_pattern_function(definition):
 
 
 class _builtin:
-
     @staticmethod
     @_op_pattern_function(NoneValue)
     def is_none(
@@ -234,7 +246,9 @@ class _builtin:
             attributes={"callee": callee},
             target_name=target_name,
             call_name=call_name,
-            condition=_with_node_constraints(condition, result_type=result_type, effect=effect),
+            condition=_with_node_constraints(
+                condition, result_type=result_type, effect=effect
+            ),
         )
 
     @staticmethod
@@ -297,7 +311,6 @@ class _builtin:
 
 
 class _distributed:
-
     @staticmethod
     @_op_pattern_function(MaterializeLocalShards)
     def is_materialize_local_shards(
@@ -309,7 +322,7 @@ class _distributed:
     ) -> CallPattern:
         return _call_pattern(
             MaterializeLocalShards,
-            (value, ),
+            (value,),
             target_name=target_name,
             call_name=call_name,
             condition=condition,
@@ -325,8 +338,9 @@ class _distributed:
         call_name: str | None = None,
         condition: Condition = None,
     ) -> CallPattern:
-        return _call_pattern(Boxing, (value, ), attributes={"new_type": new_type}, target_name=target_name,
-                             call_name=call_name, condition=condition)
+        return _call_pattern(
+            Boxing, (value,), attributes={"new_type": new_type},
+            target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(ShardedView)
@@ -338,8 +352,9 @@ class _distributed:
         call_name: str | None = None,
         condition: Condition = None,
     ) -> CallPattern:
-        return _call_pattern(ShardedView, (value, ), attributes={"new_type": new_type}, target_name=target_name,
-                             call_name=call_name, condition=condition)
+        return _call_pattern(
+            ShardedView, (value,), attributes={"new_type": new_type},
+            target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(ForceBoxing)
@@ -351,8 +366,9 @@ class _distributed:
         call_name: str | None = None,
         condition: Condition = None,
     ) -> CallPattern:
-        return _call_pattern(ForceBoxing, (value, ), attributes={"new_type": new_type}, target_name=target_name,
-                             call_name=call_name, condition=condition)
+        return _call_pattern(
+            ForceBoxing, (value,), attributes={"new_type": new_type},
+            target_name=target_name, call_name=call_name, condition=condition)
 
 
 class _math:
@@ -387,7 +403,8 @@ class _math:
         call_name: str | None = None,
         condition: Condition = None,
     ) -> CallPattern:
-        return _call_pattern(Add, (lhs, rhs), target_name=target_name, call_name=call_name, condition=condition)
+        return _call_pattern(
+            Add, (lhs, rhs), target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     def is_add_commutative(
@@ -401,8 +418,10 @@ class _math:
         """Match add in either operand order, preferring the declared order."""
 
         return is_alt(
-            _math.is_add(lhs, rhs, target_name=target_name, call_name=call_name, condition=condition),
-            _math.is_add(rhs, lhs, target_name=target_name, call_name=call_name, condition=condition),
+            _math.is_add(
+                lhs, rhs, target_name=target_name, call_name=call_name, condition=condition),
+            _math.is_add(
+                rhs, lhs, target_name=target_name, call_name=call_name, condition=condition),
         )
 
     @staticmethod
@@ -415,7 +434,8 @@ class _math:
         call_name: str | None = None,
         condition: Condition = None,
     ) -> CallPattern:
-        return _call_pattern(Mul, (lhs, rhs), target_name=target_name, call_name=call_name, condition=condition)
+        return _call_pattern(
+            Mul, (lhs, rhs), target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     def is_mul_commutative(
@@ -429,8 +449,10 @@ class _math:
         """Match multiply in either operand order, preferring the declared order."""
 
         return is_alt(
-            _math.is_mul(lhs, rhs, target_name=target_name, call_name=call_name, condition=condition),
-            _math.is_mul(rhs, lhs, target_name=target_name, call_name=call_name, condition=condition),
+            _math.is_mul(
+                lhs, rhs, target_name=target_name, call_name=call_name, condition=condition),
+            _math.is_mul(
+                rhs, lhs, target_name=target_name, call_name=call_name, condition=condition),
         )
 
     @staticmethod
@@ -442,7 +464,8 @@ class _math:
         call_name: str | None = None,
         condition: Condition = None,
     ) -> CallPattern:
-        return _call_pattern(Silu, (value, ), target_name=target_name, call_name=call_name, condition=condition)
+        return _call_pattern(
+            Silu, (value,), target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     def is_silu_mul(
@@ -476,7 +499,8 @@ class _math:
         return _call_pattern(
             MatMul,
             (lhs, rhs),
-            attributes={"transpose_a": transpose_a, "transpose_b": transpose_b, "output_data_type": output_data_type},
+            attributes={"transpose_a": transpose_a, "transpose_b": transpose_b,
+                        "output_data_type": output_data_type},
             target_name=target_name,
             call_name=call_name,
             condition=condition,
@@ -498,7 +522,8 @@ class _math:
         return _call_pattern(
             PackedDenseMatMul,
             (lhs, weight),
-            attributes={"packed_layout": packed_layout, "logical_n": logical_n, "output_data_type": output_data_type},
+            attributes={"packed_layout": packed_layout, "logical_n": logical_n,
+                        "output_data_type": output_data_type},
             target_name=target_name,
             call_name=call_name,
             condition=condition,
@@ -519,9 +544,9 @@ class _math:
         condition: Condition = None,
     ) -> CallPattern:
         return _call_pattern(
-            VectorizedBinary, (lhs, rhs), attributes={
-                "binary_op": binary_op, 'lhs_pack': lhs_pack, 'rhs_pack': rhs_pack, 'result_unpack': result_unpack
-            }, target_name=target_name, call_name=call_name, condition=condition)
+            VectorizedBinary, (lhs, rhs), attributes={"binary_op": binary_op, 'lhs_pack': lhs_pack,
+                                                   'rhs_pack': rhs_pack, 'result_unpack': result_unpack},
+            target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(VectorizedUnary)
@@ -533,8 +558,9 @@ class _math:
         call_name: str | None = None,
         condition: Condition = None,
     ) -> CallPattern:
-        return _call_pattern(VectorizedUnary, (value, ), attributes={"unary_op": unary_op}, target_name=target_name,
-                             call_name=call_name, condition=condition)
+        return _call_pattern(
+            VectorizedUnary, (value,), attributes={"unary_op": unary_op},
+            target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(VectorizedMatMul)
@@ -554,15 +580,14 @@ class _math:
         condition: Condition = None,
     ) -> CallPattern:
         return _call_pattern(
-            VectorizedMatMul, (lhs, rhs), attributes={
-                "lhs_axes": lhs_axes,
-                "rhs_axes": rhs_axes,
-                "output_axes": output_axes,
-                "output_lanes": output_lanes,
-                "transpose_a": transpose_a,
-                "transpose_b": transpose_b,
+            VectorizedMatMul,
+            (lhs, rhs),
+            attributes={
+                "lhs_axes": lhs_axes, "rhs_axes": rhs_axes, "output_axes": output_axes,
+                "output_lanes": output_lanes, "transpose_a": transpose_a, "transpose_b": transpose_b,
                 "output_data_type": output_data_type,
-            }, target_name=target_name, call_name=call_name, condition=condition)
+            },
+            target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(BlockScaledMatMul)
@@ -619,31 +644,31 @@ class _math:
 
 
 class _nn:
-
     @staticmethod
     @_op_pattern_function(PartitionedBlockScaledLinear)
     def is_partitioned_block_scaled_linear(value: PatternInput = None, weight: PatternInput = None,
-                                           weight_scale: PatternInput = None, *, partitions: int | None = None,
-                                           weight_block_n: int | None = None, weight_block_k: int | None = None,
-                                           activation_quantization: str | None = None,
-                                           output_lanes: tuple[int, ...] | None = None, target_name: str | None = None,
-                                           call_name: str | None = None, condition: Condition = None) -> CallPattern:
-        return _call_pattern(
-            PartitionedBlockScaledLinear, (value, weight, weight_scale), attributes={
-                "partitions": partitions, "weight_block_n": weight_block_n, "weight_block_k": weight_block_k,
-                "activation_quantization": activation_quantization, "output_lanes": output_lanes
-            }, target_name=target_name, call_name=call_name, condition=condition)
+                                          weight_scale: PatternInput = None, *, partitions: int | None = None,
+                                          weight_block_n: int | None = None, weight_block_k: int | None = None,
+                                          activation_quantization: str | None = None,
+                                          output_lanes: tuple[int, ...] | None = None,
+                                          target_name: str | None = None, call_name: str | None = None,
+                                          condition: Condition = None) -> CallPattern:
+        return _call_pattern(PartitionedBlockScaledLinear, (value, weight, weight_scale),
+            attributes={"partitions": partitions, "weight_block_n": weight_block_n, "weight_block_k": weight_block_k,
+                        "activation_quantization": activation_quantization, "output_lanes": output_lanes},
+            target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(PartitionedLinear)
-    def is_partitioned_linear(value: PatternInput = None, weight: PatternInput = None, *, partitions: int | None = None,
-                              accumulation_splits: int | None = None, output_lanes: tuple[int, ...] | None = None,
+    def is_partitioned_linear(value: PatternInput = None, weight: PatternInput = None, *,
+                              partitions: int | None = None, accumulation_splits: int | None = None,
+                              output_lanes: tuple[int, ...] | None = None,
                               target_name: str | None = None, call_name: str | None = None,
                               condition: Condition = None) -> CallPattern:
-        return _call_pattern(
-            PartitionedLinear, (value, weight), attributes={
-                "partitions": partitions, "accumulation_splits": accumulation_splits, "output_lanes": output_lanes
-            }, target_name=target_name, call_name=call_name, condition=condition)
+        return _call_pattern(PartitionedLinear, (value, weight),
+                             attributes={"partitions": partitions, "accumulation_splits": accumulation_splits,
+                                         "output_lanes": output_lanes},
+                             target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(KdaInputProjection)
@@ -651,40 +676,39 @@ class _nn:
                                 key_weight: PatternInput = None, value_weight: PatternInput = None,
                                 beta_weight: PatternInput = None, forget_weight: PatternInput = None,
                                 output_weight: PatternInput = None, *,
-                                output_lanes: tuple[tuple[int, ...], ...] | None = None, target_name: str | None = None,
-                                call_name: str | None = None, condition: Condition = None) -> CallPattern:
-        return _call_pattern(KdaInputProjection,
-                             (value, query_weight, key_weight, value_weight, beta_weight, forget_weight, output_weight),
-                             attributes={"output_lanes": output_lanes}, target_name=target_name, call_name=call_name,
-                             condition=condition)
+                                output_lanes: tuple[tuple[int, ...], ...] | None = None,
+                                target_name: str | None = None, call_name: str | None = None,
+                                condition: Condition = None) -> CallPattern:
+        return _call_pattern(KdaInputProjection, (value, query_weight, key_weight, value_weight,
+                             beta_weight, forget_weight, output_weight), attributes={"output_lanes": output_lanes},
+                             target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(MlaProjection)
-    def is_mla_projection(value: PatternInput = None, weight: PatternInput = None, scale: PatternInput = None, *,
-                          direction: str | None = None, qk_head_dim: int | None = None,
+    def is_mla_projection(value: PatternInput = None, weight: PatternInput = None, scale: PatternInput = None,
+                          *, direction: str | None = None, qk_head_dim: int | None = None,
                           value_head_dim: int | None = None, latent_dim: int | None = None,
                           weight_block_n: int | None = None, weight_block_k: int | None = None,
                           output_lanes: tuple[int, ...] | None = None, target_name: str | None = None,
                           call_name: str | None = None, condition: Condition = None) -> CallPattern:
-        return _call_pattern(
-            MlaProjection, (value, weight, scale), attributes={
-                'direction': direction, 'qk_head_dim': qk_head_dim, 'value_head_dim': value_head_dim, 'latent_dim':
-                latent_dim, 'weight_block_n': weight_block_n, 'weight_block_k': weight_block_k, 'output_lanes':
-                output_lanes
-            }, target_name=target_name, call_name=call_name, condition=condition)
+        return _call_pattern(MlaProjection, (value, weight, scale), attributes={
+            'direction': direction, 'qk_head_dim': qk_head_dim, 'value_head_dim': value_head_dim,
+            'latent_dim': latent_dim, 'weight_block_n': weight_block_n, 'weight_block_k': weight_block_k,
+            'output_lanes': output_lanes}, target_name=target_name, call_name=call_name, condition=condition)
+
 
     @staticmethod
     @_op_pattern_function(L2Normalization)
     def is_l2_normalization(value: PatternInput = None, *, axes: tuple[int, ...] | None = None,
                             epsilon: float | None = None, epsilon_mode: str | None = None,
                             division_mode: str | None = None, reduction_group_size: int | None = None,
-                            math_mode: str | None = None, target_name: str | None = None, call_name: str | None = None,
-                            condition: Condition = None) -> CallPattern:
-        return _call_pattern(
-            L2Normalization, (value, ), attributes={
-                "axes": axes, "epsilon": epsilon, "epsilon_mode": epsilon_mode, "division_mode": division_mode,
-                "reduction_group_size": reduction_group_size, "math_mode": math_mode
-            }, target_name=target_name, call_name=call_name, condition=condition)
+                            math_mode: str | None = None,
+                            target_name: str | None = None,
+                            call_name: str | None = None, condition: Condition = None) -> CallPattern:
+        return _call_pattern(L2Normalization, (value,), attributes={"axes": axes, "epsilon": epsilon,
+                             "epsilon_mode": epsilon_mode, "division_mode": division_mode,
+                             "reduction_group_size": reduction_group_size, "math_mode": math_mode},
+                             target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(DeltaRuleGates)
@@ -699,16 +723,15 @@ class _nn:
     @staticmethod
     @_op_pattern_function(DeltaRuleBlockUpdate)
     def is_delta_rule_block_update(query: PatternInput = None, key: PatternInput = None, value: PatternInput = None,
-                                   coefficients: PatternInput = None, log_prefix: PatternInput = None,
-                                   state: PatternInput = None, *, scale: float | None = None,
-                                   state_field: str | None = None, state_layout: tuple[str, ...] | None = None,
-                                   state_vector_axes: tuple[str, ...] | None = None, target_name: str | None = None,
-                                   call_name: str | None = None, condition: Condition = None) -> CallPattern:
-        return _call_pattern(
-            DeltaRuleBlockUpdate, (query, key, value, coefficients, log_prefix, state), attributes={
-                "scale": scale, "state_field": state_field, "state_layout": state_layout, "state_vector_axes":
-                state_vector_axes
-            }, target_name=target_name, call_name=call_name, condition=condition)
+                                    coefficients: PatternInput = None, log_prefix: PatternInput = None,
+                                    state: PatternInput = None, *, scale: float | None = None,
+                                    state_field: str | None = None, state_layout: tuple[str, ...] | None = None,
+                                    state_vector_axes: tuple[str, ...] | None = None, target_name: str | None = None,
+                                    call_name: str | None = None, condition: Condition = None) -> CallPattern:
+        return _call_pattern(DeltaRuleBlockUpdate, (query, key, value, coefficients, log_prefix, state),
+                             attributes={"scale": scale, "state_field": state_field, "state_layout": state_layout,
+                                         "state_vector_axes": state_vector_axes}, target_name=target_name,
+                             call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(DeltaRuleLogPrefix)
@@ -716,16 +739,15 @@ class _nn:
                                  scan_group_size: int | None = None, epsilon: float | None = None,
                                  log2_mode: str | None = None, target_name: str | None = None,
                                  call_name: str | None = None, condition: Condition = None) -> CallPattern:
-        return _call_pattern(
-            DeltaRuleLogPrefix, (alpha, ), attributes={
-                "block_size": block_size, "scan_group_size": scan_group_size, "epsilon": epsilon, "log2_mode": log2_mode
-            }, target_name=target_name, call_name=call_name, condition=condition)
+        return _call_pattern(DeltaRuleLogPrefix, (alpha,), attributes={"block_size": block_size,
+                             "scan_group_size": scan_group_size, "epsilon": epsilon, "log2_mode": log2_mode},
+                             target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(DeltaRuleCoefficients)
-    def is_delta_rule_coefficients(key: PatternInput = None, beta: PatternInput = None, *,
-                                   block_size: int | None = None, target_name: str | None = None,
-                                   call_name: str | None = None, condition: Condition = None) -> CallPattern:
+    def is_delta_rule_coefficients(key: PatternInput = None, beta: PatternInput = None, *, block_size: int | None = None,
+                                   target_name: str | None = None, call_name: str | None = None,
+                                   condition: Condition = None) -> CallPattern:
         return _call_pattern(DeltaRuleCoefficients, (key, beta), attributes={"block_size": block_size},
                              target_name=target_name, call_name=call_name, condition=condition)
 
@@ -842,43 +864,38 @@ class _nn:
 
     @staticmethod
     @_op_pattern_function(SparseExpertsDispatch)
-    def is_sparse_experts_dispatch(value=None, router_expert_ids=None, *, target_name=None, call_name=None,
-                                   condition=None):
+    def is_sparse_experts_dispatch(value=None, router_expert_ids=None, *, target_name=None, call_name=None, condition=None):
         return _call_pattern(SparseExpertsDispatch, (value, router_expert_ids), target_name=target_name,
                              call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(PartitionedSparseExpertsDown)
     def is_partitioned_sparse_experts_down(activations=None, router_expert_ids=None, down_input_scale=None,
-                                           down_weight=None, down_proj_scale=None, *, weight_block_n=None,
-                                           weight_block_k=None, activation_quantization=None, round_projection=None,
-                                           output_lanes=None, target_name=None, call_name=None, condition=None):
-        return _call_pattern(
-            PartitionedSparseExpertsDown,
-            (activations, router_expert_ids, down_input_scale, down_weight, down_proj_scale), attributes={
-                "weight_block_n": weight_block_n, "weight_block_k": weight_block_k, "activation_quantization":
-                activation_quantization, "round_projection": round_projection, "output_lanes": output_lanes
-            }, target_name=target_name, call_name=call_name, condition=condition)
+            down_weight=None, down_proj_scale=None, *, weight_block_n=None, weight_block_k=None,
+            activation_quantization=None, round_projection=None, output_lanes=None,
+            target_name=None, call_name=None, condition=None):
+        return _call_pattern(PartitionedSparseExpertsDown,
+            (activations, router_expert_ids, down_input_scale, down_weight, down_proj_scale),
+            attributes={"weight_block_n": weight_block_n, "weight_block_k": weight_block_k,
+                        "activation_quantization": activation_quantization, "round_projection": round_projection,
+                        "output_lanes": output_lanes}, target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(SparseExpertsCombine)
     def is_sparse_experts_combine(projections=None, router_expert_weights=None, *, output_dtype=None,
                                   round_weighted_output=None, target_name=None, call_name=None, condition=None):
-        return _call_pattern(
-            SparseExpertsCombine, (projections, router_expert_weights), attributes={
-                "output_dtype": _sparse_dtype_pattern(output_dtype), "round_weighted_output": round_weighted_output
-            }, target_name=target_name, call_name=call_name, condition=condition)
+        return _call_pattern(SparseExpertsCombine, (projections, router_expert_weights),
+                             attributes={"output_dtype": _sparse_dtype_pattern(output_dtype), "round_weighted_output": round_weighted_output},
+                             target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(SparseExpertsWeightedSum)
     def is_sparse_experts_weighted_sum(projections=None, router_expert_weights=None, *, output_dtype=None,
-                                       round_weighted_output=None, cast_output=None, target_name=None, call_name=None,
-                                       condition=None):
-        return _call_pattern(
-            SparseExpertsWeightedSum, (projections, router_expert_weights), attributes={
-                "output_dtype": _sparse_dtype_pattern(output_dtype), "round_weighted_output": round_weighted_output,
-                "cast_output": cast_output
-            }, target_name=target_name, call_name=call_name, condition=condition)
+                                       round_weighted_output=None, cast_output=None, target_name=None, call_name=None, condition=None):
+        return _call_pattern(SparseExpertsWeightedSum, (projections, router_expert_weights),
+                             attributes={"output_dtype": _sparse_dtype_pattern(output_dtype), "round_weighted_output": round_weighted_output,
+                                         "cast_output": cast_output},
+                             target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(QKVParallelLinear)
@@ -952,13 +969,12 @@ class _nn:
     ) -> CallPattern:
         return _call_pattern(
             NormStats,
-            (input, ),
-            attributes={
-                "axis": axis, "use_mean": use_mean, "reduction_group_size": reduction_group_size, "reduction_order":
-                reduction_order, "reduction_block_size": reduction_block_size, "reduction_block_traversal":
-                reduction_block_traversal, "reduction_tree_group_size": reduction_tree_group_size,
-                "reduction_group_seed_index": reduction_group_seed_index
-            },
+            (input,),
+            attributes={"axis": axis, "use_mean": use_mean, "reduction_group_size": reduction_group_size,
+                        "reduction_order": reduction_order, "reduction_block_size": reduction_block_size,
+                        "reduction_block_traversal": reduction_block_traversal,
+                        "reduction_tree_group_size": reduction_tree_group_size,
+                        "reduction_group_seed_index": reduction_group_seed_index},
             target_name=target_name,
             call_name=call_name,
             condition=condition,
@@ -1007,10 +1023,9 @@ class _nn:
         return _call_pattern(
             NormApply,
             (input, stats, scale, bias),
-            attributes={
-                "axis": axis, "epsilon": epsilon, "use_mean": use_mean, "round_before_scale": round_before_scale,
-                "output_dtype": output_dtype, "input_dtype": input_dtype, "math_mode": math_mode
-            },
+            attributes={"axis": axis, "epsilon": epsilon, "use_mean": use_mean,
+                        "round_before_scale": round_before_scale, "output_dtype": output_dtype,
+                        "input_dtype": input_dtype, "math_mode": math_mode},
             target_name=target_name,
             call_name=call_name,
             condition=condition,
@@ -1034,9 +1049,8 @@ class _nn:
         return _call_pattern(
             LayerNorm,
             (input, scale, bias),
-            attributes={
-                "axis": axis, "epsilon": epsilon, "use_mean": use_mean, "round_before_scale": round_before_scale
-            },
+            attributes={"axis": axis, "epsilon": epsilon, "use_mean": use_mean,
+                        "round_before_scale": round_before_scale},
             target_name=target_name,
             call_name=call_name,
             condition=condition,
@@ -1053,7 +1067,7 @@ class _nn:
     ) -> CallPattern:
         return _call_pattern(
             GreedySample,
-            (logits, ),
+            (logits,),
             target_name=target_name,
             call_name=call_name,
             condition=condition,
@@ -1144,13 +1158,13 @@ class _nn:
         condition: Condition = None,
     ) -> CallPattern:
         return _call_pattern(
-            VectorizedRMSNorm, (value, weight), attributes={
-                "value_axes": value_axes,
-                "weight_axes": weight_axes,
-                "logical_extent": logical_extent,
-                "epsilon": epsilon,
-                "weight_bias": weight_bias,
-            }, target_name=target_name, call_name=call_name, condition=condition)
+            VectorizedRMSNorm,
+            (value, weight),
+            attributes={
+                "value_axes": value_axes, "weight_axes": weight_axes,
+                "logical_extent": logical_extent, "epsilon": epsilon, "weight_bias": weight_bias,
+            },
+            target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(RMSNorm)
@@ -1270,23 +1284,13 @@ class _nn:
         return _call_pattern(
             GatedDeltaNet,
             (
-                value,
-                state,
-                qkv_weight,
-                qkv_scale,
-                z_weight,
-                z_scale,
-                b_weight,
-                a_weight,
-                conv_weight,
-                a_log,
-                dt_bias,
-                norm_weight,
-                output_weight,
+                value, state, qkv_weight, qkv_scale, z_weight, z_scale, b_weight,
+                a_weight, conv_weight, a_log, dt_bias, norm_weight, output_weight,
                 output_scale,
             ),
-            attributes=_gdn_attributes(num_key_heads, num_value_heads, key_head_dim, value_head_dim, conv_kernel_size,
-                                       epsilon, weight_block_n, weight_block_k),
+            attributes=_gdn_attributes(
+                num_key_heads, num_value_heads, key_head_dim, value_head_dim,
+                conv_kernel_size, epsilon, weight_block_n, weight_block_k),
             target_name=target_name,
             call_name=call_name,
             condition=condition,
@@ -1318,16 +1322,8 @@ class _nn:
         return _call_pattern(
             Qwen3PagedAttention,
             (
-                value,
-                state,
-                q_weight,
-                k_weight,
-                v_weight,
-                q_norm_weight,
-                k_norm_weight,
-                output_weight,
-                layer_id,
-                advance_sequence,
+                value, state, q_weight, k_weight, v_weight, q_norm_weight,
+                k_norm_weight, output_weight, layer_id, advance_sequence,
             ),
             attributes={
                 "num_attention_heads": num_attention_heads,
@@ -1487,24 +1483,19 @@ class _nn:
     @staticmethod
     @_op_pattern_function(UpdatePagedAttentionKVCachePair)
     def is_update_paged_attention_kv_cache_pair(
-        slots: PatternInput = None,
-        state: PatternInput = None,
-        layer_id: PatternInput = None,
-        advance_sequence: PatternInput = None,
-        *,
-        layout: tuple[str, ...] | None = None,
-        shared_kv: bool | None = None,
-        target_name: str | None = None,
-        call_name: str | None = None,
-        condition: Condition = None,
+        slots: PatternInput = None, state: PatternInput = None,
+        layer_id: PatternInput = None, advance_sequence: PatternInput = None, *,
+        layout: tuple[str, ...] | None = None, shared_kv: bool | None = None,
+        target_name: str | None = None, call_name: str | None = None, condition: Condition = None,
     ) -> CallPattern:
         if shared_kv is not None:
             requested, original_condition = shared_kv, condition
-            condition = lambda node: (node.attrs.get("shared_kv", False) is requested and
-                                      (original_condition is None or original_condition(node)))
-        return _call_pattern(UpdatePagedAttentionKVCachePair, (slots, state, layer_id, advance_sequence),
-                             attributes={"layout":
-                                         layout}, target_name=target_name, call_name=call_name, condition=condition)
+            condition = lambda node: (node.attrs.get("shared_kv", False) is requested
+                                      and (original_condition is None or original_condition(node)))
+        return _call_pattern(UpdatePagedAttentionKVCachePair,
+                             (slots, state, layer_id, advance_sequence),
+                             attributes={"layout": layout}, target_name=target_name,
+                             call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(PagedAttention)
@@ -1655,15 +1646,8 @@ class _nn:
         return _call_pattern(
             GatedDeltaNetRecurrentCore,
             (
-                state,
-                qkv,
-                z,
-                projection_input,
-                b_weight,
-                a_weight,
-                a_log,
-                dt_bias,
-                norm_weight,
+                state, qkv, z, projection_input, b_weight, a_weight, a_log,
+                dt_bias, norm_weight,
             ),
             attributes={
                 "num_key_heads": num_key_heads,
@@ -1684,33 +1668,30 @@ class _nn:
 
 
 class _ntt:
-
     @staticmethod
     @_op_pattern_function(DispatchedExpertsGateUp)
     def is_dispatched_experts_gate_up(q=None, router_expert_ids=None, gate_input_scale=None, gate_weight=None,
-                                      gate_proj_scale=None, up_input_scale=None, up_weight=None, up_proj_scale=None, *,
-                                      output_dtype=None, round_projections=None, round_activation=None,
-                                      target_name=None, call_name=None, condition=None):
-        return _call_pattern(
-            DispatchedExpertsGateUp, (q, router_expert_ids, gate_input_scale, gate_weight, gate_proj_scale,
-                                      up_input_scale, up_weight, up_proj_scale), attributes={
-                                          "output_dtype": _sparse_dtype_pattern(output_dtype), "round_projections":
-                                          round_projections, "round_activation": round_activation
-                                      }, target_name=target_name, call_name=call_name, condition=condition)
+                                     gate_proj_scale=None, up_input_scale=None, up_weight=None, up_proj_scale=None,
+                                     *, output_dtype=None, round_projections=None, round_activation=None,
+                                     target_name=None, call_name=None, condition=None):
+        return _call_pattern(DispatchedExpertsGateUp,
+                             (q, router_expert_ids, gate_input_scale, gate_weight, gate_proj_scale,
+                              up_input_scale, up_weight, up_proj_scale),
+                             attributes={"output_dtype": _sparse_dtype_pattern(output_dtype),
+                                         "round_projections": round_projections, "round_activation": round_activation},
+                             target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(SparseExpertsDownCombine)
-    def is_sparse_experts_down_combine(activations=None, router_expert_ids=None, down_input_scale=None,
-                                       down_weight=None, down_proj_scale=None, router_expert_weights=None, *,
-                                       round_projection=None, output_dtype=None, round_weighted_output=None,
-                                       cast_output=None, target_name=None, call_name=None, condition=None):
-        return _call_pattern(
-            SparseExpertsDownCombine,
-            (activations, router_expert_ids, down_input_scale, down_weight, down_proj_scale, router_expert_weights),
-            attributes={
-                "output_dtype": _sparse_dtype_pattern(output_dtype), "round_projection": round_projection,
-                "round_weighted_output": round_weighted_output, "cast_output": cast_output
-            }, target_name=target_name, call_name=call_name, condition=condition)
+    def is_sparse_experts_down_combine(activations=None, router_expert_ids=None, down_input_scale=None, down_weight=None,
+                                      down_proj_scale=None, router_expert_weights=None, *, round_projection=None,
+                                      output_dtype=None, round_weighted_output=None, cast_output=None,
+                                      target_name=None, call_name=None, condition=None):
+        return _call_pattern(SparseExpertsDownCombine,
+                             (activations, router_expert_ids, down_input_scale, down_weight, down_proj_scale, router_expert_weights),
+                             attributes={"output_dtype": _sparse_dtype_pattern(output_dtype), "round_projection": round_projection,
+                                         "round_weighted_output": round_weighted_output, "cast_output": cast_output},
+                             target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(GatherReduceAddNormApply)
@@ -1908,26 +1889,19 @@ class _ntt:
     @staticmethod
     @_op_pattern_function(PagedAttentionGatedCombine)
     def is_paged_attention_gated_combine(
-        max_state: PatternInput = None,
-        sum_state: PatternInput = None,
-        acc_state: PatternInput = None,
-        gate: PatternInput = None,
-        *,
-        layout: tuple[str, str, str] | None = None,
-        hidden_size: int | None = None,
-        output_data_type=None,
-        output_type: IRType | None = None,
-        split_hierarchy_axis: int | None = None,
-        split_count: int | None = None,
-        target_name: str | None = None,
-        call_name: str | None = None,
-        condition: Condition = None,
+        max_state: PatternInput = None, sum_state: PatternInput = None,
+        acc_state: PatternInput = None, gate: PatternInput = None, *,
+        layout: tuple[str, str, str] | None = None, hidden_size: int | None = None,
+        output_data_type=None, output_type: IRType | None = None,
+        split_hierarchy_axis: int | None = None, split_count: int | None = None,
+        target_name: str | None = None, call_name: str | None = None, condition: Condition = None,
     ) -> CallPattern:
         return _call_pattern(
-            PagedAttentionGatedCombine, (max_state, sum_state, acc_state, gate), attributes={
-                "layout": layout, "hidden_size": hidden_size, "output_data_type": output_data_type, "output_type":
-                output_type, "split_hierarchy_axis": split_hierarchy_axis, "split_count": split_count
-            }, target_name=target_name, call_name=call_name, condition=condition)
+            PagedAttentionGatedCombine, (max_state, sum_state, acc_state, gate),
+            attributes={"layout": layout, "hidden_size": hidden_size, "output_data_type": output_data_type,
+                        "output_type": output_type, "split_hierarchy_axis": split_hierarchy_axis,
+                        "split_count": split_count},
+            target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(PackedQKVParallelLinearCombine)
@@ -1941,7 +1915,7 @@ class _ntt:
     ) -> CallPattern:
         return _call_pattern(
             PackedQKVParallelLinearCombine,
-            (qkv, ),
+            (qkv,),
             attributes={"output_type": output_type},
             target_name=target_name,
             call_name=call_name,
@@ -2073,12 +2047,13 @@ class _ntt:
         attributes: dict[str, object] = {}
         if new_type is not None:
             attributes["new_type"] = VectorizedCast.normalize_attrs(
-                {"new_type": new_type, "vectorize_axes": vectorize_axes or (0, )})["new_type"]
+                {"new_type": new_type, "vectorize_axes": vectorize_axes or (0,)}
+            )["new_type"]
         if vectorize_axes is not None:
             attributes["vectorize_axes"] = tuple(vectorize_axes)
         return _call_pattern(
             VectorizedCast,
-            (value, ),
+            (value,),
             attributes=attributes,
             target_name=target_name,
             call_name=call_name,
@@ -2127,9 +2102,11 @@ class _tensors:
         call_name: str | None = None,
         condition: Condition = None,
     ) -> CallPattern:
-        normalized = None if dtype is None else Bitcast.normalize_attrs({"dtype": dtype})["dtype"]
-        return _call_pattern(Bitcast, (value, ), attributes={"dtype": normalized}, target_name=target_name,
-                             call_name=call_name, condition=condition)
+        normalized = None if dtype is None else Bitcast.normalize_attrs(
+            {"dtype": dtype})["dtype"]
+        return _call_pattern(
+            Bitcast, (value,), attributes={"dtype": normalized},
+            target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(Cast)
@@ -2142,8 +2119,9 @@ class _tensors:
         condition: Condition = None,
     ) -> CallPattern:
         normalized = None if dtype is None else Cast.normalize_attrs({"dtype": dtype})["dtype"]
-        return _call_pattern(Cast, (value, ), attributes={"dtype": normalized}, target_name=target_name,
-                             call_name=call_name, condition=condition)
+        return _call_pattern(
+            Cast, (value,), attributes={"dtype": normalized},
+            target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(Concat)
@@ -2175,7 +2153,7 @@ class _tensors:
     ) -> CallPattern:
         return _call_pattern(
             Reshape,
-            (value, ),
+            (value,),
             attributes={"shape": shape},
             target_name=target_name,
             call_name=call_name,
@@ -2194,7 +2172,7 @@ class _tensors:
     ) -> CallPattern:
         return _call_pattern(
             Permute,
-            (value, ),
+            (value,),
             attributes={"axes": axes},
             target_name=target_name,
             call_name=call_name,
@@ -2215,7 +2193,7 @@ class _tensors:
     ) -> CallPattern:
         return _call_pattern(
             Pack,
-            (value, ),
+            (value,),
             attributes={"axes": axes, "axis": axis, "lanes": lanes},
             target_name=target_name,
             call_name=call_name,
@@ -2235,7 +2213,7 @@ class _tensors:
     ) -> CallPattern:
         return _call_pattern(
             Unpack,
-            (value, ),
+            (value,),
             attributes={"axes": axes, "axis": axis},
             target_name=target_name,
             call_name=call_name,
@@ -2253,8 +2231,9 @@ class _tensors:
         call_name: str | None = None,
         condition: Condition = None,
     ) -> CallPattern:
-        return _call_pattern(Pad, (value, ), attributes={"pad_end": pad_end, "pad_value": pad_value},
-                             target_name=target_name, call_name=call_name, condition=condition)
+        return _call_pattern(
+            Pad, (value,), attributes={"pad_end": pad_end, "pad_value": pad_value},
+            target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(SliceToShape)
@@ -2266,8 +2245,9 @@ class _tensors:
         call_name: str | None = None,
         condition: Condition = None,
     ) -> CallPattern:
-        return _call_pattern(SliceToShape, (value, ), attributes={"shape": shape}, target_name=target_name,
-                             call_name=call_name, condition=condition)
+        return _call_pattern(
+            SliceToShape, (value,), attributes={"shape": shape},
+            target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
     @_op_pattern_function(GetItem)
@@ -2281,7 +2261,7 @@ class _tensors:
     ) -> CallPattern:
         return _call_pattern(
             GetItem,
-            (value, ),
+            (value,),
             attributes={"index": index},
             target_name=target_name,
             call_name=call_name,
@@ -2301,7 +2281,6 @@ class _tensors:
 
 
 class _tir:
-
     @staticmethod
     @_op_pattern_function(TIRCall)
     def is_call(
@@ -2319,7 +2298,9 @@ class _tir:
             attributes={"callee": callee},
             target_name=target_name,
             call_name=call_name,
-            condition=_with_node_constraints(condition, result_type=result_type, effect=effect),
+            condition=_with_node_constraints(
+                condition, result_type=result_type, effect=effect
+            ),
         )
 
     @staticmethod
@@ -2402,7 +2383,7 @@ class _tir:
     ) -> CallPattern:
         return _call_pattern(
             BufferView,
-            (value, ),
+            (value,),
             attributes={"alias_kind": alias_kind},
             target_name=target_name,
             call_name=call_name,
@@ -2413,7 +2394,7 @@ class _tir:
     @_op_pattern_function(BufferSubspan)
     def is_buffer_subspan(value: PatternInput = None, offsets=None, shape=None, *, target_name: str | None = None,
                           call_name: str | None = None, condition: Condition = None) -> CallPattern:
-        return _call_pattern(BufferSubspan, (value, ), attributes={"offsets": offsets, "shape": shape},
+        return _call_pattern(BufferSubspan, (value,), attributes={"offsets": offsets, "shape": shape},
                              target_name=target_name, call_name=call_name, condition=condition)
 
     @staticmethod
@@ -2491,8 +2472,11 @@ def _with_node_constraints(
         return condition
 
     def combined(node: Node) -> bool:
-        return ((result_type is None or node.type == result_type) and (effect is None or node.effect == effect)
-                and (condition is None or condition(node)))
+        return (
+            (result_type is None or node.type == result_type)
+            and (effect is None or node.effect == effect)
+            and (condition is None or condition(node))
+        )
 
     return combined
 

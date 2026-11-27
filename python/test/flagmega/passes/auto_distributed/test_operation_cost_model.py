@@ -4,7 +4,8 @@
 import pytest
 from triton.flagmega import ir as fm
 from triton.flagmega.passes.auto_distributed.operation_cost import (
-    DistributedOperationCostModel, )
+    DistributedOperationCostModel,
+)
 
 
 def _h800_model():
@@ -23,11 +24,11 @@ def _h800_model():
     )
 
 
-def test_hierarchical_target_cost_matches_reference_norm_apply_pick_values():
+def test_hierarchical_target_cost_matches_nncase_norm_apply_pick_values():
     model = _h800_model()
     placement = fm.Placement((8, 16), "yx", "bb")
     broadcast = fm.DistributedType(
-        fm.tensor_type(fm.vector_type("bfloat16", (8, )), (1, 256)),
+        fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, 256)),
         (fm.SBP.broadcast(), fm.SBP.broadcast()),
         placement,
     )
@@ -55,8 +56,8 @@ def test_hierarchical_target_cost_matches_reference_norm_apply_pick_values():
 def test_target_cost_overlaps_compute_and_memory_then_adds_synchronization():
     model = _h800_model()
     result_type = fm.DistributedType(
-        fm.tensor_type("float32", (1, )),
-        (fm.SBP.broadcast(), ),
+        fm.tensor_type("float32", (1,)),
+        (fm.SBP.broadcast(),),
         fm.Placement((8, 16), "yx", "bb"),
     )
     factors = fm.OpCostFactors(
@@ -75,13 +76,13 @@ def test_non_distributed_result_uses_one_active_block():
     model = _h800_model()
     factors = fm.OpCostFactors(block_local_memory_load_bytes=1908)
 
-    assert model.get_latency(factors, fm.tensor_type("float32", (1, ))) == 301
+    assert model.get_latency(factors, fm.tensor_type("float32", (1,))) == 301
 
 
-def test_hierarchical_target_cost_matches_reference_packed_matmul_pick_value():
+def test_hierarchical_target_cost_matches_nncase_packed_matmul_pick_value():
     model = _h800_model()
     result_type = fm.DistributedType(
-        fm.tensor_type(fm.vector_type("bfloat16", (8, )), (1, 2)),
+        fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, 2)),
         (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((0, 1), 2)),
         fm.Placement((8, 16), "yx", "bb"),
     )
@@ -101,55 +102,41 @@ def test_hierarchical_target_cost_matches_reference_packed_matmul_pick_value():
 @pytest.mark.parametrize("level", ("c", "d"))
 def test_replicated_chip_work_has_one_chip_bandwidth_budget(chips, level):
     result = fm.DistributedType(
-        fm.tensor_type("float32", (1, )),
-        (fm.SBP.broadcast(), ),
+        fm.tensor_type("float32", (1,)), (fm.SBP.broadcast(),),
         fm.Placement((chips, 8, 16), "cyx", level + "bb"),
     )
     factors = fm.OpCostFactors(
-        cpu_cycles=1280,
-        block_local_memory_load_bytes=12292,
+        cpu_cycles=1280, block_local_memory_load_bytes=12292,
         block_local_memory_store_bytes=4096,
     )
     assert _h800_model().get_latency(factors, result) == 1400
 
 
 @pytest.mark.parametrize("exclusive_axes,active_blocks", (
-    (None, 128),
-    ((0, ), 128),
-    ((1, ), 16),
-    ((0, 1), 16),
-    ((1, 3), 1),
-    ((0, 1, 2, 3), 1),
+    (None, 128), ((0,), 128), ((1,), 16), ((0, 1), 16),
+    ((1, 3), 1), ((0, 1, 2, 3), 1),
 ))
 def test_only_exclusive_block_axes_reduce_per_chip_traffic(exclusive_axes, active_blocks):
     result = fm.DistributedType(
-        fm.tensor_type("float32", (1, )),
-        (fm.SBP.broadcast(), ),
+        fm.tensor_type("float32", (1,)), (fm.SBP.broadcast(),),
         fm.Placement((4, 8, 2, 16), "cydx", "cbdb"),
         exclusive=None if exclusive_axes is None else fm.SBP.exclusive(exclusive_axes),
     )
     factors = fm.OpCostFactors(
-        chip_global_memory_load_bytes=7,
-        chip_global_memory_store_bytes=3,
-        chip_aggregate_memory_load_bytes=17,
-        chip_aggregate_memory_store_bytes=5,
+        chip_global_memory_load_bytes=7, chip_global_memory_store_bytes=3,
+        chip_aggregate_memory_load_bytes=17, chip_aggregate_memory_store_bytes=5,
     )
     assert DistributedOperationCostModel().get_latency(factors, result) == 10 * active_blocks + 22
 
 
 def test_tuple_chip_traffic_uses_largest_executing_block_domain():
     placement = fm.Placement((4, 8, 16), "cyx", "cbb")
-
     def field(exclusive):
         return fm.DistributedType(
-            fm.tensor_type("float32", (1, )),
-            (fm.SBP.broadcast(), ),
-            placement,
-            exclusive=fm.SBP.exclusive(exclusive),
+            fm.tensor_type("float32", (1,)), (fm.SBP.broadcast(),),
+            placement, exclusive=fm.SBP.exclusive(exclusive),
         )
-
-    result = fm.TupleType((field((1, )), fm.TupleType((field((0, 2)), ))))
+    result = fm.TupleType((field((1,)), fm.TupleType((field((0, 2)),))))
     assert DistributedOperationCostModel().get_latency(
-        fm.OpCostFactors(chip_global_memory_load_bytes=1),
-        result,
+        fm.OpCostFactors(chip_global_memory_load_bytes=1), result,
     ) == 16

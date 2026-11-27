@@ -53,8 +53,7 @@ def test_gated_tile_follows_fixed_scalar_capacity_without_changing_sbp(capacity,
     # A target-specific preferred implementation is not overridden by this
     # portable masked-lane heuristic.
     model = context.implementation_model
-    entries = tuple(
-        replace(entry, facts={**entry.facts, "portable_triton": False}) if entry.id ==
-        "tir.paged_attention_gated_combine.decode" else entry for entry in model.implementations)
+    entries = tuple(replace(entry, facts={**entry.facts, "portable_triton": False})
+                    if entry.id == "tir.paged_attention_gated_combine.decode" else entry for entry in model.implementations)
     custom = replace(context, implementation_model=replace(model, implementations=entries))
     assert provider.propose(custom).default_candidate == "tir.paged_attention_gated_combine.decode"

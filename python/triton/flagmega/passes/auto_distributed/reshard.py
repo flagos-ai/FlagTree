@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Bounded reshard-path planner ported from reference."""
+"""Bounded reshard-path planner ported from nncase."""
 
 from __future__ import annotations
 
@@ -11,7 +11,8 @@ from typing import Callable
 from triton.flagmega.ir import DistributedType, IRType, SBP, TensorType
 from triton.flagmega.ir.distributed_type import chip_shared_backing_type
 from triton.flagmega.passes.auto_distributed.reshard_decomposition import (
-    get_partial_reduce_scatter_intermediates, )
+    get_partial_reduce_scatter_intermediates,
+)
 
 
 @dataclass(frozen=True)
@@ -64,8 +65,12 @@ class DistributedReshardPlanner:
                 plans.append(DistributedReshardPlan(key))
 
         add(target_type)
-        if (max_hops == 1 or not isinstance(source_type, DistributedType)
-                or not isinstance(target_type, DistributedType) or source_type.tensor != target_type.tensor):
+        if (
+            max_hops == 1
+            or not isinstance(source_type, DistributedType)
+            or not isinstance(target_type, DistributedType)
+            or source_type.tensor != target_type.tensor
+        ):
             return tuple(plans)
         if source_type.placement != target_type.placement:
             # Retarget a complete chip component without changing its device
@@ -80,7 +85,8 @@ class DistributedReshardPlanner:
             add(intermediate, target_type)
         if plans:
             return tuple(plans)
-        source_no_partial = DistributedType(source_type.tensor, source_type.axis_policies, source_type.placement)
+        source_no_partial = DistributedType(
+            source_type.tensor, source_type.axis_policies, source_type.placement)
         broadcast = DistributedType(
             source_type.tensor,
             tuple(SBP.broadcast() for _ in source_type.tensor.shape),

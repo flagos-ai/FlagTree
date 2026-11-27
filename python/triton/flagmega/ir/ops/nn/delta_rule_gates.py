@@ -34,8 +34,8 @@ class DeltaRuleGates(OpDefinition):
     def normalize_attrs(cls, attributes):
         attrs = super().normalize_attrs(attributes)
         threshold = attrs["softplus_threshold"]
-        if (isinstance(threshold, bool) or not isinstance(threshold, (int, float)) or not math.isfinite(threshold)
-                or threshold <= 0):
+        if (isinstance(threshold, bool) or not isinstance(threshold, (int, float))
+                or not math.isfinite(threshold) or threshold <= 0):
             raise IRSchemaError("DeltaRuleGates softplus_threshold must be finite and positive.")
         if attrs["alpha_exp_mode"] not in ("fast", "accurate"):
             raise IRSchemaError("DeltaRuleGates alpha_exp_mode must be fast or accurate.")

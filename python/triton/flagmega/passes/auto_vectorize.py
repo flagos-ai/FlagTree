@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""EGraph AutoVectorize orchestration."""
+"""nncase-shaped EGraph AutoVectorize orchestration."""
 
 from __future__ import annotations
 
@@ -25,13 +25,10 @@ class AutoVectorizePass:
         existing = {point.id for point in module.selection_points}
         points: list[SelectionPoint] = []
         selections: list[SelectionRecord] = []
-        alternatives_by_node, defaults = coordinate_layouts(
-            module, registry, {
-                node.id: tuple(candidate
-                               for rule in registry.rules
-                               for candidate in rule.candidates(node, module))
-                for node in module.nodes
-            }, _default_candidate)
+        alternatives_by_node, defaults = coordinate_layouts(module, registry, {
+            node.id: tuple(candidate for rule in registry.rules for candidate in rule.candidates(node, module))
+            for node in module.nodes
+        }, _default_candidate)
         for node in module.nodes:
             alternatives = alternatives_by_node[node.id]
             if not alternatives:
@@ -46,14 +43,13 @@ class AutoVectorizePass:
             ), *(_to_ir_candidate(value) for value in alternatives))
             default = defaults[node.id]
             points.append(SelectionPoint(point_id, "vectorization", candidates, default, owner=node.id))
-            selections.append(
-                SelectionRecord(
-                    point_id,
-                    default,
-                    "default-policy",
-                    target.vectorization_policy.identity,
-                    "Extract the target-preferred typed-vector EGraph alternative; the Python checkpoint may override it.",
-                ))
+            selections.append(SelectionRecord(
+                point_id,
+                default,
+                "default-policy",
+                target.vectorization_policy.identity,
+                "Extract the target-preferred typed-vector EGraph alternative; the Python checkpoint may override it.",
+            ))
         return replace(
             module,
             selection_points=module.selection_points + tuple(points),
@@ -104,10 +100,12 @@ class AutoVectorizePass:
                 )
             rewrite = RewriteRule(
                 f"{rule.name}:{point.owner}:{candidate.id}",
-                lambda value, _module, owner=point.owner:
-                (value.id == owner and "vectorized_from" not in value.metadata),
-                lambda value, current, selected_rule=rule, selected_candidate=candidate:
-                (selected_rule.rewrite(value, current, selected_candidate)),
+                lambda value, _module, owner=point.owner: (
+                    value.id == owner and "vectorized_from" not in value.metadata
+                ),
+                lambda value, current, selected_rule=rule, selected_candidate=candidate: (
+                    selected_rule.rewrite(value, current, selected_candidate)
+                ),
             )
             # Equality saturation deliberately represents an effectful node as
             # an opaque boundary: merging it into an e-class could duplicate,
@@ -126,7 +124,7 @@ class AutoVectorizePass:
 
         current = module
         if pure_rules:
-            # This is deliberately EGraphRulesPass, matching reference.  Agent or
+            # This is deliberately EGraphRulesPass, matching nncase.  Agent or
             # default selection has already chosen among equality candidates.
             egraph_dumper = DumpScope.current().create_sub_dumper("AutoVectorizeEGraph")
             # The e-graph stores one class for every IR node, including
@@ -148,16 +146,15 @@ class AutoVectorizePass:
                 )
                 current = DataflowPass(
                     "ApplyLargeModelVectorization",
-                    (indexed_rule, ),
+                    (indexed_rule,),
                     max_iterations=2,
                 ).run(current)
             else:
-                current = PassManager("AutoVectorizeEGraph", dumper=egraph_dumper).add(
-                    EGraphRulesPass(
-                        "AutoVectorize",
-                        tuple(pure_rules),
-                        selector=lambda _original, alternatives, _module: alternatives[0].node,
-                    )).run(current).module
+                current = PassManager("AutoVectorizeEGraph", dumper=egraph_dumper).add(EGraphRulesPass(
+                    "AutoVectorize",
+                    tuple(pure_rules),
+                    selector=lambda _original, alternatives, _module: alternatives[0].node,
+                )).run(current).module
         if effectful_rules:
             current = DataflowPass(
                 "ApplyEffectfulVectorization",

@@ -16,9 +16,9 @@ _SCALAR = {
 
 def _source(expression, capacity=256, hierarchy=(8, 16)):
     return {
-        "local_capacity_shape": (capacity, ),
+        "local_capacity_shape": (capacity,),
         "scalar_lane_count": 1,
-        "logical_coordinate_expressions": (expression, ),
+        "logical_coordinate_expressions": (expression,),
         "distributed_type": {"placement": {"hierarchy": hierarchy}},
     }
 
@@ -37,24 +37,19 @@ def _source(expression, capacity=256, hierarchy=(8, 16)):
     (_TYPED, "shard_coord_0 * 256 + local_coord_0", 248, 64, 1),
     (_TYPED, "shard_coord_0 * 256 + local_coord_0", 256, 8, 1),
     # A non-unit payload stride is not contiguous storage.
-    ({**_SCALAR, "scalar_storage_strides": (151936, 128, 32, 2)}, "shard_coord_0 * 256 + local_coord_0", 256, 64, 1),
+    ({**_SCALAR, "scalar_storage_strides": (151936, 128, 32, 2)},
+     "shard_coord_0 * 256 + local_coord_0", 256, 64, 1),
     # Unknown or non-arithmetic mappings never claim contiguity.
     (_TYPED, "some_helper(local_coord_0)", 256, 64, 1),
 ])
 def test_k_contiguity_probe(weight, expression, capacity, block_k, expected):
     assert _k_major_n8_k16_k_contiguity(
-        weight,
-        _source(expression, capacity),
-        local_k_capacity=capacity,
-        block_k=block_k,
+        weight, _source(expression, capacity), local_k_capacity=capacity, block_k=block_k,
     ) == expected
 
 
 def test_owner_local_storage_is_contiguous_by_construction():
     weight = {**_TYPED, "coordinate_space": "local"}
     assert _k_major_n8_k16_k_contiguity(
-        weight,
-        _source("unused"),
-        local_k_capacity=256,
-        block_k=64,
+        weight, _source("unused"), local_k_capacity=256, block_k=64,
     ) == 16

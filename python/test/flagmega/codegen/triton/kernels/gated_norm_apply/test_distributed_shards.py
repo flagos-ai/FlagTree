@@ -25,23 +25,23 @@ def _module():
     broadcast = fm.SBP.broadcast()
     split = fm.SBP.split_contiguous((0, 1))
     value_tensor = fm.tensor_type("bfloat16", (TOKENS, HEADS, DIM))
-    parameter_tensor = fm.tensor_type("float32", (DIM, ))
+    parameter_tensor = fm.tensor_type("float32", (DIM,))
     # Head-split value and gate; the normalized suffix stays replicated.
     value_type = fm.DistributedType(value_tensor, (broadcast, split, broadcast), placement)
-    parameter_type = fm.DistributedType(parameter_tensor, (broadcast, ), placement)
+    parameter_type = fm.DistributedType(parameter_tensor, (broadcast,), placement)
 
     class Graph(fm.Module):
-
         def forward(self):
             value = self.input("value", value_type, id="value")
             gate = self.input("gate", value_type, id="gate")
             scale = self.input("scale", parameter_type, id="scale")
             bias = self.input("bias", parameter_type, id="bias")
             stats = fm.F.nn.norm_stats(value, axis=-1, use_mean=False, name="stats")
-            output = fm.F.nn.gated_norm_apply(value, stats, scale, bias, gate, axis=-1, epsilon=EPS, use_mean=False,
-                                              activation="sigmoid", name="output")
+            output = fm.F.nn.gated_norm_apply(
+                value, stats, scale, bias, gate, axis=-1, epsilon=EPS, use_mean=False,
+                activation="sigmoid", name="output")
             local = fm.F.distributed.force_boxing(output, output.type.tensor)
-            self.function("main", (value, gate, scale, bias), (local, ))
+            self.function("main", (value, gate, scale, bias), (local,))
 
     return Graph(dialect="distributed", stage="frozen_constants", entry="main",
                  metadata={"auto_distribution": {"placement": placement.to_data()}}).build()
@@ -52,17 +52,23 @@ def test_the_head_split_gate_is_applied_per_shard(tmp_path):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
     module = Compiler().compile(_module()).module
-    artifact = write_artifact(module, tmp_path / "gated-shards", target="nvidia-sm90", emit_executable=True)
+    artifact = write_artifact(
+        module, tmp_path / "gated-shards", target="nvidia-sm90", emit_executable=True
+    )
     runtime = load(artifact, device="cuda:0")
     generator = torch.Generator().manual_seed(31)
     value = torch.randn((TOKENS, HEADS, DIM), generator=generator).to("cuda", torch.bfloat16)
     # A per-head gate ramp: mixing up the shard offsets is observable.
-    gate = (torch.arange(HEADS, dtype=torch.float32).reshape(1, HEADS, 1).expand(TOKENS, HEADS, DIM) -
-            HEADS / 2).contiguous().to("cuda", torch.bfloat16)
-    scale = torch.randn((DIM, ), generator=generator).to("cuda", torch.float32)
+    gate = (
+        torch.arange(HEADS, dtype=torch.float32).reshape(1, HEADS, 1).expand(TOKENS, HEADS, DIM)
+        - HEADS / 2
+    ).contiguous().to("cuda", torch.bfloat16)
+    scale = torch.randn((DIM,), generator=generator).to("cuda", torch.float32)
     bias = torch.zeros_like(scale)
     wide = value.float()
-    normalized = (wide * torch.rsqrt(wide.pow(2).mean(dim=-1, keepdim=True) + EPS) * scale + bias)
+    normalized = (
+        wide * torch.rsqrt(wide.pow(2).mean(dim=-1, keepdim=True) + EPS) * scale + bias
+    )
     expected = (normalized * torch.sigmoid(gate.float())).to(torch.bfloat16)
     output = torch.empty_like(value)
 

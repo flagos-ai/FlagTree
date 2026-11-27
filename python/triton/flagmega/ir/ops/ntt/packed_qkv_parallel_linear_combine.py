@@ -23,7 +23,8 @@ from triton.flagmega.ir.ops.core import (
     tensor_nbytes,
 )
 from triton.flagmega.ir.ops.ntt.add_norm_stats import (
-    can_materialize_sum_partial, )
+    can_materialize_sum_partial,
+)
 from triton.flagmega.ir.type_pattern import is_ir_type
 
 
@@ -47,7 +48,9 @@ class PackedQKVParallelLinearCombine(OpDefinition):
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
         attrs = super().normalize_attrs(attributes)
         if not isinstance(attrs["output_type"], IRType):
-            raise IRSchemaError("PackedQKVParallelLinearCombine output_type must be an IRType.")
+            raise IRSchemaError(
+                "PackedQKVParallelLinearCombine output_type must be an IRType."
+            )
         return attrs
 
     @classmethod
@@ -55,26 +58,27 @@ class PackedQKVParallelLinearCombine(OpDefinition):
         input_type = cls.qkv.type_of(inputs)
         output_type = cls.output_type.read(inputs, attrs)
         if not can_materialize_packed_qkv(input_type, output_type):
-            raise IRSchemaError("PackedQKVParallelLinearCombine cannot materialize "
-                                f"{input_type!r} into {output_type!r}.")
+            raise IRSchemaError(
+                "PackedQKVParallelLinearCombine cannot materialize "
+                f"{input_type!r} into {output_type!r}."
+            )
         return output_type
 
     @classmethod
     def evaluate(cls, node, arguments, context):
         # Evaluator distributed values represent the complete logical sum.
-        return tuple(
-            value.to(
-                dtype=context.torch_dtype(field.tensor.dtype if isinstance(field, DistributedType) else field.dtype))
-            for value, field in zip(cls.qkv.read(arguments), node.type.fields, strict=True))
+        return tuple(value.to(dtype=context.torch_dtype(field.tensor.dtype if isinstance(field, DistributedType)
+                                                        else field.dtype))
+                     for value, field in zip(cls.qkv.read(arguments), node.type.fields, strict=True))
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         if not isinstance(node.type, TupleType):
-            return OpCost(notes=("invalid-packed-qkv-combine-type", ))
-        bytes_written = _sum_optional(
-            tuple(
-                tensor_nbytes(field.tensor if isinstance(field, DistributedType) else field)
-                for field in node.type.fields))
+            return OpCost(notes=("invalid-packed-qkv-combine-type",))
+        bytes_written = _sum_optional(tuple(
+            tensor_nbytes(field.tensor if isinstance(field, DistributedType) else field)
+            for field in node.type.fields
+        ))
         return OpCost(
             bytes_read=bytes_written,
             bytes_written=bytes_written,
@@ -82,7 +86,7 @@ class PackedQKVParallelLinearCombine(OpDefinition):
             synchronizations=None,
             kind=CostKind.ANALYTIC,
             model="flagmega.packed-qkv-combine/v1",
-            notes=("coupled-sum-partial-materialization", ),
+            notes=("coupled-sum-partial-materialization",),
         )
 
     @classmethod
@@ -108,7 +112,7 @@ class PackedQKVParallelLinearCombine(OpDefinition):
 
 
 def can_materialize_packed_qkv(input_type: IRType, output_type: IRType) -> bool:
-    """Match the reference three-field identity or coupled Sum-partial contract."""
+    """Match nncase's three-field identity or coupled Sum-partial contract."""
 
     if not isinstance(input_type, TupleType) or not isinstance(output_type, TupleType):
         return False
@@ -124,10 +128,16 @@ def can_materialize_packed_qkv(input_type: IRType, output_type: IRType) -> bool:
         return False
     distributed_inputs = tuple(input_fields)
     first_partial = distributed_inputs[0].partial
-    if (not isinstance(first_partial, SBPPartial) or first_partial.reduce_op is not ReduceOp.SUM
-            or any(field.partial != first_partial for field in distributed_inputs[1:])):
+    if (
+        not isinstance(first_partial, SBPPartial)
+        or first_partial.reduce_op is not ReduceOp.SUM
+        or any(field.partial != first_partial for field in distributed_inputs[1:])
+    ):
         return False
-    return all(can_materialize_qkv_field(source, target) for source, target in zip(input_fields, output_fields))
+    return all(
+        can_materialize_qkv_field(source, target)
+        for source, target in zip(input_fields, output_fields)
+    )
 
 
 def can_materialize_qkv_field(source, target) -> bool:
@@ -135,20 +145,24 @@ def can_materialize_qkv_field(source, target) -> bool:
     if can_materialize_sum_partial(source, target):
         return True
     before, after = source.tensor.dtype, target.tensor.dtype
-    if not (isinstance(before, VectorType) and isinstance(after, VectorType) and before.elem_type is DType.FLOAT32
-            and after.elem_type is DType.BFLOAT16 and before.lanes == after.lanes):
+    if not (isinstance(before, VectorType) and isinstance(after, VectorType)
+            and before.elem_type is DType.FLOAT32 and after.elem_type is DType.BFLOAT16
+            and before.lanes == after.lanes):
         return False
     return can_materialize_sum_partial(replace(source, tensor=replace(source.tensor, dtype=after)), target)
 
 
 def _is_materialized(value_type: IRType) -> bool:
-    return not isinstance(value_type, DistributedType) or (value_type.partial is None
-                                                           and all(not isinstance(policy, SBPPartial)
-                                                                   for policy in value_type.axis_policies))
+    return not isinstance(value_type, DistributedType) or (
+        value_type.partial is None
+        and all(not isinstance(policy, SBPPartial) for policy in value_type.axis_policies)
+    )
 
 
 def _sum_optional(values: tuple[int | None, ...]) -> int | None:
-    return None if any(value is None for value in values) else sum(value for value in values if value is not None)
+    return None if any(value is None for value in values) else sum(
+        value for value in values if value is not None
+    )
 
 
 __all__ = ["PackedQKVParallelLinearCombine", "can_materialize_packed_qkv"]

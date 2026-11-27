@@ -9,12 +9,11 @@ from triton.flagmega.rules.ntt.vectorize.propagation.producer_demand import fina
 
 
 def mhc_pre_producer_rule():
-
     def rewrite(node, module):
         projections = {
             value.id
             for value in module.nodes
-            if value.op == "builtin.get_item" and value.inputs == (node.id, ) and value.attrs["index"] == 2
+            if value.op == "builtin.get_item" and value.inputs == (node.id,) and value.attrs["index"] == 2
         }
         lanes = final_axis_pack_demand(module, projections)
         if lanes is None:
@@ -30,12 +29,13 @@ def mhc_pre_producer_rule():
         )
         helpers, restored = [packed], []
         for index in range(3):
-            field = make_node("builtin.get_item", f"{packed.id}.{index}", (packed, ), {"index": index}, metadata)
+            field = make_node("builtin.get_item", f"{packed.id}.{index}", (packed,), {"index": index}, metadata)
             helpers.append(field)
             if index == 2:
                 rank = tensor_of(node.type.fields[index]).rank
-                field = make_node("tensors.unpack", f"{field.id}.unpack", (field, ),
-                                  {"axes": (rank - 1, ) * len(lanes)}, metadata)
+                field = make_node(
+                    "tensors.unpack", f"{field.id}.unpack", (field,), {"axes": (rank - 1,) * len(lanes)}, metadata
+                )
                 helpers.append(field)
             restored.append(field)
         # Preserve the tuple ABI for scalar/mixed-layout and whole-tuple users.
@@ -44,8 +44,9 @@ def mhc_pre_producer_rule():
         assert result.type == node.type and packed.effect == node.effect
         return RewriteResult(result, tuple(helpers))
 
-    return RewriteRule("VectorizeMhcPrePropagation", lambda node, _: node.op == "nn.mhc_pre", rewrite,
-                       root_ops=("nn.mhc_pre", ))
+    return RewriteRule(
+        "VectorizeMhcPrePropagation", lambda node, _: node.op == "nn.mhc_pre", rewrite, root_ops=("nn.mhc_pre",)
+    )
 
 
 __all__ = ["mhc_pre_producer_rule"]

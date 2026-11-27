@@ -34,10 +34,8 @@ class RotaryCacheTable(OpDefinition):
         dtype = str(attrs["output_dtype"])
         if dtype not in ("float32", "bfloat16"):
             raise IRSchemaError("RotaryCacheTable output dtype must be FP32 or BF16.")
-        return {
-            "positions": positions, "inverse_frequencies": frequencies, "attention_scaling": scaling, "output_dtype":
-            dtype
-        }
+        return {"positions": positions, "inverse_frequencies": frequencies,
+                "attention_scaling": scaling, "output_dtype": dtype}
 
     @classmethod
     def infer_type(cls, inputs, attrs):
@@ -46,9 +44,9 @@ class RotaryCacheTable(OpDefinition):
     @classmethod
     def evaluate(cls, node, arguments, context):
         from triton.flagmega.evaluator.nvidia_rotary_cache import rotary_table
-        return rotary_table(node.attrs["positions"], node.attrs["inverse_frequencies"], node.attrs["attention_scaling"],
-                            node.attrs["output_dtype"])
+        return rotary_table(node.attrs["positions"], node.attrs["inverse_frequencies"],
+                            node.attrs["attention_scaling"], node.attrs["output_dtype"])
 
     @classmethod
     def cost(cls, node):
-        return OpCost(notes=("precomputed-rotary-cache", ))
+        return OpCost(notes=("precomputed-rotary-cache",))

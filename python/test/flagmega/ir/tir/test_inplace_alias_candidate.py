@@ -12,10 +12,10 @@ def _dispatch(*candidates):
         semantic_op="math.add",
         semantic_candidate="semantic.math.add",
         arguments=("lhs", "rhs"),
-        outputs=("result", ),
+        outputs=("result",),
         inplace_alias_candidates=tuple(candidates),
         reads=("lhs", "rhs"),
-        writes=("result", ),
+        writes=("result",),
     )
 
 

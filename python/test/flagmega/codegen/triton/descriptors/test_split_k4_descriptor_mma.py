@@ -31,10 +31,7 @@ def test_explicit_split_k4_contract_is_encoded(split_raw):
     assert call["lhs_stage_extent"] == 8192
 
 
-@pytest.mark.parametrize("mutation", [
-    "old_order", "relaxed_order", "simt", "old_mma", "other_variant", "missing_fact", "old_fact", "k64", "tile32",
-    "warps4", "slots2", "no_stage", "rhs_option", "split_count", "fact_only"
-])
+@pytest.mark.parametrize("mutation", ["old_order", "relaxed_order", "simt", "old_mma", "other_variant", "missing_fact", "old_fact", "k64", "tile32", "warps4", "slots2", "no_stage", "rhs_option", "split_count", "fact_only"])
 def test_split_k4_rejects_mismatched_contract(split_raw, mutation):
     raw = deepcopy(split_raw)
     if mutation == "old_order": raw["semantic_attrs"]["reduction_order"] = "mma_k16"
@@ -73,12 +70,8 @@ def test_split_helper_two_includes_preserve_one_terminal_tree(norm_stats):
     assert "(dense_p0 + dense_p1) + (dense_p2 + dense_p3)" in source
     assert source.count("__split_k4_finalize(dense_accumulator)") == 2  # definition + terminal call
     if norm_stats:
-        assert source.index("__split_k4_finalize(dense_accumulator)",
-                            source.index("def " + call["symbol"] +
-                                         "__consumer(")) < source.index("dense_projection = dense_accumulator.to(")
-        raw = deepcopy(
-            next(c for c in describe_function_runtime_binding(module)["call_abi"]["kernel_calls"]
-                 if c["family"] == "dense_matmul"))
+        assert source.index("__split_k4_finalize(dense_accumulator)", source.index("def "+call["symbol"]+"__consumer(")) < source.index("dense_projection = dense_accumulator.to(")
+        raw = deepcopy(next(c for c in describe_function_runtime_binding(module)["call_abi"]["kernel_calls"] if c["family"] == "dense_matmul"))
         raw["semantic_attrs"]["reduction_order"] = ORDER
         raw["parameters"].update(accumulation_mode="split_k4_mma", mma_block_k=128)
         raw["facts"]["split_k4_ordered_mma_accumulation"] = True

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 from typing import get_type_hints
 
 import pytest
@@ -15,9 +16,7 @@ from triton.flagmega.rules import RewriteRule
 
 
 def make_graph():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
@@ -55,9 +54,17 @@ def test_parameter_info_owns_name_type_pattern_kind_and_effect():
     assert recurrent.state.memory_effect == fm.MemoryEffect.READ_WRITE
 
     definitions = fm.definitions()
-    assert all(parameter.name and isinstance(parameter.type_pattern, fm.TypePattern)
-               for definition in definitions
-               for parameter in definition.input_parameters)
+    assert all(
+        parameter.name and isinstance(parameter.type_pattern, fm.TypePattern)
+        for definition in definitions
+        for parameter in definition.input_parameters
+    )
+    op_root = Path(__file__).parents[2] / "triton" / "flagmega" / "ir" / "ops"
+    assert "input_parameter()" not in "".join(
+        path.read_text(encoding="utf-8")
+        for path in op_root.rglob("*.py")
+        if path.name != "core.py"
+    )
 
 
 def test_functional_apis_and_emitted_python_are_canonical_snake_case():
@@ -69,17 +76,20 @@ def test_functional_apis_and_emitted_python_are_canonical_snake_case():
     assert not hasattr(fm.F, "Math")
     assert tuple(inspect.signature(fm.F.math.add).parameters) == ("lhs", "rhs", "name", "metadata")
     assert tuple(inspect.signature(pm.F.math.is_add).parameters) == (
-        "lhs",
-        "rhs",
-        "target_name",
-        "call_name",
-        "condition",
+        "lhs", "rhs", "target_name", "call_name", "condition",
     )
     pattern = pm.F.math.is_add()
     assert pattern[fm.get_definition("math.add").lhs].type_pattern.reason == "is_tensor"
 
 
-def test_functional_api_signatures_match_every_public_op():
+def test_functional_apis_are_static_typed_source_and_cover_every_public_op():
+    runtime_source = Path(inspect.getsourcefile(fm.F) or "").read_text(encoding="utf-8")
+    pattern_source = Path(inspect.getsourcefile(pm.F) or "").read_text(encoding="utf-8")
+
+    assert "def silu(" in runtime_source
+    assert "def is_silu(" in pattern_source
+    assert "_materialize_functionals" not in runtime_source + pattern_source
+    assert "setattr(" not in runtime_source + pattern_source
     assert get_type_hints(fm.F.math.silu)["value"] is fm.Node
     assert get_type_hints(fm.F.nn.rms_norm)["epsilon"] is float
 
@@ -91,19 +101,14 @@ def test_functional_api_signatures_match_every_public_op():
         declared = tuple(parameter.name for parameter in definition.parameters)
         assert tuple(inspect.signature(runtime).parameters) == (*declared, "name", "metadata")
         assert tuple(inspect.signature(pattern).parameters) == (
-            *declared,
-            "target_name",
-            "call_name",
-            "condition",
+            *declared, "target_name", "call_name", "condition",
         )
         assert runtime.__flagmega_op_definition__ is definition
         assert pattern.__flagmega_op_definition__ is definition
 
 
 def test_handwritten_functional_convenience_variants_build_and_match():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
@@ -149,9 +154,7 @@ def test_handwritten_functional_convenience_variants_build_and_match():
 
 
 def test_handwritten_tensor_recipe_and_sampling_patterns_match_attributes():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
@@ -199,7 +202,8 @@ def test_commutative_pattern_variant_matches_reversed_operands():
     lhs_pattern = pm.wildcard("lhs", lambda node: node.id == "lhs")
     rhs_pattern = pm.wildcard("rhs", lambda node: node.id == "rhs")
 
-    assert pm.try_match_root(added, pm.F.math.is_add(lhs_pattern, rhs_pattern), module) is None
+    assert pm.try_match_root(
+        added, pm.F.math.is_add(lhs_pattern, rhs_pattern), module) is None
     assert pm.try_match_root(
         added,
         pm.F.math.is_add_commutative(lhs_pattern, rhs_pattern, call_name="add"),
@@ -208,9 +212,7 @@ def test_commutative_pattern_variant_matches_reversed_operands():
 
 
 def test_parameter_type_contract_is_used_by_construction_and_verifier():
-
     class InvalidGraph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 

@@ -28,12 +28,8 @@ def _native_two_token_reference(Query, Key0, Key1, Value0, Value1, Out):
     p0 = tl.exp2(score0 * scale - maximum * scale)
     p1 = tl.exp2(score1 * scale - maximum * scale)
     inverse = tl.inline_asm_elementwise(
-        "rcp.approx.ftz.f32 $0, $1;",
-        constraints="=f,f",
-        args=[p0 + p1],
-        dtype=tl.float32,
-        is_pure=True,
-        pack=1,
+        "rcp.approx.ftz.f32 $0, $1;", constraints="=f,f", args=[p0 + p1],
+        dtype=tl.float32, is_pure=True, pack=1,
     )
     p0 = p0.to(tl.bfloat16).to(tl.float32)
     p1 = p1.to(tl.bfloat16).to(tl.float32)
@@ -55,8 +51,8 @@ def test_native_two_token_probabilities_preserve_rounding(tmp_path, traversal, f
     state.seq_lens.fill_(2)
     state.slot_mapping.fill_(1)
     generator = torch.Generator().manual_seed(0)
-    q_first = (torch.randn((16, ), generator=generator) * 4).bfloat16().cuda()
-    keys = torch.randn((2, ), generator=generator).bfloat16().cuda()
+    q_first = (torch.randn((16,), generator=generator) * 4).bfloat16().cuda()
+    keys = torch.randn((2,), generator=generator).bfloat16().cuda()
     # Close scores with a large common offset expose the exponent's
     # fused multiply-subtract rounding at the BF16 output boundary.
     keys[0], keys[1] = 256, 258
@@ -70,23 +66,20 @@ def test_native_two_token_probabilities_preserve_rounding(tmp_path, traversal, f
     state.kv_caches[0, 0, 1, 1].copy_(values[1].reshape(1, 64, 8))
     topk = torch.tensor([[0, 1]], dtype=torch.int32, device="cuda")
     actual, expected = torch.empty_like(query), torch.empty_like(query)
-    reference = _native_two_token_reference[(16, )](
-        query,
-        state.kv_caches[0, 0, 0, 0],
-        state.kv_caches[0, 0, 0, 1],
-        state.kv_caches[0, 0, 1, 0],
-        state.kv_caches[0, 0, 1, 1],
-        expected,
-        num_warps=8,
-        enable_fp_fusion=True,
+    reference = _native_two_token_reference[(16,)](
+        query, state.kv_caches[0, 0, 0, 0], state.kv_caches[0, 0, 0, 1],
+        state.kv_caches[0, 0, 1, 0], state.kv_caches[0, 0, 1, 1], expected,
+        num_warps=8, enable_fp_fusion=True,
     )
     assert reference.metadata.enable_fp_fusion
     runtime = load(artifact, device="cuda:0")
     try:
         arguments = _arguments(runtime, module, state, query, topk, actual)
         runtime.prepare(*arguments)
-        assert all(prepared.compiled_kernel.metadata.enable_fp_fusion == (floating_point_contract != "strict")
-                   for prepared in runtime._prepared)
+        assert all(
+            prepared.compiled_kernel.metadata.enable_fp_fusion == (floating_point_contract != "strict")
+            for prepared in runtime._prepared
+        )
         runtime.run_into(*arguments)
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
         assert runtime.resource_report["spill_bytes"] == 0

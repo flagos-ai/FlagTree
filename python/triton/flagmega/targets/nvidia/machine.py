@@ -16,15 +16,18 @@ from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.targets.ntt_options import NttTargetOptions
 from triton.flagmega.targets.nvidia.capability import Sm90Capability, Sm89Capability
 from triton.flagmega.targets.portable_triton_implementations import (
-    portable_triton_implementation_model, )
+    portable_triton_implementation_model,
+)
 from triton.flagmega.targets.nvidia.launch import sm90_launch_parameters
 from triton.flagmega.targets.nvidia.memory import sm90_bufferization_options
 from triton.flagmega.targets.nvidia.package import sm90_codegen_package_plan
 from triton.flagmega.targets.selection import CapabilitySelectionPolicy
 from triton.flagmega.passes.auto_distributed.operation_cost import (
-    DistributedOperationCostModel, )
+    DistributedOperationCostModel,
+)
 from triton.flagmega.passes.auto_distributed.reshard_cost import (
-    DistributedReshardCostModel, )
+    DistributedReshardCostModel,
+)
 from triton.flagmega.targets.nvidia.verifier import verify_sm90_module
 from triton.flagmega.targets.nvidia.workspaces import attach_workspace_requirements
 from triton.flagmega.targets.nvidia.shared_layout import verify_shared_workspaces
@@ -53,7 +56,7 @@ class NvidiaSm90Machine:
         # These are an editable backend configuration selected for this
         # machine profile, not constants embedded in any rule implementation.
         return NttTargetOptions(
-            placements=(Placement((8, 16), "yx", "bb"), ),
+            placements=(Placement((8, 16), "yx", "bb"),),
             vector_lane_bytes=16,
             vector_max_axes=1,
             packing_vector_bytes=16,
@@ -91,7 +94,7 @@ class NvidiaSm90Machine:
         )
 
     def distributed_operation_cost_model(self):
-        # H800 target-machine values mirror the reference canonical catalog.  The
+        # H800 target-machine values mirror nncase's canonical catalog.  The
         # aggregation implementation remains backend independent.
         return DistributedOperationCostModel(
             block_local_read_bytes_per_cycle=1024,
@@ -146,16 +149,16 @@ class NvidiaSm90Machine:
         implementation_model,
     ) -> None:
         if module.stage in {
-                "selected_tir",
-                "canonicalized_tir",
-                "microkernel_candidates",
-                "selected_microkernels",
-                "packaged_tir",
-                "memory_placed_tir",
-                "allocated_tir",
-                "scheduled_tir",
-                "synchronized_tir",
-                "bufferized_tir",
+            "selected_tir",
+            "canonicalized_tir",
+            "microkernel_candidates",
+            "selected_microkernels",
+            "packaged_tir",
+            "memory_placed_tir",
+            "allocated_tir",
+            "scheduled_tir",
+            "synchronized_tir",
+            "bufferized_tir",
         }:
             expected = {
                 "target_backend": target_backend,
@@ -188,9 +191,7 @@ def _sm90_implementation_model():
     from triton.flagmega.targets.nvidia.delta_rule import resident_delta_rule_implementations
     from triton.flagmega.targets.nvidia.sparse_experts_ordered import ordered_sparse_experts_implementations
     from triton.flagmega.targets.nvidia.dense_matmul import (
-        packed_mma_accumulator_implementations,
-        packed_mma_norm_stats_implementations,
-        ordered_mma_glu_implementations,
+        packed_mma_accumulator_implementations, packed_mma_norm_stats_implementations, ordered_mma_glu_implementations,
     )
     base = portable_triton_implementation_model()
     # These GEMV tiles fit an eight-warp consumer. Requiring sixteen warps
@@ -201,11 +202,14 @@ def _sm90_implementation_model():
         "tir.qkv_parallel_linear.packed_fused_gemv_tn256",
     }
     implementations = tuple(
-        replace(value, facts={**value.facts, "ordered_mma_accumulation": True}) if value.id ==
-        "tir.dense_matmul.packed_k_major_mma" else
-        replace(value, parameters={**value.parameters, "bounded_accurate_trig": True}) if value.family ==
-        "rotary_embedding" else replace(value, parameters={**value.parameters, "compute_num_warps": 8}) if value.id in
-        eight_warp_gemv else value for value in base.implementations)
+        replace(value, facts={**value.facts, "ordered_mma_accumulation": True})
+        if value.id == "tir.dense_matmul.packed_k_major_mma" else
+        replace(value, parameters={**value.parameters, "bounded_accurate_trig": True})
+        if value.family == "rotary_embedding" else
+        replace(value, parameters={**value.parameters, "compute_num_warps": 8})
+        if value.id in eight_warp_gemv else value
+        for value in base.implementations
+    )
     ordered = (*packed_mma_accumulator_implementations(), *packed_mma_norm_stats_implementations())
     glu = ordered_mma_glu_implementations()
     recurrent = resident_delta_rule_implementations()
@@ -213,22 +217,17 @@ def _sm90_implementation_model():
     split_glu = split_k_dense_glu_implementations()
     preferences = {
         **base.preferences,
-        "dense_matmul":
-        (*base.preferences["dense_matmul"], "tir.dense_matmul.packed_k_major_mma", *(value.id for value in ordered)),
+        "dense_matmul": (*base.preferences["dense_matmul"],
+                         "tir.dense_matmul.packed_k_major_mma", *(value.id for value in ordered)),
         "dense_matmul_glu": (*base.preferences["dense_matmul_glu"], *(value.id for value in glu)),
-        **{value.family: (value.id, *base.preferences[value.family])
-           for value in recurrent},
-        **{
-            value.family: (*base.preferences.get(
-                value.family, tuple(item.id for item in base.implementations if item.family == value.family)), value.id)
-            for value in experts
-        },
-        'split_k_dense_glu':
-        tuple(value.id for value in split_glu),
+        **{value.family: (value.id, *base.preferences[value.family]) for value in recurrent},
+        **{value.family: (*base.preferences.get(value.family, tuple(
+            item.id for item in base.implementations if item.family == value.family)), value.id)
+           for value in experts},
+        'split_k_dense_glu': tuple(value.id for value in split_glu),
     }
-    return replace(base, name="nvidia-sm90-ordered/v1",
-                   implementations=(*implementations, *ordered, *glu, *recurrent, *experts, *split_glu),
-                   preferences=preferences)
+    return replace(base, name="nvidia-sm90-ordered/v1", implementations=(
+        *implementations, *ordered, *glu, *recurrent, *experts, *split_glu), preferences=preferences)
 
 
 class NvidiaSm89Machine(NvidiaSm90Machine):
@@ -242,6 +241,7 @@ class NvidiaSm89Machine(NvidiaSm90Machine):
 
     def __init__(self, capability=None, *, implementation_model=None) -> None:
         super().__init__(capability or Sm89Capability(), implementation_model=implementation_model)
+
 
     def triton_implementation_model(self, supplied=None):
         return supplied or self._implementation_model or portable_triton_implementation_model()

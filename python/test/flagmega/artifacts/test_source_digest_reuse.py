@@ -65,8 +65,8 @@ source_layout.hash_file = repeated_hash
 verify_rdata(Path(sys.argv[1]), reuse_source_proofs=True)
 '''
     result = subprocess.run([sys.executable, "-c", worker, str(assets)],
-                            env={**os.environ, "TRITON_CACHE_DIR": str(tmp_path / "child-jit-cache")},
-                            capture_output=True, text=True, timeout=60, check=False)
+        env={**os.environ, "TRITON_CACHE_DIR": str(tmp_path / "child-jit-cache")},
+        capture_output=True, text=True, timeout=60, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -79,7 +79,7 @@ def test_same_size_mutation_invalidates_proof_even_when_mtime_is_restored(tmp_pa
         out.seek(-1, 2)
         value = out.read(1)[0]
         out.seek(-1, 2)
-        out.write(bytes((value ^ 1, )))
+        out.write(bytes((value ^ 1,)))
     os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
     with pytest.raises(ArtifactError, match="source.*hash"):
         verify_rdata(assets, module=module)
@@ -169,7 +169,7 @@ def test_a_source_changed_during_its_hash_is_never_cached(tmp_path, monkeypatch)
             out.seek(-1, 2)
             value = out.read(1)[0]
             out.seek(-1, 2)
-            out.write(bytes((value ^ 1, )))
+            out.write(bytes((value ^ 1,)))
         return digest
 
     monkeypatch.setattr(source_layout, "hash_file", changed_during_hash)
@@ -204,11 +204,9 @@ while len(list(log.parent.glob("ready-*"))) < 4:
     time.sleep(.01)
 verify_rdata(root, reuse_source_proofs=True)
 '''
-    children = [
-        subprocess.Popen([sys.executable, "-c", worker, str(copied),
-                          str(log), str(index)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        for index in range(4)
-    ]
+    children = [subprocess.Popen([sys.executable, "-c", worker, str(copied), str(log), str(index)],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                for index in range(4)]
     try:
         for child in children:
             stdout, stderr = child.communicate(timeout=60)
@@ -240,7 +238,7 @@ def test_runtime_maps_a_proven_source_and_still_audits_its_physical_chunks(tmp_p
     monkeypatch.setattr(source_layout, "hash_file", repeated_source_hash)
     monkeypatch.setattr(rdata, "_verify_chunk_hashes", fresh_chunks)
     monkeypatch.setattr(runtime, "_runtime_chip_index", lambda _count: 0)
-    instance = SimpleNamespace(artifact=assets.parent, manifest={"rdata": index}, ir_module=module, codegen={})
+    instance = SimpleNamespace(artifact=assets.parent, manifest={"rdata": index}, ir_module=module)
     result = runtime.GeneratedTirCallGraphModule._load_rdata(instance, torch, "cpu", index["segment_nbytes"])
     assert result.numel() == index["segment_nbytes"]
     assert chunks == [0]

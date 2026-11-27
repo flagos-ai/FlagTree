@@ -36,7 +36,10 @@ def test_cp_sat_selects_explicit_reshard_programs_consumed_by_materializer():
     realized = [node for node in materialized.nodes if node.op.startswith("distributed.")]
     assert realized
     assert len(realized) <= selected_hops  # identical selected paths may share one materialization
-    assert (materialized.node_map[materialized.function_map["main"].outputs[0]].op == "distributed.sharded_view")
+    assert (
+        materialized.node_map[materialized.function_map["main"].outputs[0]].op
+        == "distributed.sharded_view"
+    )
 
 
 def test_equal_cost_search_keeps_block_cyclic_candidates_but_prefers_contiguous():
@@ -52,13 +55,18 @@ def test_equal_cost_search_keeps_block_cyclic_candidates_but_prefers_contiguous(
     )
 
     output_bucket = graph.bucket_map["output"]
-    assert any("BlockCyclicSplit" in str(value)
-               for candidate in output_bucket.candidates
-               for value in (candidate.return_type, *candidate.input_types))
+    assert any(
+        "BlockCyclicSplit" in str(value)
+        for candidate in output_bucket.candidates
+        for value in (candidate.return_type, *candidate.input_types)
+    )
 
     selected = solve_search_graph(graph).selected["output"]
 
-    assert all("BlockCyclicSplit" not in str(value) for value in (selected.return_type, *selected.input_types))
+    assert all(
+        "BlockCyclicSplit" not in str(value)
+        for value in (selected.return_type, *selected.input_types)
+    )
 
 
 def test_structural_tuple_keeps_exact_producer_relations_without_boxing_edges():
@@ -72,7 +80,7 @@ def test_structural_tuple_keeps_exact_producer_relations_without_boxing_edges():
         "high_level",
         "packed",
         (lhs, rhs, value, pair),
-        (fm.Function("main", (lhs.id, rhs.id), (pair.id, )), ),
+        (fm.Function("main", (lhs.id, rhs.id), (pair.id,)),),
         "main",
     )
     target = NvidiaSm90Target()

@@ -51,8 +51,7 @@ def execute_block_update(tmp_path, torch, values, state_type, state_values, *, h
             if reusable:
                 self.function("worker", parameters, outputs, attrs={"noinline": True, "reusable": True})
                 actual = tuple(self.input("entry_" + n.id, n.type, id="entry_" + n.id) for n in parameters)
-                call = fm.F.builtin.call(*actual, callee="worker",
-                                         result_type=fm.TupleType(tuple(n.type for n in outputs)),
+                call = fm.F.builtin.call(*actual, callee="worker", result_type=fm.TupleType(tuple(n.type for n in outputs)),
                                          effect=fm.effect("read_write", "delta_rule_state"), name="update_call")
                 self.function("main", actual, (fm.F.tensors.get_item(call, 0), fm.F.tensors.get_item(call, 1)))
             else:
@@ -72,7 +71,8 @@ def execute_block_update(tmp_path, torch, values, state_type, state_values, *, h
     state_fields = dict(zip(state_buffers, (state[name] for name, _ in state_type.fields)))
     output = torch.full_like(tensors["value"], float("nan"))
     arguments = tuple(output if spec["role"] == "result" else (
-        state_fields[spec["buffer"]] if spec["value"] == state_name else tensors[spec["value"].removeprefix("entry_")])
+        state_fields[spec["buffer"]] if spec["value"] == state_name else
+        tensors[spec["value"].removeprefix("entry_")])
                       for spec in runtime.external_arguments)
     runtime.prepare(*arguments)
     runtime.run_into(*arguments)

@@ -70,9 +70,13 @@ class ExecutionFunction(TIRNode):
         if not self.name:
             raise IRSchemaError("ExecutionFunction requires a non-empty name.")
         if len(set(self.parameters)) != len(self.parameters):
-            raise IRSchemaError(f"ExecutionFunction @{self.name} has duplicate physical parameters.")
+            raise IRSchemaError(
+                f"ExecutionFunction @{self.name} has duplicate physical parameters."
+            )
         if len(set(self.results)) != len(self.results):
-            raise IRSchemaError(f"ExecutionFunction @{self.name} has duplicate physical results.")
+            raise IRSchemaError(
+                f"ExecutionFunction @{self.name} has duplicate physical results."
+            )
         if not isinstance(self.body, Sequential):
             raise IRSchemaError("ExecutionFunction body must be Sequential.")
 

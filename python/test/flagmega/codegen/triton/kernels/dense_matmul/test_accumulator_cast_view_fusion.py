@@ -14,27 +14,19 @@ def _projection_graph(mesh, axes):
     broadcast = fm.SBP.broadcast()
     groups = (32 + prod(mesh.hierarchy[a] for a in axes) - 1) // prod(mesh.hierarchy[a] for a in axes)
     block_axes = tuple(i for i, level in enumerate(mesh.hierarchy_levels) if level == 'b')
-    sentinel_groups = (128 + prod(mesh.hierarchy[a] for a in block_axes) - 1) // prod(mesh.hierarchy[a]
-                                                                                      for a in block_axes)
+    sentinel_groups = (128 + prod(mesh.hierarchy[a] for a in block_axes) - 1) // prod(mesh.hierarchy[a] for a in block_axes)
 
     class Graph(fm.Module):
-
         def forward(self):
-            x = self.input('x', fm.DistributedType(fm.tensor_type('bfloat16', (1, 256)), (broadcast, broadcast), mesh),
-                           id='x')
-            w = self.input(
-                'w',
-                fm.DistributedType(fm.tensor_type(fm.vector_type('bfloat16', (8, 2, 8)), (16, 32)),
-                                   (broadcast, fm.SBP.split_contiguous(axes, groups) if axes else broadcast), mesh),
-                id='w')
+            x = self.input('x', fm.DistributedType(fm.tensor_type('bfloat16', (1, 256)), (broadcast, broadcast), mesh), id='x')
+            w = self.input('w', fm.DistributedType(
+                fm.tensor_type(fm.vector_type('bfloat16', (8, 2, 8)), (16, 32)),
+                (broadcast, fm.SBP.split_contiguous(axes, groups) if axes else broadcast), mesh), id='w')
             no = fm.F.builtin.none()
-            projection = fm.F.ntt.packed_matmul(
-                x, w, no, no, output_data_type='float32', name='projection', metadata={
-                    'selected_vectorization': 'vectorization.matmul.n', 'selected_vector_axes': (1, ),
-                    'selected_vector_lanes': (8, )
-                })
-            sentinel = self.input('sentinel', fm.tensor_type('float32', (128, )), id='sentinel')
-            split = fm.DistributedType(sentinel.type, (fm.SBP.split_contiguous(block_axes, sentinel_groups), ), mesh)
+            projection = fm.F.ntt.packed_matmul(x, w, no, no, output_data_type='float32', name='projection',
+                metadata={'selected_vectorization': 'vectorization.matmul.n', 'selected_vector_axes': (1,), 'selected_vector_lanes': (8,)})
+            sentinel = self.input('sentinel', fm.tensor_type('float32', (128,)), id='sentinel')
+            split = fm.DistributedType(sentinel.type, (fm.SBP.split_contiguous(block_axes, sentinel_groups),), mesh)
             local = fm.F.distributed.force_boxing(sentinel, split)
             copied = fm.F.distributed.force_boxing(fm.F.math.add(local, local), sentinel.type)
             self.function('main', (x, w, sentinel), (projection, copied))
@@ -55,20 +47,19 @@ def graph(case, *, shared=None, exported=None, boxing=False):
     elif case == 'coarsen':
         mesh = fm.Placement((2, 4, 4), 'cyx', 'cbb')
         producer_axes = (0, 1, 2)
-        target_policy = fm.SBP.split_contiguous((0, ), 16)
+        target_policy = fm.SBP.split_contiguous((0,), 16)
     else:
         mesh = fm.Placement((2, 4, 4), 'ycx', 'bcb')
         producer_axes = (1, 0, 2)
-        target_policy = fm.SBP.split_contiguous((1, ), 16)
+        target_policy = fm.SBP.split_contiguous((1,), 16)
     source = _projection_graph(mesh, producer_axes)
     producer = source.node_map['projection']
     producer = replace(producer, metadata={**producer.metadata, 'offline_projection_weight_decode': {'block_k': 128}})
     assert fm.logical_type(producer.type).dtype.lanes == (2, 4)
     target = replace(producer.type, axis_policies=(fm.SBP.broadcast(), target_policy))
-    view = make_node('distributed.boxing' if boxing else 'distributed.sharded_view', 'view', (producer, ),
-                     {'new_type': target}, {})
-    cast = make_node('ntt.vectorized_cast', 'rounded', (view, ),
-                     {'new_type': fm.vector_type('bfloat16', (8, )), 'vectorize_axes': (1, 1)}, {})
+    view = make_node('distributed.boxing' if boxing else 'distributed.sharded_view', 'view', (producer,), {'new_type': target}, {})
+    cast = make_node('ntt.vectorized_cast', 'rounded', (view,),
+                     {'new_type': fm.vector_type('bfloat16', (8,)), 'vectorize_axes': (1, 1)}, {})
     nodes = [producer if n.id == producer.id else n for n in source.nodes] + [view, cast]
     outputs = [cast.id, source.functions[0].outputs[1]]
     if exported:
@@ -78,15 +69,13 @@ def graph(case, *, shared=None, exported=None, boxing=False):
         extra = make_node('math.add', 'other_use', (value, value), {}, {})
         nodes.append(extra)
         outputs.append(extra.id)
-    return fm.verify_module(
-        replace(source, nodes=tuple(nodes), functions=(replace(source.functions[0], outputs=tuple(outputs)), )))
+    return fm.verify_module(replace(source, nodes=tuple(nodes), functions=(replace(source.functions[0], outputs=tuple(outputs)),)))
 
 
 @pytest.mark.parametrize('case', ['refine', 'coarsen', 'nonfirst_chip'])
 def test_rounding_fuses_at_producer_before_ownership_view(case, tmp_path):
     source = graph(case)
-    result = fm.verify_module(
-        fuse_packed_accumulator_casts(source, predicate=lambda n: 'offline_projection_weight_decode' in n.metadata))
+    result = fm.verify_module(fuse_packed_accumulator_casts(source, predicate=lambda n: 'offline_projection_weight_decode' in n.metadata))
     assert not any(n.op in {'tensors.cast', 'ntt.vectorized_cast'} for n in result.nodes)
     output = result.node_map['rounded']
     assert output.op == 'distributed.sharded_view'
@@ -96,7 +85,7 @@ def test_rounding_fuses_at_producer_before_ownership_view(case, tmp_path):
     assert producer.attrs['output_data_type'] == 'float32'
     assert producer.attrs['post_ops'][0].nodes[-1].op == 'ntt.vectorized_cast'
     assert producer.type.axis_policies == source.node_map['projection'].type.axis_policies
-    assert fm.logical_type(producer.type).dtype == fm.vector_type('bfloat16', (8, ))
+    assert fm.logical_type(producer.type).dtype == fm.vector_type('bfloat16', (8,))
     assert fuse_packed_accumulator_casts(result).semantic_hash == result.semantic_hash
     restored = fm.load_module(fm.emit_module(result, tmp_path / 'roundtrip.py'))
     assert restored.semantic_hash == result.semantic_hash
@@ -155,13 +144,11 @@ def test_device_rounding_across_view_matches_unfused_kernel(case, tmp_path):
     mesh = source.node_map['projection'].type.placement
 
     class Target(NvidiaSm90Target):
-
         def propose_tir(self, module):
             module = super().propose_tir(fuse_packed_accumulator_casts(module) if self.fused else module)
-            return apply_plan(
-                module,
-                override_plan(module, [('tir.projection', 'tir.dense_matmul.packed_k_major_mma_accumulator')],
-                              policy='test.cast_view', rationale='Same ordered FP32 accumulator and BF16 rounding.'))
+            return apply_plan(module, override_plan(module,
+                [('tir.projection', 'tir.dense_matmul.packed_k_major_mma_accumulator')],
+                policy='test.cast_view', rationale='Same ordered FP32 accumulator and BF16 rounding.'))
 
     base = NvidiaSm90Target().triton_implementation_model
     catalog = replace(base, implementations=(*base.implementations, *packed_mma_accumulator_implementations()))
@@ -175,7 +162,7 @@ def test_device_rounding_across_view_matches_unfused_kernel(case, tmp_path):
         kind = fm.logical_type(kind)
         shape = tuple(d.fixed_value for d in kind.shape) + tuple(getattr(kind.dtype, 'lanes', ()))
         dtype = getattr(torch, getattr(kind.dtype, 'elem_type', kind.dtype).value)
-        raw = torch.full((prod(shape) + 32, ), 123, dtype=dtype, device='cuda')
+        raw = torch.full((prod(shape) + 32,), 123, dtype=dtype, device='cuda')
         guards.append(raw)
         return raw[16:-16].reshape(shape)
 
@@ -189,10 +176,8 @@ def test_device_rounding_across_view_matches_unfused_kernel(case, tmp_path):
             dense = [d for d in module.kernel_definitions if d.dispatch.microkernel.family == 'dense_matmul']
             assert len(dense) == 1
             assert bool(dense[0].dispatch.semantic_attrs.get('post_ops')) == fused
-            assert (not any(d.dispatch.semantic_op == 'ntt.vectorized_cast'
-                            for d in module.kernel_definitions)) == fused
-            runtime = load(write_artifact(module, tmp_path / str(fused), target='nvidia-sm90', emit_executable=True),
-                           device='cuda:0')
+            assert (not any(d.dispatch.semantic_op == 'ntt.vectorized_cast' for d in module.kernel_definitions)) == fused
+            runtime = load(write_artifact(module, tmp_path / str(fused), target='nvidia-sm90', emit_executable=True), device='cuda:0')
             runtimes.append(runtime)
             values = {}
             binding = runtime.buffer_plan.function_map[module.entry]

@@ -26,8 +26,8 @@ LOWER_BOUND = -5.0
 NAMES = ("q", "k", "v", "gate", "decay_rate", "gate_bias", "beta", "state")
 
 
-def _module(*, output_lanes=(), consumer_lanes=(), heads=HEADS, dim=DIM, gated=True, placement=None, head_policy=None,
-            query_scale=1.0, l2norm=True, request_phase=False, **gated_attrs):
+def _module(*, output_lanes=(), consumer_lanes=(), heads=HEADS, dim=DIM, gated=True,
+            placement=None, head_policy=None, query_scale=1.0, l2norm=True, request_phase=False, **gated_attrs):
     activation = fm.tensor_type("bfloat16", (1, heads, dim))
     weight_map = fm.tensor_type("float32", (1, heads, dim))
     state_type = fm.tensor_type("float32", (1, heads, dim, dim))
@@ -36,10 +36,9 @@ def _module(*, output_lanes=(), consumer_lanes=(), heads=HEADS, dim=DIM, gated=T
              (activation, activation, activation, weight_map, fm.tensor_type("float32", (1, heads)), state_type))
     names = NAMES if gated else ("q", "k", "v", "decay", "beta", "state")
     if placement is not None:
-        types = tuple(
-            fm.DistributedType(kind, (fm.SBP.broadcast(), head_policy, *(fm.SBP.broadcast()
-                                                                         for _ in range(kind.rank - 2))), placement)
-            for kind in types)
+        types = tuple(fm.DistributedType(kind, (fm.SBP.broadcast(), head_policy,
+                                               *(fm.SBP.broadcast() for _ in range(kind.rank - 2))), placement)
+                      for kind in types)
 
     if request_phase:
         phase_type = fm.tensor_type("bool", ())
@@ -49,17 +48,18 @@ def _module(*, output_lanes=(), consumer_lanes=(), heads=HEADS, dim=DIM, gated=T
         names = (*names, "prefill")
 
     class Graph(fm.Module):
-
         def forward(self):
-            operands = tuple(self.input(name, value_type, id=name) for name, value_type in zip(names, types))
+            operands = tuple(self.input(name, value_type, id=name)
+                             for name, value_type in zip(names, types))
             operation = fm.F.nn.kda_gated_step if request_phase else fm.F.nn.kda_gated_recurrent_core
-            pair = (operation(*operands, lower_bound=LOWER_BOUND, epsilon=1e-6, output_lanes=output_lanes,
-                              query_scale=query_scale, l2norm_in_kernel=l2norm, name="rec", **gated_attrs) if gated else
-                    fm.F.nn.kda_recurrent_core(*operands, epsilon=1e-6, output_lanes=output_lanes,
-                                               query_scale=query_scale, l2norm_in_kernel=l2norm, name="rec"))
+            pair = (operation(
+                *operands, lower_bound=LOWER_BOUND, epsilon=1e-6, output_lanes=output_lanes,
+                query_scale=query_scale, l2norm_in_kernel=l2norm, name="rec", **gated_attrs) if gated else
+                fm.F.nn.kda_recurrent_core(*operands, epsilon=1e-6, output_lanes=output_lanes,
+                    query_scale=query_scale, l2norm_in_kernel=l2norm, name="rec"))
             output, new_state = fm.F.tensors.get_items(pair, 0, 1, name_prefix="rec")
             if consumer_lanes:
-                output = fm.F.tensors.pack(output, consumer_lanes, axes=(-1, ) * len(consumer_lanes))
+                output = fm.F.tensors.pack(output, consumer_lanes, axes=(-1,) * len(consumer_lanes))
             self.function("main", operands, (output, new_state))
 
     return Graph(dialect="high_level", stage="frozen_constants" if placement else "imported", entry="main",
@@ -67,8 +67,8 @@ def _module(*, output_lanes=(), consumer_lanes=(), heads=HEADS, dim=DIM, gated=T
 
 
 def _artifact(tmp_path: pathlib.Path):
-    return write_artifact(Compiler().compile(_module()).module, tmp_path / "kda-gated", target="nvidia-sm90",
-                          emit_executable=True)
+    return write_artifact(Compiler().compile(_module()).module, tmp_path / "kda-gated",
+                          target="nvidia-sm90", emit_executable=True)
 
 
 def _values(torch, *, device="cpu", heads=HEADS, dim=DIM):
@@ -159,12 +159,13 @@ def test_rounding_the_gate_would_be_observable(tmp_path):
     fused, fused_state = _reference(torch, values)
     rounded, rounded_state = _reference(torch, values, round_gate=True)
 
-    assert torch.count_nonzero(fused != rounded) or torch.count_nonzero(fused_state != rounded_state), (
-        "This fixture no longer separates the FP32 in-kernel gate from the "
-        "rounded graph expansion, so the assertions above are vacuous.")
+    assert torch.count_nonzero(fused != rounded) or torch.count_nonzero(
+        fused_state != rounded_state), (
+            "This fixture no longer separates the FP32 in-kernel gate from the "
+            "rounded graph expansion, so the assertions above are vacuous.")
 
 
-@pytest.mark.parametrize("lanes", [(8, ), (2, 4), (1, )])
+@pytest.mark.parametrize("lanes", [(8,), (2, 4), (1,)])
 @pytest.mark.parametrize("gated", [True, False], ids=["gated", "regular"])
 def test_packed_kda_writes_all_heads_and_preserves_state(tmp_path, lanes, gated):
     from math import prod
@@ -176,10 +177,8 @@ def test_packed_kda_writes_all_heads_and_preserves_state(tmp_path, lanes, gated)
     host = _values(torch, heads=heads, dim=dim)
     if not gated:
         decay = LOWER_BOUND * torch.sigmoid(host["decay_rate"] * (host["gate"].float() + host["gate_bias"]))
-        host = {
-            **{name: host[name]
-               for name in ("q", "k", "v", "state")}, "decay": decay, "beta": torch.sigmoid(host["beta"].float())
-        }
+        host = {**{name: host[name] for name in ("q", "k", "v", "state")},
+                "decay": decay, "beta": torch.sigmoid(host["beta"].float())}
     results = []
     for name, kwargs in (("scalar", {}), ("demand", {"consumer_lanes": lanes}), ("direct", {"output_lanes": lanes})):
         module = Compiler().compile(_module(heads=heads, dim=dim, gated=gated, **kwargs)).module
@@ -192,8 +191,8 @@ def test_packed_kda_writes_all_heads_and_preserves_state(tmp_path, lanes, gated)
         # Each variant starts from its own state; in-place state reuse is legal.
         values = {key: value.cuda().clone() for key, value in host.items()}
         shape = (1, heads, dim) if name == "scalar" else (1, heads, dim // prod(lanes), *lanes)
-        outputs = (torch.empty(shape, dtype=torch.bfloat16,
-                               device="cuda"), torch.empty((1, heads, dim, dim), dtype=torch.float32, device="cuda"))
+        outputs = (torch.empty(shape, dtype=torch.bfloat16, device="cuda"),
+                   torch.empty((1, heads, dim, dim), dtype=torch.float32, device="cuda"))
         result_specs = [spec for spec in runtime.external_arguments if spec["role"] == "result"]
         result_map = {spec["value"]: output for spec, output in zip(result_specs, outputs)}
         arguments = tuple(result_map[spec["value"]] if spec["role"] == "result" else values[spec["value"]]
@@ -210,30 +209,28 @@ def test_packed_kda_writes_all_heads_and_preserves_state(tmp_path, lanes, gated)
 
 
 @pytest.mark.parametrize("gated", [True, False], ids=["gated", "regular"])
-@pytest.mark.parametrize("heads,head_policy", [(4, fm.SBP.split_contiguous((0, ))),
-                                               (4, fm.SBP.split_block_cyclic((0, ), 1)),
-                                               (5, fm.SBP.split_block_cyclic((0, ), 1))])
+@pytest.mark.parametrize("heads,head_policy", [(4, fm.SBP.split_contiguous((0,))),
+                                               (4, fm.SBP.split_block_cyclic((0,), 1)),
+                                               (5, fm.SBP.split_block_cyclic((0,), 1))])
 def test_packed_kda_preserves_distributed_head_addresses(tmp_path, gated, head_policy, heads):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA required")
-    placement = fm.Placement((2, ), "x", "b")
+    placement = fm.Placement((2,), "x", "b")
     dim = 8
     host = _values(torch, heads=heads, dim=dim)
     if not gated:
         decay = LOWER_BOUND * torch.sigmoid(host["decay_rate"] * (host["gate"].float() + host["gate_bias"]))
-        host = {
-            **{name: host[name]
-               for name in ("q", "k", "v", "state")}, "decay": decay, "beta": torch.sigmoid(host["beta"].float())
-        }
+        host = {**{name: host[name] for name in ("q", "k", "v", "state")},
+                "decay": decay, "beta": torch.sigmoid(host["beta"].float())}
     module = _module(gated=gated, heads=heads, dim=dim, output_lanes=(2, 4), placement=placement,
                      head_policy=head_policy)
-    path = write_artifact(Compiler().compile(module).module, tmp_path / "head-owners", target="nvidia-sm90",
-                          emit_executable=True)
+    path = write_artifact(Compiler().compile(module).module, tmp_path / "head-owners",
+                          target="nvidia-sm90", emit_executable=True)
     runtime = load(path, device="cuda:0")
     values = {name: value.cuda().clone() for name, value in host.items()}
-    outputs = (torch.empty((1, heads, 1, 2, 4), dtype=torch.bfloat16,
-                           device="cuda"), torch.empty((1, heads, dim, dim), dtype=torch.float32, device="cuda"))
+    outputs = (torch.empty((1, heads, 1, 2, 4), dtype=torch.bfloat16, device="cuda"),
+               torch.empty((1, heads, dim, dim), dtype=torch.float32, device="cuda"))
     result_specs = [spec for spec in runtime.external_arguments if spec["role"] == "result"]
     result_map = {spec["value"]: output for spec, output in zip(result_specs, outputs)}
     arguments = tuple(result_map[spec["value"]] if spec["role"] == "result" else values[spec["value"]]

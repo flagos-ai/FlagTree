@@ -20,7 +20,8 @@ def test_target_leaf_policies_deduplicate_and_filter_cross_axis_ownership():
     assert len(policies) == len(set(policies))
     assert len(policies) == len(fm.leaf_candidate_policies(tensor, placement))
     for candidate in policies:
-        owners = [owner for sbp in candidate if isinstance(sbp, fm.SBPSplit) for owner in sbp.hierarchy_axes]
+        owners = [owner for sbp in candidate if isinstance(sbp, fm.SBPSplit)
+                  for owner in sbp.hierarchy_axes]
         assert len(owners) == len(set(owners))
         assert fm.is_distributable(tensor, candidate, placement)
 
@@ -29,5 +30,6 @@ def test_target_can_decline_splits_without_implicit_contiguous_fallback():
     tensor = fm.tensor_type("bfloat16", (1, 128))
     placement = fm.Placement((2, 4), "yx", "bb")
 
-    assert fm.leaf_candidate_policies(tensor, placement, split_candidates=lambda *args:
-                                      ()) == ((fm.SBP.broadcast(), fm.SBP.broadcast()), )
+    assert fm.leaf_candidate_policies(tensor, placement, split_candidates=lambda *args: ()) == (
+        (fm.SBP.broadcast(), fm.SBP.broadcast()),
+    )

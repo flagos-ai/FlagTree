@@ -27,8 +27,10 @@ def _verify_recurrent_output(raw, out, state):
     abi = out["abi"]
     shape = tuple(int(dim) for dim in state["abi"]["local_capacity_shape"])
     lane_count = prod(lanes)
-    if (tuple(abi.get("scalar_lane_shape", ())) != lanes or int(abi.get("scalar_lane_count", 1)) != lane_count
-            or abi["scalar_dtype"] != "bfloat16" or lane_count <= 0 or shape[-1] % lane_count
+    if (tuple(abi.get("scalar_lane_shape", ())) != lanes
+            or int(abi.get("scalar_lane_count", 1)) != lane_count
+            or abi["scalar_dtype"] != "bfloat16"
+            or lane_count <= 0 or shape[-1] % lane_count
             or tuple(abi["local_capacity_shape"]) != (1, shape[1], shape[-1] // lane_count)
             or _abi_strides(abi)[-1] != lane_count):
         raise CodegenError("KDA activation output ABI disagrees with output_lanes or recurrent state.")
@@ -63,19 +65,15 @@ def kda_convolution_call(raw):
     kernel = int(raw["semantic_attrs"]["kernel_size"])
     head, channel = domain["local_coordinates"][1], domain["local_coordinates"][2]
     parts = tuple({
-        "value":
-        _pointer(source),
-        "value_offset":
-        emit_local_scalar_offset(source["abi"], domain["local_coordinates"]),
-        "result":
-        _pointer(sink),
-        "result_offset":
-        emit_local_scalar_offset(sink["abi"], domain["local_coordinates"]),
-        "result_writer_active":
-        _canonical_writer_active(sink["abi"]),
-        "weight_offsets":
-        [emit_local_scalar_offset(weight["abi"], (str(part), head, channel, str(column)))
-         for column in range(kernel)],
+        "value": _pointer(source),
+        "value_offset": emit_local_scalar_offset(source["abi"], domain["local_coordinates"]),
+        "result": _pointer(sink),
+        "result_offset": emit_local_scalar_offset(sink["abi"], domain["local_coordinates"]),
+        "result_writer_active": _canonical_writer_active(sink["abi"]),
+        "weight_offsets": [
+            emit_local_scalar_offset(weight["abi"], (str(part), head, channel, str(column)))
+            for column in range(kernel)
+        ],
         "state_offsets": [
             emit_local_scalar_offset(state["abi"], (str(part), head, channel, str(column)))
             for column in range(kernel - 1)
@@ -84,8 +82,7 @@ def kda_convolution_call(raw):
             emit_local_scalar_offset(new_state["abi"], (str(part), head, channel, str(column)))
             for column in range(kernel - 1)
         ],
-    }
-                  for part, (source, sink) in enumerate(zip(inputs, outputs, strict=True)))
+    } for part, (source, sink) in enumerate(zip(inputs, outputs, strict=True)))
     return {
         **domain,
         "tile": min(tile, 1024),
@@ -164,7 +161,8 @@ def kda_gated_recurrent_call(raw):
 
     buffers = {
         name: _buffer(raw, "inputs", name)
-        for name in ("query", "key", "value", "gate", "decay_rate", "gate_bias", "beta_logits", "state")
+        for name in ("query", "key", "value", "gate", "decay_rate", "gate_bias",
+                     "beta_logits", "state")
     }
     out = _buffer(raw, "outputs", "result_0")
     new_state = _buffer(raw, "outputs", "result_1")
@@ -179,10 +177,11 @@ def kda_gated_recurrent_call(raw):
     if raw["semantic_op"] == "nn.kda_gated_step":
         phase = _buffer(raw, "inputs", "prefill")
         abi = phase["abi"]
-        if (abi["scalar_dtype"] != "bool" or tuple(abi["logical_shape"]) or int(abi["scalar_lane_count"]) != 1):
+        if (abi["scalar_dtype"] != "bool" or tuple(abi["logical_shape"])
+                or int(abi["scalar_lane_count"]) != 1):
             raise CodegenError("KDA request phase requires one scalar BOOL value.")
-        request_prefill = (_scalar_expression(phase) if abi.get("storage") == "scalar" else
-                           f"tl.load({_pointer(phase)} + ({emit_local_scalar_offset(abi, ())}))")
+        request_prefill = (_scalar_expression(phase) if abi.get("storage") == "scalar"
+                           else f"tl.load({_pointer(phase)} + ({emit_local_scalar_offset(abi, ())}))")
     return {
         "internal_grid_barriers": 0,
         "heads": emit_active_extent(buffers["state"]["abi"], 1),
@@ -198,8 +197,7 @@ def kda_gated_recurrent_call(raw):
         "kda_reduction_layout": reduction_layout,
         "l2norm_in_kernel": bool(raw["semantic_attrs"]["l2norm_in_kernel"]),
         "query_scale": float(raw["semantic_attrs"].get("query_scale", 1.0)),
-        **{name: _pointer(buffer)
-           for name, buffer in buffers.items()},
+        **{name: _pointer(buffer) for name, buffer in buffers.items()},
         **{f"{name}_head_offset": _head_offset(buffer["abi"])
            for name, buffer in buffers.items()},
         "out": _pointer(out),

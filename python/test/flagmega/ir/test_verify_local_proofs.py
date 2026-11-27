@@ -14,9 +14,9 @@ from triton.flagmega.ir.ops.math.silu import Silu
 
 
 def _module():
-    x = fm.Node("x", "builtin.var", (), fm.tensor_type("float32", (8, )), attrs={"name": "x"})
-    y = fm.Node("y", "math.silu", (x.id, ), x.type)
-    return fm.IRModule("high_level", "imported", (x, y), (fm.Function("main", (x.id, ), (y.id, )), ), "main")
+    x = fm.Node("x", "builtin.var", (), fm.tensor_type("float32", (8,)), attrs={"name": "x"})
+    y = fm.Node("y", "math.silu", (x.id,), x.type)
+    return fm.IRModule("high_level", "imported", (x, y), (fm.Function("main", (x.id,), (y.id,)),), "main")
 
 
 def test_unchanged_nodes_keep_local_type_proofs_across_stage_snapshots(monkeypatch):
@@ -53,7 +53,7 @@ def test_unchanged_node_sequence_reuses_its_local_proof_without_dispatch(monkeyp
 def test_changing_a_local_input_invalidates_its_users_proof():
     module = fm.verify_module(_module())
     x, y = module.nodes
-    bad = replace(x, type=fm.tensor_type("float32", (16, )))
+    bad = replace(x, type=fm.tensor_type("float32", (16,)))
     with pytest.raises(IRVerificationError):
         fm.verify_module(replace(module, nodes=(bad, y)))
 
@@ -63,7 +63,7 @@ def test_unchanged_nodes_do_not_hide_broken_topology_or_function_contracts():
     with pytest.raises(IRVerificationError, match="non-topological"):
         fm.verify_module(replace(module, nodes=tuple(reversed(module.nodes))))
     with pytest.raises(IRVerificationError, match="does not exist"):
-        fm.verify_module(replace(module, functions=(fm.Function("main", ("x", ), ("missing", )), )))
+        fm.verify_module(replace(module, functions=(fm.Function("main", ("x",), ("missing",)),)))
 
 
 def test_changed_verifier_and_ambient_verifiers_are_not_cached(monkeypatch):
@@ -83,7 +83,7 @@ def test_changed_verifier_and_ambient_verifiers_are_not_cached(monkeypatch):
 
 def test_changed_inference_cannot_inherit_an_earlier_local_proof(monkeypatch):
     module = fm.verify_module(_module())
-    monkeypatch.setattr(Silu, "infer_type", classmethod(lambda cls, inputs, attrs: fm.tensor_type("float32", (16, ))))
+    monkeypatch.setattr(Silu, "infer_type", classmethod(lambda cls, inputs, attrs: fm.tensor_type("float32", (16,))))
     with pytest.raises(IRVerificationError):
         fm.verify_module(replace(module, stage="packed"))
 

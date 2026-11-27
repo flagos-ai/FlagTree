@@ -19,7 +19,6 @@ from python.test.flagmega.codegen.triton.kernels.block_fp8.test_dequantized_runt
 
 
 class Projection(fm.Module):
-
     def __init__(self, glu):
         super().__init__(dialect="high_level", stage="imported", entry="main")
         self.glu = glu
@@ -33,10 +32,10 @@ class Projection(fm.Module):
             up = self.input("up", w.type, id="up")
             up_scale = self.input("up_scale", s.type, id="up_scale")
             result = fm.F.nn.matmul_glu(x, w, up, s, up_scale, activation="silu", **attrs)
-            self.function("main", (x, w, up, s, up_scale), (result, ))
+            self.function("main", (x, w, up, s, up_scale), (result,))
         else:
             result = fm.F.math.block_scaled_matmul(x, w, s, **attrs)
-            self.function("main", (x, w, s), (result, ))
+            self.function("main", (x, w, s), (result,))
 
 
 def _compile(tmp_path, glu, mode):
@@ -47,20 +46,27 @@ def _compile(tmp_path, glu, mode):
     catalog = replace(
         base,
         implementations=tuple(
-            replace(value, parameters={**value.parameters, "scaled_accumulation": mode}) if value.id ==
-            identity else value for value in base.implementations),
+            replace(value, parameters={**value.parameters, "scaled_accumulation": mode})
+            if value.id == identity
+            else value
+            for value in base.implementations
+        ),
     )
     compiler.target = NvidiaSm90Target(triton_implementation_model=catalog)
     proposed = compiler.compile(Projection(glu).build(), stop_after="propose-tir").module
-    choices = [(point.id, identity) for point in proposed.selection_points if any(candidate.id == identity
-                                                                                  for candidate in point.candidates)]
+    choices = [
+        (point.id, identity)
+        for point in proposed.selection_points
+        if any(candidate.id == identity for candidate in point.candidates)
+    ]
     assert choices
     selected = apply_plan(proposed, override_plan(proposed, choices))
     compiled = compiler.compile(selected).module
     restored = fm.load_module(fm.emit_module(compiled, tmp_path / "selected.py"))
     assert restored.semantic_hash == compiled.semantic_hash
     assert any(
-        d.dispatch.microkernel.parameters.get("scaled_accumulation") == mode for d in restored.kernel_definitions)
+        d.dispatch.microkernel.parameters.get("scaled_accumulation") == mode for d in restored.kernel_definitions
+    )
     return write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
 
 
@@ -111,5 +117,6 @@ def test_selected_scaled_accumulation_preserves_rounding_boundary(tmp_path, glu,
 )
 def test_scaled_promotion_rejects_unsupported_selected_contracts(mode, variant, quantization, block_k):
     with pytest.raises(CodegenError, match="scaled"):
-        _scaled_accumulation_mode({"parameters": {"scaled_accumulation": mode}, "variant": variant}, quantization,
-                                  block_k)
+        _scaled_accumulation_mode(
+            {"parameters": {"scaled_accumulation": mode}, "variant": variant}, quantization, block_k
+        )

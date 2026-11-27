@@ -3,24 +3,26 @@
 
 from triton.flagmega import ir as fm
 from triton.flagmega.ir.ops.nn._paged_attention_state import (
-    PagedAttentionStateConfig, )
+    PagedAttentionStateConfig,
+)
 from triton.flagmega.passes.auto_vectorize import AutoVectorizePass
 from triton.flagmega.targets import NvidiaSm90Target
 
 
 class _CacheUpdatingQKVRoPE(fm.Module):
-
     def __init__(self):
         super().__init__(dialect="nn", stage="decomposed", entry="main")
-        self.config = PagedAttentionStateConfig(1, 1, 16, block_size=4, num_blocks=2, lanes=8)
+        self.config = PagedAttentionStateConfig(
+            1, 1, 16, block_size=4, num_blocks=2, lanes=8
+        )
 
     def forward(self):
         q = self.input("q", fm.tensor_type("bfloat16", (1, 2, 16)))
         k = self.input("k", fm.tensor_type("bfloat16", (1, 1, 16)))
         v = self.input("v", fm.tensor_type("bfloat16", (1, 1, 16)))
-        q_scale = self.input("q_scale", fm.tensor_type("bfloat16", (16, )))
-        k_scale = self.input("k_scale", fm.tensor_type("bfloat16", (16, )))
-        bias = self.input("bias", fm.tensor_type("bfloat16", (16, )))
+        q_scale = self.input("q_scale", fm.tensor_type("bfloat16", (16,)))
+        k_scale = self.input("k_scale", fm.tensor_type("bfloat16", (16,)))
+        bias = self.input("bias", fm.tensor_type("bfloat16", (16,)))
         cos = self.input("cos", fm.tensor_type("float32", (1, 1, 16)))
         sin = self.input("sin", fm.tensor_type("float32", (1, 1, 16)))
         state = self.input("state", self.config.ref_type)
@@ -65,7 +67,7 @@ class _CacheUpdatingQKVRoPE(fm.Module):
                 layer,
                 advance,
             ),
-            (fused, ),
+            (fused,),
         )
 
 
@@ -84,5 +86,7 @@ def test_selected_effectful_vectorization_is_materialized_outside_the_egraph():
         tensor = rewritten.node_map[input_id].type
         assert isinstance(tensor, fm.TensorType)
         assert isinstance(tensor.dtype, fm.VectorType)
-        assert tensor.dtype.lanes == (8, )
-    assert tuple(node.id for node in rewritten.nodes if not node.effect.is_pure) == ("fused", )
+        assert tensor.dtype.lanes == (8,)
+    assert tuple(
+        node.id for node in rewritten.nodes if not node.effect.is_pure
+    ) == ("fused",)

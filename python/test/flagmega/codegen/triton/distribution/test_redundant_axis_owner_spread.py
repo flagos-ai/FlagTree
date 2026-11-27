@@ -18,7 +18,9 @@ placement property (disjointness across values, and a stable owner count).
 import pytest
 
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
-    _distributed_unique_writer_active, )
+    _distributed_unique_writer_active,
+)
+
 
 HIERARCHY = (8, 16)
 
@@ -34,7 +36,9 @@ def _abi(split_axis, *, hierarchy=HIERARCHY):
                 "hierarchy": hierarchy,
                 "hierarchy_levels": "b" * len(hierarchy),
             },
-            "axis_policies": ({"kind": "split", "stages": ({"hierarchy_axes": (split_axis, )}, )}, ),
+            "axis_policies": (
+                {"kind": "split", "stages": ({"hierarchy_axes": (split_axis,)},)},
+            ),
         },
     }
 
@@ -50,9 +54,10 @@ def _owners(expression, hierarchy=HIERARCHY):
     for shard_y in range(rows):
         for shard_x in range(columns):
             if eval(  # noqa: S307 - rendered predicate, fixed local names
-                    expression,
+                expression,
                 {"__builtins__": {}},
-                {"shard_y": shard_y, "shard_x": shard_x, "shard_index": shard_y * columns + shard_x},
+                {"shard_y": shard_y, "shard_x": shard_x,
+                 "shard_index": shard_y * columns + shard_x},
             ):
                 owners.add(shard_y * columns + shard_x)
     return owners
@@ -82,8 +87,10 @@ def test_values_splitting_different_axes_get_disjoint_owners():
     split_x_owners = _owners(_distributed_unique_writer_active(_abi(1)))
     split_y_owners = _owners(_distributed_unique_writer_active(_abi(0)))
 
-    assert not (split_x_owners & split_y_owners), ("values split on different axes share "
-                                                   f"{sorted(split_x_owners & split_y_owners)}")
+    assert not (split_x_owners & split_y_owners), (
+        "values split on different axes share "
+        f"{sorted(split_x_owners & split_y_owners)}"
+    )
 
 
 def test_distinct_writer_ordinals_stay_disjoint_on_the_same_split_axis():
@@ -112,14 +119,18 @@ def test_three_roles_of_one_call_cover_distinct_blocks():
     v = _owners(_distributed_unique_writer_active(_abi(0), writer_ordinal=1))
 
     assert len(q) + len(k) + len(v) == 32
-    assert len(q | k | v) == 32, ("roles overlap: "
-                                  f"Q&K={sorted(q & k)} Q&V={sorted(q & v)} K&V={sorted(k & v)}")
+    assert len(q | k | v) == 32, (
+        "roles overlap: "
+        f"Q&K={sorted(q & k)} Q&V={sorted(q & v)} K&V={sorted(k & v)}"
+    )
 
 
 def test_fully_split_value_elects_every_block_unchanged():
     """A value that splits every axis has no redundant axis to elect on."""
     abi = _abi(0)
-    abi["distributed_type"]["axis_policies"] = ({"kind": "split", "stages": ({"hierarchy_axes": (0, 1)}, )}, )
+    abi["distributed_type"]["axis_policies"] = (
+        {"kind": "split", "stages": ({"hierarchy_axes": (0, 1)},)},
+    )
 
     assert _distributed_unique_writer_active(abi) == "True"
 
@@ -127,7 +138,7 @@ def test_fully_split_value_elects_every_block_unchanged():
 def test_fully_replicated_value_elects_exactly_one_block():
     """A value that splits nothing keeps a single owner for the whole mesh."""
     abi = _abi(0)
-    abi["distributed_type"]["axis_policies"] = ({"kind": "broadcast"}, )
+    abi["distributed_type"]["axis_policies"] = ({"kind": "broadcast"},)
 
     assert len(_owners(_distributed_unique_writer_active(abi))) == 1
 

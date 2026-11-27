@@ -9,21 +9,25 @@ from triton.flagmega.selection import override_plan
 
 def _module():
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
-    value_type = fm.tensor_type("float32", (257, ))
+    value_type = fm.tensor_type("float32", (257,))
     lhs = builder.var("lhs", value_type, id="lhs")
     rhs = builder.var("rhs", value_type, id="rhs")
     output = builder.call("math.add", (lhs, rhs), value_type, id="output")
-    builder.function("main", (lhs, rhs), (output, ))
+    builder.function("main", (lhs, rhs), (output,))
     return builder.build(entry="main")
 
 
 def _compile_scalar_selection():
-    proposed = Compiler().compile(_module(), stop_after="propose-vectorization").module
+    proposed = Compiler().compile(
+        _module(), stop_after="propose-vectorization"
+    ).module
     plan = override_plan(
         proposed,
-        (("vectorization.output", "vectorization.scalar"), ),
+        (("vectorization.output", "vectorization.scalar"),),
     )
-    scalar = Compiler().run_stage(proposed, "apply-vectorization", plan=plan).module
+    scalar = Compiler().run_stage(
+        proposed, "apply-vectorization", plan=plan
+    ).module
     return Compiler().compile(scalar).module
 
 
@@ -34,7 +38,9 @@ def test_agent_vectorization_choice_lowers_to_distinct_target_candidate_and_sour
     vector_dispatch = next(value for node in vectorized.nodes
                            if (value := fm.kernel_dispatch_for_call(vectorized, node)) is not None
                            and value.semantic_op == "math.vectorized_binary")
-    scalar_dispatch = fm.kernel_dispatch_for_call(scalar, scalar.node_map["output"])
+    scalar_dispatch = fm.kernel_dispatch_for_call(
+        scalar, scalar.node_map["output"]
+    )
     assert vector_dispatch is not None and scalar_dispatch is not None
     assert vector_dispatch.candidate == "tir.elementwise.add"
     assert scalar_dispatch.candidate == "tir.elementwise.add.scalar"

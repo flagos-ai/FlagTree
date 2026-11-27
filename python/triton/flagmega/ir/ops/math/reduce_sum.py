@@ -40,8 +40,8 @@ class ReduceSum(OpDefinition):
         if not isinstance(attrs["keep_dims"], bool):
             raise IRSchemaError("ReduceSum keep_dims must be boolean.")
         lanes = attrs["output_lanes"]
-        if not isinstance(lanes,
-                          (tuple, list)) or any(isinstance(x, bool) or not isinstance(x, int) or x <= 0 for x in lanes):
+        if not isinstance(lanes, (tuple, list)) or any(
+                isinstance(x, bool) or not isinstance(x, int) or x <= 0 for x in lanes):
             raise IRSchemaError("ReduceSum output_lanes must be a sequence of positive integers.")
         return {"axes": tuple(attrs["axes"]), "keep_dims": attrs["keep_dims"], "output_lanes": tuple(lanes)}
 

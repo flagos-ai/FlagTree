@@ -17,10 +17,7 @@ def _fp8_module():
     weight = builder.weight("weight", weight_type, source="memory", key="weight", id="weight")
     scale = builder.weight("scale", scale_type, source="memory", key="scale", id="scale")
     output = builder.call(
-        "math.block_scaled_matmul",
-        [source, weight, scale],
-        activation_type,
-        id="output",
+        "math.block_scaled_matmul", [source, weight, scale], activation_type, id="output",
         attrs={"weight_block_n": 128, "weight_block_k": 128},
     )
     builder.function("main", [source], [output])
@@ -34,7 +31,7 @@ def test_auto_packing_inserts_an_explicit_pack_and_preserves_fp8_semantics(tmp_p
     packed_weight = packed.node_map[output.inputs[1]]
     assert output.op == "math.packed_block_scaled_matmul"
     assert packed_weight.op == "tensors.pack"
-    assert packed_weight.inputs == ("weight", )
+    assert packed_weight.inputs == ("weight",)
     assert packed_weight.type == fm.tensor_type(fm.vector_type("float8_e4m3fn", (2, 16)), (128, 4))
     assert packed.node_map["weight"].op == "builtin.weight"
 
@@ -42,8 +39,6 @@ def test_auto_packing_inserts_an_explicit_pack_and_preserves_fp8_semantics(tmp_p
     weight = torch.randn(128, 128, dtype=torch.float32).to(torch.float8_e4m3fn)
     resolver = DictWeightResolver({"weight": weight, "scale": torch.ones(1, 1)})
     evaluator = TorchEvaluator(resolver)
-    torch.testing.assert_close(
-        evaluator.run(packed, {"source": source})[0],
-        evaluator.run(module, {"source": source})[0])
+    torch.testing.assert_close(evaluator.run(packed, {"source": source})[0], evaluator.run(module, {"source": source})[0])
     path = fm.emit_module(packed, tmp_path / "packed.py")
     assert fm.load_module(path) == packed

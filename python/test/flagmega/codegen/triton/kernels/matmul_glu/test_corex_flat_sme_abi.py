@@ -22,7 +22,8 @@ def _call(*, typed=False, compact=False, n=128, k=160, owners=(2, 2), tail=0):
     buffers = {}
     for name in ("value", "gate_weight", "up_weight", "result"):
         packed = name in ("gate_weight", "up_weight")
-        dtype = fm.VectorType(fm.DType.BFLOAT16, (8, 2, 8)) if typed and packed else fm.DType.BFLOAT16
+        dtype = fm.VectorType(fm.DType.BFLOAT16, (8, 2, 8)
+                              ) if typed and packed else fm.DType.BFLOAT16
         if packed:
             shape = (k // 16, total_n // 8) if typed else (k // 16, total_n // 8, 2, 64)
             sbp = (broadcast, fm.SBP.split_contiguous(axes, n // 8)) + \
@@ -30,29 +31,29 @@ def _call(*, typed=False, compact=False, n=128, k=160, owners=(2, 2), tail=0):
         else:
             shape = (1, k if name == "value" else total_n)
             sbp = (broadcast, broadcast if name == "value" else fm.SBP.split_contiguous(axes, n))
-        local_shape = shape if name == "value" else ((shape[0], n // 8, *shape[2:]) if packed else (1, n))
+        local_shape = shape if name == "value" else (
+            (shape[0], n // 8, *shape[2:]) if packed else (1, n)
+        )
         storage_shape = local_shape if compact else shape
         strides = tuple(prod(storage_shape[index + 1:]) for index in range(len(shape)))
-        kind = (fm.DistributedBufferStorageKind.COMPACT_PER_OWNER
-                if compact else fm.DistributedBufferStorageKind.CANONICAL_GLOBAL)
-        physical = fm.PhysicalBuffer(name, "input", prod(shape) * dtype.itemsize * prod(owners), 256)
+        kind = (fm.DistributedBufferStorageKind.COMPACT_PER_OWNER if compact
+                else fm.DistributedBufferStorageKind.CANONICAL_GLOBAL)
+        physical = fm.PhysicalBuffer(name, "input", prod(
+            shape) * dtype.itemsize * prod(owners), 256)
         descriptor = fm.BufferDescriptor(
-            name,
-            dtype,
-            shape,
-            strides,
-            "input",
-            256,
-            fm.MemSpan(physical, 0,
-                       prod(storage_shape) * dtype.itemsize),
+            name, dtype, shape, strides, "input", 256,
+            fm.MemSpan(physical, 0, prod(storage_shape) * dtype.itemsize),
             distributed_type=fm.DistributedType(fm.tensor_type(dtype, shape), sbp, mesh),
             distributed_storage_kind=kind,
         )
-        buffers[name] = dict(formal=name, runtime_argument=name.upper(), abi=describe_local_buffer_abi(descriptor))
-    return dict(family="dense_matmul_glu", variant="packed_k_major_gemv", packed_layout="k_major_n8_k16", tile_n=128,
-                block_k=32, local_n_capacity=n, local_k_capacity=k,
+        buffers[name] = dict(formal=name, runtime_argument=name.upper(),
+                             abi=describe_local_buffer_abi(descriptor))
+    return dict(family="dense_matmul_glu", variant="packed_k_major_gemv",
+                packed_layout="k_major_n8_k16", tile_n=128, block_k=32,
+                local_n_capacity=n, local_k_capacity=k,
                 inputs=[dict(buffers=[buffers[key]])
-                        for key in ("value", "gate_weight", "up_weight")], outputs=[dict(buffers=[buffers["result"]])])
+                        for key in ("value", "gate_weight", "up_weight")],
+                outputs=[dict(buffers=[buffers["result"]])])
 
 
 def _select(call, schedule=None):
@@ -72,20 +73,8 @@ def test_packed_owner_rows_support_both_storage_representations(typed, compact):
 
 
 @pytest.mark.parametrize("change", (
-    "alignment",
-    "offset",
-    "runtime_view",
-    "k_tail",
-    "n_tail",
-    "ragged_owner",
-    "stride",
-    "component_stride",
-    "pool_scope_stride",
-    "dtype",
-    "origin",
-    "row_count",
-    "mixed_storage",
-    "source_capacity",
+    "alignment", "offset", "runtime_view", "k_tail", "n_tail", "ragged_owner",
+    "stride", "component_stride", "pool_scope_stride", "dtype", "origin", "row_count", "mixed_storage", "source_capacity",
 ))
 def test_incomplete_transport_proofs_keep_the_general_kernel(change):
     call = _call(tail=32 if change == "ragged_owner" else 0)
@@ -124,26 +113,24 @@ def test_closed_function_pool_alignment_is_specific_to_each_formal():
     call = _call()
     gate, up = [parameter["buffers"][0] for parameter in call["inputs"][1:]]
     gate["abi"]["alignment_bytes"] = up["abi"]["alignment_bytes"] = 1
-    schedule = dict(device_functions=[
-        dict(function="glu", function_pool_abi=dict(bindings=[
-            dict(formal="GATE_WEIGHT", alignment_bytes=256),
-        ]))
-    ])
+    schedule = dict(device_functions=[dict(function="glu", function_pool_abi=dict(bindings=[
+        dict(formal="GATE_WEIGHT", alignment_bytes=256),
+    ]))])
     assert _select(call, schedule) is None
     schedule["device_functions"][0]["function_pool_abi"]["bindings"].append(
-        dict(formal="UP_WEIGHT", alignment_bytes=256))
+        dict(formal="UP_WEIGHT", alignment_bytes=256)
+    )
     assert _select(call, schedule) is not None
 
 
 @pytest.mark.parametrize("typed,compact,n", (
-    (False, False, 264),
-    (True, False, 280),
-    (True, True, 512),
+    (False, False, 264), (True, False, 280), (True, True, 512),
 ))
 @pytest.mark.parametrize("change", (None, "alignment", "runtime_view", "source_capacity", "k_tail"))
 def test_gemv_transport_proves_owner_origins_and_partial_n32_rows(typed, compact, n, change):
     call = _call(typed=typed, compact=compact, n=n, k=192)
-    call.update(family="dense_matmul", variant="packed_k_major_gemv", block_k=64, local_m_capacity=1)
+    call.update(family="dense_matmul", variant="packed_k_major_gemv",
+                block_k=64, local_m_capacity=1)
     source, weight = [parameter["buffers"][0] for parameter in call["inputs"][:2]]
     source["formal"], weight["formal"] = "lhs", "rhs"
     call["inputs"] = call["inputs"][:2]
@@ -179,10 +166,11 @@ def test_down_transport_requires_packed_row_and_scalar_source(compact, change):
         source["abi"]["local_capacity_shape"] = (2, 512)
     elif change == "weight_stride":
         weight["abi"]["scalar_storage_strides"] = (8192, 192)
-    stats = dict(formal="result_1", runtime_argument="S", abi=dict(local_capacity_shape=(1, ), scalar_lane_count=1,
-                                                                   scalar_dtype="float32"))
-    call = dict(family="dense_matmul", variant="packed_k_major_gemv_norm_stats", packed_layout="k_major_n8_k16",
-                block_k=128, tile_n=64, local_n_capacity=128, local_k_capacity=512,
+    stats = dict(formal="result_1", runtime_argument="S", abi=dict(
+        local_capacity_shape=(1,), scalar_lane_count=1, scalar_dtype="float32"))
+    call = dict(family="dense_matmul", variant="packed_k_major_gemv_norm_stats",
+                packed_layout="k_major_n8_k16", block_k=128, tile_n=64,
+                local_n_capacity=128, local_k_capacity=512,
                 inputs=[dict(buffers=[item]) for item in (source, weight, residual)],
                 outputs=[dict(buffers=[item]) for item in (result, stats)])
     attach_flat_sme_calls({"down": [call]}, None)
@@ -199,41 +187,20 @@ def test_down_transport_requires_packed_row_and_scalar_source(compact, change):
     (32, 64, True, (None, None), True),
 ))
 def test_warp_owned_sme_preserves_original_glu_arithmetic(
-    tmp_path,
-    n,
-    k,
-    round_activation,
-    limits,
-    cancellation,
+    tmp_path, n, k, round_activation, limits, cancellation,
 ):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or not getattr(torch, "corex", False):
         pytest.skip("requires an Iluvatar COREX GPU")
     call = dict(
-        family="dense_matmul_glu",
-        variant="packed_k_major_gemv",
-        symbol="run",
-        signature="X, W, U, Y",
-        local_m=1,
-        local_m_capacity=1,
-        local_n_capacity=n,
-        local_k_capacity=k,
-        source="X",
-        gate_weight="W",
-        up_weight="U",
-        result="Y",
-        source_offset="dense_glu_local_k_offsets",
-        result_offset="dense_glu_local_n_offsets",
-        global_n="dense_glu_local_n_offsets",
-        global_k="dense_glu_local_k_offsets",
-        source_active="True",
-        result_active="True",
-        tile_n=128,
-        block_k=32,
-        output_type="tl.bfloat16",
-        round_activation=round_activation,
-        gate_clamp_max=limits[0],
-        up_clamp=limits[1],
+        family="dense_matmul_glu", variant="packed_k_major_gemv", symbol="run",
+        signature="X, W, U, Y", local_m=1, local_m_capacity=1, local_n_capacity=n, local_k_capacity=k,
+        source="X", gate_weight="W", up_weight="U", result="Y",
+        source_offset="dense_glu_local_k_offsets", result_offset="dense_glu_local_n_offsets",
+        global_n="dense_glu_local_n_offsets", global_k="dense_glu_local_k_offsets",
+        source_active="True", result_active="True", tile_n=128, block_k=32,
+        output_type="tl.bfloat16", round_activation=round_activation,
+        gate_clamp_max=limits[0], up_clamp=limits[1],
     )
     offset = (f"(dense_glu_global_k[None, :] // 16) * {n * 16} + "
               "(dense_glu_global_n[:, None] // 8) * 128 + "
@@ -251,38 +218,10 @@ def test_warp_owned_sme_preserves_original_glu_arithmetic(
         # The original K32 tree adds adjacent register pairs, then distant
         # halves. Repeated adjacent pairs produce -1 instead of -2 here.
         streams = torch.tensor([
-            1,
-            0,
-            1,
-            33554432,
-            1,
-            -1,
-            0,
-            -1,
-            -33554432,
-            -33554432,
-            -1,
-            -1,
-            33554432,
-            -1,
-            -33554432,
-            33554432,
-            0,
-            33554432,
-            -1,
-            1,
-            -33554432,
-            1,
-            1,
-            0,
-            0,
-            -1,
-            0,
-            0,
-            1,
-            -1,
-            -1,
-            1,
+            1, 0, 1, 33554432, 1, -1, 0, -1,
+            -33554432, -33554432, -1, -1, 33554432, -1, -33554432, 33554432,
+            0, 33554432, -1, 1, -33554432, 1, 1, 0,
+            0, -1, 0, 0, 1, -1, -1, 1,
         ], dtype=torch.bfloat16)
         x.fill_(1)
         gate_matrix = torch.zeros((n, k), dtype=torch.bfloat16)
@@ -296,16 +235,13 @@ def test_warp_owned_sme_preserves_original_glu_arithmetic(
     for corex, warps in ((False, 32), (True, 16)):
         if corex:
             call["corex_flat_sme_glu"] = dict(
-                source="X",
-                gate_weight="W",
-                up_weight="U",
-                result="Y",
-                weight_k_group_stride=n * 16,
+                source="X", gate_weight="W", up_weight="U", result="Y", weight_k_group_stride=n * 16,
             )
         source = TritonTemplateRegistry().render_kernel(
-            KernelTemplateSpec("dense_matmul_glu", "packed_k_major_gemv", "corex" if corex else None,
-                               "bi_v150" if corex else None),
-            dict(render_calls=[call], num_warps=warps, distributed_entry=False, mesh_hierarchy=(1, 1)),
+            KernelTemplateSpec("dense_matmul_glu", "packed_k_major_gemv",
+                               "corex" if corex else None, "bi_v150" if corex else None),
+            dict(render_calls=[call], num_warps=warps,
+                 distributed_entry=False, mesh_hierarchy=(1, 1)),
         ).source
         path = tmp_path / f"glu_{warps}.py"
         path.write_text("import triton\nimport triton.language as tl\n"
@@ -314,10 +250,10 @@ def test_warp_owned_sme_preserves_original_glu_arithmetic(
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         output = torch.empty(n, device="cuda", dtype=torch.bfloat16)
-        module.run[(1, )](x, gate, up, output, num_warps=warps, enable_fp_fusion=False)
+        module.run[(1,)](x, gate, up, output, num_warps=warps, enable_fp_fusion=False)
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph):
-            module.run[(1, )](x, gate, up, output, num_warps=warps, enable_fp_fusion=False)
+            module.run[(1,)](x, gate, up, output, num_warps=warps, enable_fp_fusion=False)
         for _ in range(10):
             graph.replay()
         torch.cuda.synchronize()
@@ -326,8 +262,7 @@ def test_warp_owned_sme_preserves_original_glu_arithmetic(
 
 
 @pytest.mark.parametrize("typed,compact_gate,compact_up", (
-    (False, False, False),
-    (True, True, True),
+    (False, False, False), (True, True, True),
 ))
 @pytest.mark.parametrize("family", ("dense_matmul_glu", "dense_matmul"))
 def test_selected_transport_addresses_every_owner(tmp_path, typed, compact_gate, compact_up, family):
@@ -340,28 +275,30 @@ def test_selected_transport_addresses_every_owner(tmp_path, typed, compact_gate,
     call["inputs"][2] = other["inputs"][2]
     if family == "dense_matmul_glu":
         assert _select(call) is not None
-    x, gate, up, result = [parameter["buffers"][0] for group in ("inputs", "outputs") for parameter in call[group]]
-    call.update(symbol="run", signature="VALUE, GATE_WEIGHT, UP_WEIGHT, RESULT", local_m=1, local_m_capacity=1,
-                source_active="True", result_active="True", global_n="dense_glu_local_n_offsets",
-                global_k="dense_glu_local_k_offsets", output_type="tl.bfloat16", round_activation=False,
-                gate_clamp_max=None, up_clamp=None)
+    x, gate, up, result = [parameter["buffers"][0] for group in ("inputs", "outputs")
+                           for parameter in call[group]]
+    call.update(symbol="run", signature="VALUE, GATE_WEIGHT, UP_WEIGHT, RESULT",
+                local_m=1, local_m_capacity=1, source_active="True", result_active="True",
+                global_n="dense_glu_local_n_offsets", global_k="dense_glu_local_k_offsets",
+                output_type="tl.bfloat16", round_activation=False, gate_clamp_max=None, up_clamp=None)
     for field, binding in (("source", x), ("gate_weight", gate), ("up_weight", up), ("result", result)):
         call[field] = emit_buffer_pointer(binding["abi"], binding["runtime_argument"])
     call["source_offset"] = emit_local_scalar_offset(x["abi"], ("0", "dense_glu_local_k_offsets"))
-    call["result_offset"] = emit_local_scalar_offset(result["abi"], ("0", "dense_glu_local_n_offsets"))
+    call["result_offset"] = emit_local_scalar_offset(
+        result["abi"], ("0", "dense_glu_local_n_offsets"))
     lane = "((dense_glu_global_n[:, None] % 8) * 16 + dense_glu_global_k[None, :] % 16)"
     for field, binding in (("gate_weight_offset", gate), ("up_weight_offset", up)):
         coordinates = ("dense_glu_global_k[None, :] // 16", "dense_glu_global_n[:, None] // 8")
         call[field] = emit_local_scalar_offset(
-            binding["abi"],
-            coordinates if typed else (*coordinates, f"{lane} // 64", f"{lane} % 64"),
+            binding["abi"], coordinates if typed else (
+                *coordinates, f"{lane} // 64", f"{lane} % 64"),
             lane_coordinate=lane if typed else None,
         )
     transport = "corex_flat_sme_glu"
     if family == "dense_matmul":
         call.pop(transport, None)
-        call.update(family=family, variant="packed_k_major_gemv", block_k=64, weight=call["gate_weight"],
-                    weight_offset=call["gate_weight_offset"])
+        call.update(family=family, variant="packed_k_major_gemv", block_k=64,
+                    weight=call["gate_weight"], weight_offset=call["gate_weight_offset"])
         x["formal"], gate["formal"] = "lhs", "rhs"
         call["inputs"] = call["inputs"][:2]
         for field in ("global_n", "global_k", "source_offset", "result_offset", "weight_offset"):
@@ -377,8 +314,9 @@ def test_selected_transport_addresses_every_owner(tmp_path, typed, compact_gate,
     def weight(compact):
         dense = (torch.randn((n * prod(owners), k), generator=generator) / 32).bfloat16()
         packed = dense.reshape(prod(owners), n // 8, 8, k // 16, 16)
-        return packed.permute(0, 3, 1, 2, 4).contiguous().cuda() if compact else (packed.permute(3, 0, 1, 2,
-                                                                                                 4).contiguous().cuda())
+        return packed.permute(0, 3, 1, 2, 4).contiguous().cuda() if compact else (
+            packed.permute(3, 0, 1, 2, 4).contiguous().cuda()
+        )
 
     weights = weight(compact_gate), weight(compact_up)
     results = []
@@ -387,9 +325,10 @@ def test_selected_transport_addresses_every_owner(tmp_path, typed, compact_gate,
         if not corex:
             render_call.pop(transport)
         source = TritonTemplateRegistry().render_kernel(
-            KernelTemplateSpec(family, "packed_k_major_gemv", "corex" if corex else None, "bi_v150" if corex else None),
-            dict(render_calls=[render_call], num_warps=warps, distributed_entry=True, mesh_hierarchy=owners,
-                 mesh_levels="bb", mesh_axis_names=["block_y", "block_x"]),
+            KernelTemplateSpec(family, "packed_k_major_gemv",
+                               "corex" if corex else None, "bi_v150" if corex else None),
+            dict(render_calls=[render_call], num_warps=warps, distributed_entry=True,
+                 mesh_hierarchy=owners, mesh_levels="bb", mesh_axis_names=["block_y", "block_x"]),
         ).source
         path = tmp_path / f"owner_glu_{warps}.py"
         path.write_text("import triton\nimport triton.language as tl\n"
@@ -400,7 +339,8 @@ def test_selected_transport_addresses_every_owner(tmp_path, typed, compact_gate,
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         output = torch.empty(n * prod(owners), device="cuda", dtype=torch.bfloat16)
-        module.run[(prod(owners), )](value, *weights, output, num_warps=warps, enable_fp_fusion=False)
+        module.run[(prod(owners),)](value, *weights, output,
+                                    num_warps=warps, enable_fp_fusion=False)
         torch.cuda.synchronize()
         results.append(output)
     assert torch.equal(*results)

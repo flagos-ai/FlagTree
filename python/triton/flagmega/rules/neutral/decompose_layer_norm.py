@@ -32,7 +32,7 @@ def decompose_layer_norm_rule() -> RewriteRule:
         stats = make_node(
             "nn.norm_stats",
             f"{source.id}.decomposed.stats",
-            (value, ),
+            (value,),
             {"axis": int(source.attrs["axis"]), "use_mean": bool(source.attrs["use_mean"])},
             metadata,
         )
@@ -43,7 +43,7 @@ def decompose_layer_norm_rule() -> RewriteRule:
             dict(source.attrs),
             metadata,
         )
-        return RewriteResult(replacement, (stats, ))
+        return RewriteResult(replacement, (stats,))
 
     return RewriteRule("DecomposeLayerNorm", pattern, rewrite)
 

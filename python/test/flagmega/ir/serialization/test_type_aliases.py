@@ -14,9 +14,9 @@ from triton.flagmega import ir as fm
 
 def _module_with_repeated_distributed_type():
     value_type = fm.DistributedType(
-        fm.tensor_type(fm.vector_type("bfloat16", (8, )), (256, 32)),
+        fm.tensor_type(fm.vector_type("bfloat16", (8,)), (256, 32)),
         (
-            fm.SBP.split(fm.SplitStage.contiguous((0, ), 32)),
+            fm.SBP.split(fm.SplitStage.contiguous((0,), 32)),
             fm.SBP.broadcast(),
         ),
         fm.Placement((8, 16), "yx", "bb"),
@@ -44,8 +44,8 @@ def test_repeated_types_are_named_once_and_remain_editable_python(tmp_path):
 
 def test_single_use_type_stays_inline_for_local_editability():
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
-    value = builder.var("value", fm.tensor_type("float32", (3, )), id="value")
-    builder.function("main", (value, ), (value, ))
+    value = builder.var("value", fm.tensor_type("float32", (3,)), id="value")
+    builder.function("main", (value,), (value,))
 
     source = fm.module_source(builder.build(entry="main"))
 
@@ -57,8 +57,7 @@ def test_shared_type_hashing_is_independent_of_node_count(monkeypatch):
     prototype = _module_with_repeated_distributed_type()
     value_type = prototype.nodes[0].type
     nodes = tuple(fm.Node(f"x{i}", "builtin.var", (), value_type, attrs={"name": f"x{i}"}) for i in range(50))
-    module = replace(prototype, nodes=nodes, functions=(fm.Function("main", tuple(n.id for n in nodes),
-                                                                    (nodes[-1].id, )), ))
+    module = replace(prototype, nodes=nodes, functions=(fm.Function("main", tuple(n.id for n in nodes), (nodes[-1].id,)),))
     original = fm.DistributedType.__hash__
     calls = []
 
@@ -74,7 +73,6 @@ def test_shared_type_hashing_is_independent_of_node_count(monkeypatch):
 
 
 def test_fragment_cache_does_not_rehash_full_alias_table_per_lookup(monkeypatch):
-
     class CountedSignature(tuple):
         members_hashed = 0
 
@@ -103,7 +101,11 @@ def test_shared_fragment_cache_observes_an_edited_node_type():
     assert "TYPE_0000" in fm.module_source(original)
 
     edited_nodes = tuple(
-        replace(node, type=fm.tensor_type("float32", (7, ))) if node.id == "rhs" else node for node in original.nodes)
+        replace(node, type=fm.tensor_type("float32", (7,)))
+        if node.id == "rhs"
+        else node
+        for node in original.nodes
+    )
     edited = replace(original, nodes=edited_nodes)
     source = fm.module_source(edited)
 
@@ -118,10 +120,10 @@ def test_shared_expression_cache_reuses_only_the_same_selection_object(monkeypat
     point = fm.SelectionPoint(
         id="choice",
         kind="unit-test",
-        candidates=(fm.Candidate("keep", {"tile": 16}, {}), ),
+        candidates=(fm.Candidate("keep", {"tile": 16}, {}),),
         default_candidate="keep",
     )
-    original = replace(base, selection_points=(point, ))
+    original = replace(base, selection_points=(point,))
     fm.module_source(original)
 
     def fail_if_reexpanded(_value):
@@ -133,23 +135,22 @@ def test_shared_expression_cache_reuses_only_the_same_selection_object(monkeypat
 
     edited_point = replace(
         point,
-        candidates=(fm.Candidate("keep", {"tile": 32}, {}), ),
+        candidates=(fm.Candidate("keep", {"tile": 32}, {}),),
     )
     with pytest.raises(AssertionError, match="expanded again"):
-        fm.module_source(replace(stage_edit, selection_points=(edited_point, )))
+        fm.module_source(replace(stage_edit, selection_points=(edited_point,)))
 
 
 def test_expression_fragments_do_not_retain_ir_owners():
-
     def populate_cache():
         module = _module_with_repeated_distributed_type()
         point = fm.SelectionPoint(
             id="choice",
             kind="unit-test",
-            candidates=(fm.Candidate("keep", {"tile": 16}, {}), ),
+            candidates=(fm.Candidate("keep", {"tile": 16}, {}),),
             default_candidate="keep",
         )
-        module = replace(module, selection_points=(point, ))
+        module = replace(module, selection_points=(point,))
         fm.module_source(module)
         return ref(module), ref(point)
 

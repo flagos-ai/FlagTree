@@ -3,7 +3,8 @@
 
 from triton.flagmega import ir as fm
 from triton.flagmega.ir.ops.math.packed_block_scaled_matmul import (
-    PackedBlockScaledMatMul, )
+    PackedBlockScaledMatMul,
+)
 
 
 def _node(name, value_type):
@@ -11,10 +12,10 @@ def _node(name, value_type):
 
 
 def test_packed_fp8_matmul_scales_physical_k_split_to_logical_units():
-    placement = fm.Placement((8, ), "x", "b")
+    placement = fm.Placement((8,), "x", "b")
     value = fm.DistributedType(
         fm.tensor_type("bfloat16", (1, 1024)),
-        (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((0, ), 64)),
+        (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((0,), 64)),
         placement,
     )
     weight = fm.DistributedType(
@@ -22,7 +23,7 @@ def test_packed_fp8_matmul_scales_physical_k_split_to_logical_units():
             fm.VectorType(fm.DType.FLOAT8_E4M3FN, (2, 16)),
             (1024, 32),
         ),
-        (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((0, ), 2)),
+        (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((0,), 2)),
         placement,
     )
     scale = fm.DistributedType(
@@ -46,4 +47,4 @@ def test_packed_fp8_matmul_scales_physical_k_split_to_logical_units():
         },
     )
 
-    assert result.partial == fm.SBP.partial((0, ))
+    assert result.partial == fm.SBP.partial((0,))

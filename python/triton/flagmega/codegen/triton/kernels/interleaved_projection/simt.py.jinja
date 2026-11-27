@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: interleaved_projection/simt platform=generic
+# flagmega-kernel: interleaved_projection/simt platform=generic
 # Each original native row is projected once and writes its producer-owned field.
 @triton.jit
 def _flagmega_interleaved_iq4_xs_local_tile(

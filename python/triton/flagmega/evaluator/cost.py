@@ -30,8 +30,11 @@ class CostCoverage:
 
     @property
     def partial(self) -> tuple[CostCoverageEntry, ...]:
-        return tuple(value for value in self.entries
-                     if not value.cost.is_complete and value.cost.kind is not CostKind.UNKNOWN)
+        return tuple(
+            value
+            for value in self.entries
+            if not value.cost.is_complete and value.cost.kind is not CostKind.UNKNOWN
+        )
 
     @property
     def unknown(self) -> tuple[CostCoverageEntry, ...]:
@@ -39,8 +42,10 @@ class CostCoverage:
 
 
 def inspect_cost_coverage(module: IRModule) -> CostCoverage:
-    return CostCoverage(
-        tuple(CostCoverageEntry(node.id, node.op, owner, get_cost(node)) for node, owner in executable_nodes(module)))
+    return CostCoverage(tuple(
+        CostCoverageEntry(node.id, node.op, owner, get_cost(node))
+        for node, owner in executable_nodes(module)
+    ))
 
 
 __all__ = ["CostCoverage", "CostCoverageEntry", "inspect_cost_coverage"]

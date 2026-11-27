@@ -24,17 +24,18 @@ def distributed_state_graph(*, view_results=False):
     mesh = fm.Placement((2, 2, 4), "cyx", "cbb")
     broad = fm.SBP.broadcast()
     head = fm.SBP.split_contiguous((0, 2), 1)
-    convolution = fm.DistributedType(fm.tensor_type("bfloat16", (3, 8, 128, 3)), (broad, head, broad, broad), mesh)
-    recurrent = fm.DistributedType(fm.tensor_type("float32", (1, 8, 128, 128)), (broad, head, broad, broad), mesh)
+    convolution = fm.DistributedType(fm.tensor_type("bfloat16", (3, 8, 128, 3)),
+                                     (broad, head, broad, broad), mesh)
+    recurrent = fm.DistributedType(fm.tensor_type("float32", (1, 8, 128, 128)),
+                                  (broad, head, broad, broad), mesh)
 
     class Graph(fm.Module):
-
         def forward(self):
-            ids = self.input("input_ids", fm.tensor_type("int32", (1, )), id="input_ids")
+            ids = self.input("input_ids", fm.tensor_type("int32", (1,)), id="input_ids")
             conv = self.input("conv", convolution, id="conv")
             state = self.input("recurrent", recurrent, id="recurrent")
-            paged = self.input("paged",
-                               PagedAttentionStateConfig(1, 1, 8, block_size=8, num_blocks=1).ref_type, id="paged")
+            paged = self.input("paged", PagedAttentionStateConfig(1, 1, 8, block_size=8, num_blocks=1).ref_type,
+                               id="paged")
             logits = fm.F.tensors.broadcast_to(fm.F.tensors.cast(ids, "float32"), shape=(1, 8), name="logits")
             token = fm.F.nn.greedy_sample(logits, name="token")
             conv_out = fm.F.math.add(conv, conv, name="conv_update")
@@ -43,12 +44,10 @@ def distributed_state_graph(*, view_results=False):
                 conv_out = fm.F.tensors.reshape(conv_out, shape=(3, 8, 128, 3), name="conv_result")
                 state_out = fm.F.tensors.reshape(state_out, shape=(1, 8, 128, 128), name="recurrent_result")
             self.builder.metadata["composite_abi"] = {
-                "schema": "flagmega.composite-abi/v1",
-                "input_id": ids.id,
-                "logits_output": logits.id,
-                "token_output": token.id,
-                "tensor_states": ({"state_id": 0, "input": (conv.id, state.id), "output":
-                                   (conv_out.id, state_out.id)}, ),
+                "schema": "flagmega.composite-abi/v1", "input_id": ids.id,
+                "logits_output": logits.id, "token_output": token.id,
+                "tensor_states": ({"state_id": 0, "input": (conv.id, state.id),
+                                   "output": (conv_out.id, state_out.id)},),
                 "paged_state": {"input": paged.id, "output": paged.id},
             }
             self.function("main", (ids, conv, state, paged), (logits, token, conv_out, state_out, paged))
@@ -123,8 +122,7 @@ def owned_state_device_group():
         pytest.skip("requires SM90")
     context = torch.empty(1, device=device)
     uuid = "GPU-" + str(torch.cuda.get_device_properties(device).uuid).removeprefix("GPU-")
-    active = subprocess.check_output(["nvidia-smi", "--query-compute-apps=gpu_uuid,pid", "--format=csv,noheader"],
-                                     text=True)
+    active = subprocess.check_output(["nvidia-smi", "--query-compute-apps=gpu_uuid,pid", "--format=csv,noheader"], text=True)
     owners = {int(row.split(",")[1]) for row in active.splitlines() if row.split(",")[0].strip() == uuid}
     # nvidia-smi reports host PIDs, which need not match this container's PID
     # namespace. Our live CUDA allocation must be the only device context.
@@ -156,10 +154,10 @@ def test_owned_state_carry_matches_every_global_head(tmp_path, view_results, cap
             for field in ("convolution", "recurrent"):
                 old = getattr(value, field)
                 guard_elements = 256 // old.element_size()
-                storage = torch.full((old.numel() + 2 * guard_elements, ), -123., dtype=old.dtype, device=device)
+                storage = torch.full((old.numel() + 2 * guard_elements,), -123., dtype=old.dtype, device=device)
                 setattr(value, field, storage[guard_elements:-guard_elements].reshape(old.shape))
                 guards.extend((storage[:guard_elements], storage[-guard_elements:]))
-        ids = torch.full((1, ), 11, dtype=torch.int32, device=device)
+        ids = torch.full((1,), 11, dtype=torch.int32, device=device)
         logits, token = runtime.create_outputs()
         runtime.prepare(ids, state, logits=logits, next_token=token)
         assert runtime.resource_report["spill_bytes"] == 0
@@ -172,12 +170,10 @@ def test_owned_state_carry_matches_every_global_head(tmp_path, view_results, cap
                 runtime.run_into(logits, token, ids, state)
         torch.cuda.current_stream().wait_stream(stream)
         for mutation in range(3):
-            conv = ((torch.arange(3 * 8 * 128 * 3) * 5 + mutation * 7) % 31 - 15).reshape(
-                3, 8, 128, 3).float().div(128).bfloat16()
+            conv = ((torch.arange(3 * 8 * 128 * 3) * 5 + mutation * 7) % 31 - 15).reshape(3, 8, 128, 3).float().div(128).bfloat16()
             recurrent = torch.arange(8 * 128 * 128).reshape(1, 8, 128, 128).float().div(65536).add(mutation / 16)
             if mutation == 0:
-                conv.zero_()
-                recurrent.zero_()
+                conv.zero_(); recurrent.zero_()
             expected_conv = conv[:, rank * 4:(rank + 1) * 4].permute(1, 0, 2, 3).unsqueeze(2).contiguous()
             expected_recurrent = recurrent[:, rank * 4:(rank + 1) * 4].permute(1, 0, 2, 3).unsqueeze(2).contiguous()
             state.kda.convolution.copy_(expected_conv.unsqueeze(0))
@@ -202,8 +198,8 @@ def test_owned_state_carry_matches_every_global_head(tmp_path, view_results, cap
                 dist.all_gather_object(pieces, (state.kda.convolution[0].cpu(), state.kda.recurrent[0].cpu()))
                 whole_conv = torch.cat([piece[0].squeeze(2).permute(1, 0, 2, 3) for piece in pieces], dim=1)
                 whole_recurrent = torch.cat([piece[1].squeeze(2).permute(1, 0, 2, 3) for piece in pieces], dim=1)
-                assert torch.equal(whole_conv.view(torch.uint8), (conv * 2**(step + 1)).view(torch.uint8))
-                assert torch.equal(whole_recurrent.view(torch.uint8), (recurrent * 2**(step + 1)).view(torch.uint8))
+                assert torch.equal(whole_conv.view(torch.uint8), (conv * 2 ** (step + 1)).view(torch.uint8))
+                assert torch.equal(whole_recurrent.view(torch.uint8), (recurrent * 2 ** (step + 1)).view(torch.uint8))
         original = state.kda.config
         state.kda.config = replace(original, chip_index=1 - rank)
         with pytest.raises(RuntimeContractError, match="KDA state"):

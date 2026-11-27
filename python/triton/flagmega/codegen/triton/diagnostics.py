@@ -9,9 +9,11 @@ import json
 from triton.flagmega.diagnostics import DumpFlags, Dumper
 from triton.flagmega.ir import IRModule, kernel_dispatch_of
 from triton.flagmega.codegen.triton.function_schedule import (
-    describe_function_schedule, )
+    describe_function_schedule,
+)
 from triton.flagmega.codegen.triton.runtime_binding import (
-    describe_function_runtime_binding, )
+    describe_function_runtime_binding,
+)
 from triton.flagmega.codegen.triton.package_plan import plain_package_value
 
 
@@ -21,12 +23,12 @@ def dump_schedules(module: IRModule, dumper: Dumper | None) -> None:
     root = dumper.create_sub_dumper("Schedule")
     for function in module.functions:
         with root.open_artifact(
-                f"{function.name}.call_schedule.json",
-                category=DumpFlags.SCHEDULE,
-                kind="tir.function-schedule/v2",
-                producer="triton-function-scheduler",
-                source_semantic_hash=module.semantic_hash,
-                encoding="utf-8",
+            f"{function.name}.call_schedule.json",
+            category=DumpFlags.SCHEDULE,
+            kind="tir.function-schedule/v2",
+            producer="triton-function-scheduler",
+            source_semantic_hash=module.semantic_hash,
+            encoding="utf-8",
         ) as stream:
             json.dump(
                 plain_package_value(describe_function_schedule(
@@ -39,12 +41,12 @@ def dump_schedules(module: IRModule, dumper: Dumper | None) -> None:
             )
             stream.write("\n")
         with root.open_artifact(
-                f"{function.name}.runtime_binding.json",
-                category=DumpFlags.SCHEDULE,
-                kind="tir.runtime-binding/v1",
-                producer="triton-runtime-binder",
-                source_semantic_hash=module.semantic_hash,
-                encoding="utf-8",
+            f"{function.name}.runtime_binding.json",
+            category=DumpFlags.SCHEDULE,
+            kind="tir.runtime-binding/v1",
+            producer="triton-runtime-binder",
+            source_semantic_hash=module.semantic_hash,
+            encoding="utf-8",
         ) as stream:
             json.dump(
                 plain_package_value(describe_function_runtime_binding(
@@ -61,12 +63,12 @@ def dump_schedules(module: IRModule, dumper: Dumper | None) -> None:
         if dispatch is None:
             continue
         with root.open_artifact(
-                f"{function.name}.schedule.json",
-                category=DumpFlags.SCHEDULE,
-                kind="tir.schedule/v1",
-                producer="triton-package-renderer",
-                source_semantic_hash=module.semantic_hash,
-                encoding="utf-8",
+            f"{function.name}.schedule.json",
+            category=DumpFlags.SCHEDULE,
+            kind="tir.schedule/v1",
+            producer="triton-package-renderer",
+            source_semantic_hash=module.semantic_hash,
+            encoding="utf-8",
         ) as stream:
             dispatch_data = dispatch.to_data()
             # ``tir.schedule/v1`` predates first-class semantic/microkernel
@@ -89,14 +91,13 @@ def dump_schedules(module: IRModule, dumper: Dumper | None) -> None:
                 "parameters": resolved_parameters,
                 "facts": resolved_facts,
             })
-            json.dump(
-                plain_package_value({
-                    "schema": "flagmega.tir-schedule/v1",
-                    "function": function.name,
-                    "parameters": [value.to_data() for value in function.parameters],
-                    "return_type": function.runtime_return_type.to_data(),
-                    "dispatch": dispatch_data,
-                }), stream, indent=2, sort_keys=True)
+            json.dump(plain_package_value({
+                "schema": "flagmega.tir-schedule/v1",
+                "function": function.name,
+                "parameters": [value.to_data() for value in function.parameters],
+                "return_type": function.runtime_return_type.to_data(),
+                "dispatch": dispatch_data,
+            }), stream, indent=2, sort_keys=True)
             stream.write("\n")
 
 
@@ -110,12 +111,12 @@ def dump_codegen(
         return
     root = dumper.create_sub_dumper("CodeGen")
     with root.open_artifact(
-            "package.json",
-            category=DumpFlags.CODEGEN,
-            kind="triton.package-descriptor/v1",
-            producer="triton-package-renderer",
-            source_semantic_hash=module.semantic_hash,
-            encoding="utf-8",
+        "package.json",
+        category=DumpFlags.CODEGEN,
+        kind="triton.package-descriptor/v1",
+        producer="triton-package-renderer",
+        source_semantic_hash=module.semantic_hash,
+        encoding="utf-8",
     ) as stream:
         json.dump(
             plain_package_value(descriptor),
@@ -125,12 +126,12 @@ def dump_codegen(
         )
         stream.write("\n")
     with root.open_artifact(
-            "generated_kernels.py",
-            category=DumpFlags.CODEGEN,
-            kind="triton.python-source/v1",
-            producer="triton-package-renderer",
-            source_semantic_hash=module.semantic_hash,
-            encoding="utf-8",
+        "generated_kernels.py",
+        category=DumpFlags.CODEGEN,
+        kind="triton.python-source/v1",
+        producer="triton-package-renderer",
+        source_semantic_hash=module.semantic_hash,
+        encoding="utf-8",
     ) as stream:
         stream.write(source)
 

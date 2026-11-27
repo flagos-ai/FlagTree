@@ -8,7 +8,8 @@ from math import prod
 
 from triton.flagmega.ir import DistributedType, Node, ReduceOp, SBPBroadCast, TupleType
 from triton.flagmega.ir.ops.ntt.add_norm_stats import (
-    can_materialize_sum_partial, )
+    can_materialize_sum_partial,
+)
 from triton.flagmega.codegen.triton.vectorization import (
     configured_vector_schedule,
     consumed_vector_contracts,
@@ -19,7 +20,7 @@ from .core import TritonCandidateContext, TritonCandidateProposal
 
 
 class AddNormStatsCandidateProvider:
-    """Lower the combine to a catalog-provided collective.
+    """Lower the nncase-shaped combine to a catalog-provided collective.
 
     The provider describes only distributed semantics.  A target catalog owns
     the concrete tile, launch requirements, and implementation template.
@@ -39,7 +40,9 @@ class AddNormStatsCandidateProvider:
         source_type = context.module.node_map[node.inputs[0]].type
         addend_type = context.module.node_map[node.inputs[1]].type
         value_type, stats_type = node.type.fields
-        if addend_type != value_type or not can_materialize_sum_partial(source_type, value_type):
+        if addend_type != value_type or not can_materialize_sum_partial(
+            source_type, value_type
+        ):
             return None
         if not isinstance(value_type, DistributedType):
             return None
@@ -69,7 +72,9 @@ class AddNormStatsCandidateProvider:
         else:
             return None
         owner_count = prod(placement.hierarchy)
-        partial_owner_count = prod(placement.hierarchy[axis] for axis in partial_axes)
+        partial_owner_count = prod(
+            placement.hierarchy[axis] for axis in partial_axes
+        )
         fused_requirements = {}
         residual_add = node.metadata.get("residual_add")
         norm_consumer = node.metadata.get("norm_consumer")
@@ -83,71 +88,74 @@ class AddNormStatsCandidateProvider:
             )
             if fused_requirements is None:
                 return None
-        value_contract = vectorization_contract(
-            Node(
-                node.id,
-                "math.add",
-                node.inputs,
-                value_type,
-                node.effect,
-                {},
-                node.metadata,
-            ))
+        value_contract = vectorization_contract(Node(
+            node.id,
+            "math.add",
+            node.inputs,
+            value_type,
+            node.effect,
+            {},
+            node.metadata,
+        ))
         implementations = context.implementations(
             family,
             **contract,
             axis_kind="last",
             use_mean=bool(node.attrs["use_mean"]),
-            output_layout=("broadcast" if all(isinstance(policy, SBPBroadCast)
-                                              for policy in value_type.axis_policies) else "distributed"),
+            output_layout=(
+                "broadcast"
+                if all(
+                    isinstance(policy, SBPBroadCast)
+                    for policy in value_type.axis_policies
+                )
+                else "distributed"
+            ),
         )
         implementations = tuple(
-            implementation for implementation in implementations
-            if (context.cooperative_grid or "cooperative_grid" not in implementation.requires) and (
-                family != "add_norm_stats" or (implementation.contract.get("outer_rows") == "multiple") == (rows != 1)))
+            implementation
+            for implementation in implementations
+            if (context.cooperative_grid or "cooperative_grid" not in implementation.requires)
+            and (family != "add_norm_stats"
+                 or (implementation.contract.get("outer_rows") == "multiple") == (rows != 1))
+        )
         candidates = tuple(
             context.configure_implementation(
                 implementation,
                 semantic_parameters={
-                    "source_type":
-                    source_type,
-                    "value_type":
-                    value_type,
-                    "stats_type":
-                    stats_type,
-                    "axis":
-                    int(node.attrs["axis"]),
-                    "use_mean":
-                    bool(node.attrs["use_mean"]),
-                    "partial_axes":
-                    partial_axes,
-                    "partial_owner_count":
-                    partial_owner_count,
-                    "owner_count":
-                    owner_count,
-                    "vector_schedule":
-                    configured_vector_schedule(
+                    "source_type": source_type,
+                    "value_type": value_type,
+                    "stats_type": stats_type,
+                    "axis": int(node.attrs["axis"]),
+                    "use_mean": bool(node.attrs["use_mean"]),
+                    "partial_axes": partial_axes,
+                    "partial_owner_count": partial_owner_count,
+                    "owner_count": owner_count,
+                    "vector_schedule": configured_vector_schedule(
                         value_contract,
                         lowering="collective_output_tile",
                         tile=int(implementation.parameters["tile"]),
                     ),
-                    "consumed_vector_contracts":
-                    fused_requirements,
-                    **({
-                        "residual_add": residual_add,
-                        "norm_consumer": norm_consumer,
-                    } if fused_requirements else {}),
+                    "consumed_vector_contracts": fused_requirements,
+                    **(
+                        {
+                            "residual_add": residual_add,
+                            "norm_consumer": norm_consumer,
+                        }
+                        if fused_requirements else {}
+                    ),
                 },
                 facts={
-                    **({"collective_semantics": "gather-reduce-add-norm-stats"} if partial_axes else {
-                           "local_semantics": "add-norm-stats"
-                       }),
-                    "explicit_norm_stats_result":
-                    True,
-                    "placement_owner_count":
-                    owner_count,
+                    **(
+                        {"collective_semantics": "gather-reduce-add-norm-stats"}
+                        if partial_axes
+                        else {"local_semantics": "add-norm-stats"}
+                    ),
+                    "explicit_norm_stats_result": True,
+                    "placement_owner_count": owner_count,
                 },
-            ) for implementation in implementations)
+            )
+            for implementation in implementations
+        )
         if not candidates:
             return None
         return TritonCandidateProposal(

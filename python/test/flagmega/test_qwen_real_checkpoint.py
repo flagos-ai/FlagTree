@@ -17,6 +17,7 @@ from triton.flagmega.importer import DirectoryCheckpoint, Qwen35Layer0Importer
 from triton.flagmega.runtime import load as load_runtime
 from triton.flagmega.passes import decompose_gated_delta_net
 
+
 torch = pytest.importorskip("torch")
 
 
@@ -76,8 +77,8 @@ def test_real_qwen3_8_27b_fp8_layer0_two_step_compile_run_and_reference(tmp_path
         torch.cuda.synchronize()
         hidden_error = (observed_output.float() - expected_output.float()).abs()
         recurrent_error = (observed_recurrent - expected_recurrent).abs()
-        cosine = torch.nn.functional.cosine_similarity(observed_output.float().reshape(1, -1),
-                                                       expected_output.float().reshape(1, -1)).item()
+        cosine = torch.nn.functional.cosine_similarity(
+            observed_output.float().reshape(1, -1), expected_output.float().reshape(1, -1)).item()
         measurements.append({
             "step": step,
             "seconds": elapsed,
@@ -87,27 +88,33 @@ def test_real_qwen3_8_27b_fp8_layer0_two_step_compile_run_and_reference(tmp_path
         })
         if step == 1:
             workspace = runtime.diagnostic_workspace()
-            convolution_id = next(node.id for node in decomposed.nodes if node.op == "nn.gdn_convolution")
+            convolution_id = next(
+                node.id for node in decomposed.nodes if node.op == "nn.gdn_convolution")
             prefix = convolution_id.rsplit('.', 1)[0]
             measurements[-1]["recurrent_input_max_abs"] = {
-                "query":
-                (workspace[f"{convolution_id}.0"].float() - trace[f"{prefix}.query"].float()).abs().max().item(),
+                "query": (workspace[f"{convolution_id}.0"].float() - trace[f"{prefix}.query"].float()).abs().max().item(),
                 "key": (workspace[f"{convolution_id}.1"].float() - trace[f"{prefix}.key"].float()).abs().max().item(),
                 "gate": (workspace[f"{convolution_id}.3"].float() - trace[f"{prefix}.gate"].float()).abs().max().item(),
-                "beta": (torch.sigmoid(workspace[f"{convolution_id}.4"].to(torch.bfloat16)).float() -
-                         trace[f"{prefix}.beta"].float()).abs().max().item(),
-                "decay_input":
-                (workspace[f"{convolution_id}.5"].float() - trace[f"{prefix}.decay"].float()).abs().max().item(),
+                "beta": (
+                    torch.sigmoid(workspace[f"{convolution_id}.4"].to(torch.bfloat16)).float()
+                    - trace[f"{prefix}.beta"].float()
+                ).abs().max().item(),
+                "decay_input": (
+                    workspace[f"{convolution_id}.5"].float() - trace[f"{prefix}.decay"].float()
+                ).abs().max().item(),
             }
             print(measurements[-1])
         torch.testing.assert_close(observed_output.float(), expected_output.float(), atol=4e-2, rtol=2e-2)
-        torch.testing.assert_close(observed_convolution.float(), expected_convolution.float(), atol=1e-1, rtol=2e-2)
+        torch.testing.assert_close(
+            observed_convolution.float(), expected_convolution.float(), atol=1e-1, rtol=2e-2)
         torch.testing.assert_close(observed_recurrent, expected_recurrent, atol=1.2e-2, rtol=5e-3)
         assert cosine >= 0.999
         if step == 0:
             workspace = runtime.diagnostic_workspace()
-            convolution_id = next(node.id for node in decomposed.nodes if node.op == "nn.gdn_convolution")
-            recurrent_id = next(node.id for node in decomposed.nodes if node.op == "nn.gdn_recurrent_core")
+            convolution_id = next(
+                node.id for node in decomposed.nodes if node.op == "nn.gdn_convolution")
+            recurrent_id = next(
+                node.id for node in decomposed.nodes if node.op == "nn.gdn_recurrent_core")
             comparisons = {
                 "token_embedding": (workspace["token_embedding"], trace["token_embedding"]),
                 "input_norm": (workspace["input_norm"], trace["input_norm"]),
@@ -131,15 +138,18 @@ def test_real_qwen3_8_27b_fp8_layer0_two_step_compile_run_and_reference(tmp_path
             }
             tolerance = 2e-2 + 2e-2 * reference_output.float().abs()
             mismatch_indices = torch.nonzero(hidden_error > tolerance, as_tuple=False)[:, 1]
-            measurements[-1]["mismatches"] = [{
-                "index": int(index),
-                "actual": output[0, index].float().item(),
-                "expected": reference_output[0, index].float().item(),
-                "actual_after_gdn": workspace["after_gdn"][0, index].float().item(),
-                "expected_after_gdn": trace["after_gdn"][0, index].float().item(),
-                "actual_mlp_down": workspace["mlp_down"][0, index].float().item(),
-                "expected_mlp_down": trace["mlp_down"][0, index].float().item(),
-            } for index in mismatch_indices]
+            measurements[-1]["mismatches"] = [
+                {
+                    "index": int(index),
+                    "actual": output[0, index].float().item(),
+                    "expected": reference_output[0, index].float().item(),
+                    "actual_after_gdn": workspace["after_gdn"][0, index].float().item(),
+                    "expected_after_gdn": trace["after_gdn"][0, index].float().item(),
+                    "actual_mlp_down": workspace["mlp_down"][0, index].float().item(),
+                    "expected_mlp_down": trace["mlp_down"][0, index].float().item(),
+                }
+                for index in mismatch_indices
+            ]
             print(measurements[-1])
 
     assert runtime.prepare_count == 1

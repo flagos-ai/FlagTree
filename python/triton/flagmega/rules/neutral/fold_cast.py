@@ -30,7 +30,8 @@ def fold_cast_rule():
                 # Only a lossless first conversion makes the round trip an
                 # identity. A private F32 -> BF16 -> F32 still rounds.
                 pair = (tensor_of(original.type).dtype, tensor_of(source.type).dtype)
-                if pair not in {(DType.FLOAT8_E4M3FN, DType.BFLOAT16), (DType.FLOAT8_E4M3FN, DType.FLOAT32),
+                if pair not in {(DType.FLOAT8_E4M3FN, DType.BFLOAT16),
+                                (DType.FLOAT8_E4M3FN, DType.FLOAT32),
                                 (DType.BFLOAT16, DType.FLOAT32)}:
                     return root
             return RewriteRedirect(original.id)

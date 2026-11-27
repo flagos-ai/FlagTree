@@ -22,8 +22,9 @@ from .helpers import StubTarget, semantic_packed_qkv_module
 def test_semantic_microkernel_materializes_physical_effects(tmp_path, facts):
     target = StubTarget()
     model = target.triton_implementation_model
-    target.triton_implementation_model = replace(
-        model, implementations=tuple(replace(value, facts={**value.facts, **facts}) for value in model.implementations))
+    target.triton_implementation_model = replace(model, implementations=tuple(
+        replace(value, facts={**value.facts, **facts}) for value in model.implementations
+    ))
     policy = TritonMicroKernelSelectionPolicy(default_triton_microkernel_registry())
     selected = fm.verify_module(policy.apply(policy.propose(semantic_packed_qkv_module(), target), target))
     restored = fm.load_module(fm.emit_module(selected, tmp_path / "selected.py"))

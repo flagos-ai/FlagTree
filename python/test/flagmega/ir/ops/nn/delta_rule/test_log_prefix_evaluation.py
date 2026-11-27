@@ -42,9 +42,10 @@ def test_cuda_fast_log2_matches_declared_approximate_prefix():
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
-    fixture = json.loads(
-        (Path(__file__).resolve().parents[4] / "data" / "native_log_prefix_fast_math.json").read_text())
+    fixture = json.loads((Path(__file__).resolve().parents[4] / "data" /
+                          "native_log_prefix_fast_math.json").read_text())
     alpha = torch.tensor(fixture["alpha"], device="cuda")
     expected = torch.tensor(fixture["prefix"], device="cuda")
-    actual = evaluate(DeltaRuleLogPrefix, (alpha, ), block_size=4, scan_group_size=4, log2_mode="fast")
+    actual = evaluate(DeltaRuleLogPrefix, (alpha,), block_size=4, scan_group_size=4,
+                      log2_mode="fast")
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)

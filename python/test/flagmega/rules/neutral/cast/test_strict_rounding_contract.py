@@ -12,21 +12,19 @@ from triton.flagmega.passes.target_independent import decompose_complex_ops
 
 @pytest.mark.parametrize("kind", ["round_trip", "matmul"])
 def test_strict_contract_preserves_observable_bf16_rounding(kind):
-
     class Graph(fm.Module):
-
         def forward(self):
             dtype = "float32" if kind == "round_trip" else "bfloat16"
             x = self.input("x", fm.tensor_type(dtype, (1, 16)))
             if kind == "round_trip":
                 rounded = fm.F.tensors.cast(x, "bfloat16")
-                params = (x, )
+                params = (x,)
             else:
                 w = self.input("w", fm.tensor_type(dtype, (1, 16)))
                 rounded = fm.F.math.matmul(x, w, transpose_b=True)
                 params = (x, w)
             result = fm.F.tensors.cast(rounded, "float32")
-            self.function("main", params, (result, ))
+            self.function("main", params, (result,))
 
     module = Graph(dialect="high_level", stage="imported", entry="main").build()
     module = replace(module, metadata={**module.metadata, "floating_point_contract": "strict"})
@@ -41,29 +39,25 @@ def test_strict_contract_preserves_observable_bf16_rounding(kind):
 
 
 def test_strict_contract_still_folds_lossless_widening_round_trip():
-
     class Graph(fm.Module):
-
         def forward(self):
-            x = self.input("x", fm.tensor_type("bfloat16", (16, )), id="x")
+            x = self.input("x", fm.tensor_type("bfloat16", (16,)), id="x")
             result = fm.F.tensors.cast(fm.F.tensors.cast(x, "float32"), "bfloat16")
-            self.function("main", (x, ), (result, ))
+            self.function("main", (x,), (result,))
 
     module = Graph(dialect="high_level", stage="imported", entry="main").build()
     module = replace(module, metadata={**module.metadata, "floating_point_contract": "strict"})
-    assert decompose_complex_ops(module).functions[0].outputs == ("x", )
+    assert decompose_complex_ops(module).functions[0].outputs == ("x",)
 
 
 @pytest.mark.parametrize("source,intermediate", [("float32", "bfloat16"), ("float32", "float8_e4m3fn")])
 def test_explicit_cast_store_preserves_rounding_in_relaxed_module(source, intermediate, tmp_path):
-
     class Graph(fm.Module):
-
         def forward(self):
-            x = self.input("x", fm.tensor_type(source, (16, )), id="x")
+            x = self.input("x", fm.tensor_type(source, (16,)), id="x")
             rounded = fm.F.tensors.cast(x, intermediate, rounding_contract="preserve")
             result = fm.F.tensors.cast(rounded, source)
-            self.function("main", (x, ), (result, ))
+            self.function("main", (x,), (result,))
 
     module = Graph(dialect="high_level", stage="imported", entry="main").build()
     restored = fm.load_module(fm.emit_module(module, tmp_path / "cast.py"))
@@ -76,14 +70,12 @@ def test_explicit_cast_store_preserves_rounding_in_relaxed_module(source, interm
 
 
 def test_explicit_lossless_cast_round_trip_still_folds():
-
     class Graph(fm.Module):
-
         def forward(self):
-            x = self.input("x", fm.tensor_type("bfloat16", (16, )), id="x")
+            x = self.input("x", fm.tensor_type("bfloat16", (16,)), id="x")
             wide = fm.F.tensors.cast(x, "float32", rounding_contract="preserve")
             result = fm.F.tensors.cast(wide, "bfloat16")
-            self.function("main", (x, ), (result, ))
+            self.function("main", (x,), (result,))
 
     module = Graph(dialect="high_level", stage="imported", entry="main").build()
-    assert decompose_complex_ops(module).functions[0].outputs == ("x", )
+    assert decompose_complex_ops(module).functions[0].outputs == ("x",)

@@ -28,7 +28,8 @@ from triton.flagmega.ir.types import DType
 _OPTIONAL_TENSOR = is_tensor() | is_none()
 
 
-@op_definition("nn.staged_routing", namespace="nn", functional_name="staged_routing", display_name="NN.StagedRouting")
+@op_definition("nn.staged_routing", namespace="nn", functional_name="staged_routing",
+               display_name="NN.StagedRouting")
 class StagedRouting(OpDefinition):
     """Select unbiased scores with a stable bias-corrected ordering.
 
@@ -114,13 +115,13 @@ class StagedRouting(OpDefinition):
         if isinstance(source, DistributedType):
             if source.partial is not None or any(policy != SBP.broadcast() for policy in source.axis_policies):
                 raise IRSchemaError("StagedRouting requires broadcast router logits; insert explicit Boxing.")
-            if bias_source is not None and (not isinstance(bias_source, DistributedType) or bias_source.placement
-                                            != source.placement or any(policy != SBP.broadcast()
-                                                                       for policy in bias_source.axis_policies)):
+            if bias_source is not None and (not isinstance(bias_source, DistributedType)
+                                            or bias_source.placement != source.placement
+                                            or any(policy != SBP.broadcast() for policy in bias_source.axis_policies)):
                 raise IRSchemaError("StagedRouting bias must be broadcast like the logits.")
             result = TupleType((weights, indices))
-            return TupleType(
-                tuple(DistributedType(field, source.axis_policies, source.placement) for field in result.fields))
+            return TupleType(tuple(DistributedType(field, source.axis_policies, source.placement)
+                                   for field in result.fields))
         return TupleType((weights, indices))
 
     @classmethod

@@ -1,0 +1,44 @@
+// Diagnostic-only UINT32 dependent loop; no model/state/RDATA argument.
+FTT_GLOBAL void flagmega_profile_clock_kernel(unsigned long long *out,
+    unsigned long long epoch, unsigned int iterations, unsigned int seed) {
+    if(ftt::arch::thread_id()!=0)return;
+    const unsigned long long start=ftt::arch::global_timer64();
+    unsigned int value=seed;
+#pragma unroll 1
+    for(unsigned int i=0;i<iterations;++i) {
+        asm volatile("mad.lo.u32 %0, %1, 1664525, 1013904223;" : "=r"(value) : "r"(value));
+    }
+    const unsigned long long end=ftt::arch::global_timer64();
+    out[0]=start;out[1]=end;out[2]=epoch;out[3]=(unsigned long long)value;
+}
+extern "C" int flagmega_profile_clock_resource_info(int *values) {
+    if(!values)return -1;
+    cudaFuncAttributes attributes{};
+    cudaError_t status=cudaFuncGetAttributes(&attributes,flagmega_profile_clock_kernel);
+    if(status!=cudaSuccess)return (int)status;
+    if(attributes.maxThreadsPerBlock<128)return (int)cudaErrorLaunchOutOfResources;
+    values[0]=attributes.numRegs;values[1]=(int)attributes.sharedSizeBytes;
+    values[2]=(int)attributes.localSizeBytes;values[3]=attributes.maxThreadsPerBlock;
+    return 0;
+}
+extern "C" int flagmega_profile_clock_calibrate(void *out,unsigned long long capacity_bytes,
+    unsigned long long epoch,unsigned int iterations,unsigned int seed,void *stream,
+    void *start_event,void *end_event) {
+    if(!out || reinterpret_cast<uintptr_t>(out)%8 || capacity_bytes<32 || !epoch ||
+       iterations<(1U<<12) || iterations>(1U<<26) || !start_event || !end_event)return -1;
+    const cudaStream_t launch_stream=(cudaStream_t)stream;
+    cudaStreamCaptureStatus capture;
+    cudaError_t status=cudaStreamIsCapturing(launch_stream,&capture);
+    if(status!=cudaSuccess)return (int)status;
+    if(capture!=cudaStreamCaptureStatusNone)return (int)cudaErrorNotSupported;
+    int resources[4];const int admission=flagmega_profile_clock_resource_info(resources);
+    if(admission)return admission;
+    status=cudaEventRecord((cudaEvent_t)start_event,launch_stream);
+    if(status!=cudaSuccess)return (int)status;
+    unsigned long long *output=(unsigned long long*)out;
+    void *arguments[]={&output,&epoch,&iterations,&seed};
+    status=cudaLaunchKernel((const void*)flagmega_profile_clock_kernel,dim3(1),dim3(128),arguments,0,launch_stream);
+    if(status!=cudaSuccess)return (int)status;
+    status=cudaEventRecord((cudaEvent_t)end_event,launch_stream);
+    return (int)status;
+}

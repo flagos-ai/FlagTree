@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from triton.flagmega.ir import IRModule, Node, logical_type
 
+
 _DIRECT_PROJECTION_OPS = frozenset({
     "math.matmul",
     "math.packed_dense_matmul",
@@ -22,7 +23,8 @@ _DIRECT_PROJECTION_OPS = frozenset({
     "math.packed_block_scaled_matmul",
     "ntt.packed_matmul",
 })
-_TUPLE_PROJECTION_OPS = frozenset({})
+_TUPLE_PROJECTION_OPS = frozenset({
+})
 _PROJECTION_OPS = _DIRECT_PROJECTION_OPS | _TUPLE_PROJECTION_OPS
 _TRANSPARENT_ADAPTERS = frozenset({
     "distributed.boxing",
@@ -31,13 +33,25 @@ _TRANSPARENT_ADAPTERS = frozenset({
 
 
 def _is_rms_consumer(node: Node, input_id: str) -> bool:
-    return (node.op == "nn.rms_norm" and node.inputs
-            and node.inputs[0] == input_id) or (node.op == "nn.norm_apply" and len(node.inputs) == 4
-                                                and node.inputs[0] == input_id and not bool(node.attrs["use_mean"]))
+    if node.attrs.get("compute_profile", "default") != "default":
+        return False
+    return (
+        node.op == "nn.rms_norm"
+        and node.inputs
+        and node.inputs[0] == input_id
+    ) or (
+        node.op == "nn.norm_apply"
+        and len(node.inputs) == 4
+        and node.inputs[0] == input_id
+        and not bool(node.attrs["use_mean"])
+    )
 
 
 def _is_add(node: Node) -> bool:
-    return node.op == "math.add" or (node.op == "math.vectorized_binary" and node.attrs.get("binary_op") == "add")
+    return node.op == "math.add" or (
+        node.op == "math.vectorized_binary"
+        and node.attrs.get("binary_op") == "add"
+    )
 
 
 @dataclass(frozen=True)
@@ -50,7 +64,9 @@ class ProjectionResidualNormMatch:
     norm_consumer: str
 
 
-def find_projection_residual_norm_matches(module: IRModule, ) -> dict[str, ProjectionResidualNormMatch]:
+def find_projection_residual_norm_matches(
+    module: IRModule,
+) -> dict[str, ProjectionResidualNormMatch]:
     """Return producer-keyed, exact single-projection-use fusion matches."""
 
     users: dict[str, list[Node]] = {node.id: [] for node in module.nodes}
@@ -72,7 +88,10 @@ def find_projection_residual_norm_matches(module: IRModule, ) -> dict[str, Proje
         residual_inputs = tuple(value for value in add.inputs if value != projected_input)
         if len(residual_inputs) != 1:
             continue
-        norm_users = tuple(user for user in users.get(add.id, ()) if _is_rms_consumer(user, add.id))
+        norm_users = tuple(
+            user for user in users.get(add.id, ())
+            if _is_rms_consumer(user, add.id)
+        )
         if len(norm_users) == 1:
             norm = norm_users[0]
         elif not norm_users:
@@ -81,8 +100,10 @@ def find_projection_residual_norm_matches(module: IRModule, ) -> dict[str, Proje
                 continue
         else:
             continue
-        if (logical_type(projection.type) != logical_type(add.type)
-                or logical_type(add.type) != logical_type(norm.type)):
+        if (
+            logical_type(projection.type) != logical_type(add.type)
+            or logical_type(add.type) != logical_type(norm.type)
+        ):
             continue
         matches[producer.id] = ProjectionResidualNormMatch(
             producer=producer.id,
@@ -110,8 +131,12 @@ def _loop_carried_norm_consumer(
     """
 
     functions = tuple(
-        function for function in module.functions
-        if bool(function.attrs.get("reusable")) and residual_add.id in function.outputs and function.parameters)
+        function
+        for function in module.functions
+        if bool(function.attrs.get("reusable"))
+        and residual_add.id in function.outputs
+        and function.parameters
+    )
     if len(functions) != 1:
         return None
     function = functions[0]
@@ -120,14 +145,22 @@ def _loop_carried_norm_consumer(
     entry_norms = _norms_reachable_through_adapters(parameter, users)
     if len(entry_norms) != 1:
         return None
-    calls = tuple(node for node in module.nodes
-                  if node.op == "builtin.call" and str(node.attrs.get("callee")) == function.name)
+    calls = tuple(
+        node
+        for node in module.nodes
+        if node.op == "builtin.call"
+        and str(node.attrs.get("callee")) == function.name
+    )
     if not calls:
         return None
     projected: list[Node] = []
     for call in calls:
-        fields = tuple(user for user in users.get(call.id, ())
-                       if user.op == "builtin.get_item" and int(user.attrs.get("index", -1)) == output_index)
+        fields = tuple(
+            user
+            for user in users.get(call.id, ())
+            if user.op == "builtin.get_item"
+            and int(user.attrs.get("index", -1)) == output_index
+        )
         if len(fields) != 1:
             return None
         projected.append(fields[0])
@@ -136,7 +169,11 @@ def _loop_carried_norm_consumer(
             return None
         if users.get(value.id, ()) != [calls[index + 1]]:
             return None
-    final_norms = tuple(user for user in users.get(projected[-1].id, ()) if _is_rms_consumer(user, projected[-1].id))
+    final_norms = tuple(
+        user
+        for user in users.get(projected[-1].id, ())
+        if _is_rms_consumer(user, projected[-1].id)
+    )
     if len(final_norms) != 1:
         return None
     return entry_norms[0]
@@ -155,7 +192,7 @@ def _norms_reachable_through_adapters(
             continue
         visited.add(current)
         for user in users.get(current, ()):
-            if user.op in _TRANSPARENT_ADAPTERS and user.inputs == (current, ):
+            if user.op in _TRANSPARENT_ADAPTERS and user.inputs == (current,):
                 pending.append(user.id)
             elif _is_rms_consumer(user, current):
                 norms[user.id] = user
@@ -168,8 +205,10 @@ def _projection_value(
 ) -> Node | None:
     if producer.op in _DIRECT_PROJECTION_OPS:
         return producer
-    outputs = tuple(user for user in users.get(producer.id, ())
-                    if user.op == "builtin.get_item" and int(user.attrs.get("index", -1)) == 0)
+    outputs = tuple(
+        user for user in users.get(producer.id, ())
+        if user.op == "builtin.get_item" and int(user.attrs.get("index", -1)) == 0
+    )
     return outputs[0] if len(outputs) == 1 else None
 
 

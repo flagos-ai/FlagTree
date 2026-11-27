@@ -17,8 +17,7 @@ from triton.flagmega.importer.numerics import VLLM_AE10_INDUCTOR_LEVEL3
 from triton.flagmega.importer.numerics.gdn_prefill import emit_gdn_prefill
 from triton.flagmega.importer.numerics.rotary_cache import native_rope_inverse_frequencies
 from triton.flagmega.importer.numerics.partitioned_projection import (
-    ordered_projection_parts,
-    qwen35_native_projection_parts,
+    ordered_projection_parts, qwen35_native_projection_parts,
 )
 from triton.flagmega.ir import DType, TupleType, tensor_type, verify_module
 from triton.flagmega.ir.distributed_inference import tensor_of
@@ -37,8 +36,8 @@ def apply_qwen35_moe_vllm_profile(module):
         raise ImporterError("The pinned numerical contract requires an explicit decode or prefill phase.")
     if module.metadata.get("numerical_contract") == VLLM_AE10_INDUCTOR_LEVEL3:
         return verify_module(module)
-    if module.metadata.get("numerical_contract", "default") != "default":
-        raise ImporterError("Select the Qwen3.5 numerical contract from a fresh reference import.")
+    if module.metadata.get("numerical_contract", "nncase") != "nncase":
+        raise ImporterError("Select the Qwen3.5 numerical contract from a fresh nncase import.")
     decoder_names = set(module.function_map) & {phase + "_linear", phase + "_attention"}
     if not decoder_names:
         raise ImporterError("The Qwen3.5 numerical contract requires reusable decoder functions.")
@@ -46,19 +45,12 @@ def apply_qwen35_moe_vllm_profile(module):
     hidden_parameters = {module.function_map[name].parameters[0] for name in decoder_names}
     # These are the reusable attention function's cos/sin parameters. Their
     # storage dtype carries the source's table rounding across the call ABI.
-    rotary_parameters = {
-        name
-        for node in module.nodes if node.op == "nn.rope" for name in node.inputs[1:]
-        if original[name].op == "builtin.var"
-    }
-    qk_stats = {
-        original[name + suffix].inputs[1]
-        for name in decoder_names if name.endswith("_attention") for suffix in ("_q_norm", "_k_norm")
-    }
-    qk_norms = {
-        name + suffix
-        for name in decoder_names if name.endswith("_attention") for suffix in ("_q_norm", "_k_norm")
-    }
+    rotary_parameters = {name for node in module.nodes if node.op == "nn.rope"
+                         for name in node.inputs[1:] if original[name].op == "builtin.var"}
+    qk_stats = {original[name + suffix].inputs[1] for name in decoder_names if name.endswith("_attention")
+                for suffix in ("_q_norm", "_k_norm")}
+    qk_norms = {name + suffix for name in decoder_names if name.endswith("_attention")
+                for suffix in ("_q_norm", "_k_norm")}
     shared_gate_ids, shared_expert_ids = set(), set()
     for name in decoder_names:
         for suffix, op in (("_input_norm", "nn.norm_apply"), ("_attention_residual", "math.add"),
@@ -71,8 +63,7 @@ def apply_qwen35_moe_vllm_profile(module):
             gate = original[SparseExperts.router_expert_weights.read(scaled.inputs)]
         else:
             broadcast = original[scaled.inputs[1]] if scaled.op == "math.mul" else None
-            gate = original[
-                broadcast.inputs[0]] if broadcast is not None and broadcast.op == "tensors.broadcast_to" else None
+            gate = original[broadcast.inputs[0]] if broadcast is not None and broadcast.op == "tensors.broadcast_to" else None
         if gate is None or gate.op != "math.sigmoid":
             raise ImporterError(f"Unexpected Qwen3.5 shared-expert gate topology in {name!r}.")
         shared_gate_ids.add(gate.id)
@@ -88,7 +79,7 @@ def apply_qwen35_moe_vllm_profile(module):
 
     def cast(value, dtype, name):
         return value if value.type.dtype == dtype else emit("tensors.cast", name, (value, ),
-                                                            {"dtype": dtype.value, "rounding_contract": "preserve"})
+            {"dtype": dtype.value, "rounding_contract": "preserve"})
 
     def wide(value, name):
         return cast(value, DType.FLOAT32, name)
@@ -125,25 +116,21 @@ def apply_qwen35_moe_vllm_profile(module):
                 }, source.metadata)
         elif source.op == "nn.rotary_embedding":
             frequencies = native_rope_inverse_frequencies(source.attrs["head_dim"], source.attrs["theta"])
-            cache = emit(
-                "nn.rotary_cache_table", source.id + ".cache", attrs={
-                    "positions": paged_attention_state_config_from_type(inputs[1].type).max_sequence_length,
-                    "inverse_frequencies": frequencies, "attention_scaling": source.attrs.get("attention_scaling", 1.),
-                    "output_dtype": "bfloat16"
-                })
-            result = emit(source.op, source.id, (*inputs, cache), {
-                **source.attrs, "output_dtype": "bfloat16", "math_mode": "accurate", "inverse_frequencies": frequencies
-            }, source.metadata)
+            cache = emit("nn.rotary_cache_table", source.id + ".cache", attrs={
+                "positions": paged_attention_state_config_from_type(inputs[1].type).max_sequence_length,
+                "inverse_frequencies": frequencies,
+                "attention_scaling": source.attrs.get("attention_scaling", 1.), "output_dtype": "bfloat16"})
+            result = emit(source.op, source.id, (*inputs, cache),
+                          {**source.attrs, "output_dtype": "bfloat16", "math_mode": "accurate",
+                           "inverse_frequencies": frequencies}, source.metadata)
         elif source.id in qk_stats:
             value_type = tensor_of(module.node_map[source.inputs[0]].type)
             suffix = value_type.shape[int(source.attrs["axis"]) % value_type.rank:]
             capacity = prod(d.fixed_value for d in suffix) * prod(getattr(value_type.dtype, "lanes", ()))
             tree_group = min(32, 1 << (max((capacity + 1) // 2, 1) - 1).bit_length())
-            result = emit(
-                source.op, source.id, inputs, {
-                    **source.attrs, "reduction_group_size": 2, "reduction_order": "tree", "reduction_tree_group_size":
-                    tree_group
-                }, source.metadata)
+            result = emit(source.op, source.id, inputs,
+                          {**source.attrs, "reduction_group_size": 2, "reduction_order": "tree",
+                           "reduction_tree_group_size": tree_group}, source.metadata)
         elif source.op == "nn.norm_stats":
             input_rms = not source.inputs[0].endswith("_attention_residual")
             value_type = tensor_of(module.node_map[source.inputs[0]].type)
@@ -151,25 +138,22 @@ def apply_qwen35_moe_vllm_profile(module):
             capacity = prod(d.fixed_value for d in suffix) * prod(getattr(value_type.dtype, "lanes", ()))
             tree_count = (min(capacity, 1024) if input_rms else capacity) // 8
             tree_group = min(32, 1 << (max(tree_count, 1) - 1).bit_length())
-            result = emit(
-                source.op, source.id, inputs, {
-                    **source.attrs, "reduction_group_size":
-                    8, "reduction_tree_group_size":
-                    tree_group, **({
-                        "reduction_order": "tile_fma", "reduction_block_size": 1024,
-                        "reduction_block_traversal": "reverse"
-                    } if input_rms else {"reduction_order": "group_fma", "reduction_group_seed_index": 1})
-                }, source.metadata)
+            result = emit(source.op, source.id, inputs,
+                          {**source.attrs, "reduction_group_size": 8, "reduction_tree_group_size": tree_group,
+                           **({"reduction_order": "tile_fma", "reduction_block_size": 1024,
+                               "reduction_block_traversal": "reverse"}
+                              if input_rms else {"reduction_order": "group_fma", "reduction_group_seed_index": 1})},
+                          source.metadata)
         elif source.op == "nn.norm_apply" and source.id not in qk_norms:
-            result = emit(source.op, source.id, inputs, {**source.attrs, "math_mode": "accurate"}, source.metadata)
+            result = emit(source.op, source.id, inputs,
+                          {**source.attrs, "math_mode": "accurate"}, source.metadata)
         elif source.op == "nn.qkv_parallel_linear":
-            result = emit(source.op, source.id, inputs, {**source.attrs, "reduction_order": "mma_k16"}, source.metadata)
+            result = emit(source.op, source.id, inputs,
+                          {**source.attrs, "reduction_order": "mma_k16"}, source.metadata)
         elif source.op == "nn.paged_attention":
-            result = emit(
-                source.op, source.id, inputs, {
-                    **source.attrs, "probability_rounding": "online_bf16", "softmax_block_size": 80,
-                    "softmax_traversal": "reverse"
-                }, source.metadata)
+            result = emit(source.op, source.id, inputs,
+                          {**source.attrs, "probability_rounding": "online_bf16",
+                           "softmax_block_size": 80, "softmax_traversal": "reverse"}, source.metadata)
         elif source.id in {name + "_router_softmax" for name in decoder_names}:
             # The following routing op owns scoring and normalization,
             # including their native FP32 rounding order.
@@ -178,18 +162,13 @@ def apply_qwen35_moe_vllm_profile(module):
             continue
         elif source.id in {name + "_router_top_k" for name in decoder_names}:
             bias = emit("builtin.none", source.id + ".bias")
-            result = emit(
-                "nn.staged_routing", source.id, (inputs[0], bias), {
-                    "k": source.attrs["k"],
-                    "axis": source.attrs["axis"],
-                    "index_dtype": source.attrs["index_dtype"],
-                    "scoring": "softmax",
-                    "normalize": True,
-                    "scaling": 1.,
-                    "arithmetic": "exp_grouped_reciprocal",
-                }, source.metadata)
+            result = emit("nn.staged_routing", source.id, (inputs[0], bias), {
+                "k": source.attrs["k"], "axis": source.attrs["axis"],
+                "index_dtype": source.attrs["index_dtype"], "scoring": "softmax",
+                "normalize": True, "scaling": 1., "arithmetic": "exp_grouped_reciprocal",
+            }, source.metadata)
         elif source.id in {name + "_router_weights" for name in decoder_names}:
-            result = emit("tensors.reshape", source.id, (inputs[0], ),
+            result = emit("tensors.reshape", source.id, (inputs[0],),
                           {"shape": tuple(dim.fixed_value for dim in source.type.shape)}, source.metadata)
         elif (source.op == "math.matmul" and source.attrs.get("transpose_b") is True
               and not source.attrs.get("transpose_a") and qwen35_native_projection_parts(*inputs) == 2):
@@ -206,8 +185,8 @@ def apply_qwen35_moe_vllm_profile(module):
             # Native linear projections publish BF16 before their consumers.
             # Declare that boundary so a private FP32 cast cannot request the
             # relaxed FoldMatMulCast rewrite's unrounded FP32 projection.
-            result = emit(source.op, source.id, inputs, {**source.attrs, "output_data_type": "bfloat16"},
-                          source.metadata)
+            result = emit(source.op, source.id, inputs,
+                          {**source.attrs, "output_data_type": "bfloat16"}, source.metadata)
         elif source.op == "nn.dense_matmul_glu":
             gate = emit("math.matmul", source.id + ".gate", inputs[:2], {"transpose_b": True})
             up = emit("math.matmul", source.id + ".up", (inputs[0], inputs[2]), {"transpose_b": True})
@@ -218,13 +197,8 @@ def apply_qwen35_moe_vllm_profile(module):
             shared = source.id in shared_expert_ids
             result = emit(
                 source.op, source.id, inputs, {
-                    **source.attrs,
-                    "round_projections": True,
-                    "round_activation": not shared,
-                    "round_down_projection": shared,
-                    "round_weighted_output": True,
-                    "intermediate_dtype": "bfloat16",
-                    "output_dtype": "bfloat16",
+                    **source.attrs, "round_projections": True, "round_activation": not shared, "round_down_projection": shared,
+                    "round_weighted_output": True, "intermediate_dtype": "bfloat16", "output_dtype": "bfloat16",
                     "reduction_order": "mma_k16",
                 }, source.metadata)
         elif source.id in {name + "_attention_residual" for name in decoder_names}:
@@ -258,8 +232,8 @@ def apply_qwen35_moe_vllm_profile(module):
         replace(
             module, nodes=tuple(nodes), metadata={
                 **module.metadata, "numerical_contract": VLLM_AE10_INDUCTOR_LEVEL3, "numerical_profile_reference": {
-                    "vllm": "ae10e855abf4ff5e24e2088aef16029ee1cb7de8", "phase": phase, "compile_mode": 3, "custom_ops":
-                    ("none", ), "tensor_parallel_size": 1
+                    "vllm": "ae10e855abf4ff5e24e2088aef16029ee1cb7de8", "phase": phase, "compile_mode": 3,
+                    "custom_ops": ("none", ), "tensor_parallel_size": 1
                 }
             }))
     # Staged routing owns the old TopK normalization recipe. Remove its

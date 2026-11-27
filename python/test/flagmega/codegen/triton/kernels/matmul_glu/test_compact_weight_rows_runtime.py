@@ -19,7 +19,6 @@ def _module(*, canonical_up=False, gate_limit=None, up_limit=None):
     scale = fm.tensor_type("float32", (12, 1))
 
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("value", value, id="value")
             gate = self.input("gate", weight, id="gate")
@@ -28,13 +27,14 @@ def _module(*, canonical_up=False, gate_limit=None, up_limit=None):
             px = fm.F.distributed.force_boxing(x, fm.DistributedType(value, (b, b), mesh))
             pg = fm.F.distributed.force_boxing(gate, fm.DistributedType(weight, (split, b), mesh))
             up_type = fm.DistributedType(weight, (split, b), mesh)
-            pu = (fm.F.distributed.sharded_view(up, up_type) if canonical_up else fm.F.distributed.force_boxing(
-                up, up_type))
+            pu = (fm.F.distributed.sharded_view(up, up_type) if canonical_up
+                  else fm.F.distributed.force_boxing(up, up_type))
             ps = fm.F.distributed.force_boxing(scales, fm.DistributedType(scale, (b, b), mesh))
-            result = fm.F.nn.matmul_glu(px, pg, pu, ps, ps, activation="silu", weight_block_n=16, weight_block_k=128,
-                                        gate_clamp_max=gate_limit, up_clamp=up_limit, name="glu")
+            result = fm.F.nn.matmul_glu(px, pg, pu, ps, ps, activation="silu",
+                weight_block_n=16, weight_block_k=128,
+                gate_clamp_max=gate_limit, up_clamp=up_limit, name="glu")
             output = fm.F.distributed.force_boxing(result, fm.logical_type(result.type))
-            self.function("main", (x, gate, up, scales), (output, ))
+            self.function("main", (x, gate, up, scales), (output,))
 
     return Graph(dialect="distributed", stage="frozen_constants", entry="main",
                  metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()
@@ -50,12 +50,12 @@ def test_output_shards_use_compact_fp8_weight_rows(tmp_path, variant, canonical_
     compiler = Compiler()
     proposed = compiler.compile(_module(canonical_up=canonical_up, gate_limit=limits[0], up_limit=limits[1]),
                                 stop_after="propose-tir").module
-    choices = [(point.id, variant) for point in proposed.selection_points if any(candidate.id == variant
-                                                                                 for candidate in point.candidates)]
+    choices = [(point.id, variant) for point in proposed.selection_points
+               if any(candidate.id == variant for candidate in point.candidates)]
     assert len(choices) == 1
     selected = apply_plan(proposed, override_plan(proposed, choices))
-    artifact = write_artifact(
-        compiler.compile(selected).module, tmp_path / "glu", target="nvidia-sm90", emit_executable=True)
+    artifact = write_artifact(compiler.compile(selected).module, tmp_path / "glu",
+                              target="nvidia-sm90", emit_executable=True)
     runtime = load(artifact, device="cuda:0")
     try:
         x = torch.ones((1, 128), device="cuda", dtype=torch.bfloat16)

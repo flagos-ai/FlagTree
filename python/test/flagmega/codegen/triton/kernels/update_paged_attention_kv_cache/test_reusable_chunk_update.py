@@ -45,8 +45,8 @@ def test_reusable_chunk_worker_advances_after_all_owner_reads(tmp_path, dag):
             increment = self.input("entry_advance", boolean, id="entry_advance")
             no_advance = fm.F.builtin.scalar_const(boolean, False)
             first = fm.F.builtin.call(values, cache, first_layer, no_advance, callee="worker",
-                                      result_type=config.ref_type, effect=fm.effect("read_write",
-                                                                                    config.ref_type.name), name="first")
+                                      result_type=config.ref_type, effect=fm.effect("read_write", config.ref_type.name),
+                                      name="first")
             second = fm.F.builtin.call(values, first, second_layer, increment, callee="worker",
                                        result_type=config.ref_type,
                                        effect=fm.effect("read_write", config.ref_type.name), name="second")
@@ -55,19 +55,13 @@ def test_reusable_chunk_worker_advances_after_all_owner_reads(tmp_path, dag):
     module = Graph(dialect="distributed", stage="frozen_constants", entry="main",
                    metadata={"auto_distribution": {"placement": placement.to_data()}}).build()
     fm.emit_module(module, tmp_path / "input.py")
-
     class Target(NvidiaSm90Target):
-
         def propose_tir(self, module):
             module = super().propose_tir(module)
-            return replace(
-                module, metadata={
-                    **module.metadata, "kernel_program_partition": (
-                        dict(symbol="program_first", calls=("first", ), num_warps=4, depends_on=()),
-                        dict(symbol="program_second", calls=("second", ), num_warps=4, depends_on=("program_first", )),
-                    )
-                })
-
+            return replace(module, metadata={**module.metadata, "kernel_program_partition": (
+                dict(symbol="program_first", calls=("first",), num_warps=4, depends_on=()),
+                dict(symbol="program_second", calls=("second",), num_warps=4, depends_on=("program_first",)),
+            )})
     compiler = Compiler()
     if dag:
         compiler.target = Target()

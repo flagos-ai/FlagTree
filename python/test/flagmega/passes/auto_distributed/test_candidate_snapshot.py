@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""The reference provider protocol must consume one candidate enumeration."""
+"""The nncase provider protocol must consume one candidate enumeration."""
 
 from dataclasses import replace
 
@@ -27,28 +27,23 @@ class CountingProvider(DistributedCandidateProviderBase):
         tensor = context.source_call.type
         return tuple(
             DistributedCandidate(
-                f"temporary.{index}",
-                value,
-                (value, ),
-                1,
-                self.reason,
-            ) for index, value in enumerate((
-                fm.DistributedType(tensor, (fm.SBP.broadcast(), ), context.placement),
-                fm.DistributedType(tensor, (fm.SBP.split_contiguous((0, 1)), ), context.placement),
-            )))
+                f"temporary.{index}", value, (value,), 1, self.reason,
+            )
+            for index, value in enumerate((
+                fm.DistributedType(tensor, (fm.SBP.broadcast(),), context.placement),
+                fm.DistributedType(tensor, (fm.SBP.split_contiguous((0, 1)),), context.placement),
+            ))
+        )
 
 
 def _context():
     builder = fm.IRBuilder(dialect="high_level", stage="packing_applied")
-    tensor = fm.tensor_type("float32", (16, ))
+    tensor = fm.tensor_type("float32", (16,))
     value = builder.var("value", tensor, id="value")
-    call = builder.call("math.silu", (value, ), tensor, id="call")
-    builder.function("main", (value, ), (call, ))
+    call = builder.call("math.silu", (value,), tensor, id="call")
+    builder.function("main", (value,), (call,))
     return DistributedCandidateContext(
-        builder.build(entry="main"),
-        call,
-        fm.Placement((2, 2), "yx", "bb"),
-        ((tensor, ), ),
+        builder.build(entry="main"), call, fm.Placement((2, 2), "yx", "bb"), ((tensor,),),
     )
 
 
@@ -66,7 +61,7 @@ def test_replaced_context_recomputes_after_agent_changes_type_or_policy():
     context = _context()
     provider = CountingProvider()
     original = provider.get_candidates(context)
-    tensor = fm.tensor_type("float32", (32, ))
+    tensor = fm.tensor_type("float32", (32,))
     edited = replace(context, source_call=replace(context.source_call, type=tensor))
     changed = provider.get_candidates(edited)
     assert all(candidate.return_type.tensor == tensor for candidate in changed)

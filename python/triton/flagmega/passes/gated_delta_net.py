@@ -19,7 +19,7 @@ _GET_ITEM_OP = "builtin.get_item"
 def decompose_gated_delta_net(module: IRModule) -> IRModule:
     """Expose the independently optimizable stages of every fused GDN call.
 
-    The decomposition follows the reference semantic boundary: QKV and Z
+    The decomposition follows nncase's semantic boundary: QKV and Z
     projections, stateful convolution, recurrent core, and the final output
     projection.  It deliberately contains no target, mesh, launch, or kernel
     policy.  Tuple projections are replaced by aliases so the two stateful
@@ -219,7 +219,11 @@ def _verify_projected_gdn_uses(module: IRModule) -> None:
         for input_id in node.inputs:
             if input_id not in fused:
                 continue
-            if (node.op != _GET_ITEM_OP or len(node.inputs) != 1 or int(node.attrs.get("index", -1)) not in (0, 1)):
+            if (
+                node.op != _GET_ITEM_OP
+                or len(node.inputs) != 1
+                or int(node.attrs.get("index", -1)) not in (0, 1)
+            ):
                 raise IRVerificationError(
                     "DecomposeGatedDeltaNet requires fused tuple results to be consumed through "
                     "builtin.get_item indices 0 or 1.",
@@ -236,7 +240,11 @@ def _verify_projected_gdn_uses(module: IRModule) -> None:
 
 
 def _gdn_projection_ids(module: IRModule) -> dict[str, dict[int, tuple[str, ...]]]:
-    values: dict[str, dict[int, list[str]]] = {node.id: {0: [], 1: []} for node in module.nodes if node.op == _GDN_OP}
+    values: dict[str, dict[int, list[str]]] = {
+        node.id: {0: [], 1: []}
+        for node in module.nodes
+        if node.op == _GDN_OP
+    }
     for node in module.nodes:
         if node.op == _GET_ITEM_OP and len(node.inputs) == 1 and node.inputs[0] in values:
             values[node.inputs[0]][int(node.attrs["index"])].append(node.id)
@@ -247,7 +255,10 @@ def _gdn_projection_ids(module: IRModule) -> dict[str, dict[int, tuple[str, ...]
                 stage=module.stage,
                 node_id=node_id,
             )
-    return {node_id: {index: tuple(ids) for index, ids in fields.items()} for node_id, fields in values.items()}
+    return {
+        node_id: {index: tuple(ids) for index, ids in fields.items()}
+        for node_id, fields in values.items()
+    }
 
 
 def _verify_gdn_source(source: Node, inputs: Sequence[Node], stage: str) -> None:

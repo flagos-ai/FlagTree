@@ -28,8 +28,8 @@ class AllocationSession:
         canonical_pairs = tuple(sorted(tuple(sorted((str(indexes[a]), str(indexes[b])))) for a, b in pairs))
         key = (memory_space, canonical, canonical_pairs, bytes_budget)
         if key not in self._results:
-            self._results[key] = self.allocator.allocate(canonical, memory_space, avoid_reuse=canonical_pairs,
-                                                         bytes_budget=bytes_budget)
+            self._results[key] = self.allocator.allocate(
+                canonical, memory_space, avoid_reuse=canonical_pairs, bytes_budget=bytes_budget)
             self.misses += 1
         else:
             self.hits += 1

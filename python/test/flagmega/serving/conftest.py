@@ -1,5 +1,3 @@
-# Copyright 2026 FlagOS Contributors
-# SPDX-License-Identifier: MIT
 from types import SimpleNamespace
 
 import pytest
@@ -45,7 +43,6 @@ def backend():
 
 
 class TorchModel:
-
     def __init__(self, *, builtin, artifact):
         import torch
         from triton.flagmega.ir.ops.nn._paged_attention_state import PagedAttentionStateConfig
@@ -66,8 +63,7 @@ class TorchModel:
 
     def create_outputs(self):
         logits = self.torch.empty((1, 16))
-        return (logits, self.torch.empty(
-            (1, ), dtype=self.torch.int32)) if self.result_kind == "logits_token_state" else logits
+        return (logits, self.torch.empty((1,), dtype=self.torch.int32)) if self.result_kind == "logits_token_state" else logits
 
     def prepare(self, *args, **kwargs):
         self.prepares += 1

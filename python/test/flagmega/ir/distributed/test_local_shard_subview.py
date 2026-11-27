@@ -11,7 +11,7 @@ def _types():
     placement = fm.Placement((8, 16), "yx", "bb")
     split_y = fm.DistributedType(
         tensor,
-        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 256)),
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 256)),
         placement,
     )
     split_yx = fm.DistributedType(
@@ -21,7 +21,7 @@ def _types():
     )
     split_x = fm.DistributedType(
         tensor,
-        (fm.SBP.broadcast(), fm.SBP.split_contiguous((1, ), 128)),
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((1,), 128)),
         placement,
     )
     return split_y, split_yx, split_x
@@ -82,10 +82,10 @@ def test_split_to_broadcast_coarsening_does_not_enter_symbolic_proof(monkeypatch
 
 
 def test_larger_cyclic_capacity_is_rejected_before_symbolic_owner_binding(monkeypatch):
-    tensor = fm.tensor_type("float32", (128, ))
-    placement = fm.Placement((8, ), "x", "b")
-    source = fm.DistributedType(tensor, (fm.SBP.split_block_cyclic((0, ), 16), ), placement)
-    target = fm.DistributedType(tensor, (fm.SBP.split_block_cyclic((0, ), 32), ), placement)
+    tensor = fm.tensor_type("float32", (128,))
+    placement = fm.Placement((8,), "x", "b")
+    source = fm.DistributedType(tensor, (fm.SBP.split_block_cyclic((0,), 16),), placement)
+    target = fm.DistributedType(tensor, (fm.SBP.split_block_cyclic((0,), 32),), placement)
 
     def unexpected(*args, **kwargs):
         raise AssertionError("capacity disproves containment without binding owners")
@@ -99,10 +99,10 @@ def test_larger_cyclic_capacity_is_rejected_before_symbolic_owner_binding(monkey
 
 
 def test_noncontiguous_first_stage_is_rejected_without_owner_arithmetic(monkeypatch):
-    tensor = fm.tensor_type("float32", (1024, ))
-    placement = fm.Placement((8, ), "x", "b")
-    source = fm.DistributedType(tensor, (fm.SBP.split_block_cyclic((0, ), 16), ), placement)
-    target = fm.DistributedType(tensor, (fm.SBP.split_contiguous((0, ), 16), ), placement)
+    tensor = fm.tensor_type("float32", (1024,))
+    placement = fm.Placement((8,), "x", "b")
+    source = fm.DistributedType(tensor, (fm.SBP.split_block_cyclic((0,), 16),), placement)
+    target = fm.DistributedType(tensor, (fm.SBP.split_contiguous((0,), 16),), placement)
 
     def unexpected(*args, **kwargs):
         raise AssertionError("a cyclic stage spanning multiple blocks is not a rectangular region")
@@ -132,17 +132,17 @@ def test_uniform_sibling_intervals_are_decided_without_symbolic_simplification(m
 def test_uniform_interval_proof_matches_every_concrete_owner():
     from itertools import product
 
-    tensor = fm.tensor_type("float32", (72, ))
+    tensor = fm.tensor_type("float32", (72,))
     placement = fm.Placement((2, 3), "yx", "bb")
     policies = (
         fm.SBP.broadcast(),
-        fm.SBP.split_contiguous((0, ), 6),
-        fm.SBP.split_contiguous((1, ), 4),
+        fm.SBP.split_contiguous((0,), 6),
+        fm.SBP.split_contiguous((1,), 4),
         fm.SBP.split_contiguous((0, 1), 1),
-        fm.SBP.split(fm.SplitStage.contiguous((0, ), 6), fm.SplitStage.contiguous((1, ), 2)),
+        fm.SBP.split(fm.SplitStage.contiguous((0,), 6), fm.SplitStage.contiguous((1,), 2)),
         fm.SBP.split_block_cyclic((0, 1), 12),
     )
-    types = tuple(fm.DistributedType(tensor, (policy, ), placement) for policy in policies)
+    types = tuple(fm.DistributedType(tensor, (policy,), placement) for policy in policies)
     for source, target in product(types, repeat=2):
         expected = True
         for coordinate in product(range(2), range(3)):
@@ -156,8 +156,8 @@ def test_uniform_interval_proof_matches_every_concrete_owner():
 def test_dynamic_broadcast_axis_does_not_block_static_split_proof(monkeypatch):
     tensor = fm.tensor_type("float32", (fm.dim("B", 1, 8), 128))
     placement = fm.Placement((2, 2), "yx", "bb")
-    source = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 64)), placement)
-    target = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.split_contiguous((1, ), 64)), placement)
+    source = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 64)), placement)
+    target = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.split_contiguous((1,), 64)), placement)
 
     def unexpected(*args, **kwargs):
         raise AssertionError("identical symbolic broadcast extents cancel exactly")
@@ -171,10 +171,10 @@ def test_dynamic_broadcast_axis_does_not_block_static_split_proof(monkeypatch):
 
 
 def test_ragged_owner_origins_disprove_containment_without_tail_algebra(monkeypatch):
-    tensor = fm.tensor_type("float32", (16, ))
+    tensor = fm.tensor_type("float32", (16,))
     placement = fm.Placement((8, 16), "yx", "bb")
-    source = fm.DistributedType(tensor, (fm.SBP.split_block_cyclic((0, 1), 1), ), placement)
-    target = fm.DistributedType(tensor, (fm.SBP.split_contiguous((1, ), 1), ), placement)
+    source = fm.DistributedType(tensor, (fm.SBP.split_block_cyclic((0, 1), 1),), placement)
+    target = fm.DistributedType(tensor, (fm.SBP.split_contiguous((1,), 1),), placement)
 
     def unexpected(*args, **kwargs):
         raise AssertionError("negative owner-origin difference disproves containment even at ragged tails")

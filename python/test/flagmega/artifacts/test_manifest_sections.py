@@ -113,7 +113,7 @@ def test_section_hashing_streams_instead_of_using_read_bytes(tmp_path, monkeypat
 
     monkeypatch.setattr(Path, "read_bytes", reject_unbounded_read_bytes)
     section = record_section(root, payload, name="payload", kind="test/v1")
-    verify_sections(root, (section, ))
+    verify_sections(root, (section,))
 
     assert section.nbytes == len(b"stream me")
 
@@ -151,7 +151,7 @@ def test_deferred_section_hash_still_checks_size(tmp_path):
     section = record_section(root, payload, name="payload", kind="test/v1")
     payload.write_bytes(b"changed!")
 
-    verify_sections(root, (section, ), defer_hashes=frozenset({"payload"}))
+    verify_sections(root, (section,), defer_hashes=frozenset({"payload"}))
     payload.write_bytes(b"wrong size")
     with pytest.raises(ArtifactError, match="size"):
-        verify_sections(root, (section, ), defer_hashes=frozenset({"payload"}))
+        verify_sections(root, (section,), defer_hashes=frozenset({"payload"}))

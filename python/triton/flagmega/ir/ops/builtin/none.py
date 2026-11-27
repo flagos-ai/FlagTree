@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""First-class optional operand sentinel, equivalent to reference ``None``."""
+"""First-class optional operand sentinel, equivalent to nncase ``None``."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ class NoneValue(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost.exact_zero(notes=("optional-none", ))
+        return OpCost.exact_zero(notes=("optional-none",))
 
 
 __all__ = ["NoneValue"]

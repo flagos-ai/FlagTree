@@ -12,8 +12,6 @@ from triton.flagmega.ir import IRModule, Node
 from triton.flagmega.pattern_match import MatchResult, Pattern, try_match_root
 
 RuleMatch = Callable[[Node, IRModule], bool]
-
-
 @dataclass(frozen=True)
 class RewriteResult:
     """One local replacement plus topologically ordered helper nodes.
@@ -117,8 +115,8 @@ class RewriteRule:
         from triton.flagmega.ir.op_fusion import has_ops
         # Existing rules describe naked operators. A fused call has additional
         # semantic expressions, even though its base op name is unchanged.
-        if not self.supports_fusion and any(
-                isinstance(value, Node) and has_ops(value.attrs) for value in result.values()):
+        if not self.supports_fusion and any(isinstance(value, Node) and has_ops(value.attrs)
+                                            for value in result.values()):
             return None
         return self.rewrite(result, module)  # type: ignore[arg-type]
 

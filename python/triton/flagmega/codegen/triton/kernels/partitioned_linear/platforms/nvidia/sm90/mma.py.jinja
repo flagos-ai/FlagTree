@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: partitioned_linear/mma platform=nvidia architecture=sm90
+# flagmega-kernel: partitioned_linear/mma platform=nvidia architecture=sm90
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls | default(()) %}
 {% if call.family == "partitioned_linear" and call.variant == "mma" %}

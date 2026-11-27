@@ -14,8 +14,8 @@ from triton.flagmega.codegen.triton.kernel_call_renderers import _dense_matmul_c
 from triton.flagmega.codegen.triton.templates import TritonTemplateRegistry
 
 
-def _abi(*, logical_shape, local_shape, scalar_strides, storage_kind="compact_local", coordinate_space="local",
-         logical_coordinates=None, component_stride=0):
+def _abi(*, logical_shape, local_shape, scalar_strides, storage_kind="compact_local",
+         coordinate_space="local", logical_coordinates=None, component_stride=0):
     if logical_coordinates is None:
         logical_coordinates = tuple(f"local_coord_{axis}" for axis in range(len(logical_shape)))
     return {
@@ -46,11 +46,8 @@ def _mma_raw(local_m):
     result_abi = _abi(logical_shape=(local_m, 16), local_shape=(local_m, 16), scalar_strides=(16, 1))
     # transpose_b: weight is (N, K) = (16, 32), canonical global/unpacked.
     weight_abi = _abi(
-        logical_shape=(16, 32),
-        local_shape=(16, 32),
-        scalar_strides=(32, 1),
-        storage_kind="canonical_global",
-        coordinate_space="canonical_global",
+        logical_shape=(16, 32), local_shape=(16, 32), scalar_strides=(32, 1),
+        storage_kind="canonical_global", coordinate_space="canonical_global",
         logical_coordinates=("local_coord_0", "local_coord_1"),
     )
     return {
@@ -82,7 +79,7 @@ def test_mma_renders_a_power_of_two_arange_for_non_power_of_two_m():
     source = TritonTemplateRegistry().render(
         "kernels/dense_matmul/mma.py.jinja",
         {
-            "render_calls": (call, ),
+            "render_calls": (call,),
             "distributed_entry": True,
             "mesh_axis_names": ("y", "x"),
             "mesh_hierarchy": (8, 16),

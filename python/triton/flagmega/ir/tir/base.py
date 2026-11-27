@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import ClassVar
 
+
 _NODE_TYPES: dict[str, type[TIRNode]] = {}
 
 
@@ -32,12 +33,15 @@ class TIRCost:
     synchronizations: int | None = 0
 
     def __post_init__(self) -> None:
-        if any(value is not None and (isinstance(value, bool) or value < 0) for value in (
+        if any(
+            value is not None and (isinstance(value, bool) or value < 0)
+            for value in (
                 self.flops,
                 self.bytes_read,
                 self.bytes_written,
                 self.synchronizations,
-        )):
+            )
+        ):
             raise ValueError("TIRCost factors must be non-negative integers or None.")
 
     def __add__(self, other: TIRCost) -> TIRCost:
@@ -50,12 +54,16 @@ class TIRCost:
 
     @property
     def unknown_factors(self) -> tuple[str, ...]:
-        return tuple(name for name, value in (
-            ("flops", self.flops),
-            ("bytes_read", self.bytes_read),
-            ("bytes_written", self.bytes_written),
-            ("synchronizations", self.synchronizations),
-        ) if value is None)
+        return tuple(
+            name
+            for name, value in (
+                ("flops", self.flops),
+                ("bytes_read", self.bytes_read),
+                ("bytes_written", self.bytes_written),
+                ("synchronizations", self.synchronizations),
+            )
+            if value is None
+        )
 
 
 class TIRNode:
@@ -72,7 +80,6 @@ class TIRNode:
 
 
 class TIRValue(TIRNode):
-
     @property
     def type(self):
         raise NotImplementedError

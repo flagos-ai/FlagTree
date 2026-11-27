@@ -27,10 +27,8 @@ def test_partial_unroll_exact_dyadic_projection_after_resume(tmp_path, suffix, k
         pytest.skip("SM90 CUDA is required")
     implementation_id = "tir.dense_matmul." + suffix
     model = portable_triton_implementation_model()
-    model = replace(
-        model, implementations=tuple(
-            replace(value, parameters={**value.parameters, "reduction_unroll": unroll}) if value.id ==
-            implementation_id else value for value in model.implementations))
+    model = replace(model, implementations=tuple(replace(value, parameters={**value.parameters, "reduction_unroll": unroll})
+        if value.id == implementation_id else value for value in model.implementations))
     compiler = Compiler()
     compiler.target = NvidiaSm90Target(triton_implementation_model=model)
     module = _packed_descriptor_pipeline_module(implementation_id, k=k, n=n, compiler=compiler)
@@ -40,14 +38,11 @@ def test_partial_unroll_exact_dyadic_projection_after_resume(tmp_path, suffix, k
     call = next(value for value in describe_tir_package(module)["render_calls"] if value["family"] == "dense_matmul")
     assert call["reduction_unroll"] == unroll
     weight = ((torch.arange(n)[:, None] * 5 + torch.arange(k)[None, :] * 3) % 61 - 30).to(torch.bfloat16)
-    checkpoint = MemoryCheckpoint({}, {"weight": TensorInfo("weight", DType.BFLOAT16, (n, k), "memory")},
-                                  {"weight": weight})
+    checkpoint = MemoryCheckpoint({}, {"weight": TensorInfo("weight", DType.BFLOAT16, (n, k), "memory")}, {"weight": weight})
     value = ((torch.arange(k).double() % 17 - 8) / 128).reshape(1, k)
     expected = (value @ weight.double().T).to(torch.bfloat16).cuda()
     value = value.to(device="cuda", dtype=torch.bfloat16)
-    runtime = load(
-        write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", checkpoint=checkpoint,
-                       emit_executable=True), device="cuda:0")
+    runtime = load(write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", checkpoint=checkpoint, emit_executable=True), device="cuda:0")
     output = runtime.create_outputs()
     runtime.prepare(value, output=output)
     for _ in range(3):

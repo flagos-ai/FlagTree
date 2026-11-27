@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Structural pattern matching over e-classes, aligned with reference EGraphMatcher."""
+"""Structural pattern matching over e-classes, aligned with nncase EGraphMatcher."""
 
 from __future__ import annotations
 
@@ -95,9 +95,11 @@ def _match_enode(
                 if branch.capture(pattern, tuple(value.node for value in path)):
                     results.append(branch)
             if (len(current.children) != 1 or any(value.node.id == current.node.id for value in path)
-                    or not _match_enode(graph, current, pattern.step, _Scope(user_counts=scope.user_counts), module)):
+                    or not _match_enode(graph, current, pattern.step,
+                                       _Scope(user_counts=scope.user_counts), module)):
                 continue
-            pending.extend((child, (*path, current)) for child in graph.class_view(current.children[0]).nodes)
+            pending.extend((child, (*path, current)) for child in
+                           graph.class_view(current.children[0]).nodes)
         return results
 
     if isinstance(pattern, OrPattern):
@@ -143,8 +145,9 @@ def _match_call(
 
     node_map = module.node_map
     operands = tuple(
-        node_map.get(input_id,
-                     graph.class_view(child).nodes[0].node) for input_id, child in zip(node.inputs, enode.children))
+        node_map.get(input_id, graph.class_view(child).nodes[0].node)
+        for input_id, child in zip(node.inputs, enode.children)
+    )
     operand_patterns = pattern.arguments.patterns_for(operands)
     if operand_patterns is None:
         return []
@@ -168,12 +171,14 @@ def _match_call(
 
 def _same_identity(lhs: object, rhs: object) -> bool:
     if isinstance(lhs, Node) and isinstance(rhs, Node):
-        # the reference e-graph match memo uses expression reference identity.  Two
+        # nncase's e-graph match memo uses expression reference identity.  Two
         # alternatives deliberately share the stable source id, so id-string
         # equality would incorrectly conflate different expressions.
         return lhs is rhs
     if isinstance(lhs, tuple) and isinstance(rhs, tuple):
-        return len(lhs) == len(rhs) and all(_same_identity(left, right) for left, right in zip(lhs, rhs))
+        return len(lhs) == len(rhs) and all(
+            _same_identity(left, right) for left, right in zip(lhs, rhs)
+        )
     return lhs is rhs or lhs == rhs
 
 
@@ -189,7 +194,6 @@ def _user_counts(module: IRModule) -> dict[str, int]:
 
 
 def _scope_signature(root: Node, matches: dict[Pattern, object]) -> tuple[object, ...]:
-
     def identity(value: object) -> object:
         if isinstance(value, Node):
             return ("node", id(value))

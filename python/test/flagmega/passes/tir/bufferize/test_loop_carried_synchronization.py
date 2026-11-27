@@ -22,21 +22,20 @@ def carried_loop_module(trips=4):
     carried = builder.var("carried", value_type, id="carried")
     consumed = builder.call("tir.kernel", [carried], value_type, id="body_read")
     produced = builder.call("tir.kernel", [consumed], value_type, id="body_write")
-    builder.region("body", (iv, carried), (produced, ), iter_count=1)
+    builder.region("body", (iv, carried), (produced,), iter_count=1)
 
     lower = builder.var("lower", index_type, id="lower")
     upper = builder.var("upper", index_type, id="upper")
     step = builder.var("step", index_type, id="step")
     seed = builder.var("seed", value_type, id="seed")
     loop = builder.call(
-        "control.for",
-        [lower, upper, step, seed],
-        fm.TupleType((value_type, )),
-        id="loop",
+        "control.for", [lower, upper, step, seed],
+        fm.TupleType((value_type,)), id="loop",
         attrs={"callee": "body", "iter_count": 1},
     )
-    output = builder.call("builtin.get_item", [loop], value_type, id="output", attrs={"index": 0})
-    builder.function("main", (lower, upper, step, seed), (output, ))
+    output = builder.call("builtin.get_item", [loop], value_type, id="output",
+                          attrs={"index": 0})
+    builder.function("main", (lower, upper, step, seed), (output,))
     return builder.build(entry="main")
 
 
@@ -46,10 +45,14 @@ def test_loop_body_orders_its_own_carried_write_against_the_next_trip():
     events = plan_memory_synchronization(module, plan).events
     wrap = [
         event for event in events
-        if event.function == "body" and event.after == "body_write" and event.before == "body_read"
+        if event.function == "body"
+        and event.after == "body_write"
+        and event.before == "body_read"
     ]
-    assert wrap, ("The body's trailing write to the carry must be ordered against the "
-                  f"next trip's read of it; planned events were {events!r}")
+    assert wrap, (
+        "The body's trailing write to the carry must be ordered against the "
+        f"next trip's read of it; planned events were {events!r}"
+    )
     # The pair spans the trip boundary either way round: the trailing write
     # must not land before the leading read of the same bytes, and the
     # leading read must see the previous trip's write.

@@ -33,15 +33,16 @@ _TENSOR = fm.tensor_type("float32", (1, 64))
 
 
 def _types():
-    broadcast = fm.DistributedType(_TENSOR, (fm.SBP.broadcast(), fm.SBP.broadcast()), _PLACEMENT)
+    broadcast = fm.DistributedType(
+        _TENSOR, (fm.SBP.broadcast(), fm.SBP.broadcast()), _PLACEMENT)
     chip_split = fm.DistributedType(
         _TENSOR,
-        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 16)),
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 16)),
         _PLACEMENT,
     )
     block_split = fm.DistributedType(
         _TENSOR,
-        (fm.SBP.broadcast(), fm.SBP.split_contiguous((1, ), 32)),
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((1,), 32)),
         _PLACEMENT,
     )
     return broadcast, chip_split, block_split
@@ -59,14 +60,13 @@ def test_a_chip_crossing_reshard_of_a_parameter_is_not_realizable(policy):
     broadcast, chip_split, _ = _types()
     # The restore an all-gather would need: the source distinguishes chips, the
     # target does not, so every chip has to read all the others' components.
-    assert fm.boxing_crossing_chip_axes(chip_split, broadcast) == (0, )
-    assert policy.classify(
-        DistributedReshardRealizationContext(
-            chip_split,
-            broadcast,
-            DistributedReshardSourceKind.FUNCTION_PARAMETER,
-            DistributedReshardUsageKind.INTERNAL,
-        )) is DistributedReshardRealization.UNSUPPORTED
+    assert fm.boxing_crossing_chip_axes(chip_split, broadcast) == (0,)
+    assert policy.classify(DistributedReshardRealizationContext(
+        chip_split,
+        broadcast,
+        DistributedReshardSourceKind.FUNCTION_PARAMETER,
+        DistributedReshardUsageKind.INTERNAL,
+    )) is DistributedReshardRealization.UNSUPPORTED
 
 
 @pytest.mark.parametrize("policy", _policies(), ids=lambda value: type(value).__name__)
@@ -77,7 +77,9 @@ def test_a_chip_crossing_reshard_of_a_parameter_is_not_realizable(policy):
         DistributedReshardSourceKind.CONSTANT,
     ),
 )
-def test_a_chip_crossing_reshard_of_addressable_storage_stays_realizable(policy, source_kind):
+def test_a_chip_crossing_reshard_of_addressable_storage_stays_realizable(
+    policy, source_kind
+):
     """Only a parameter is opaque.
 
     An internal value lives in the workspace pool and a constant in rdata, both
@@ -87,13 +89,12 @@ def test_a_chip_crossing_reshard_of_addressable_storage_stays_realizable(policy,
     """
 
     broadcast, chip_split, _ = _types()
-    assert policy.classify(
-        DistributedReshardRealizationContext(
-            chip_split,
-            broadcast,
-            source_kind,
-            DistributedReshardUsageKind.INTERNAL,
-        )) is not DistributedReshardRealization.UNSUPPORTED
+    assert policy.classify(DistributedReshardRealizationContext(
+        chip_split,
+        broadcast,
+        source_kind,
+        DistributedReshardUsageKind.INTERNAL,
+    )) is not DistributedReshardRealization.UNSUPPORTED
 
 
 @pytest.mark.parametrize("policy", _policies(), ids=lambda value: type(value).__name__)
@@ -102,13 +103,12 @@ def test_a_block_only_reshard_of_a_parameter_stays_realizable(policy):
 
     broadcast, _, block_split = _types()
     assert fm.boxing_crossing_chip_axes(block_split, broadcast) == ()
-    assert policy.classify(
-        DistributedReshardRealizationContext(
-            block_split,
-            broadcast,
-            DistributedReshardSourceKind.FUNCTION_PARAMETER,
-            DistributedReshardUsageKind.INTERNAL,
-        )) is not DistributedReshardRealization.UNSUPPORTED
+    assert policy.classify(DistributedReshardRealizationContext(
+        block_split,
+        broadcast,
+        DistributedReshardSourceKind.FUNCTION_PARAMETER,
+        DistributedReshardUsageKind.INTERNAL,
+    )) is not DistributedReshardRealization.UNSUPPORTED
 
 
 def test_exclusive_selection_cannot_alias_missing_parameter_peer_shards():
@@ -123,14 +123,13 @@ def test_exclusive_selection_cannot_alias_missing_parameter_peer_shards():
         _TENSOR,
         (fm.SBP.broadcast(), fm.SBP.broadcast()),
         _PLACEMENT,
-        exclusive=fm.SBP.exclusive((0, )),
+        exclusive=fm.SBP.exclusive((0,)),
     )
     _, chip_split, _ = _types()
-    assert fm.boxing_crossing_chip_axes(chip_split, exclusive) == (0, )
-    assert policy.classify(
-        DistributedReshardRealizationContext(
-            chip_split,
-            exclusive,
-            DistributedReshardSourceKind.FUNCTION_PARAMETER,
-            DistributedReshardUsageKind.INTERNAL,
-        )) is DistributedReshardRealization.UNSUPPORTED
+    assert fm.boxing_crossing_chip_axes(chip_split, exclusive) == (0,)
+    assert policy.classify(DistributedReshardRealizationContext(
+        chip_split,
+        exclusive,
+        DistributedReshardSourceKind.FUNCTION_PARAMETER,
+        DistributedReshardUsageKind.INTERNAL,
+    )) is DistributedReshardRealization.UNSUPPORTED

@@ -29,7 +29,9 @@ class Block(TIRStmt):
             raise IRSchemaError("TIR Block requires a non-empty name.")
         for field in ("iter_vars", "reads", "writes", "alloc_buffers"):
             object.__setattr__(self, field, tuple(getattr(self, field)))
-        if self.predicate is not None and (self.predicate.type.rank != 0 or self.predicate.type.dtype != DType.BOOL):
+        if self.predicate is not None and (
+            self.predicate.type.rank != 0 or self.predicate.type.dtype != DType.BOOL
+        ):
             raise IRSchemaError("TIR Block predicate must be a scalar bool.")
 
 

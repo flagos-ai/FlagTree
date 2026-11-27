@@ -9,9 +9,7 @@ from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 
 
 def test_matmul_n_candidate_pads_and_vectorizes_output_axis():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
@@ -19,7 +17,7 @@ def test_matmul_n_candidate_pads_and_vectorizes_output_axis():
             lhs = self.input("lhs", fm.tensor_type("bfloat16", (5, 7)), id="lhs")
             rhs = self.input("rhs", fm.tensor_type("bfloat16", (7, 10)), id="rhs")
             output = fm.F.math.matmul(lhs, rhs, name="output")
-            self.function("main", (lhs, rhs), (output, ))
+            self.function("main", (lhs, rhs), (output,))
 
     module = Graph().build()
     vectorized = Compiler().compile(module, stop_after="apply-vectorization").module

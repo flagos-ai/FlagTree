@@ -39,7 +39,9 @@ def test_internal_widening_sharded_view_costs_one_grid_synchronization():
         DistributedReshardUsageKind.INTERNAL,
     )
 
-    assert model.realization_cost(context, DistributedReshardRealization.SHARDED_VIEW) == 2200
+    assert model.realization_cost(
+        context, DistributedReshardRealization.SHARDED_VIEW
+    ) == 2200
 
 
 def test_local_subview_and_terminal_output_alias_are_zero_cost():
@@ -58,8 +60,12 @@ def test_local_subview_and_terminal_output_alias_are_zero_cost():
         DistributedReshardUsageKind.PROGRAM_OUTPUT,
     )
 
-    assert model.realization_cost(local, DistributedReshardRealization.SHARDED_VIEW) == 0
-    assert model.realization_cost(terminal, DistributedReshardRealization.SHARDED_VIEW) == 0
+    assert model.realization_cost(
+        local, DistributedReshardRealization.SHARDED_VIEW
+    ) == 0
+    assert model.realization_cost(
+        terminal, DistributedReshardRealization.SHARDED_VIEW
+    ) == 0
 
 
 def test_logical_constant_view_does_not_charge_runtime_synchronization():
@@ -72,24 +78,22 @@ def test_logical_constant_view_does_not_charge_runtime_synchronization():
         DistributedReshardUsageKind.INTERNAL,
     )
 
-    assert model.realization_cost(context, DistributedReshardRealization.SHARDED_VIEW) == 0
+    assert model.realization_cost(
+        context, DistributedReshardRealization.SHARDED_VIEW
+    ) == 0
 
 
 def test_materialized_stats_cost_depends_on_collective_fan_in():
     placement = fm.Placement((2, 8), "yx", "bb")
     tensor = fm.tensor_type("float32", (1, 1, 16, 1))
-    output = fm.DistributedType(tensor, (fm.SBP.broadcast(), ) * 4, placement)
+    output = fm.DistributedType(tensor, (fm.SBP.broadcast(),) * 4, placement)
     target = NvidiaSm90Target()
     costs = []
     for axis in (0, 1):
-        source = replace(output, partial=fm.SBP.partial((axis, ), fm.ReduceOp.SUM))
+        source = replace(output, partial=fm.SBP.partial((axis,), fm.ReduceOp.SUM))
         context = DistributedReshardRealizationContext(
-            source,
-            output,
-            DistributedReshardSourceKind.INTERNAL,
-            DistributedReshardUsageKind.INTERNAL,
+            source, output, DistributedReshardSourceKind.INTERNAL, DistributedReshardUsageKind.INTERNAL,
         )
-        costs.append(target.distributed_reshard_cost_model().realization_cost(context,
-                                                                              DistributedReshardRealization.BOXING))
+        costs.append(target.distributed_reshard_cost_model().realization_cost(context, DistributedReshardRealization.BOXING))
     assert costs[1] > costs[0]
     assert costs[0] >= target.distributed_operation_cost_model().grid_synchronization_cycles

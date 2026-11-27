@@ -25,16 +25,18 @@ def promoted_projection_type(source_type, result_type):
         return source_type
     source_dtype = source.dtype.elem_type if isinstance(source.dtype, VectorType) else source.dtype
     result_dtype = result.dtype.elem_type if isinstance(result.dtype, VectorType) else result.dtype
-    if ((source_dtype, result_dtype) not in {(DType.BFLOAT16, DType.FLOAT32), (DType.FLOAT32, DType.FLOAT32),
-                                             (DType.BFLOAT16, DType.BFLOAT16)} or source.rank != result.rank):
+    if ((source_dtype, result_dtype) not in {
+            (DType.BFLOAT16, DType.FLOAT32), (DType.FLOAT32, DType.FLOAT32),
+            (DType.BFLOAT16, DType.BFLOAT16)}
+            or source.rank != result.rank):
         return None
     operand = Node("<projection>", "builtin.var", (), source_type, attrs={"name": "<projection>"})
     try:
         if isinstance(source.dtype, VectorType) and isinstance(result.dtype, VectorType):
-            attrs = VectorizedCast.normalize_attrs({"new_type": result.dtype, "vectorize_axes": (-1, )})
-            promoted = VectorizedCast.infer_type((operand, ), attrs)
+            attrs = VectorizedCast.normalize_attrs({"new_type": result.dtype, "vectorize_axes": (-1,)})
+            promoted = VectorizedCast.infer_type((operand,), attrs)
         elif not isinstance(source.dtype, VectorType) and not isinstance(result.dtype, VectorType):
-            promoted = Cast.infer_type((operand, ), Cast.normalize_attrs({"dtype": result.dtype}))
+            promoted = Cast.infer_type((operand,), Cast.normalize_attrs({"dtype": result.dtype}))
         else:
             return None
     except IRSchemaError:

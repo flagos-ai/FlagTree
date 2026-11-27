@@ -11,12 +11,12 @@ def _add_module():
     lhs = builder.var("lhs", value_type, id="lhs")
     rhs = builder.var("rhs", value_type, id="rhs")
     output = builder.call("math.add", (lhs, rhs), value_type, id="output")
-    builder.function("main", (lhs, rhs), (output, ))
+    builder.function("main", (lhs, rhs), (output,))
     return fm.verify_module(builder.build(entry="main"))
 
 
 def test_unknown_cost_factors_are_not_encoded_as_zero():
-    cost = fm.OpCost(notes=("not-modeled", ))
+    cost = fm.OpCost(notes=("not-modeled",))
 
     assert cost.kind is fm.CostKind.UNKNOWN
     assert cost.flops is None
@@ -43,7 +43,7 @@ def test_known_local_factors_remain_partial_until_every_factor_is_proven():
 
 
 def test_exact_zero_requires_an_explicit_contract():
-    cost = fm.OpCost.exact_zero(notes=("alias-only", ))
+    cost = fm.OpCost.exact_zero(notes=("alias-only",))
 
     assert cost.kind is fm.CostKind.EXACT
     assert cost.is_complete

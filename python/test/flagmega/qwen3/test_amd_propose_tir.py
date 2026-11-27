@@ -21,12 +21,16 @@ AMD_TARGETS = ("amd-gfx1100", "amd-gfx1201")
 def test_qwen3_bf16_reaches_propose_tir_on_amd(target_name):
     module = import_qwen3_model(full_checkpoint(num_hidden_layers=2))
 
-    result = Compiler(CompileOptions(target=target_name)).compile(module, stop_after="propose-tir").module
+    result = Compiler(CompileOptions(target=target_name)).compile(
+        module, stop_after="propose-tir"
+    ).module
 
     assert result.stage == "selected_tir_variants"
 
     points = list(result.selection_points)
     assert points
     empty = [point.id for point in points if not point.candidates]
-    assert not empty, (f"{target_name}: selection points with no capability-supported "
-                       f"candidate: {empty}")
+    assert not empty, (
+        f"{target_name}: selection points with no capability-supported "
+        f"candidate: {empty}"
+    )

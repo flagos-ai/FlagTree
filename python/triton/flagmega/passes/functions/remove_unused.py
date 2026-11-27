@@ -14,7 +14,7 @@ from triton.flagmega.passes.functions.graph import function_nodes
 def remove_unused_functions(module: IRModule) -> IRModule:
     """Keep exactly the graph program reachable from ``module.entry``.
 
-    This is the flat-IR counterpart of reference ``RemoveUnusedFunctions``.  A
+    This is the flat-IR counterpart of nncase ``RemoveUnusedFunctions``.  A
     FlagMega module has one executable entry; graph functions not referenced
     by that entry and nodes not belonging to a retained function are dead
     program state, not independent compilation roots.
@@ -27,7 +27,9 @@ def remove_unused_functions(module: IRModule) -> IRModule:
 
     function_map = module.function_map
     if module.entry not in function_map:
-        raise IRVerificationError(f"Entry function @{module.entry} is not defined.", stage=module.stage)
+        raise IRVerificationError(
+            f"Entry function @{module.entry} is not defined.", stage=module.stage
+        )
 
     reachable_functions: set[str] = set()
     pending = [module.entry]
@@ -52,15 +54,35 @@ def remove_unused_functions(module: IRModule) -> IRModule:
                 )
             pending.append(callee)
 
-    functions = tuple(function for function in module.functions if function.name in reachable_functions)
-    live_nodes = {node.id for function in functions for node in function_nodes(module, function)}
+    functions = tuple(
+        function
+        for function in module.functions
+        if function.name in reachable_functions
+    )
+    live_nodes = {
+        node.id
+        for function in functions
+        for node in function_nodes(module, function)
+    }
     nodes = tuple(node for node in module.nodes if node.id in live_nodes)
-    points = tuple(point for point in module.selection_points if point.owner is None or point.owner in live_nodes)
+    points = tuple(
+        point
+        for point in module.selection_points
+        if point.owner is None or point.owner in live_nodes
+    )
     point_ids = {point.id for point in points}
-    selections = tuple(record for record in module.selections if record.point_id in point_ids)
+    selections = tuple(
+        record
+        for record in module.selections
+        if record.point_id in point_ids
+    )
 
-    if (nodes == module.nodes and functions == module.functions and points == module.selection_points
-            and selections == module.selections):
+    if (
+        nodes == module.nodes
+        and functions == module.functions
+        and points == module.selection_points
+        and selections == module.selections
+    ):
         return module
     return replace(
         module,

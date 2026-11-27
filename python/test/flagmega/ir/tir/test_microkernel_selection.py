@@ -11,17 +11,19 @@ from triton.flagmega.errors import CodegenError, IRSchemaError
 from triton.flagmega.ir.tir.serialization import tir_from_data, tir_to_data
 
 
-def _dispatch(*, microkernel: fm.TIRMicroKernelSelection | None = None) -> fm.KernelDispatch:
+def _dispatch(
+    *, microkernel: fm.TIRMicroKernelSelection | None = None
+) -> fm.KernelDispatch:
     return fm.T.kernel_dispatch(
         semantic_op="ntt.packed_qkv_parallel_linear_fused_rhs",
         semantic_candidate="ntt.packed_qkv_parallel_linear",
         arguments=("input", "weight"),
-        outputs=("output", ),
+        outputs=("output",),
         semantic_parameters={"rhs_layout": "k_major"},
         semantic_facts={"m": 1, "k": 2048, "n": 6144},
         microkernel=microkernel,
         reads=("input", "weight"),
-        writes=("output", ),
+        writes=("output",),
     )
 
 
@@ -37,30 +39,34 @@ def _module(dispatch: fm.KernelDispatch) -> fm.IRModule:
             fm.T.prim_parameter("weight", weight_type, fm.T.PrimParameterRole.INPUT),
             fm.T.prim_parameter("output", output_type, fm.T.PrimParameterRole.OUTPUT),
         ),
-        fm.T.sequential((dispatch, )),
-        fm.T.return_((fm.T.return_binding(fm.T.value_ref("output", output_type), "output"), )),
+        fm.T.sequential((dispatch,)),
+        fm.T.return_((fm.T.return_binding(fm.T.value_ref("output", output_type), "output"),)),
     )
     builder = fm.IRBuilder(dialect="semantic_tir", stage="tir_canonicalized")
     source = builder.var("source", input_type, id="source")
-    weight = builder.weight("weight", weight_type, source="weights.safetensors", key="weight", id="weight")
+    weight = builder.weight(
+        "weight", weight_type, source="weights.safetensors", key="weight", id="weight"
+    )
     builder.prim_function(function)
-    result = builder.call("tir.call", (source, weight), output_type, id="result", attrs={"callee": "packed_qkv"})
-    builder.function("main", (source, ), (result, ))
+    result = builder.call(
+        "tir.call", (source, weight), output_type, id="result", attrs={"callee": "packed_qkv"}
+    )
+    builder.function("main", (source,), (result,))
     return builder.build(
         entry="main",
         selection_points=(fm.SelectionPoint(
             "tir.result",
             "tir",
-            (fm.Candidate("ntt.packed_qkv_parallel_linear"), ),
+            (fm.Candidate("ntt.packed_qkv_parallel_linear"),),
             "ntt.packed_qkv_parallel_linear",
             "result",
-        ), ),
+        ),),
         selections=(fm.SelectionRecord(
             "tir.result",
             "ntt.packed_qkv_parallel_linear",
             "default-policy",
             "test",
-        ), ),
+        ),),
     )
 
 
@@ -71,7 +77,7 @@ def _microkernel(implementation: str = "triton.packed_qkv.blocked") -> fm.TIRMic
         variant="blocked",
         parameters={"block_m": 16, "block_n": 128},
         facts={"estimated_cycles": 42},
-        requires=("tensor_core", ),
+        requires=("tensor_core",),
     )
 
 
@@ -91,14 +97,14 @@ def test_legacy_dispatch_constructor_upgrades_target_data():
         semantic_op="ntt.matmul",
         candidate="triton.matmul.blocked",
         arguments=("lhs", "rhs"),
-        outputs=("output", ),
+        outputs=("output",),
         parameters={"family": "matmul", "variant": "blocked", "block_m": 16},
         facts={"requires": "tensor_core", "estimated_cycles": 7},
     )
 
     assert dispatch.semantic_candidate == "triton.matmul.blocked"
     assert dispatch.microkernel is not None
-    assert dispatch.microkernel.requires == ("tensor_core", )
+    assert dispatch.microkernel.requires == ("tensor_core",)
     assert dispatch.candidate == "triton.matmul.blocked"
     assert dispatch.parameters["block_m"] == 16
 
@@ -120,7 +126,7 @@ def test_split_tir_data_round_trip_and_legacy_data_upgrade():
         "facts": {"requires": "tensor_core"},
     })
     assert legacy.microkernel is not None
-    assert legacy.microkernel.requires == ("tensor_core", )
+    assert legacy.microkernel.requires == ("tensor_core",)
 
 
 def test_editable_python_round_trip_exposes_both_selection_layers(tmp_path: Path):

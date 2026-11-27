@@ -10,6 +10,7 @@ from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType
 from triton.flagmega.runtime import load
 
+
 IMPLEMENTATION = "tir.qkv_parallel_linear.packed_gemv_smem_pipeline"
 
 
@@ -36,11 +37,9 @@ def test_masked_tile_keeps_real_rhs_shape_in_the_tensor_map(packed_qkv_simt_pipe
     monkeypatch.setitem(_FAMILY_ENCODERS, "qkv_parallel_linear", capture)
     describe_tir_package(packed_qkv_simt_pipeline_module)
     raw, = captured
-    raw = {
-        **raw, "parameters": {**raw["parameters"], "block_n": 64, "block_k": 256, "masked_n_tail": True},
-        "shared_workspaces": ({**raw["shared_workspaces"][0], "shape":
-                               (2, 1, 8, 16, 2, 64)}, raw["shared_workspaces"][1])
-    }
+    raw = {**raw, "parameters": {**raw["parameters"], "block_n": 64, "block_k": 256, "masked_n_tail": True},
+           "shared_workspaces": ({**raw["shared_workspaces"][0], "shape": (2, 1, 8, 16, 2, 64)},
+                                  raw["shared_workspaces"][1])}
     call = _qkv_parallel_linear_call(raw)
     request = call["host_tensor_descriptor_requests"][0]
     assert call["block_n"] == 64
@@ -62,15 +61,12 @@ def test_simt_qkv_matches_three_independent_matmuls(tmp_path, packed_qkv_simt_pi
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 is required")
     generator = torch.Generator().manual_seed(280)
-    weights = {
-        name: torch.randn((2048, n), generator=generator, dtype=torch.bfloat16) / 32
-        for name, n in (("q_weight", 2048), ("k_weight", 1024), ("v_weight", 1024))
-    }
-    checkpoint = MemoryCheckpoint(
-        {}, {name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
-             for name, value in weights.items()}, weights)
-    artifact = write_artifact(packed_qkv_simt_pipeline_module, tmp_path / "qkv", target="nvidia-sm90",
-                              checkpoint=checkpoint, emit_executable=True)
+    weights = {name: torch.randn((2048, n), generator=generator, dtype=torch.bfloat16) / 32
+               for name, n in (("q_weight", 2048), ("k_weight", 1024), ("v_weight", 1024))}
+    checkpoint = MemoryCheckpoint({}, {
+        name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory") for name, value in weights.items()
+    }, weights)
+    artifact = write_artifact(packed_qkv_simt_pipeline_module, tmp_path / "qkv", target="nvidia-sm90", checkpoint=checkpoint, emit_executable=True)
     runtime = load(artifact, device="cuda:0")
     value = torch.randn((1, 2048), generator=generator, dtype=torch.bfloat16).cuda() / 8
     outputs = tuple(torch.empty((1, n), dtype=torch.bfloat16, device="cuda") for n in (2048, 1024, 1024))

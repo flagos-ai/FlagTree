@@ -11,8 +11,12 @@ def _packed_matmul_module() -> fm.IRModule:
     weight_type = fm.tensor_type(fm.vector_type("float8_e4m3fn", (2, 16)), [1024, 32])
     scale_type = fm.tensor_type("float32", [8, 8])
     value = builder.var("value", value_type, id="value")
-    weight = builder.weight("weight", weight_type, source="unit.safetensors", key="weight", id="weight")
-    scale = builder.weight("scale", scale_type, source="unit.safetensors", key="scale", id="scale")
+    weight = builder.weight(
+        "weight", weight_type, source="unit.safetensors", key="weight", id="weight"
+    )
+    scale = builder.weight(
+        "scale", scale_type, source="unit.safetensors", key="scale", id="scale"
+    )
     output = builder.call(
         "math.packed_block_scaled_matmul",
         (value, weight, scale),
@@ -26,7 +30,7 @@ def _packed_matmul_module() -> fm.IRModule:
             "packed_layout": "n_major_k_packed",
         },
     )
-    builder.function("main", (value, ), (output, ))
+    builder.function("main", (value,), (output,))
     return fm.verify_module(builder.build(entry="main"))
 
 
@@ -43,11 +47,10 @@ def test_lower_tir_preserves_mesh_kernel_types_and_reshard_program():
     assert launch["grid_mesh"]["hierarchy_levels"] == "bb"
     assert distribution["schema"] == "flagmega.tir-distribution/v1"
     assert distribution["adapters"]
-    assert {value["op"]
-            for value in distribution["adapters"]} == {
-                "distributed.sharded_view",
-                "distributed.boxing",
-            }
+    assert {value["op"] for value in distribution["adapters"]} == {
+        "distributed.sharded_view",
+        "distributed.boxing",
+    }
     assert kernel_distribution["placement"] == launch["grid_mesh"]
     assert kernel_distribution["input_types"]
     assert kernel_distribution["output_type"] is not None
@@ -61,5 +64,7 @@ def test_distribution_lowering_round_trips_as_editable_python_ir(tmp_path):
     loaded = fm.load_module(checkpoint)
     assert loaded.semantic_hash == result.semantic_hash
     assert fm.kernel_dispatch_for_call(
-        loaded, loaded.node_map["output"]).parameters["distribution"] == (fm.kernel_dispatch_for_call(
-            result, result.node_map["output"]).parameters["distribution"])
+        loaded, loaded.node_map["output"]
+    ).parameters["distribution"] == (
+        fm.kernel_dispatch_for_call(result, result.node_map["output"]).parameters["distribution"]
+    )

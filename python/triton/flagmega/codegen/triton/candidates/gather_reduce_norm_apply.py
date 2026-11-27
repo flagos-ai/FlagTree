@@ -21,7 +21,9 @@ class GatherReduceNormApplySemanticTIRCandidateProvider:
         if node.op not in self.op_names:
             return None
         candidate = Candidate("semantic.ntt.gather_reduce_norm_apply", {}, {})
-        return TritonCandidateProposal((candidate, ), candidate.id, selection_kind="semantic_tir")
+        return TritonCandidateProposal(
+            (candidate,), candidate.id, selection_kind="semantic_tir"
+        )
 
 
 __all__ = ["GatherReduceNormApplySemanticTIRCandidateProvider"]

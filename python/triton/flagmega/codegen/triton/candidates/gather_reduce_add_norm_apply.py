@@ -10,7 +10,8 @@ from math import prod
 from triton.flagmega.ir import DistributedType, ReduceOp, TupleType
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.ops.ntt.add_norm_stats import (
-    can_materialize_sum_partial, )
+    can_materialize_sum_partial,
+)
 
 from .core import TritonCandidateContext, TritonCandidateProposal
 
@@ -32,12 +33,17 @@ class GatherReduceAddNormApplyCandidateProvider:
         source_type = context.module.node_map[node.inputs[0]].type
         addend_type = context.module.node_map[node.inputs[1]].type
         value_type, norm_output_type = node.type.fields
-        if (not isinstance(source_type, DistributedType) or source_type.partial is None
-                or source_type.partial.reduce_op is not ReduceOp.SUM or not source_type.partial.axes
-                or addend_type != value_type or not can_materialize_sum_partial(source_type, value_type)
-                or not isinstance(value_type, DistributedType) or not isinstance(norm_output_type, DistributedType)
-                or replace(norm_output_type, tensor=replace(norm_output_type.tensor,
-                                                            dtype=value_type.tensor.dtype)) != value_type):
+        if (
+            not isinstance(source_type, DistributedType)
+            or source_type.partial is None
+            or source_type.partial.reduce_op is not ReduceOp.SUM
+            or not source_type.partial.axes
+            or addend_type != value_type
+            or not can_materialize_sum_partial(source_type, value_type)
+            or not isinstance(value_type, DistributedType)
+            or not isinstance(norm_output_type, DistributedType)
+            or replace(norm_output_type, tensor=replace(norm_output_type.tensor, dtype=value_type.tensor.dtype)) != value_type
+        ):
             return None
         value = tensor_of(value_type)
         axis = int(node.attrs["axis"])
@@ -49,7 +55,9 @@ class GatherReduceAddNormApplyCandidateProvider:
         placement = value_type.placement
         partial_axes = tuple(source_type.partial.axes)
         owner_count = prod(placement.hierarchy)
-        partial_owner_count = prod(placement.hierarchy[index] for index in partial_axes)
+        partial_owner_count = prod(
+            placement.hierarchy[index] for index in partial_axes
+        )
         implementations = context.implementations(
             "gather_reduce_add_norm_apply",
             reduction="sum",
@@ -57,8 +65,12 @@ class GatherReduceAddNormApplyCandidateProvider:
             supports_mean=True,
             outer_rows="batched",
         )
-        implementations = tuple(implementation for implementation in implementations
-                                if context.cooperative_grid or "cooperative_grid" not in implementation.requires)
+        implementations = tuple(
+            implementation
+            for implementation in implementations
+            if context.cooperative_grid
+            or "cooperative_grid" not in implementation.requires
+        )
         candidates = tuple(
             context.configure_implementation(
                 implementation,
@@ -75,7 +87,9 @@ class GatherReduceAddNormApplyCandidateProvider:
                     "private_norm_stats_workspace": True,
                     "placement_owner_count": owner_count,
                 },
-            ) for implementation in implementations)
+            )
+            for implementation in implementations
+        )
         if not candidates:
             return None
         return TritonCandidateProposal(

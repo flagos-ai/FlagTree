@@ -20,7 +20,7 @@ def load_tokenizer(checkpoint, backend):
     generation = checkpoint / "generation_config.json"
     generation = json.loads(generation.read_text()) if generation.exists() else {}
     eos = generation.get("eos_token_id", config.get("eos_token_id", tokenizer.eos_token_id))
-    eos = () if eos is None else ((eos, ) if isinstance(eos, int) else tuple(eos))
+    eos = () if eos is None else ((eos,) if isinstance(eos, int) else tuple(eos))
     return tokenizer, eos
 
 
@@ -36,7 +36,8 @@ class TextStream:
 
     def put(self, token):
         self.tokens.append(token)
-        self.text = self.tokenizer.decode(self.tokens, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+        self.text = self.tokenizer.decode(self.tokens, skip_special_tokens=True,
+                                           clean_up_tokenization_spaces=False)
         boundary = max(self.text.rfind(" "), self.text.rfind("\n")) + 1
         # CJK text does not generally delimit words with spaces.
         if self.text and ("\u4e00" <= self.text[-1] <= "\u9fff"):
@@ -52,7 +53,6 @@ class TextStream:
 
 
 class ChatSession:
-
     def __init__(self, engine, tokenizer, *, system_prompt=None, template_kwargs=None):
         self.engine = engine
         self.tokenizer = tokenizer
@@ -73,8 +73,8 @@ class ChatSession:
                                                     **self.template_kwargs)
         tokenization_ms = (time.perf_counter() - started) * 1000
         stream = TextStream(self.tokenizer, write)
-        result = self.engine.generate(prompt, max_new_tokens=max_new_tokens, on_token=stream.put, started_at=started,
-                                      tokenization_ms=tokenization_ms)
+        result = self.engine.generate(prompt, max_new_tokens=max_new_tokens, on_token=stream.put,
+                                      started_at=started, tokenization_ms=tokenization_ms)
         stream.finish()
         # Commit only a completed turn. The next template is compared by exact
         # token prefix, including any changed assistant suffix or special tokens.

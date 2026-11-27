@@ -18,13 +18,12 @@ MODE = "exp_grouped_reciprocal"
 
 
 def module(*, rows=3, experts=256, k=8):
-
     class Graph(fm.Module):
-
         def forward(self):
             logits = self.input("logits", fm.tensor_type("float32", (rows, experts)), id="logits")
-            route = fm.F.nn.staged_routing(logits, fm.F.builtin.none(), k=k, index_dtype="int32", arithmetic=MODE)
-            self.function("main", (logits, ), fm.F.tensors.get_items(route, 0, 1))
+            route = fm.F.nn.staged_routing(
+                logits, fm.F.builtin.none(), k=k, index_dtype="int32", arithmetic=MODE)
+            self.function("main", (logits,), fm.F.tensors.get_items(route, 0, 1))
 
     return Graph(dialect="high_level", stage="imported", entry="main").build()
 
@@ -46,8 +45,8 @@ def test_grouped_softmax_contract_survives_edit_resume(tmp_path):
 @pytest.mark.parametrize("experts", (1, 2, 4))
 def test_grouped_softmax_short_rows_keep_selection_order(experts):
     logits = torch.zeros((1, experts))
-    weights, ids = TorchEvaluator(DictWeightResolver({})).run(module(rows=1, experts=experts, k=experts),
-                                                              {"logits": logits})
+    weights, ids = TorchEvaluator(DictWeightResolver({})).run(
+        module(rows=1, experts=experts, k=experts), {"logits": logits})
     torch.testing.assert_close(weights, torch.full_like(weights, 1. / experts), rtol=0, atol=0)
     torch.testing.assert_close(ids, torch.arange(experts, dtype=torch.int32).unsqueeze(0))
 
@@ -55,8 +54,9 @@ def test_grouped_softmax_short_rows_keep_selection_order(experts):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_grouped_softmax_routing_matches_native_cuda(tmp_path):
     logits, expected, expected_ids = gold("cuda")
-    artifact = write_artifact(Compiler().compile(module()).module, tmp_path / "artifact", target="nvidia-sm90",
-                              emit_executable=True)
+    artifact = write_artifact(
+        Compiler().compile(module()).module, tmp_path / "artifact",
+        target="nvidia-sm90", emit_executable=True)
     runtime = load(artifact, device="cuda:0")
     weights, ids = torch.empty_like(expected), torch.empty_like(expected_ids)
     try:
@@ -66,7 +66,7 @@ def test_grouped_softmax_routing_matches_native_cuda(tmp_path):
         torch.testing.assert_close(ids, expected_ids, rtol=0, atol=0)
         reports = runtime.resource_report
         if not isinstance(reports, tuple):
-            reports = (reports, )
+            reports = (reports,)
         assert all(report["spill_bytes"] == 0 for report in reports)
     finally:
         runtime.close()

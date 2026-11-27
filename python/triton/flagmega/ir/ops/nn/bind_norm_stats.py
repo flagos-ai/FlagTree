@@ -44,10 +44,14 @@ class BindNormStats(OpDefinition):
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         value = cls.value.read(inputs)
         stats_type = cls.stats.type_of(inputs)
-        expected = NormStats.infer_type((value, ), attrs)
+        expected = NormStats.infer_type((value,), attrs)
         compatible = expected == stats_type
-        if (not compatible and isinstance(expected, DistributedType) and expected.partial is not None
-                and isinstance(stats_type, DistributedType)):
+        if (
+            not compatible
+            and isinstance(expected, DistributedType)
+            and expected.partial is not None
+            and isinstance(stats_type, DistributedType)
+        ):
             compatible = replace(expected, partial=None) == stats_type
         if not compatible:
             raise IRSchemaError(
@@ -64,7 +68,7 @@ class BindNormStats(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         del node
-        return OpCost.exact_zero(notes=("normalization-statistics-binding", ))
+        return OpCost.exact_zero(notes=("normalization-statistics-binding",))
 
 
 __all__ = ["BindNormStats"]

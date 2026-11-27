@@ -17,7 +17,8 @@ def dense_subspan_offset(source_shape, shape, offsets, itemsize=1):
     """Prove dense C-order contiguity and return the byte offset."""
     if len(shape) != len(source_shape) or len(offsets) != len(shape):
         raise IRSchemaError("BufferSubspan offsets/shape must match the source rank.")
-    if any(start < 0 or size < 0 or start + size > extent for extent, size, start in zip(source_shape, shape, offsets)):
+    if any(start < 0 or size < 0 or start + size > extent
+           for extent, size, start in zip(source_shape, shape, offsets)):
         raise IRSchemaError("BufferSubspan exceeds its source extent.")
     if not prod(shape):
         return 0
@@ -85,7 +86,7 @@ class BufferSubspan(OpDefinition):
 
     @classmethod
     def cost(cls, node):
-        return OpCost(notes=("zero-copy-contiguous-subspan", ))
+        return OpCost(notes=("zero-copy-contiguous-subspan",))
 
 
 def slice_subspan_attrs(node, module):
@@ -107,7 +108,7 @@ def slice_subspan_attrs(node, module):
             offsets[axis] = indices.start if indices else 0
     attrs = {"offsets": tuple(offsets), "shape": _fixed_shape(result.shape)}
     try:
-        inferred = BufferSubspan.infer_type((source, ), attrs)
+        inferred = BufferSubspan.infer_type((source,), attrs)
     except IRSchemaError:
         return None
     return attrs if inferred == node.type else None

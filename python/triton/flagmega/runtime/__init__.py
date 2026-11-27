@@ -5,6 +5,7 @@
 from triton.flagmega.runtime.prepared import PreparedKernel, ResourceContract, prepare_jit_kernel
 from triton.flagmega.runtime.shared_readonly import SharedReadonlyPool
 from triton.flagmega.runtime.loader import load
+from triton.flagmega.runtime.speculative import SpeculativeStep, longest_greedy_prefix, speculative_step
 from triton.flagmega.runtime.lifecycle import RuntimeModule, RuntimeState
 from triton.flagmega.ir.ops.nn._kda_state import KdaState, KdaStateConfig, create_kda_state
 from triton.flagmega.ir.ops.nn._dsa_indexer_state import DsaIndexerState, DsaIndexerStateConfig, create_dsa_indexer_state
@@ -32,6 +33,9 @@ from triton.flagmega.runtime.workspace_diagnostics import (
 from triton.flagmega.runtime.tensor_descriptor import TensorDescriptorCache
 
 __all__ = [
+    "SpeculativeStep",
+    "longest_greedy_prefix",
+    "speculative_step",
     "GeneratedAddModule",
     "GeneratedElementwiseModule",
     "CompositeModelState",

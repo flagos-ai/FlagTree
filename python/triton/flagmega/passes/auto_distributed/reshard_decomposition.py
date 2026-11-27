@@ -19,7 +19,7 @@ def get_partial_reduce_scatter_intermediates(
     source: DistributedType,
     target: DistributedType,
 ) -> tuple[DistributedType, ...]:
-    """Port the reference ``DistributedReshardDecomposition`` exactly at type level.
+    """Port nncase's ``DistributedReshardDecomposition`` exactly at type level.
 
     A partial-to-materialized transition may discharge some placement axes
     directly into the target split.  Any remaining partial axes can first be
@@ -29,8 +29,12 @@ def get_partial_reduce_scatter_intermediates(
     """
 
     partial = source.partial
-    if (partial is None or target.partial is not None or source.tensor != target.tensor
-            or source.placement != target.placement):
+    if (
+        partial is None
+        or target.partial is not None
+        or source.tensor != target.tensor
+        or source.placement != target.placement
+    ):
         return ()
     remaining = _validate_partial_transition(source, target, partial)
     if not remaining:
@@ -39,7 +43,9 @@ def get_partial_reduce_scatter_intermediates(
     for placement_axis in remaining:
         divisor *= source.placement.hierarchy[placement_axis]
     values: list[DistributedType] = []
-    for tensor_axis, (source_policy, target_policy) in enumerate(zip(source.axis_policies, target.axis_policies)):
+    for tensor_axis, (source_policy, target_policy) in enumerate(
+        zip(source.axis_policies, target.axis_policies)
+    ):
         if not isinstance(source_policy, SBPBroadCast) or not isinstance(target_policy, SBPBroadCast):
             continue
         policies = list(target.axis_policies)
@@ -48,7 +54,7 @@ def get_partial_reduce_scatter_intermediates(
             ceil_div(target.tensor.shape[tensor_axis], divisor),
         )
         candidate_policies = tuple(policies)
-        # The reference decomposition probes every broadcast tensor axis.  Its
+        # The nncase decomposition probes every broadcast tensor axis.  Its
         # graph can temporarily hold candidates which are rejected later by
         # DistributedUtility.IsDistributable; FlagMega validates at
         # DistributedType construction, so perform the same filter here.

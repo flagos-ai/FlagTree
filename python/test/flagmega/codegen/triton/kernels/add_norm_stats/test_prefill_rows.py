@@ -18,7 +18,6 @@ def test_prefill_residual_statistics(tmp_path, rows):
         pytest.skip("requires SM90")
 
     class Graph(fm.Module):
-
         def forward(self):
             a = self.input("a", fm.tensor_type("float32", (rows, 512)), id="a")
             b = self.input("b", fm.tensor_type("bfloat16", (rows, 512)), id="b")

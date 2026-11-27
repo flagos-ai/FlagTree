@@ -18,7 +18,7 @@ def _bufferized_schedule_module() -> fm.IRModule:
     source = builder.var("source", value_type, id="source")
     output = builder.call(
         "tir.kernel",
-        (source, ),
+        (source,),
         value_type,
         id="output",
         attrs={
@@ -29,17 +29,16 @@ def _bufferized_schedule_module() -> fm.IRModule:
             "semantic_attrs": {},
         },
     )
-    builder.function("main", (source, ), (output, ))
+    builder.function("main", (source,), (output,))
     selected = materialize_kernel_prim_functions(builder.build(entry="main"))
     plan = fm.make_buffer_plan(selected)
     bound = bind_prim_function_buffers(selected)
-    return fm.verify_module(
-        replace(
-            bound,
-            stage="bufferized_tir",
-            dialect="bufferized_tir",
-            metadata={**bound.metadata, "buffer_plan": plan.to_data()},
-        ))
+    return fm.verify_module(replace(
+        bound,
+        stage="bufferized_tir",
+        dialect="bufferized_tir",
+        metadata={**bound.metadata, "buffer_plan": plan.to_data()},
+    ))
 
 
 def test_cli_exposes_editable_ir_physical_schedule(tmp_path, capsys):
@@ -52,10 +51,14 @@ def test_cli_exposes_editable_ir_physical_schedule(tmp_path, capsys):
     result = json.loads(capsys.readouterr().out)
 
     assert result["ok"] is True
-    assert result["schedule"]["schema"] == ("flagmega.triton-function-schedule/v2")
+    assert result["schedule"]["schema"] == (
+        "flagmega.triton-function-schedule/v2"
+    )
     assert result["schedule"]["physical_strategy"] == "entry_schedule"
     assert result["runtime_binding"]["signature"] == [
         "source",
         "output",
     ]
-    assert [region["kind"] for region in result["schedule"]["regions"]] == ["local_segment"]
+    assert [
+        region["kind"] for region in result["schedule"]["regions"]
+    ] == ["local_segment"]

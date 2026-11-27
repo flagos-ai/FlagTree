@@ -1,0 +1,89 @@
+# flagmega-kernel: gdn_recurrent/r004_column_v6
+# Copyright 2026 FlagOS Contributors
+# SPDX-License-Identifier: MIT
+# H004 standalone: gate/qk -> 384 column CTAs -> head publication.
+# Reuse the faithfully pinned register core including fused libdevice.exp(g).
+{% include "kernels/gdn_recurrent/r004_reference_v4.py.jinja" %}
+{% include "kernels/gdn_recurrent/r004_norm_v6.py.jinja" %}
+
+@triton.jit
+def _r004_column_projection_v6(X, BW):
+    h = tl.program_id(0)
+    k0 = tle.gpu.set_layout(tl.arange(0,128),D)
+    acc = tl.full((),0.0,tl.float32)
+    for start in tl.range(0,5120,128):
+        k = start + k0
+        group = (k % 256) // 32
+        lane = k % 32
+        base = h*2720 + (k//256)*136
+        d = tl.load(BW.to(tl.pointer_type(tl.float16))+base//2).to(tl.float32)
+        sl = tl.load(BW+base+4+group//2)
+        sh = tl.load(BW.to(tl.pointer_type(tl.uint16))+(base+2)//2)
+        sc = ((sl >> ((group%2)*4)) & 15) | (((sh >> (group*2)) & 3)*16)
+        packed = tl.load(BW+base+8+group*16+lane%16)
+        code = tl.where(lane//16==0,packed & 15,packed >> 4)
+        cv = tl.where(code == 0, -127.0, tl.where(code == 1, -104.0, tl.where(code == 2, -83.0, tl.where(code == 3, -65.0, tl.where(code == 4, -49.0, tl.where(code == 5, -35.0, tl.where(code == 6, -22.0, tl.where(code == 7, -10.0, tl.where(code == 8, 1.0, tl.where(code == 9, 13.0, tl.where(code == 10, 25.0, tl.where(code == 11, 38.0, tl.where(code == 12, 53.0, tl.where(code == 13, 69.0, tl.where(code == 14, 89.0, 113.0)))))))))))))))
+        decoded = d * (sc.to(tl.float32)-32.0) * cv
+        value = tl.load(X+k).to(tl.float32)
+        acc += tl.sum(decoded*value,0)
+    return acc.to(tl.bfloat16).to(tl.float32)
+
+
+@triton.jit
+def _r004_column_prep_v6(QKV,X,BW,AW,ALog,DT,QN,KN,Beta,G):
+    h = tl.program_id(0)
+    # Two unchanged, independent IQ4_XS tiny projection arithmetic streams.
+    b = _r004_column_projection_v6(X,BW)
+    a = _r004_column_projection_v6(X,AW)
+    beta = tl.sigmoid(b).to(tl.bfloat16).to(tl.float32)
+    biased = a + tl.load(DT+h)
+    softplus = tl.where(biased>20.0,biased,libdevice.log1p(libdevice.exp(biased)))
+    decay_log = -libdevice.exp(tl.load(ALog+h))*softplus
+    tl.store(Beta+h,beta)
+    tl.store(G+h,decay_log)
+    # Independent complete norm replicas; no warp partial enters the tiny-dot D domain.
+    if h < 16:
+        i = tle.gpu.set_layout(tl.arange(0,128),V_T)
+        q = tl.load(QKV+h*128+i).to(tl.float32)
+        k = tl.load(QKV+2048+h*128+i).to(tl.float32)
+        qinv = 1.0/tl.maximum(tl.sqrt(norm128_v6(q)),1.e-12)
+        kinv = 1.0/tl.maximum(tl.sqrt(norm128_v6(k)),1.e-12)
+        qinv = norm_broadcast_v6(qinv)
+        kinv = norm_broadcast_v6(kinv)
+        elected = norm_warp0_v6()
+        tl.store(QN+h*128+i,q*qinv,elected)
+        tl.store(KN+h*128+i,k*kinv,elected)
+
+
+@triton.jit
+def _r004_column_y_v6(Core,Z,Norm,Y):
+    h = tl.program_id(0)
+    i = tle.gpu.set_layout(tl.arange(0,128),V_T)
+    core = tl.load(Core+h*128+i)
+    sumsq = norm128_v6(core)
+    arg = tl.inline_asm_elementwise("fma.rn.f32 $0,$1,0f3c000000,0f358637bd;",
+        constraints="=f,f", args=[sumsq], dtype=tl.float32, is_pure=True, pack=1)
+    inv = norm_broadcast_v6(tl.rsqrt(arg))
+    weight = tl.load(Norm+i)
+    z = tl.load(Z+h*128+i).to(tl.float32)
+    weighted = norm_mul_v6(norm_mul_v6(core,inv),weight)
+    pre = norm_mul_v6(weighted,z*tl.sigmoid(z))
+    tl.store(Y+h*128+i,pre.to(tl.bfloat16),norm_warp0_v6())
+
+@triton.jit
+def _r004_column_core_v6(QN,KN,QKV,Beta,G,StateParent,Layer,Core):
+    # Direct selected-parent source; no gather/clear or additional state staging.
+    selected = StateParent + Layer.to(tl.int64)*786432
+    _r004_reference_core_v4(QN,KN,QKV,Beta,G,selected,StateParent,Layer,Core)
+
+{% if render_calls is defined %}
+{% for call in render_calls if call.family == "gdn_recurrent" and call.variant == "r004_column_v6" %}
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+{% if call.phase == "core" %}
+    _r004_column_core_v6({{ call.native_arguments | join(", ") }})
+{% else %}
+    _r004_column_{{ call.phase }}_v6({{ call.native_arguments | join(", ") }})
+{% endif %}
+{% endfor %}
+{% endif %}

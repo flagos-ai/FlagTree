@@ -14,9 +14,7 @@ def _rule(name):
 
 
 def _pack_binary_module(op="add"):
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
@@ -25,8 +23,8 @@ def _pack_binary_module(op="add"):
             lhs = self.input("lhs", value_type, id="lhs")
             rhs = self.input("rhs", value_type, id="rhs")
             scalar = getattr(fm.F.math, op)(lhs, rhs, name="scalar")
-            root = fm.F.tensors.pack(scalar, (8, ), axes=(1, ), name="root")
-            self.function("main", (lhs, rhs), (root, ))
+            root = fm.F.tensors.pack(scalar, (8,), axes=(1,), name="root")
+            self.function("main", (lhs, rhs), (root,))
 
     return Graph().build()
 
@@ -55,27 +53,21 @@ def test_vectorize_binary_propagation_matches_and_rewrites_one_rule(materialize_
     [("lhs", "BinaryDevectorizeLhsPropagation"), ("rhs", "BinaryDevectorizeRhsPropagation")],
 )
 def test_one_sided_devectorize_propagation_packs_the_other_operand(
-    materialize_rewrite,
-    side,
-    rule_name,
+    materialize_rewrite, side, rule_name,
 ):
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
             vector = self.input(
-                "vector",
-                fm.tensor_type(fm.vector_type("bfloat16", (8, )), (2, 2)),
-                id="vector",
+                "vector", fm.tensor_type(fm.vector_type("bfloat16", (8,)), (2, 2)), id="vector",
             )
             scalar = self.input("scalar", fm.tensor_type("bfloat16", (2, 16)), id="scalar")
-            unpacked = fm.F.tensors.unpack(vector, axes=(1, ), name="unpacked")
+            unpacked = fm.F.tensors.unpack(vector, axes=(1,), name="unpacked")
             operands = (unpacked, scalar) if side == "lhs" else (scalar, unpacked)
             root = fm.F.math.add(*operands, name="root")
-            self.function("main", (vector, scalar), (root, ))
+            self.function("main", (vector, scalar), (root,))
 
     module = Graph().build()
     result = _rule(rule_name).apply(module.node_map["root"], module)
@@ -83,7 +75,7 @@ def test_one_sided_devectorize_propagation_packs_the_other_operand(
     assert [node.op for node in result.prefix_nodes] == ["tensors.pack", "math.vectorized_binary"]
     assert result.replacement.op == "tensors.unpack"
     packed = result.prefix_nodes[0]
-    assert packed.inputs == ("scalar", )
+    assert packed.inputs == ("scalar",)
     rewritten = materialize_rewrite(module, result)
 
     vector = torch.randn(2, 2, 8, dtype=torch.bfloat16)

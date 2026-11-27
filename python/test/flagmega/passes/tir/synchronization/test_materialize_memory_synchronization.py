@@ -22,19 +22,21 @@ def _plan():
         "prepared",
         "nested",
         "grid",
-        ("WRITE->READ", ),
+        ("WRITE->READ",),
         (MemoryRange(
             "workspace",
             "workspace:@main",
             0,
             32,
             "read",
-        ), ),
-    ), ))
+        ),),
+    ),))
 
 
 def test_plan_is_materialized_immediately_before_dependent_call():
-    result = materialize_memory_synchronization(scheduled_nested_module(), _plan())
+    result = materialize_memory_synchronization(
+        scheduled_nested_module(), _plan()
+    )
     fields = result.execution_function_map["main"].body.fields
 
     assert [type(value) for value in fields] == [
@@ -45,22 +47,30 @@ def test_plan_is_materialized_immediately_before_dependent_call():
     ]
     barrier = fields[1]
     assert barrier.scope is fm.BarrierScope.CHIP
-    assert barrier.after == ("prepared", )
+    assert barrier.after == ("prepared",)
     assert barrier.before == "nested"
-    assert barrier.ranges[0] == fm.T.synchronization_range("workspace", "workspace:@main", 0, 32, "read")
+    assert barrier.ranges[0] == fm.T.synchronization_range(
+        "workspace", "workspace:@main", 0, 32, "read"
+    )
 
 
 def test_materialized_barriers_reconstruct_the_exact_diagnostic_plan():
-    result = materialize_memory_synchronization(scheduled_nested_module(), _plan())
+    result = materialize_memory_synchronization(
+        scheduled_nested_module(), _plan()
+    )
 
     assert memory_synchronization_from_execution_functions(result) == _plan()
 
 
 def test_plan_with_non_topological_predecessor_fails_fast():
-    invalid = MemorySynchronizationPlan((SynchronizationEvent("main", "output", "nested", "grid", (), ()), ))
+    invalid = MemorySynchronizationPlan((SynchronizationEvent(
+        "main", "output", "nested", "grid", (), ()
+    ),))
 
     try:
-        materialize_memory_synchronization(scheduled_nested_module(), invalid)
+        materialize_memory_synchronization(
+            scheduled_nested_module(), invalid
+        )
     except IRVerificationError as error:
         assert "not topologically ordered" in str(error)
     else:

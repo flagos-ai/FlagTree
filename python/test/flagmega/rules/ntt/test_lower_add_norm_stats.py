@@ -13,7 +13,6 @@ from triton.flagmega.passes.norm_stats import lower_add_norm_stats
 
 
 class _Graph(fm.Module):
-
     def __init__(self, *, shared_projection=False):
         super().__init__(dialect="ntt", stage="norm_bindings_finalized", entry="main")
         self.shared_projection = shared_projection
@@ -21,8 +20,10 @@ class _Graph(fm.Module):
     def forward(self):
         lhs = self.input("lhs", fm.tensor_type("float32", (2, 8)), id="lhs")
         rhs = self.input("rhs", fm.tensor_type("float32", (4, 8)), id="rhs")
-        residual = self.input("residual", fm.tensor_type("float32", (2, 4)), id="residual")
-        projection = fm.F.math.matmul(lhs, rhs, transpose_b=True, name="projection")
+        residual = self.input(
+            "residual", fm.tensor_type("float32", (2, 4)), id="residual")
+        projection = fm.F.math.matmul(
+            lhs, rhs, transpose_b=True, name="projection")
         value = fm.F.math.add(projection, residual, name="value")
         stats = fm.F.nn.norm_stats(value, axis=-1, use_mean=False, name="stats")
         outputs = [value, stats]
@@ -63,9 +64,10 @@ def test_keeps_combine_when_matmul_result_has_another_user():
 
 
 class _PartialGraph(fm.Module):
-
     def __init__(self):
-        super().__init__(dialect="ntt", stage="norm_bindings_finalized", entry="main")
+        super().__init__(
+            dialect="ntt", stage="norm_bindings_finalized", entry="main"
+        )
 
     def forward(self):
         placement = fm.Placement((2, 2), "ab", "bb")
@@ -96,7 +98,9 @@ class _PartialGraph(fm.Module):
             ),
             id="residual",
         )
-        projection = fm.F.math.matmul(lhs, rhs, transpose_b=True, name="projection")
+        projection = fm.F.math.matmul(
+            lhs, rhs, transpose_b=True, name="projection"
+        )
         combined = fm.F.ntt.add_norm_stats(
             projection,
             residual,
@@ -104,10 +108,10 @@ class _PartialGraph(fm.Module):
             use_mean=False,
             name="combined",
         )
-        self.function("main", (lhs, rhs, residual), (combined, ))
+        self.function("main", (lhs, rhs, residual), (combined,))
 
 
-def test_keeps_partial_matmul_and_combine_as_two_tir_roles_like_reference():
+def test_keeps_partial_matmul_and_combine_as_two_tir_roles_like_nncase():
     original = _PartialGraph().build()
 
     rewritten = lower_add_norm_stats(original)
@@ -119,10 +123,11 @@ def test_keeps_partial_matmul_and_combine_as_two_tir_roles_like_reference():
 
 
 class _PackedViewGraph(fm.Module):
-
     def __init__(self, *, shared_projection: bool = False, broadcast_view: bool = False, wide: bool = False,
                  residual_roundtrip: bool = False, exported_cast: bool = False):
-        super().__init__(dialect="ntt", stage="norm_bindings_finalized", entry="main")
+        super().__init__(
+            dialect="ntt", stage="norm_bindings_finalized", entry="main"
+        )
         self.shared_projection = shared_projection
         self.broadcast_view = broadcast_view
         self.wide = wide
@@ -137,12 +142,14 @@ class _PackedViewGraph(fm.Module):
             placement,
         )
         rhs_type = fm.DistributedType(
-            fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8, 2, 8)), (4, 4)),
+            fm.tensor_type(
+                fm.VectorType(fm.DType.BFLOAT16, (8, 2, 8)), (4, 4)
+            ),
             (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, 1))),
             placement,
         )
         output_type = fm.DistributedType(
-            fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8, )), (1, 4)),
+            fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8,)), (1, 4)),
             (
                 fm.SBP.broadcast(),
                 fm.SBP.broadcast() if self.broadcast_view else fm.SBP.split_contiguous((0, 1)),
@@ -153,13 +160,13 @@ class _PackedViewGraph(fm.Module):
         rhs = self.input("rhs", rhs_type, id="rhs")
         residual_type = output_type
         if self.residual_roundtrip:
-            residual_type = replace(output_type, tensor=fm.tensor_type(fm.vector_type("float32", (4, )), (1, 8)),
-                                    axis_policies=(fm.SBP.broadcast(), fm.SBP.split_contiguous((0, 1))))
+            residual_type = replace(output_type, tensor=fm.tensor_type(fm.vector_type("float32", (4,)), (1, 8)),
+                axis_policies=(fm.SBP.broadcast(), fm.SBP.split_contiguous((0, 1))))
         residual = self.input("residual", residual_type, id="residual")
         residual_input = residual
         if self.residual_roundtrip:
-            residual = fm.F.ntt.vectorized_cast(residual, new_type=fm.vector_type("bfloat16", (8, )),
-                                                vectorize_axes=(1, ), name="rounded_residual")
+            residual = fm.F.ntt.vectorized_cast(residual, new_type=fm.vector_type("bfloat16", (8,)),
+                vectorize_axes=(1,), name="rounded_residual")
         none = fm.F.builtin.none(name="none")
         projection = fm.F.ntt.packed_matmul(
             lhs,
@@ -174,13 +181,16 @@ class _PackedViewGraph(fm.Module):
                 "selected_vector_lanes": (1, 8),
             },
         )
-        materialized = (fm.F.distributed.sharded_view(projection, output_type, name="projection_view")
-                        if self.broadcast_view else projection)
+        materialized = (
+            fm.F.distributed.sharded_view(
+                projection, output_type, name="projection_view"
+            ) if self.broadcast_view else projection
+        )
         if self.wide:
-            materialized = fm.F.ntt.vectorized_cast(materialized, new_type=fm.vector_type("float32", (4, )),
-                                                    vectorize_axes=(1, ), name="wide_projection")
-            residual = fm.F.ntt.vectorized_cast(residual, new_type=fm.vector_type("float32", (4, )),
-                                                vectorize_axes=(1, ), name="wide_residual")
+            materialized = fm.F.ntt.vectorized_cast(materialized,
+                new_type=fm.vector_type("float32", (4,)), vectorize_axes=(1,), name="wide_projection")
+            residual = fm.F.ntt.vectorized_cast(residual,
+                new_type=fm.vector_type("float32", (4,)), vectorize_axes=(1,), name="wide_residual")
         combined = fm.F.ntt.add_norm_stats(
             materialized,
             residual,
@@ -262,26 +272,22 @@ def test_addend_cast_chain_fuses_only_when_private_and_preserves_every_rounding(
     assert call.inputs[-1] == ("wide_residual" if exported else "residual")
     assert call.attrs.get("addend_cast_dtypes", ()) == (() if exported else ("bfloat16", "float32"))
     assert ("rounded_residual" in fused.node_map) is exported
-    inputs = {
-        "lhs": torch.ones(1, 64).bfloat16(), "rhs": torch.full((4, 4, 8, 2, 8), .125).bfloat16(), "residual":
-        torch.linspace(-1.01, 1.01, 32).reshape(1, 8, 4)
-    }
+    inputs = {"lhs": torch.ones(1, 64).bfloat16(), "rhs": torch.full((4, 4, 8, 2, 8), .125).bfloat16(),
+              "residual": torch.linspace(-1.01, 1.01, 32).reshape(1, 8, 4)}
     evaluator = TorchEvaluator(DictWeightResolver({}))
     torch.testing.assert_close(evaluator.run(fused, inputs), evaluator.run(original, inputs), rtol=0, atol=0)
     assert fm.load_module(fm.emit_module(fused, tmp_path / "epilogue.py")).semantic_hash == fused.semantic_hash
 
 
 def test_forms_and_lowers_f32_projection_through_contiguous_lane_view():
-
     class Graph(fm.Module):
-
         def forward(self):
             lhs = self.input("lhs", fm.tensor_type("bfloat16", (1, 64)))
             rhs = self.input("rhs", fm.tensor_type(fm.vector_type("bfloat16", (8, 2, 8)), (4, 4)))
-            residual = self.input("residual", fm.tensor_type(fm.vector_type("float32", (4, )), (1, 8)))
+            residual = self.input("residual", fm.tensor_type(fm.vector_type("float32", (4,)), (1, 8)))
             none = fm.F.builtin.none()
             projection = fm.F.ntt.packed_matmul(lhs, rhs, none, none, output_data_type="float32", name="projection")
-            view = fm.F.tensors.bitcast(projection, fm.vector_type("float32", (4, )), name="view")
+            view = fm.F.tensors.bitcast(projection, fm.vector_type("float32", (4,)), name="view")
             value = fm.F.math.vectorized_binary(view, residual, binary_op="add", name="value")
             stats = fm.F.nn.norm_stats(value, axis=-1, use_mean=False)
             self.function("main", (lhs, rhs, residual), (value, stats))
@@ -295,10 +301,8 @@ def test_forms_and_lowers_f32_projection_through_contiguous_lane_view():
     assert "view" not in result.node_map
     assert "projection" not in result.node_map
     generator = torch.Generator().manual_seed(9)
-    feeds = {
-        "lhs": torch.randn(1, 64, generator=generator).bfloat16(), "rhs":
-        torch.randn(4, 4, 8, 2, 8,
-                    generator=generator).bfloat16(), "residual": torch.randn(1, 8, 4, generator=generator)
-    }
+    feeds = {"lhs": torch.randn(1, 64, generator=generator).bfloat16(),
+             "rhs": torch.randn(4, 4, 8, 2, 8, generator=generator).bfloat16(),
+             "residual": torch.randn(1, 8, 4, generator=generator)}
     evaluator = TorchEvaluator(DictWeightResolver({}))
     torch.testing.assert_close(evaluator.run(result, feeds), evaluator.run(original, feeds), rtol=0, atol=0)

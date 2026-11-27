@@ -40,9 +40,8 @@ def test_complete_root_pipeline_projects_its_resources(compile_pipeline_module):
     pipeline = pipelines[0]
     schedule = pipeline["pipeline_schedule"]
     assert len(schedule["stages"]) == 1
-    assert schedule["stages"][0]["call"] in next(k["calls"]
-                                                 for k in package["kernels"]
-                                                 if k["symbol"] == pipeline["symbol"])
+    assert schedule["stages"][0]["call"] in next(
+        k["calls"] for k in package["kernels"] if k["symbol"] == pipeline["symbol"])
     assert "tle.gpu.warp_specialize(" in source
     assert source.count("_flagmega_shared_arena = tle.gpu.alloc(") == 1
     assert all(not p.get("pipeline_schedule") for p in programs if p is not pipeline)
@@ -60,11 +59,9 @@ def test_root_pipeline_program_runs_with_strict_resources(tmp_path, compile_pipe
     module = compile_pipeline_module(reusable=reusable, wrapper_depth=wrapper_depth, program_dag=True)
     weight = ((torch.arange(128)[:, None] + torch.arange(128)[None, :]) % 7 - 3).bfloat16()
     weights = {"first_weight": weight, "second_weight": weight.roll(1, 0)} if reusable else {"weight": weight}
-    checkpoint = MemoryCheckpoint({},
-                                  {name: TensorInfo(name, DType.BFLOAT16, (128, 128), "memory")
-                                   for name in weights}, weights)
-    artifact = write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", checkpoint=checkpoint,
-                              emit_executable=True)
+    checkpoint = MemoryCheckpoint({}, {name: TensorInfo(name, DType.BFLOAT16, (128, 128), "memory")
+                                       for name in weights}, weights)
+    artifact = write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", checkpoint=checkpoint, emit_executable=True)
     runtime = load(artifact, device="cuda:0")
     try:
         value = ((torch.arange(128) % 11 - 5) / 128).reshape(1, 128).bfloat16().cuda()

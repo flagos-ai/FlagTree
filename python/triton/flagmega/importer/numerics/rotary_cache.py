@@ -13,4 +13,4 @@ def native_rope_inverse_frequencies(head_dim: int, theta: float) -> tuple[float,
     # first, then its reciprocal in CPU FP32. Exponentiating a negative
     # logarithm on the device introduces different rounded coefficients.
     exponents = torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim
-    return tuple((1.0 / (theta**exponents)).tolist())
+    return tuple((1.0 / (theta ** exponents)).tolist())

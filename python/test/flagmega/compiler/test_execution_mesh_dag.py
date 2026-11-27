@@ -20,41 +20,31 @@ from triton.flagmega.targets import NvidiaSm90Target
 
 
 def compile_mesh_fork():
-
     class Graph(fm.Module):
-
         def forward(self):
-            kind = fm.tensor_type('float32', (4096, ))
+            kind = fm.tensor_type('float32', (4096,))
             x, y = self.input('x', kind, id='x'), self.input('y', kind, id='y')
             a = fm.F.math.add(x, y, name='prefix', metadata={'execution_mesh': (4, 8)})
             b = fm.F.math.add(a, x, name='left', metadata={'execution_mesh': (8, 16)})
-            c = fm.F.math.mul(
-                a, y, name='right',
-                metadata={'execution_mesh': '*', 'kernel_program_kind': 'ordinary', 'kernel_num_warps': 4})
+            c = fm.F.math.mul(a, y, name='right', metadata={'execution_mesh': '*',
+                'kernel_program_kind': 'ordinary', 'kernel_num_warps': 4})
             d = fm.F.math.add(b, c, name='join', metadata={'execution_mesh': (4, 16)})
-            self.function('main', (x, y), (d, ))
+            self.function('main', (x, y), (d,))
 
     class Target(NvidiaSm90Target):
-
         def select_microkernels(self, module):
             module = super().select_microkernels(module)
             kernels = selected_kernel_nodes(module)
-            module = replace(
-                module, metadata={
-                    **module.metadata, 'launch_contract':
-                    {**module.metadata.get('launch_contract', {}), **self.plan_launch(module, kernels)}
-                })
+            module = replace(module, metadata={**module.metadata,
+                'launch_contract': {**module.metadata.get('launch_contract', {}),
+                                    **self.plan_launch(module, kernels)}})
             module = plan_execution_programs(module, self, kernels)
             requests = module.metadata['kernel_program_partition']
             assert len(requests) == 4
-            parents = ((), (0, ), (0, ), (1, 2))
-            return replace(
-                module, metadata={
-                    **module.metadata, 'kernel_program_partition':
-                    tuple({**request, 'depends_on': tuple(requests[p]['symbol']
-                                                          for p in dependencies)}
-                          for request, dependencies in zip(requests, parents, strict=True))
-                })
+            parents = ((), (0,), (0,), (1, 2))
+            return replace(module, metadata={**module.metadata, 'kernel_program_partition': tuple(
+                {**request, 'depends_on': tuple(requests[p]['symbol'] for p in dependencies)}
+                for request, dependencies in zip(requests, parents, strict=True))})
 
     compiler = Compiler()
     compiler.target = Target()
@@ -89,14 +79,14 @@ def test_mesh_dag_device_independent_numerics_and_cuda_graph(tmp_path):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip('requires SM90')
     module = compile_mesh_fork()
-    runtime = load(write_artifact(module, tmp_path / 'artifact', target='nvidia-sm90', emit_executable=True),
-                   device='cuda:0')
+    runtime = load(write_artifact(module, tmp_path / 'artifact', target='nvidia-sm90',
+        emit_executable=True), device='cuda:0')
     x = torch.linspace(-1., 1., 4096, device='cuda')
     y = torch.linspace(.25, .75, 4096, device='cuda')
     output = torch.full_like(x, float('nan'))
     try:
         arguments = tuple(output if s['role'] == 'result' else {'x': x, 'y': y}[s['value']]
-                          for s in runtime.external_arguments)
+            for s in runtime.external_arguments)
         Runtime.prepare(runtime, *arguments)
         assert runtime._program_dag is not None
         assert len(runtime._program_dag.streams) == 2

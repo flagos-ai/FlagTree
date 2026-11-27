@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import fields, is_dataclass
-from typing import Mapping
+from typing import Any, Mapping
 
 from triton.flagmega.ir.dim_expr import DimExpr, Dimension
 from triton.flagmega.ir.model import (

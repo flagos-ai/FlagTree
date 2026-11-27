@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from triton.flagmega.errors import EvaluationError, IRSchemaError
-from triton.flagmega.ir.model import RefType, tensor_type
+from triton.flagmega.ir.model import RefType, TensorType, tensor_type
 from triton.flagmega.ir.types import DType
 
 
@@ -36,8 +36,9 @@ class DsaIndexerStateConfig:
     @property
     def ref_type(self):
         return RefType("dsa_indexer_state", (
-            ("packed_states", tensor_type(DType.BFLOAT16, (len(self.layer_ids), *self.packed_shape))),
-            ("seq_lens", tensor_type(DType.INT32, (1, ))),
+            ("packed_states", tensor_type(DType.BFLOAT16,
+                                            (len(self.layer_ids), *self.packed_shape))),
+            ("seq_lens", tensor_type(DType.INT32, (1,))),
         ))
 
 
@@ -65,7 +66,7 @@ class DsaIndexerState:
         expected = (len(self.config.layer_ids), *self.config.packed_shape)
         if tuple(self.packed_states.shape) != expected or self.packed_states.dtype != torch.bfloat16:
             raise EvaluationError(f"DSA packed state must be BF16{expected}.")
-        if tuple(self.seq_lens.shape) != (1, ) or self.seq_lens.dtype != torch.int32:
+        if tuple(self.seq_lens.shape) != (1,) or self.seq_lens.dtype != torch.int32:
             raise EvaluationError("DSA seq_lens must be int32[1].")
         if dynamic_values and not 0 <= self.sequence_length <= self.config.max_sequence_length:
             raise EvaluationError("DSA sequence length is outside cache capacity.")
@@ -73,7 +74,7 @@ class DsaIndexerState:
     def append(self, value, *, layer_id, advance_sequence=False):
         self.validate()
         index = self._index(layer_id)
-        if value.ndim != 2 or tuple(value.shape[1:]) != (2 * self.config.index_head_dim + 1, ):
+        if value.ndim != 2 or tuple(value.shape[1:]) != (2 * self.config.index_head_dim + 1,):
             raise EvaluationError("DSA packed updates must be [tokens, 2*index_head_dim+1].")
         tokens = int(value.shape[0])
         begin = self.sequence_length
@@ -97,7 +98,7 @@ def create_dsa_indexer_state(config: DsaIndexerStateConfig, *, device="cpu"):
     import torch
     state = DsaIndexerState(
         torch.zeros((len(config.layer_ids), *config.packed_shape), dtype=torch.bfloat16, device=device),
-        torch.zeros((1, ), dtype=torch.int32, device=device), config)
+        torch.zeros((1,), dtype=torch.int32, device=device), config)
     state.validate()
     return state
 

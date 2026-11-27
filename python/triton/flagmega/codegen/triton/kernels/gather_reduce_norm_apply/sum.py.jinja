@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: gather_reduce_norm_apply/sum platform=generic
+# flagmega-kernel: gather_reduce_norm_apply/sum platform=generic
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% macro reduce_statistic(call, offset, accumulator) %}
 for norm_partial_start in tl.range(

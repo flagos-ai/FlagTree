@@ -7,14 +7,12 @@ from triton.flagmega import ir as fm
 
 
 def test_add_norm_stats_has_a_producer_independent_public_identity(tmp_path):
-
     class Graph(fm.Module):
-
         def forward(self):
             value = self.input("value", fm.tensor_type("float32", (2, 32)))
             addend = self.input("addend", value.type)
             combined = fm.F.ntt.add_norm_stats(value, addend, axis=-1, use_mean=False, name="residual_stats")
-            self.function("main", (value, addend), (combined, ))
+            self.function("main", (value, addend), (combined,))
 
     module = fm.verify_module(Graph(dialect="high_level", stage="imported", entry="main").build())
     node = module.node_map["residual_stats"]

@@ -23,7 +23,7 @@ def test_bind_norm_stats_accepts_materialized_form_of_partial_statistics():
         placement,
     )
     value = _node("value", value_type)
-    partial = NormStats.infer_type((value, ), {"axis": -1, "use_mean": False})
+    partial = NormStats.infer_type((value,), {"axis": -1, "use_mean": False})
     assert isinstance(partial, fm.DistributedType) and partial.partial is not None
     materialized = replace(partial, partial=None)
 
@@ -36,14 +36,14 @@ def test_bind_norm_stats_accepts_materialized_form_of_partial_statistics():
 
 
 def test_bind_norm_stats_rejects_unmaterialized_partial():
-    placement = fm.Placement((8, ), "x", "b")
+    placement = fm.Placement((8,), "x", "b")
     value_type = fm.DistributedType(
         fm.tensor_type("bfloat16", [1, 64]),
-        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ))),
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,))),
         placement,
     )
     value = _node("value", value_type)
-    partial = NormStats.infer_type((value, ), {"axis": -1, "use_mean": False})
+    partial = NormStats.infer_type((value,), {"axis": -1, "use_mean": False})
     with pytest.raises(IRSchemaError, match="materialized non-partial"):
         BindNormStats.infer_type(
             (value, _node("stats", partial)),

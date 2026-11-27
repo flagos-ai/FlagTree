@@ -43,9 +43,9 @@ from triton.flagmega.ir.tir import (
     TIRTransferPipelineContract,
 )
 from triton.flagmega.targets.nvidia.gdn import (
-    gdn_large_key_implementations,
-    gdn_state_pipeline_implementations,
+    gdn_large_key_implementations, gdn_state_pipeline_implementations,
     gdn_scalar_head_gate_implementations,
+    r004_reference_implementations,
 )
 from triton.flagmega.targets.nvidia.mhc import mhc_contiguous_tf32_implementations
 from triton.flagmega.targets.nvidia.mla import mla_projection_implementations
@@ -57,16 +57,16 @@ from triton.flagmega.targets.nvidia.sparse_experts import sparse_experts_wgmma_i
 
 
 def _implementation(
-        candidate_id: str,
-        family: str,
-        variant: str,
-        parameters=None,
-        *,
-        contract=None,
-        requires=(),
-        facts=None,
-        shared_workspaces=(),
-        transfer_pipeline=None,
+    candidate_id: str,
+    family: str,
+    variant: str,
+    parameters=None,
+    *,
+    contract=None,
+    requires=(),
+    facts=None,
+    shared_workspaces=(),
+    transfer_pipeline=None,
 ) -> TritonImplementation:
     facts = dict(facts or {})
     # The decode lookup addresses the table by (token_id, feature).  The
@@ -76,14 +76,17 @@ def _implementation(
     # table needs no Boxing: the renderer indexes it with the local feature
     # coordinate.  Pinning `weight` canonical here instead obliged every chip to
     # store the whole vocabulary.
-    if (facts.get("host_tensor_descriptor") and (parameters or {}).get("descriptor_kind") != "table"):
+    if (
+        facts.get("host_tensor_descriptor")
+        and (parameters or {}).get("descriptor_kind") != "table"
+    ):
         # A single tensor map spans the canonical weight shape, so it needs a
         # canonical global base address. Make that requirement visible before
         # allocation. A descriptor table instead emits one map per resident
         # owner, so it addresses whatever storage the weight already has and
         # must not force every chip to hold the whole tensor.
         arguments = {
-            "dense_matmul": ("rhs", ),
+            "dense_matmul": ("rhs",),
             "dense_matmul_glu": ("gate_weight", "up_weight"),
         }.get(family)
         if arguments is not None:
@@ -101,14 +104,27 @@ def _implementation(
     )
 
 
+class _StandaloneAwareImplementationModel(TritonImplementationModel):
+    """Keep standalone definitions out of every ordinary provider enumeration."""
+
+    def find(self, family: str, **contract: object):
+        return tuple(
+            implementation for implementation in super().find(family, **contract)
+            if implementation.contract.get("standalone_schema") is None
+            or all(contract.get(key) == implementation.contract[key]
+                   for key in ("standalone_schema", "standalone_module"))
+        )
+
+
 def portable_triton_implementation_model() -> TritonImplementationModel:
     """Describe implemented SM90 variants without putting machine knobs in rules."""
 
-    cooperative = ("cooperative_grid", )
+    cooperative = ("cooperative_grid",)
     implementations = (
         *gdn_state_pipeline_implementations(),
         *gdn_large_key_implementations(),
         *gdn_scalar_head_gate_implementations(),
+        *r004_reference_implementations(),
         *delta_rule_implementations(),
         *portable_tensor_transform_implementations(),
         *portable_gather_implementations(),
@@ -769,7 +785,8 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
             "tir.dense_matmul.packed_k_major_threaded_fma",
             "dense_matmul",
             "packed_k_major_threaded_fma",
-            {"block_k": 1024, "tile_n": 8, "dot_lanes": 128, "values_per_lane": 8, "compute_num_warps": 4},
+            {"block_k": 1024, "tile_n": 8, "dot_lanes": 128, "values_per_lane": 8,
+             "compute_num_warps": 4},
             contract={
                 "supports_local_row_loop": True,
                 "input_kind": "packed",
@@ -782,7 +799,7 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
                 "requires_unpartitioned_reduction": True,
                 "supports_masked_output_tiles": True,
             },
-            requires=("cooperative_grid", "ptx"),
+            requires=("cooperative_grid",),
         ),
         _implementation(
             "tir.dense_matmul.packed_k_major_mma",
@@ -801,7 +818,7 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
                 "requires_unpartitioned_reduction": True,
                 "supports_masked_tiles": True,
             },
-            requires=("mma_v3", ),
+            requires=("mma_v3",),
         ),
         _implementation(
             "tir.dense_matmul.packed_k_major_gemv",
@@ -2045,67 +2062,69 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
     # typed exponential/sigmoid use the explicit VectorizedUnary operation.
     identities = {implementation.id for implementation in implementations}
     implementations += tuple(
-        replace(
-            implementation, id=implementation.id.removesuffix(".scalar") + ".typed", parameters={
-                **{
-                    key: value
-                    for key, value in implementation.parameters.items() if key != "elements_per_program"
-                }, "vector_groups": 32
-            }, contract={**implementation.contract, "vectorization_kind": "typed_elements"})
+        replace(implementation,
+                id=implementation.id.removesuffix(".scalar") + ".typed",
+                parameters={**{key: value for key, value in implementation.parameters.items()
+                               if key != "elements_per_program"}, "vector_groups": 32},
+                contract={**implementation.contract, "vectorization_kind": "typed_elements"})
         for implementation in implementations
         if implementation.family == "elementwise" and implementation.contract.get("vectorization_kind") == "scalar"
-        and implementation.contract.get("semantic_op") != "math.div" and implementation.id.removesuffix(".scalar") +
-        ".typed" not in identities)
+        and implementation.contract.get("semantic_op") != "math.div"
+        and implementation.id.removesuffix(".scalar") + ".typed" not in identities
+    )
     from .nvidia.sparse_experts import sparse_experts_pipeline_implementations
     implementations += sparse_experts_pipeline_implementations()
     from .nvidia.packed_qkv import packed_qkv_n_tiled_implementations, packed_qkv_ordered_implementations
-    implementations += packed_qkv_n_tiled_implementations(
-        next(value for value in implementations
-             if value.id == "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline"))
-    implementations += packed_qkv_ordered_implementations(
-        next(value for value in implementations
-             if value.id == "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline"))
+    implementations += packed_qkv_n_tiled_implementations(next(
+        value for value in implementations if value.id == "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline"))
+    implementations += packed_qkv_ordered_implementations(next(
+        value for value in implementations if value.id == "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline"))
     # A separate, explicit transport choice. The synchronous candidate keeps
     # its masked-row contract and remains the preference until measured.
-    staged = next(
-        value for value in implementations
-        if value.id == ("tir.dense_matmul.packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats_lhs8192"))
+    staged = next(value for value in implementations if value.id == (
+        "tir.dense_matmul.packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats_lhs8192"
+    ))
     from .nvidia.dense_lhs_staging import dense_lhs_staging_implementations
-    implementations += dense_lhs_staging_implementations(
-        next(value for value in implementations
-             if value.id == ("tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv")),
-        staged.shared_workspaces[1])
+    implementations += dense_lhs_staging_implementations(next(
+        value for value in implementations if value.id == (
+            "tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv")), staged.shared_workspaces[1])
     implementations += (replace(
         staged,
         id=staged.id + "_async",
         parameters={**staged.parameters, "lhs_copy_kind": "async"},
         requires=(*staged.requires, "async_copy"),
-    ), )
+    ),)
     attention_preferences = portable_attention_preferences()
     preferences = {
-        "mla_projection": ("tir.mla_projection.mma", ),
-        "delta_rule_gates": ("tir.delta_rule_gates.local", ),
-        "l2_normalization": ("tir.l2_normalization.local", ),
-        "delta_rule_coefficients": ("tir.delta_rule_coefficients.blockwise", ),
-        "delta_rule_log_prefix": ("tir.delta_rule_log_prefix.grouped", ),
-        "delta_rule_block_update": ("tir.delta_rule_block_update.blockwise", ),
-        "delta_rule_chunk_transfer": ("tir.delta_rule_chunk_transfer.blockwise", ),
-        "delta_rule_chunk_fixup": ("tir.delta_rule_chunk_fixup.ordered", ),
-        "delta_rule_chunked_block_update": ("tir.delta_rule_chunked_block_update.blockwise", ),
+        "mla_projection": ("tir.mla_projection.mma",),
+        "delta_rule_gates": ("tir.delta_rule_gates.local",),
+        "l2_normalization": ("tir.l2_normalization.local",),
+        "delta_rule_coefficients": ("tir.delta_rule_coefficients.blockwise",),
+        "delta_rule_log_prefix": ("tir.delta_rule_log_prefix.grouped",),
+        "delta_rule_block_update": ("tir.delta_rule_block_update.blockwise",),
+        "delta_rule_chunk_transfer": ("tir.delta_rule_chunk_transfer.blockwise",),
+        "delta_rule_chunk_fixup": ("tir.delta_rule_chunk_fixup.ordered",),
+        "delta_rule_chunked_block_update": ("tir.delta_rule_chunked_block_update.blockwise",),
         **attention_preferences,
         **portable_local_reduction_preferences(),
         **portable_normalization_preferences(),
         "block_fp8": ("tir.block_fp8.mma", "tir.block_fp8.simt"),
-        "interleaved_projection": ("tir.interleaved_projection.simt", ),
+        "interleaved_projection": ("tir.interleaved_projection.simt",),
         "matmul_glu": ("tir.matmul_glu.mma", "tir.matmul_glu.simt"),
-        "greedy_sample": ("tir.greedy_sample.distributed_argmax", ),
-        "rms_norm": ("tir.rms_norm.local", ),
-        "norm_stats": ("tir.norm_stats.local", ),
-        "norm_apply": ("tir.norm_apply.local", ),
-        "gated_norm_apply": ("tir.gated_norm_apply.local", ),
-        "gdn_convolution": ("tir.gdn_convolution.persistent", ),
-        "gdn_recurrent":
-        ("tir.gdn_recurrent.persistent", "tir.gdn_recurrent.persistent_k256", "tir.gdn_recurrent.persistent_k512"),
+        "greedy_sample": ("tir.greedy_sample.distributed_argmax",),
+        "rms_norm": ("tir.rms_norm.local",),
+        "norm_stats": (
+            "tir.norm_stats.local",
+        ),
+        "norm_apply": (
+            "tir.norm_apply.local",
+        ),
+        "gated_norm_apply": (
+            "tir.gated_norm_apply.local",
+        ),
+        "gdn_convolution": ("tir.gdn_convolution.persistent",),
+        "gdn_recurrent": ("tir.gdn_recurrent.persistent", "tir.gdn_recurrent.persistent_k256",
+                          "tir.gdn_recurrent.persistent_k512"),
         "distributed_boxing": (
             "tir.distributed_boxing.tensor_load",
             "tir.distributed_boxing.tensor_store",
@@ -2199,11 +2218,12 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
     # register-only F32 widening PostOps body. Other variants remain ineligible
     # for that contract until their own epilogue emitter supports it.
     implementations = tuple(
-        replace(implementation, contract={**implementation.contract, "supports_projection_widening_post_ops": True}
-                ) if implementation.family == "dense_matmul" and implementation.variant in
-        {"packed_k_major_gemv", "packed_tensor_descriptor_smem_pipeline_gemv"} else implementation
-        for implementation in implementations)
-    return TritonImplementationModel(implementations, preferences, "nvidia-sm90/v45")
+        replace(implementation, contract={**implementation.contract, "supports_projection_widening_post_ops": True})
+        if implementation.family == "dense_matmul" and implementation.variant in {
+            "packed_k_major_gemv", "packed_tensor_descriptor_smem_pipeline_gemv"}
+        else implementation for implementation in implementations
+    )
+    return _StandaloneAwareImplementationModel(implementations, preferences, "nvidia-sm90/v45")
 
 
 __all__ = ["portable_triton_implementation_model"]

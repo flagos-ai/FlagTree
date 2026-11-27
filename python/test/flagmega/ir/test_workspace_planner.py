@@ -84,7 +84,9 @@ def test_workspace_rejects_inplace_reuse_while_the_parameter_has_a_future_use():
     rhs = builder.call("test.unary", [source], value_type, id="rhs")
     combined = builder.call("math.add", [lhs, rhs], value_type, id="combined")
     future_lhs = builder.call("test.unary", [lhs], value_type, id="future_lhs")
-    output = builder.call("test.binary", [combined, future_lhs], value_type, id="output")
+    output = builder.call(
+        "test.binary", [combined, future_lhs], value_type, id="output"
+    )
     builder.function("main", [source], [output])
 
     plan = make_buffer_plan(builder.build(entry="main"))
@@ -104,9 +106,13 @@ def test_tuple_field_lifetime_follows_get_item_consumers():
         TupleType((value_type, value_type)),
         id="pair",
     )
-    first = builder.call("builtin.get_item", [pair], value_type, id="first", attrs={"index": 0})
+    first = builder.call(
+        "builtin.get_item", [pair], value_type, id="first", attrs={"index": 0}
+    )
     intermediate = builder.call("test.unary", [source], value_type, id="intermediate")
-    delayed = builder.call("builtin.get_item", [pair], value_type, id="delayed", attrs={"index": 1})
+    delayed = builder.call(
+        "builtin.get_item", [pair], value_type, id="delayed", attrs={"index": 1}
+    )
     output = builder.call("test.binary", [first, delayed, intermediate], value_type, id="output")
     builder.function("main", [source], [output])
 
@@ -132,10 +138,16 @@ def test_workspace_extends_a_terminal_free_span_instead_of_leaving_a_hole():
         TupleType((small_type, small_type)),
         id="pair",
     )
-    _dead_field = builder.call("builtin.get_item", [pair], small_type, id="dead_field", attrs={"index": 1})
+    dead_field = builder.call(
+        "builtin.get_item", [pair], small_type, id="dead_field", attrs={"index": 1}
+    )
     large = builder.call("test.expand", [source], large_type, id="large")
-    live_field = builder.call("builtin.get_item", [pair], small_type, id="live_field", attrs={"index": 0})
-    output = builder.call("test.join", [live_field, large], small_type, id="output")
+    live_field = builder.call(
+        "builtin.get_item", [pair], small_type, id="live_field", attrs={"index": 0}
+    )
+    output = builder.call(
+        "test.join", [live_field, large], small_type, id="output"
+    )
     builder.function("main", [source], [output])
 
     plan = make_buffer_plan(builder.build(entry="main"))

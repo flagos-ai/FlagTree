@@ -36,15 +36,15 @@ def verify_joint_resources(specs, prepared, sm_count):
         ancestors[symbol] = frozenset(parents).union(*(ancestors[p] for p in parents))
         tails[spec["stream_index"]] = symbol
         footprints[symbol] = footprint
-    totals = tuple(
-        maximum_antichain_weight(ancestors, {name: value[i]
-                                             for name, value in footprints.items()})
-        for i in range(4))
+    totals = tuple(maximum_antichain_weight(ancestors, {name: value[i] for name, value in footprints.items()})
+                   for i in range(4))
     register_limit = min(p.contract.register_file_capacity_per_sm for p in prepared)
     shared_limit = min(p.contract.shared_memory_capacity_bytes for p in prepared)
     if totals[0] > register_limit or totals[1] > shared_limit or totals[2] > 2048 or totals[3] > 32:
-        raise RuntimeContractError("Concurrent kernel programs exceed their joint SM90 residency contract: "
-                                   f"registers={totals[0]}, shared={totals[1]}, threads={totals[2]}.")
+        raise RuntimeContractError(
+            "Concurrent kernel programs exceed their joint SM90 residency contract: "
+            f"registers={totals[0]}, shared={totals[1]}, threads={totals[2]}."
+        )
     return {
         "registers": totals[0],
         "shared_bytes": totals[1],
@@ -55,7 +55,6 @@ def verify_joint_resources(specs, prepared, sm_count):
 
 
 class ProgramDAG:
-
     def __init__(self, specs, prepared, *, device, target):
         import torch
 
@@ -88,19 +87,26 @@ class ProgramDAG:
                 begin = value.data_ptr()
                 spans.append((index, begin, begin + value.numel() * value.element_size()))
         for position, (left, lo, hi) in enumerate(spans):
-            for right, other_lo, other_hi in spans[position + 1:]:
+            for right, other_lo, other_hi in spans[position + 1 :]:
                 if (left in self.mutable or right in self.mutable) and lo < other_hi and other_lo < hi:
                     raise RuntimeContractError(
-                        "Concurrent kernel programs cannot bind undeclared writable external aliases.")
+                        "Concurrent kernel programs cannot bind undeclared writable external aliases."
+                    )
 
     def launch(self, external_arguments, descriptors, *, stream=None):
         import torch
 
-        caller = (torch.cuda.current_stream(self.device) if stream is None else stream if isinstance(
-            stream, torch.cuda.Stream) else torch.cuda.ExternalStream(stream, device=self.device))
+        caller = (
+            torch.cuda.current_stream(self.device)
+            if stream is None
+            else stream
+            if isinstance(stream, torch.cuda.Stream)
+            else torch.cuda.ExternalStream(stream, device=self.device)
+        )
         if self.caller_stream is not None and self.caller_stream != caller.cuda_stream:
             raise RuntimeContractError(
-                "A concurrent program instance is bound to its first caller stream; prepare another instance.")
+                "A concurrent program instance is bound to its first caller stream; prepare another instance."
+            )
         self.caller_stream = caller.cuda_stream
         self._verify_external_aliases(external_arguments)
         for branch in self.streams:

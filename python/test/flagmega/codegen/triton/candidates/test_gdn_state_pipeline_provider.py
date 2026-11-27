@@ -18,34 +18,29 @@ def _graph(*, key_dim=128, dtype_input=None, tokens=1, replicated=False):
     broadcast = fm.SBP.broadcast()
     split = broadcast if replicated else fm.SBP.split_contiguous((0, 1))
     specs = {
-        "qkv": (tokens, config.conv_dim),
-        "z": (tokens, 64),
-        "projection_input": (tokens, 32),
-        "b_weight": (4, 32),
-        "a_weight": (4, 32),
-        "a_log": (4, ),
-        "dt_bias": (4, ),
-        "norm_weight": (16, ),
+        "qkv": (tokens, config.conv_dim), "z": (tokens, 64),
+        "projection_input": (tokens, 32), "b_weight": (4, 32), "a_weight": (4, 32),
+        "a_log": (4,), "dt_bias": (4,), "norm_weight": (16,),
     }
     builder = fm.IRBuilder(dialect="distributed", stage="frozen_constants")
     state = builder.var("state", config.ref_type, id="state")
     inputs = [state]
     for name, shape in specs.items():
         dtype = "float32" if name in (dtype_input, "a_log") else "bfloat16"
-        policies = (broadcast, split) if name == "z" else (broadcast, ) * len(shape)
+        policies = (broadcast, split) if name == "z" else (broadcast,) * len(shape)
         inputs.append(builder.var(name, fm.DistributedType(fm.tensor_type(dtype, shape), policies, placement), id=name))
     output = fm.TupleType((inputs[2].type, state.type))
-    result = builder.call(
-        "nn.gdn_recurrent_core", tuple(inputs), output, attrs={
-            "key_head_dim": key_dim, "value_head_dim": 16, "num_key_heads": 2, "num_value_heads": 4, "epsilon": 1e-6
-        }, id="recurrent")
-    builder.function("main", tuple(inputs), (result, ))
+    result = builder.call("nn.gdn_recurrent_core", tuple(inputs), output,
+                          attrs={"key_head_dim": key_dim, "value_head_dim": 16,
+                                 "num_key_heads": 2, "num_value_heads": 4, "epsilon": 1e-6}, id="recurrent")
+    builder.function("main", tuple(inputs), (result,))
     return builder.build(entry="main")
 
 
 def _propose(graph):
     target = NvidiaSm90Target()
-    context = TritonCandidateContext(graph, target, {}, {}, {}, frozenset(), True, target.triton_implementation_model)
+    context = TritonCandidateContext(graph, target, {}, {}, {}, frozenset(), True,
+                                    target.triton_implementation_model)
     before = graph.semantic_hash
     proposal = GdnCandidateProvider().propose(graph.node_map["recurrent"], context)
     assert graph.semantic_hash == before
@@ -66,9 +61,8 @@ def test_state_pipeline_rejects_non_decode_or_duplicate_owners(options):
 
 def test_state_pipeline_rejects_unaligned_state_row_before_selection():
     graph = _graph(key_dim=12)
-    nodes = tuple(
-        replace(node, attrs={**node.attrs, "key_head_dim": 13}) if node.id == "recurrent" else node
-        for node in graph.nodes)
+    nodes = tuple(replace(node, attrs={**node.attrs, "key_head_dim": 13})
+                  if node.id == "recurrent" else node for node in graph.nodes)
     proposal = _propose(replace(graph, nodes=nodes))
     assert all("state_smem_pipeline" not in candidate.id for candidate in proposal.candidates)
 

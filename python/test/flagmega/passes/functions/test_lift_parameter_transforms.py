@@ -40,7 +40,7 @@ def _module() -> fm.IRModule:
     )
     packed = builder.call(
         "tensors.reshape",
-        (parameter, ),
+        (parameter,),
         physical,
         id="pack_physical",
         attrs={"shape": (2, 2, 2, 2)},
@@ -52,14 +52,14 @@ def _module() -> fm.IRModule:
     )
     first_call = builder.call(
         "builtin.call",
-        (first, ),
+        (first,),
         physical,
         id="first_call",
         attrs={"callee": "pack"},
     )
     second_call = builder.call(
         "builtin.call",
-        (second, ),
+        (second,),
         physical,
         id="second_call",
         attrs={"callee": "pack"},
@@ -67,8 +67,8 @@ def _module() -> fm.IRModule:
     builder.function("main", (), (first_call, second_call))
     builder.function(
         "pack",
-        (parameter, ),
-        (packed, ),
+        (parameter,),
+        (packed,),
         attrs={"calling_convention": "device", "reusable": True},
     )
     return fm.verify_module(builder.build(entry="main"))
@@ -81,14 +81,14 @@ def test_lift_parameter_transform_refines_one_callee_abi_and_every_call():
     assert "pack_physical" not in result.node_map
     parameter_id = result.function_map["pack"].parameters[0]
     assert result.node_map[parameter_id].metadata["lifted_parameter_transform"] == "pack_physical"
-    assert result.function_map["pack"].outputs == (parameter_id, )
+    assert result.function_map["pack"].outputs == (parameter_id,)
     for call_id, weight_id in (
         ("first_call", "first_weight"),
         ("second_call", "second_weight"),
     ):
         clone_id = f"{call_id}.pack_physical"
-        assert result.node_map[call_id].inputs == (clone_id, )
-        assert result.node_map[clone_id].inputs == (weight_id, )
+        assert result.node_map[call_id].inputs == (clone_id,)
+        assert result.node_map[clone_id].inputs == (weight_id,)
         assert result.node_map[clone_id].metadata["lifted_from_function"] == "pack"
 
 
@@ -110,19 +110,18 @@ def test_lifted_call_graph_preserves_reference_evaluation():
 def test_shared_parameter_can_supply_multiple_offline_representations(retain_raw):
     source = _module()
     original_root = source.node_map['pack_physical']
-    other = fm.Node('pack_other', 'tensors.permute', (original_root.id, ), original_root.type,
-                    attrs={'axes':
-                           (3, 2, 1, 0)}, metadata={'packed_from': 'pack_weight', 'packed_layout': 'unit_other'})
-    output_ids = (original_root.id, other.id, *(('pack_weight', ) if retain_raw else ()))
+    other = fm.Node('pack_other', 'tensors.permute', (original_root.id,), original_root.type,
+                    attrs={'axes': (3, 2, 1, 0)}, metadata={'packed_from': 'pack_weight',
+                    'packed_layout': 'unit_other'})
+    output_ids = (original_root.id, other.id, *(('pack_weight',) if retain_raw else ()))
     result_type = fm.TupleType(tuple((source.node_map | {other.id: other})[name].type for name in output_ids))
     nodes = []
     for node in source.nodes:
         nodes.append(replace(node, type=result_type) if node.op == 'builtin.call' else node)
         if node.id == original_root.id:
             nodes.append(other)
-    source = fm.verify_module(
-        replace(source, nodes=tuple(nodes),
-                functions=tuple(replace(f, outputs=output_ids) if f.name == 'pack' else f for f in source.functions)))
+    source = fm.verify_module(replace(source, nodes=tuple(nodes), functions=tuple(
+        replace(f, outputs=output_ids) if f.name == 'pack' else f for f in source.functions)))
     lifted = fm.verify_module(lift_parameter_constant_transforms(source))
     parameters = lifted.function_map['pack'].parameters
     assert len(parameters) == 2 + int(retain_raw)
@@ -148,11 +147,13 @@ def _multi_source_module() -> fm.IRModule:
                 source="unit.safetensors",
                 key=node_id,
                 id=node_id,
-                metadata={"rdata_group": {
-                    "name": f"unit.layer.{role}",
-                    "index": layer,
-                    "count": 2,
-                }},
+                metadata={
+                    "rdata_group": {
+                        "name": f"unit.layer.{role}",
+                        "index": layer,
+                        "count": 2,
+                    }
+                },
             )
     left = builder.var("left", value_type, id="fuse_left")
     right = builder.var("right", value_type, id="fuse_right")
@@ -173,9 +174,11 @@ def _multi_source_module() -> fm.IRModule:
             value_type,
             id=f"layer_{layer}_call",
             attrs={"callee": "fuse"},
-        ) for layer in range(2))
+        )
+        for layer in range(2)
+    )
     builder.function("main", (), calls)
-    builder.function("fuse", (left, right), (fused, ))
+    builder.function("fuse", (left, right), (fused,))
     return fm.verify_module(builder.build(entry="main"))
 
 
@@ -190,8 +193,10 @@ def test_multi_source_lift_derives_model_independent_composite_rdata_group():
 
     frozen = freeze_constant_islands(lifted)
     plan = fm.make_buffer_plan(frozen)
-    grouped = tuple(value for value in plan.buffers
-                    if value.rdata_group and value.rdata_group.startswith(f"{next(iter(names))}.repr_"))
+    grouped = tuple(
+        value for value in plan.buffers
+        if value.rdata_group and value.rdata_group.startswith(f"{next(iter(names))}.repr_")
+    )
     assert len({value.rdata_group for value in grouped}) == 1
     assert {value.group_index for value in grouped} == {0, 1}
 
@@ -203,12 +208,18 @@ def test_multi_source_lift_rejects_misaligned_rdata_group_indexes():
         nodes=tuple(
             replace(
                 node,
-                metadata={"rdata_group": {
-                    "name": "unit.layer.right",
-                    "index": 1,
-                    "count": 2,
-                }},
-            ) if node.id == "layer_0_right" else node for node in source.nodes),
+                metadata={
+                    "rdata_group": {
+                        "name": "unit.layer.right",
+                        "index": 1,
+                        "count": 2,
+                    }
+                },
+            )
+            if node.id == "layer_0_right"
+            else node
+            for node in source.nodes
+        ),
     )
 
     with pytest.raises(IRVerificationError, match="one integer layer index/count"):

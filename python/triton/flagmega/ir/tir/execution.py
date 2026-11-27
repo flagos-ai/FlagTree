@@ -68,14 +68,21 @@ def verify_execution_functions(module) -> None:
     # is what makes a wrap-around barrier legal in those functions.
     repeated_functions = _repeated_execution_function_names(module)
     if len(functions) != len(module.execution_functions):
-        raise IRVerificationError("ExecutionFunction names must be unique.", stage=module.stage)
+        raise IRVerificationError(
+            "ExecutionFunction names must be unique.", stage=module.stage
+        )
     if functions:
         execution_names = set(functions)
         graph_names = set(module.function_map)
         fragment = module.metadata.get("_dump_function_fragment") is True
         signatures = module.metadata.get("function_signatures", {})
-        valid_fragment = (fragment and len(graph_names) == 1 and hasattr(signatures, "keys")
-                          and execution_names == set(signatures.keys()) and graph_names.issubset(execution_names))
+        valid_fragment = (
+            fragment
+            and len(graph_names) == 1
+            and hasattr(signatures, "keys")
+            and execution_names == set(signatures.keys())
+            and graph_names.issubset(execution_names)
+        )
         if execution_names != graph_names and not valid_fragment:
             raise IRVerificationError(
                 "ExecutionFunction set must exactly cover graph functions: "
@@ -112,9 +119,16 @@ def verify_execution_functions(module) -> None:
                     f"ExecutionFunction @{function.name} has no BufferPlan ABI.",
                     stage=module.stage,
                 ) from error
-            expected_parameters = tuple(buffer_id for _, buffers in function_plan.parameters for buffer_id in buffers)
-            expected_results = tuple(
-                dict.fromkeys(buffer_id for _, buffers in function_plan.outputs for buffer_id in buffers))
+            expected_parameters = tuple(
+                buffer_id
+                for _, buffers in function_plan.parameters
+                for buffer_id in buffers
+            )
+            expected_results = tuple(dict.fromkeys(
+                buffer_id
+                for _, buffers in function_plan.outputs
+                for buffer_id in buffers
+            ))
             if function.parameters != expected_parameters or function.results != expected_results:
                 raise IRVerificationError(
                     f"ExecutionFunction @{function.name} signature differs from "
@@ -126,14 +140,12 @@ def verify_execution_functions(module) -> None:
             if isinstance(call, KernelInvoke) and call.kernel not in kernel_names:
                 raise IRVerificationError(
                     f"KernelInvoke {call.call_id!r} references missing kernel definition @{call.kernel}.",
-                    stage=module.stage,
-                    node_id=call.call_id,
+                    stage=module.stage, node_id=call.call_id,
                 )
             if isinstance(call, PrimFunctionCall) and call.callee in kernel_names:
                 raise IRVerificationError(
                     f"PrimFunctionCall {call.call_id!r} cannot call a non-function kernel definition; use KernelInvoke.",
-                    stage=module.stage,
-                    node_id=call.call_id,
+                    stage=module.stage, node_id=call.call_id,
                 )
             if call.call_id in call_ids:
                 raise IRVerificationError(
@@ -159,15 +171,21 @@ def verify_execution_functions(module) -> None:
                     node_id=call.call_id,
                 )
             if primitive is not None:
-                expected_arguments = tuple(buffer.name
-                                           for parameter in primitive.runtime_parameters
-                                           for buffer in parameter.buffers)
-                expected_results = tuple(buffer.name
-                                         for parameter in primitive.output_parameters
-                                         for buffer in parameter.buffers)
-                expected_workspaces = tuple(buffer.name
-                                            for parameter in primitive.workspaces
-                                            for buffer in parameter.buffers)
+                expected_arguments = tuple(
+                    buffer.name
+                    for parameter in primitive.runtime_parameters
+                    for buffer in parameter.buffers
+                )
+                expected_results = tuple(
+                    buffer.name
+                    for parameter in primitive.output_parameters
+                    for buffer in parameter.buffers
+                )
+                expected_workspaces = tuple(
+                    buffer.name
+                    for parameter in primitive.workspaces
+                    for buffer in parameter.buffers
+                )
             else:
                 expected_arguments = callee.parameters
                 expected_results = callee.results
@@ -202,7 +220,10 @@ def verify_execution_functions(module) -> None:
                 )
             for shared in call.shared_workspace_buffers:
                 physical = shared.mem_span.buffer
-                if (physical.memory_space != "shared" or physical.function != function.name):
+                if (
+                    physical.memory_space != "shared"
+                    or physical.function != function.name
+                ):
                     raise IRVerificationError(
                         f"Execution call {call.call_id!r} shared buffer "
                         f"{shared.name!r} is not owned by caller @{function.name}.",
@@ -212,7 +233,9 @@ def verify_execution_functions(module) -> None:
             if call.callee not in shared_formals:
                 if primitive is not None:
                     dispatch = kernel_dispatch_of(primitive)
-                    shared_formals[call.callee] = (() if dispatch is None else dispatch.shared_workspace_buffers)
+                    shared_formals[call.callee] = (
+                        () if dispatch is None else dispatch.shared_workspace_buffers
+                    )
                 else:
                     # Same ordered resource interface as the reusable callee:
                     # consumer traversal sees each semantic call exactly once.
@@ -222,11 +245,8 @@ def verify_execution_functions(module) -> None:
                         for buffer in nested_call.shared_workspace_buffers
                     }.values())
             verify_shared_call_abi(
-                call,
-                shared_formals[call.callee],
-                stage=module.stage,
-                leaf=primitive is not None,
-                maximum_bytes=shared_capacity,
+                call, shared_formals[call.callee], stage=module.stage,
+                leaf=primitive is not None, maximum_bytes=shared_capacity,
             )
             if buffer_plan is not None:
                 missing = {
@@ -267,8 +287,12 @@ def verify_execution_functions(module) -> None:
                         # comparison; v6 dumps must carry the exact allocation.
                         actual_pools = {
                             memory_space: (
-                                (expected_pools[memory_space][0]
-                                 if allocation is None and memory_space in expected_pools else allocation),
+                                (
+                                    expected_pools[memory_space][0]
+                                    if allocation is None
+                                    and memory_space in expected_pools
+                                    else allocation
+                                ),
                                 offset,
                                 nbytes,
                             )
@@ -307,7 +331,10 @@ def _repeated_execution_function_names(module) -> frozenset[str]:
     names = {value.name for value in getattr(module, "execution_functions", ())}
     if not names:
         return frozenset()
-    result = {value.name for value in module.execution_functions if value.attrs.get("region_kind") == "for"}
+    result = {
+        value.name for value in module.execution_functions
+        if value.attrs.get("region_kind") == "for"
+    }
 
     def visit(node) -> None:
         body_function = getattr(node, "body_function", None)
@@ -334,7 +361,9 @@ def _repeated_execution_function_names(module) -> frozenset[str]:
     return frozenset(result)
 
 
-def _verify_barrier_topology(function: ExecutionFunction, repeated_functions=frozenset()) -> None:
+def _verify_barrier_topology(
+    function: ExecutionFunction, repeated_functions=frozenset()
+) -> None:
     seen: set[str] = set()
     pending: list[Barrier] = []
     # A repeated function re-executes, so a hazard between its trailing
@@ -351,19 +380,25 @@ def _verify_barrier_topology(function: ExecutionFunction, repeated_functions=fro
     for item in execution_items_of(function):
         if isinstance(item, Barrier):
             if not item.after or not set(item.after).issubset(seen | repeated):
-                raise IRVerificationError(f"Barrier before {item.before!r} in @{function.name} "
-                                          "references a call that has not executed.")
+                raise IRVerificationError(
+                    f"Barrier before {item.before!r} in @{function.name} "
+                    "references a call that has not executed."
+                )
             pending.append(item)
             continue
         if not isinstance(item, (PrimFunctionCall, KernelInvoke)):
             continue
         if pending and any(value.before != item.call_id for value in pending):
-            raise IRVerificationError(f"Barrier in @{function.name} is not immediately attached to "
-                                      f"execution call {item.call_id!r}.")
+            raise IRVerificationError(
+                f"Barrier in @{function.name} is not immediately attached to "
+                f"execution call {item.call_id!r}."
+            )
         pending.clear()
         seen.add(item.call_id)
     if pending:
-        raise IRVerificationError(f"ExecutionFunction @{function.name} ends with an unattached barrier.")
+        raise IRVerificationError(
+            f"ExecutionFunction @{function.name} ends with an unattached barrier."
+        )
 
 
 def _verify_call_topology(
@@ -377,12 +412,16 @@ def _verify_call_topology(
     for call in calls:
         unknown = set(call.dependencies) - call_ids
         if unknown:
-            raise IRVerificationError(f"Execution call {call.call_id!r} in @{function.name} has "
-                                      f"unknown dependencies {sorted(unknown)}.")
+            raise IRVerificationError(
+                f"Execution call {call.call_id!r} in @{function.name} has "
+                f"unknown dependencies {sorted(unknown)}."
+            )
         missing = set(call.dependencies) - seen
         if missing:
-            raise IRVerificationError(f"Execution call {call.call_id!r} in @{function.name} executes "
-                                      f"before dependencies {sorted(missing)}.")
+            raise IRVerificationError(
+                f"Execution call {call.call_id!r} in @{function.name} executes "
+                f"before dependencies {sorted(missing)}."
+            )
         seen.add(call.call_id)
 
 

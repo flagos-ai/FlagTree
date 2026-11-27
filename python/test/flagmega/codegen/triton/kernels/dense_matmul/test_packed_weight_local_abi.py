@@ -25,7 +25,9 @@ def _abi(
     for extent in lane_shape:
         lane_count *= extent
     if logical_coordinates is None:
-        logical_coordinates = tuple(f"local_coord_{axis}" for axis in range(len(logical_shape)))
+        logical_coordinates = tuple(
+            f"local_coord_{axis}" for axis in range(len(logical_shape))
+        )
     return {
         "storage": "workspace",
         "pool_byte_offset": pool_byte_offset,
@@ -90,7 +92,9 @@ def _typed_weight_abi(*, compact_per_owner):
         local_shape=(2, 1) if compact_per_owner else (2, 2),
         scalar_strides=(128, 128) if compact_per_owner else (256, 128),
         lane_shape=(8, 2, 8),
-        storage_kind=("compact_per_owner" if compact_per_owner else "canonical_global"),
+        storage_kind=(
+            "compact_per_owner" if compact_per_owner else "canonical_global"
+        ),
         coordinate_space="local" if compact_per_owner else "canonical_global",
         logical_coordinates=(
             "local_coord_0",
@@ -102,7 +106,9 @@ def _typed_weight_abi(*, compact_per_owner):
 
 
 def test_compact_owner_packed_weight_uses_owner_base_and_local_coordinates():
-    call = _dense_matmul_call(_raw_call(_typed_weight_abi(compact_per_owner=True)))
+    call = _dense_matmul_call(
+        _raw_call(_typed_weight_abi(compact_per_owner=True))
+    )
 
     assert "(shard_index) * 256" in call["weight"]
     assert "dense_local_n_offsets" in call["weight_offset"]
@@ -119,9 +125,9 @@ def test_dense_rows_preserve_owner_coordinates_and_active_tail(canonical):
         abi["logical_shape"] = (3, abi["logical_shape"][1])
         abi["local_capacity_shape"] = (2, abi["local_capacity_shape"][1])
         abi["active_shape_expressions"] = ("tl.minimum(2, tl.maximum(0, 3 - shard_coord_0 * 2))",
-                                           abi["active_shape_expressions"][1])
+                                             abi["active_shape_expressions"][1])
         abi["logical_coordinate_expressions"] = ("local_coord_0 + shard_coord_0 * 2",
-                                                 abi["logical_coordinate_expressions"][1])
+                                                  abi["logical_coordinate_expressions"][1])
         abi["coordinate_space"] = "canonical_global" if canonical else "local"
     call = _dense_matmul_call(raw)
     assert call["local_m_capacity"] == 2
@@ -132,7 +138,9 @@ def test_dense_rows_preserve_owner_coordinates_and_active_tail(canonical):
 
 
 def test_canonical_packed_weight_uses_storage_base_and_global_coordinates():
-    call = _dense_matmul_call(_raw_call(_typed_weight_abi(compact_per_owner=False)))
+    call = _dense_matmul_call(
+        _raw_call(_typed_weight_abi(compact_per_owner=False))
+    )
 
     assert "shard_index" not in call["weight"]
     assert "dense_global_n" in call["weight_offset"]

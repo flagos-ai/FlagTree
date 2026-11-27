@@ -13,16 +13,15 @@ from .test_partial_reduce_local_abi import _abi, _prepare
 
 @pytest.mark.parametrize("sharing_scope", ["chip", "block"])
 def test_plain_result_addressing_uses_physical_sharing_not_distributed_storage_kind(sharing_scope):
-    source = _abi(
-        (1, 48), local_shape=(1, 3), storage_kind="compact_per_owner", coordinate_space="local",
-        coordinates=("local_coord_0", "local_coord_1 + shard_coord_1 * 3"), axis_policies=({"kind": "broadcast"}, {
-            "kind":
-            "split", "stages": ({"hierarchy_axes": (1, ), "distribution": {"kind": "contiguous", "granularity": 3}}, )
-        }), partial_axes=(0, ), owner_stride=3)
+    source = _abi((1, 48), local_shape=(1, 3), storage_kind="compact_per_owner", coordinate_space="local",
+                  coordinates=("local_coord_0", "local_coord_1 + shard_coord_1 * 3"),
+                  axis_policies=({"kind": "broadcast"}, {"kind": "split", "stages":
+                                                         ({"hierarchy_axes":
+                                                           (1, ), "distribution": {"kind": "contiguous", "granularity": 3}}, )}), partial_axes=(0, ), owner_stride=3)
     result = _abi((1, 48), storage_kind="compact_local")
     result.update(distributed_type=None, memory_sharing_scope=sharing_scope)
     if sharing_scope == "block":
-        leaf = _prepare((source, ), (result, ), ("gather_reduce_scatter", ))["leaves"][0]
+        leaf = _prepare((source,), (result,), ("gather_reduce_scatter",))["leaves"][0]
         assert leaf["writer_active"] == "True"
         assert leaf["capacity"] == 48
         assert "boxing_offsets" in leaf["source_offset"]
@@ -115,35 +114,28 @@ def test_packed_split_k_projection_reduces_vector_packets_into_private_broadcast
     weight_type = fm.tensor_type(fm.vector_type("bfloat16", (8, 2, 8)), (128, 64))
 
     class Graph(fm.Module):
-
         def forward(self):
             value = self.input("value", value_type)
             weight = self.input("weight", weight_type)
             value_b = fm.F.distributed.boxing(value, fm.DistributedType(value_type, (broad, broad), mesh))
             activated = fm.F.math.silu(value_b)
-            lhs = fm.F.distributed.sharded_view(
-                activated, fm.DistributedType(value_type, (broad, fm.SBP.split_contiguous((0, ), 256)), mesh))
-            rhs = fm.F.distributed.boxing(
-                weight,
-                fm.DistributedType(weight_type, (fm.SBP.split_contiguous((0, ), 16), fm.SBP.split_contiguous((1, ), 4)),
-                                   mesh))
+            lhs = fm.F.distributed.sharded_view(activated, fm.DistributedType(
+                value_type, (broad, fm.SBP.split_contiguous((0,), 256)), mesh))
+            rhs = fm.F.distributed.boxing(weight, fm.DistributedType(weight_type, (
+                fm.SBP.split_contiguous((0,), 16), fm.SBP.split_contiguous((1,), 4)), mesh))
             none = fm.F.builtin.none()
-            partial = fm.F.ntt.packed_matmul(
-                lhs, rhs, none, none, output_data_type="float32", metadata={
-                    "selected_vectorization": "vectorization.matmul.n",
-                    "selected_vector_axes": (1, 1),
-                    "selected_vector_lanes": (2, 4),
-                })
-            reduced = fm.F.distributed.force_boxing(partial,
-                                                    fm.DistributedType(partial.type.tensor, (broad, broad), mesh),
-                                                    name="all_reduce")
+            partial = fm.F.ntt.packed_matmul(lhs, rhs, none, none, output_data_type="float32", metadata={
+                "selected_vectorization": "vectorization.matmul.n",
+                "selected_vector_axes": (1, 1), "selected_vector_lanes": (2, 4),
+            })
+            reduced = fm.F.distributed.force_boxing(partial, fm.DistributedType(
+                partial.type.tensor, (broad, broad), mesh), name="all_reduce")
             scalar = fm.F.tensors.bitcast(reduced, "float32")
             output = fm.F.math.silu(scalar)
-            self.function("main", (value, weight), (fm.F.distributed.force_boxing(output, output.type.tensor), ))
+            self.function("main", (value, weight), (fm.F.distributed.force_boxing(output, output.type.tensor),))
 
-    module = Compiler().compile(
-        Graph(dialect="distributed", stage="frozen_constants", entry="main",
-              metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()).module
+    module = Compiler().compile(Graph(dialect="distributed", stage="frozen_constants", entry="main",
+                                     metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()).module
     runtime = load(write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True),
                    device="cuda:0")
     generator = torch.Generator(device="cuda").manual_seed(20260913)
@@ -166,27 +158,22 @@ def test_qkv_collective_routes_flat_partials_to_head_aligned_results(tmp_path, l
     heads = (5, 3, 3)
 
     class Graph(fm.Module):
-
         def forward(self):
             inputs, partials, destinations = [], [], []
             for index, count in enumerate(heads):
                 tensor = fm.tensor_type("float32", (2, count * 128))
                 source = self.input(f"value{index}", tensor)
                 inputs.append(source)
-                local = fm.F.distributed.force_boxing(
-                    source,
-                    fm.DistributedType(tensor, (fm.SBP.split_contiguous((0, ), 1), fm.SBP.split_block_cyclic(
-                        (1, ), 32)), mesh))
-                partial = fm.F.math.reduce_sum(local, axes=(0, ), keep_dims=True)
+                local = fm.F.distributed.force_boxing(source, fm.DistributedType(tensor, (
+                    fm.SBP.split_contiguous((0,), 1), fm.SBP.split_block_cyclic((1,), 32)), mesh))
+                partial = fm.F.math.reduce_sum(local, axes=(0,), keep_dims=True)
                 if lanes != 1:
-                    partial = fm.F.tensors.pack(partial, axes=(-1, ), lanes=(lanes, ))
+                    partial = fm.F.tensors.pack(partial, axes=(-1,), lanes=(lanes,))
                 partials.append(partial)
-                destinations.append(
-                    fm.DistributedType(partial.type.tensor,
-                                       (broad, fm.SBP.split_block_cyclic(
-                                           (1 if index == 0 else 0, ), 128 // lanes)), mesh))
-            combined = fm.F.ntt.packed_qkv_parallel_linear_combine(fm.F.builtin.tuple(*partials),
-                                                                   fm.TupleType(tuple(destinations)), name="collective")
+                destinations.append(fm.DistributedType(partial.type.tensor, (
+                    broad, fm.SBP.split_block_cyclic((1 if index == 0 else 0,), 128 // lanes)), mesh))
+            combined = fm.F.ntt.packed_qkv_parallel_linear_combine(
+                fm.F.builtin.tuple(*partials), fm.TupleType(tuple(destinations)), name="collective")
             outputs = []
             for index, count in enumerate(heads):
                 field = fm.F.tensors.get_item(combined, index)
@@ -197,13 +184,10 @@ def test_qkv_collective_routes_flat_partials_to_head_aligned_results(tmp_path, l
                 outputs.append(fm.F.distributed.force_boxing(consumed, consumed.type.tensor))
             self.function("main", tuple(inputs), tuple(outputs))
 
-    module = Compiler().compile(
-        Graph(
-            dialect="distributed",
-            stage="distributed",
-            entry="main",
-            metadata={"auto_distribution": {"placement": mesh.to_data()}},
-        ).build()).module
+    module = Compiler().compile(Graph(
+        dialect="distributed", stage="distributed", entry="main",
+        metadata={"auto_distribution": {"placement": mesh.to_data()}},
+    ).build()).module
     buffers = fm.verify_buffer_plan(module).buffer_map
     for index in range(3):
         view = buffers[f"heads{index}"]
@@ -211,10 +195,10 @@ def test_qkv_collective_routes_flat_partials_to_head_aligned_results(tmp_path, l
         assert view.mem_span == buffers[view.alias_of].mem_span
     runtime = load(write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True),
                    device="cuda:0")
-    values = tuple(
-        (torch.arange(2 * count * 128, device="cuda").reshape(2, count * 128) % 17 - 8).float() for count in heads)
-    expected = tuple(
-        torch.nn.functional.silu(value.sum(0).reshape(1, count, 128)) for value, count in zip(values, heads))
+    values = tuple((torch.arange(2 * count * 128, device="cuda").reshape(2, count * 128) % 17 - 8).float()
+                   for count in heads)
+    expected = tuple(torch.nn.functional.silu(value.sum(0).reshape(1, count, 128))
+                     for value, count in zip(values, heads))
     outputs = tuple(torch.empty_like(value) for value in expected)
     runtime.prepare(*values, *outputs)
     for _ in range(3):

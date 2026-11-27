@@ -15,8 +15,8 @@ from .candidate_identity import distributed_candidate_id
 from .candidates import DistributedCandidate, DistributedCandidateContext
 
 
-def complete_candidate_relations(module, buckets, placement, registry, reshard_cost_model, operation_cost_model,
-                                 type_inference_memo):
+def complete_candidate_relations(module, buckets, placement, registry, reshard_cost_model,
+                                operation_cost_model, type_inference_memo):
     from .search import CandidateBucket, _provider_candidates, function_output_type
 
     by_id = {bucket.node_id: bucket for bucket in buckets}
@@ -51,8 +51,8 @@ def complete_candidate_relations(module, buckets, placement, registry, reshard_c
         name = pending.popleft()
         queued.remove(name)
         node, bucket = nodes[name], by_id[name]
-        available = tuple(
-            tuple(dict.fromkeys(c.return_type for c in by_id[source].candidates)) for source in node.inputs)
+        available = tuple(tuple(dict.fromkeys(c.return_type for c in by_id[source].candidates))
+                          for source in node.inputs)
         requested = tuple(demands[name])
         key = (available, requested)
         if processed.get(name) == key:
@@ -62,19 +62,17 @@ def complete_candidate_relations(module, buckets, placement, registry, reshard_c
         if provider is not None:
             from triton.flagmega.ir.execution_mesh import effective_execution_mesh, placement_for_execution_mesh
             node_placement = placement_for_execution_mesh(placement, effective_execution_mesh(module, node))
-            context = DistributedCandidateContext(module, node, node_placement, available,
-                                                  registry.split_candidate_provider, reshard_cost_model,
-                                                  operation_cost_model, type_inference_memo=type_inference_memo)
+            context = DistributedCandidateContext(
+                module, node, node_placement, available, registry.split_candidate_provider,
+                reshard_cost_model, operation_cost_model, type_inference_memo=type_inference_memo)
             candidates = _provider_candidates(provider, context, node.type, requested)
         elif node.op == "builtin.tuple":
-            candidates = tuple(
-                DistributedCandidate(
-                    distributed_candidate_id(name, "tuple-structural-provider-demand", value,
-                                             value.fields), value, value.fields, 0, "tuple-structural-provider-demand",
-                    objective_kind="analytic", objective_model="flagmega.structural-zero/v1", objective_evidence=(
-                        "provider-demanded-tuple-layout", "field-wise-reshard-preserves-producer-contract"))
-                for value in requested
-                if isinstance(value, TupleType) and len(value.fields) == len(node.inputs))
+            candidates = tuple(DistributedCandidate(
+                distributed_candidate_id(name, "tuple-structural-provider-demand", value, value.fields),
+                value, value.fields, 0, "tuple-structural-provider-demand",
+                objective_kind="analytic", objective_model="flagmega.structural-zero/v1",
+                objective_evidence=("provider-demanded-tuple-layout", "field-wise-reshard-preserves-producer-contract"))
+                for value in requested if isinstance(value, TupleType) and len(value.fields) == len(node.inputs))
         elif node.op == "builtin.get_item":
             index = int(node.attrs["index"])
             tuples = dict.fromkeys(value for value in available[0] if isinstance(value, TupleType))
@@ -85,10 +83,10 @@ def complete_candidate_relations(module, buckets, placement, registry, reshard_c
                     if logical_type(output) == logical_type(value.fields[index]):
                         fields = (*value.fields[:index], output, *value.fields[index + 1:])
                         tuples[TupleType(fields, value.is_variadic)] = None
-            candidates = tuple(
-                DistributedCandidate(
-                    distributed_candidate_id(name, f"tuple-field-{index}", value.fields[index], (
-                        value, )), value.fields[index], (value, ), 0, f"tuple-field-{index}") for value in tuples)
+            candidates = tuple(DistributedCandidate(
+                distributed_candidate_id(name, f"tuple-field-{index}", value.fields[index], (value,)),
+                value.fields[index], (value,), 0, f"tuple-field-{index}")
+                for value in tuples)
         else:
             continue
         known = {(c.return_type, c.input_types) for c in bucket.candidates}

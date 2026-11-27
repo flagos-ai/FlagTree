@@ -12,16 +12,8 @@ from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.distributed_type import local_tensor_type
 from triton.flagmega.ir.ops.core import OpDefinition, OpCost, OpCostFactors, attribute_parameter, input_parameter, op_definition, tensor_nbytes
 from triton.flagmega.ir.ops.nn._sparse_experts import (
-    element_type,
-    floating_tensor,
-    lanes,
-    normalize_numerics,
-    pack_result,
-    python_dtype_call,
-    require_shape,
-    role_axes,
-    static_elements,
-    unpack_value,
+    element_type, floating_tensor, lanes, normalize_numerics, pack_result, python_dtype_call,
+    require_shape, role_axes, static_elements, unpack_value,
 )
 from triton.flagmega.ir.types import data_type
 
@@ -43,12 +35,13 @@ def combine_type(inputs, attrs, *, local=False):
         if isinstance(weights, DistributedType):
             raise IRSchemaError("SparseExpertsCombine operands must share a placement")
         return output
-    if (not isinstance(weights, DistributedType) or weights.placement != values.placement or weights.partial is not None
-            or values.exclusive is not None or weights.exclusive is not None
+    if (not isinstance(weights, DistributedType) or weights.placement != values.placement
+            or weights.partial is not None or values.exclusive is not None or weights.exclusive is not None
             or weights.axis_policies != values.axis_policies[:2]):
         raise IRSchemaError("SparseExpertsCombine coefficients must follow token/route owners")
-    if values.partial is not None and (values.partial.reduce_op is not ReduceOp.SUM or element_type(value.dtype)
-                                       is not DType.FLOAT32 or attrs["round_weighted_output"]):
+    if values.partial is not None and (values.partial.reduce_op is not ReduceOp.SUM
+                                       or element_type(value.dtype) is not DType.FLOAT32
+                                       or attrs["round_weighted_output"]):
         raise IRSchemaError("SparseExpertsCombine needs materialized input before per-route rounding")
     token, route, hidden_policy = values.axis_policies
     _, route_axes, _ = role_axes(token, route, hidden_policy)
@@ -82,18 +75,16 @@ class SparseExpertsCombine(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
-        return evaluate_combine(arguments[0], arguments[1], context.types[node.inputs[0]], node.type, node.attrs,
-                                context)
+        return evaluate_combine(arguments[0], arguments[1], context.types[node.inputs[0]], node.type, node.attrs, context)
 
     @classmethod
     def cost(cls, node):
-        return OpCost(bytes_written=tensor_nbytes(node.type), notes=("route-weighted-combine", ))
+        return OpCost(bytes_written=tensor_nbytes(node.type), notes=("route-weighted-combine",))
 
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
         local_type = combine_type(inputs, attrs, local=True)
-        fan = prod(local_type.placement.hierarchy[axis] for axis in local_type.partial.axes) if isinstance(
-            local_type, DistributedType) and local_type.partial else 1
+        fan = prod(local_type.placement.hierarchy[axis] for axis in local_type.partial.axes) if isinstance(local_type, DistributedType) and local_type.partial else 1
         # Complete sums round in their result store, with no separate FP32
         # materialization or conversion kernel. Partial sums still need FP32.
         factors = SparseExpertsWeightedSum.cost_factors(inputs, attrs, return_type if fan == 1 else local_type)
@@ -105,14 +96,13 @@ class SparseExpertsCombine(OpDefinition):
         result = local_tensor_type(return_type) if isinstance(return_type, DistributedType) else return_type
         size = tensor_nbytes(local)
         cast = local.dtype != result.dtype
-        return replace(
-            factors, elementwise_operations=factors.elementwise_operations +
-            static_elements(local.shape) * lanes(local.dtype) * (fan - 1),
-            chip_global_memory_load_bytes=size * fan if fan > 1 else 0,
-            chip_global_memory_store_bytes=size if fan > 1 else 0,
-            block_local_memory_load_bytes=factors.block_local_memory_load_bytes + (size if cast else 0),
-            block_local_memory_store_bytes=factors.block_local_memory_store_bytes +
-            (tensor_nbytes(result) if cast else 0), grid_synchronizations=int(fan > 1))
+        return replace(factors,
+                       elementwise_operations=factors.elementwise_operations + static_elements(local.shape) * lanes(local.dtype) * (fan - 1),
+                       chip_global_memory_load_bytes=size * fan if fan > 1 else 0,
+                       chip_global_memory_store_bytes=size if fan > 1 else 0,
+                       block_local_memory_load_bytes=factors.block_local_memory_load_bytes + (size if cast else 0),
+                       block_local_memory_store_bytes=factors.block_local_memory_store_bytes + (tensor_nbytes(result) if cast else 0),
+                       grid_synchronizations=int(fan > 1))
 
 
 @op_definition("nn.sparse_experts_weighted_sum", namespace="nn", functional_name="sparse_experts_weighted_sum",
@@ -141,10 +131,8 @@ class SparseExpertsWeightedSum(SparseExpertsCombine):
 
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
-
         def local(value):
             return local_tensor_type(value) if isinstance(value, DistributedType) else tensor_of(value)
-
         values, weights = (local(node.type) for node in inputs)
         output = local(return_type)
         elements = static_elements(values.shape)
@@ -157,8 +145,7 @@ class SparseExpertsWeightedSum(SparseExpertsCombine):
 
 def evaluate_combine(projections, coefficients, input_type, output_type, attrs, context):
     value = unpack_value(projections, input_type).float()
-    dtype = element_type(
-        tensor_of(input_type).dtype if attrs["output_dtype"] is None else data_type(attrs["output_dtype"]))
+    dtype = element_type(tensor_of(input_type).dtype if attrs["output_dtype"] is None else data_type(attrs["output_dtype"]))
     result = value.new_zeros((value.shape[0], value.shape[2]))
     for route in range(value.shape[1]):
         weighted = value[:, route] * coefficients[:, route, None].float()

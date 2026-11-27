@@ -55,8 +55,9 @@ def propagate_domains(graph, fixed_selections, site_map):
     for producer_id, producer_index, consumer_id, consumer_index, input_index in site_map:
         if consumer_index is None:
             continue
-        adapters_by_edge.setdefault((producer_id, consumer_id, input_index), set()).add(
-            (producer_index, consumer_index))
+        adapters_by_edge.setdefault(
+            (producer_id, consumer_id, input_index), set()
+        ).add((producer_index, consumer_index))
 
     # Identical physical relations share a support template, never a decision
     # variable: distinct weights and distinct graph uses stay independently selectable.
@@ -66,9 +67,11 @@ def propagate_domains(graph, fixed_selections, site_map):
         for input_index, producer in enumerate(consumer.inputs):
             source_types = tuple(value.return_type for value in buckets[producer].candidates)
             target_types = tuple(value.input_types[input_index] for value in buckets[consumer.id].candidates)
-            adapters = frozenset((p, c)
-                                 for p, c in adapters_by_edge.get((producer, consumer.id, input_index), ())
-                                 if p < len(source_types) and c < len(target_types))
+            adapters = frozenset(
+                (p, c)
+                for p, c in adapters_by_edge.get((producer, consumer.id, input_index), ())
+                if p < len(source_types) and c < len(target_types)
+            )
             key = (source_types, target_types, adapters)
             supports = templates.get(key)
             if supports is None:
@@ -83,20 +86,20 @@ def propagate_domains(graph, fixed_selections, site_map):
             neighbors[consumer.id].append((producer, supports[0]))
 
     from .loops import binding_relations, loop_edges
-
     def add_relation(producer, consumer, pairs):
-        forward = tuple(frozenset(c for p, c in pairs if p == i) for i in range(len(buckets[producer].candidates)))
-        reverse = tuple(frozenset(p for p, c in pairs if c == i) for i in range(len(buckets[consumer].candidates)))
+        forward = tuple(frozenset(c for p, c in pairs if p == i)
+                        for i in range(len(buckets[producer].candidates)))
+        reverse = tuple(frozenset(p for p, c in pairs if c == i)
+                        for i in range(len(buckets[consumer].candidates)))
         neighbors[producer].append((consumer, reverse))
         neighbors[consumer].append((producer, forward))
-
     for producer, consumer, pairs in binding_relations(graph.module, buckets):
         add_relation(producer, consumer, pairs)
     for parameter, output, yield_index in loop_edges(graph.module):
-        pairs = tuple((p, c)
-                      for p, source in enumerate(buckets[output].candidates)
+        pairs = tuple((p, c) for p, source in enumerate(buckets[output].candidates)
                       for c, target in enumerate(buckets[parameter].candidates)
-                      if source.return_type == target.return_type or (output, p, parameter, c, yield_index) in site_map)
+                      if source.return_type == target.return_type
+                      or (output, p, parameter, c, yield_index) in site_map)
         add_relation(output, parameter, pairs)
 
     pending = deque(buckets)

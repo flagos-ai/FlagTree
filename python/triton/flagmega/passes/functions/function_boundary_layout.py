@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Plan and propagate tensor layouts across reusable function boundaries.
 
-The pass follows the reference module-level algorithm: collect an identity variant,
+The pass follows nncase's module-level algorithm: collect an identity variant,
 an internal canonical variant, and variants demanded by callers; select one
 variant per reusable callee with CP-SAT; specialize each callee once; then
 rewrite every call to the same ABI.  The transformation runs to a fixed point
@@ -88,10 +88,13 @@ def propagate_function_boundary_layouts(module: IRModule) -> IRModule:
         if rewritten is current:
             return current
         current = rewritten
-    remaining = _collect_candidate_layouts(current, enable_caller_output_demand=False)
+    remaining = _collect_candidate_layouts(
+        current, enable_caller_output_demand=False)
     if remaining:
-        details = ", ".join(f"{name}: {[candidate.candidate_id for candidate in candidates]}"
-                            for name, candidates in sorted(remaining.items()))
+        details = ", ".join(
+            f"{name}: {[candidate.candidate_id for candidate in candidates]}"
+            for name, candidates in sorted(remaining.items())
+        )
         raise IRVerificationError(
             "Function boundary layout planning did not converge within "
             f"{_MAX_PLANNING_ITERATIONS} iterations; remaining variants: {details}.",
@@ -128,7 +131,8 @@ def _propagate_one_iteration(
         outputs: dict[int, _OutputLayout] = {}
         for index, item in layout.outputs.items():
             if item.source_pack:
-                packed_id = _fresh_id(f"{item.source_id}.boundary_pack", occupied)
+                packed_id = _fresh_id(
+                    f"{item.source_id}.boundary_pack", occupied)
                 occupied.add(packed_id)
                 item = replace(item, packed_id=packed_id)
             outputs[index] = item
@@ -141,7 +145,11 @@ def _propagate_one_iteration(
     for node in module.nodes:
         if node.op == "builtin.call":
             layout = layouts.get(str(node.attrs["callee"]))
-            if (layout is not None and len(layout.function.outputs) == 1 and 0 in layout.outputs):
+            if (
+                layout is not None
+                and len(layout.function.outputs) == 1
+                and 0 in layout.outputs
+            ):
                 raw_id = _fresh_id(f"{node.id}.boundary_packed", occupied)
                 occupied.add(raw_id)
                 raw_projection_ids[node.id] = raw_id
@@ -188,26 +196,31 @@ def _propagate_one_iteration(
                 if pack_id in item.view_pack_ids:
                     original = node_map[pack_id]
                     packed_input_views[pack_id] = replace(
-                        original, op="tensors.bitcast", inputs=(item.parameter_id, ),
-                        attrs={"dtype": data_type_to_data(tensor_of(original.type).dtype)}, metadata={
-                            **original.metadata, "boundary_layout": "packed_input_view", "introduced_by":
-                            "FunctionBoundaryLayoutPropagation"
-                        })
+                        original, op="tensors.bitcast", inputs=(item.parameter_id,),
+                        attrs={"dtype": data_type_to_data(tensor_of(original.type).dtype)},
+                        metadata={**original.metadata, "boundary_layout": "packed_input_view",
+                                  "introduced_by": "FunctionBoundaryLayoutPropagation"})
                     continue
                 removed_substitutions[pack_id] = item.parameter_id
                 removed_owners[pack_id] = item.parameter_id
-            raw_users = frozenset(user.id
-                                  for user in users.get(item.parameter_id, ())
-                                  if user.id in owned and user.id not in item.pack_ids)
-            if (raw_users or item.parameter_id in layout.function.outputs
-                    or item.parameter_id in direct_raw_output_parameters
-                    or item.parameter_id in source_pack_parameters):
-                restore_id = _fresh_id(f"{item.parameter_id}.boundary_restore", occupied)
+            raw_users = frozenset(
+                user.id
+                for user in users.get(item.parameter_id, ())
+                if user.id in owned and user.id not in item.pack_ids
+            )
+            if (
+                raw_users
+                or item.parameter_id in layout.function.outputs
+                or item.parameter_id in direct_raw_output_parameters
+                or item.parameter_id in source_pack_parameters
+            ):
+                restore_id = _fresh_id(
+                    f"{item.parameter_id}.boundary_restore", occupied)
                 occupied.add(restore_id)
                 raw_parameter_restores[item.parameter_id] = Node(
                     restore_id,
                     item.restore_op,
-                    (item.parameter_id, ),
+                    (item.parameter_id,),
                     item.logical_type,
                     PURE,
                     item.restore_attrs,
@@ -220,8 +233,11 @@ def _propagate_one_iteration(
                 )
                 raw_parameter_use_nodes[item.parameter_id] = raw_users
         for item in layout.outputs.values():
-            output_replacements[(name, item.index)] = (raw_parameter_restores[item.packed_id].id
-                                                       if item.packed_id in raw_parameter_restores else item.packed_id)
+            output_replacements[(name, item.index)] = (
+                raw_parameter_restores[item.packed_id].id
+                if item.packed_id in raw_parameter_restores
+                else item.packed_id
+            )
             if item.unpack_id is not None:
                 removed_substitutions[item.unpack_id] = item.packed_id
                 removed_owners[item.unpack_id] = item.packed_id
@@ -235,7 +251,11 @@ def _propagate_one_iteration(
         if raw_id is None:
             continue
         output = projection_layouts[node.inputs[0]]
-        if (node.op == output.source_op and node.type == output.packed_type and node.attrs == output.pack_attrs):
+        if (
+            node.op == output.source_op
+            and node.type == output.packed_type
+            and node.attrs == output.pack_attrs
+        ):
             removed_substitutions[node.id] = raw_id
             removed_owners[node.id] = raw_id
 
@@ -244,28 +264,30 @@ def _propagate_one_iteration(
         for item in layout.outputs.values():
             if not item.source_pack:
                 continue
-            source_packs.setdefault(item.source_id, []).append(
-                Node(
-                    item.packed_id,
-                    item.source_op,
-                    (item.source_id, ),
-                    item.packed_type,
-                    PURE,
-                    item.pack_attrs,
-                    {
-                        "introduced_by": "FunctionBoundaryLayoutPropagation",
-                        "boundary_layout": "packed_output",
-                        "callee": name,
-                        "output_index": item.index,
-                    },
-                ))
+            source_packs.setdefault(item.source_id, []).append(Node(
+                item.packed_id,
+                item.source_op,
+                (item.source_id,),
+                item.packed_type,
+                PURE,
+                item.pack_attrs,
+                {
+                    "introduced_by": "FunctionBoundaryLayoutPropagation",
+                    "boundary_layout": "packed_output",
+                    "callee": name,
+                    "output_index": item.index,
+                },
+            ))
 
-    function_output_roots = {output for function in module.functions for output in function.outputs}
+    function_output_roots = {
+        output for function in module.functions for output in function.outputs
+    }
     nodes: list[Node] = []
 
     def append_projection_source_packs(node, raw, output):
         for source_pack in source_packs.get(node.id, ()):
-            if (source_pack.type == output.packed_type and source_pack.op == output.source_op
+            if (source_pack.type == output.packed_type
+                    and source_pack.op == output.source_op
                     and source_pack.attrs == output.pack_attrs):
                 # A forwarded packed call result already implements this
                 # caller-demand transform. Resolve the outer function's
@@ -273,7 +295,7 @@ def _propagate_one_iteration(
                 removed_substitutions[source_pack.id] = raw.id
                 removed_owners[source_pack.id] = raw.id
             else:
-                nodes.append(replace(source_pack, inputs=(node.id, )))
+                nodes.append(replace(source_pack, inputs=(node.id,)))
 
     def projection_needs_source_view(node, output):
         return any(pack.type != output.packed_type or pack.op != output.source_op or pack.attrs != output.pack_attrs
@@ -284,21 +306,23 @@ def _propagate_one_iteration(
         if node.id in removed_substitutions:
             continue
         if node.id in parameter_types:
-            nodes.append(
-                replace(
-                    node,
-                    type=parameter_types[node.id],
-                    metadata={
-                        **dict(node.metadata),
-                        "boundary_layout": "packed",
-                        "introduced_by": "FunctionBoundaryLayoutPropagation",
-                    },
-                ))
+            nodes.append(replace(
+                node,
+                type=parameter_types[node.id],
+                metadata={
+                    **dict(node.metadata),
+                    "boundary_layout": "packed",
+                    "introduced_by": "FunctionBoundaryLayoutPropagation",
+                },
+            ))
             if node.id in raw_parameter_restores:
                 nodes.append(raw_parameter_restores[node.id])
             for source_pack in source_packs.get(node.id, ()):
-                source_input = (raw_parameter_restores[node.id].id if node.id in raw_parameter_restores else node.id)
-                nodes.append(replace(source_pack, inputs=(source_input, )))
+                source_input = (
+                    raw_parameter_restores[node.id].id
+                    if node.id in raw_parameter_restores else node.id
+                )
+                nodes.append(replace(source_pack, inputs=(source_input,)))
             continue
         if node.op == "builtin.call" and str(node.attrs["callee"]) in layouts:
             layout = layouts[str(node.attrs["callee"])]
@@ -320,24 +344,31 @@ def _propagate_one_iteration(
                 argument = node_map[argument_id]
                 if argument.type == item.packed_type:
                     arguments[index] = argument_id
-                elif (argument.op == item.restore_op and argument.attrs == item.restore_attrs
-                      and node_map[argument.inputs[0]].type == item.packed_type):
+                elif (
+                    argument.op == item.restore_op
+                    and argument.attrs == item.restore_attrs
+                    and node_map[argument.inputs[0]].type == item.packed_type
+                ):
                     arguments[index] = argument.inputs[0]
                 else:
-                    helper_id = _fresh_id(f"{node.id}.arg{index}.boundary_pack", occupied)
+                    helper_id = _fresh_id(
+                        f"{node.id}.arg{index}.boundary_pack", occupied)
                     occupied.add(helper_id)
-                    helper_type = get_definition(item.transform_op).infer_type((argument, ), item.pack_attrs)
+                    helper_type = get_definition(item.transform_op).infer_type(
+                        (argument,), item.pack_attrs)
                     if helper_type != item.packed_type:
                         # Discovery proves the callee contract, but this call
                         # may carry an incompatible symbolic/alternate layout.
                         # Keep the original function untouched rather than
                         # fabricating a coercion.
-                        raise ValueError(f"Call {node.id!r} argument {index} cannot satisfy the unique "
-                                         f"packed boundary of @{layout.function.name}.")
+                        raise ValueError(
+                            f"Call {node.id!r} argument {index} cannot satisfy the unique "
+                            f"packed boundary of @{layout.function.name}."
+                        )
                     helper = Node(
                         helper_id,
                         item.transform_op,
-                        (argument_id, ),
+                        (argument_id,),
                         helper_type,
                         PURE,
                         item.pack_attrs,
@@ -376,22 +407,22 @@ def _propagate_one_iteration(
                 },
             )
             nodes.append(raw)
-            if _needs_logical_projection(node, users, removed_substitutions, layouts,
-                                         function_output_roots) or projection_needs_source_view(node, output):
-                nodes.append(
-                    Node(
-                        node.id,
-                        output.restore_op,
-                        (raw.id, ),
-                        output.logical_type,
-                        PURE,
-                        output.unpack_attrs,
-                        {
-                            **dict(node.metadata),
-                            "introduced_by": "FunctionBoundaryLayoutPropagation",
-                            "boundary_layout": "logical_view",
-                        },
-                    ))
+            if _needs_logical_projection(
+                node, users, removed_substitutions, layouts, function_output_roots
+            ) or projection_needs_source_view(node, output):
+                nodes.append(Node(
+                    node.id,
+                    output.restore_op,
+                    (raw.id,),
+                    output.logical_type,
+                    PURE,
+                    output.unpack_attrs,
+                    {
+                        **dict(node.metadata),
+                        "introduced_by": "FunctionBoundaryLayoutPropagation",
+                        "boundary_layout": "logical_view",
+                    },
+                ))
             else:
                 removed_substitutions[node.id] = raw.id
                 removed_owners[node.id] = raw.id
@@ -413,22 +444,22 @@ def _propagate_one_iteration(
                 },
             )
             nodes.append(raw)
-            if _needs_logical_projection(node, users, removed_substitutions, layouts,
-                                         function_output_roots) or projection_needs_source_view(node, output):
-                nodes.append(
-                    Node(
-                        node.id,
-                        output.restore_op,
-                        (raw.id, ),
-                        output.logical_type,
-                        PURE,
-                        output.unpack_attrs,
-                        {
-                            **dict(node.metadata),
-                            "introduced_by": "FunctionBoundaryLayoutPropagation",
-                            "boundary_layout": "logical_view",
-                        },
-                    ))
+            if _needs_logical_projection(
+                node, users, removed_substitutions, layouts, function_output_roots
+            ) or projection_needs_source_view(node, output):
+                nodes.append(Node(
+                    node.id,
+                    output.restore_op,
+                    (raw.id,),
+                    output.logical_type,
+                    PURE,
+                    output.unpack_attrs,
+                    {
+                        **dict(node.metadata),
+                        "introduced_by": "FunctionBoundaryLayoutPropagation",
+                        "boundary_layout": "logical_view",
+                    },
+                ))
             else:
                 removed_substitutions[node.id] = raw.id
                 removed_owners[node.id] = raw.id
@@ -436,63 +467,73 @@ def _propagate_one_iteration(
             continue
         rewritten = replace(
             node,
-            inputs=tuple(raw_parameter_restores[value].id if value in raw_parameter_restores
-                         and node.id in raw_parameter_use_nodes[value] else _resolve(value, removed_substitutions)
-                         for value in node.inputs),
+            inputs=tuple(
+                raw_parameter_restores[value].id
+                if value in raw_parameter_restores
+                and node.id in raw_parameter_use_nodes[value]
+                else _resolve(value, removed_substitutions)
+                for value in node.inputs
+            ),
         )
         nodes.append(rewritten)
         for source_pack in source_packs.get(node.id, ()):
-            nodes.append(replace(source_pack, inputs=(rewritten.id, )))
+            nodes.append(replace(source_pack, inputs=(rewritten.id,)))
 
     functions = _rewritten_functions(module, layouts)
-    functions = tuple(
-        replace(
-            function,
-            outputs=tuple(
-                _resolve(
-                    output_replacements.get(
-                        (function.name, index),
-                        raw_parameter_restores[output].id if output in raw_parameter_restores else output,
-                    ),
-                    removed_substitutions,
-                ) for index, output in enumerate(function.outputs)),
-            attrs={
-                **dict(function.attrs),
-                **({
-                    "function_boundary_layout": {
-                        "inputs": tuple(sorted(layouts[function.name].inputs)),
-                        "outputs": tuple(sorted(layouts[function.name].outputs)),
-                    }
-                } if function.name in layouts else {}),
-            },
-        ) for function in functions)
+    functions = tuple(replace(
+        function,
+        outputs=tuple(
+            _resolve(
+                output_replacements.get(
+                    (function.name, index),
+                    raw_parameter_restores[output].id
+                    if output in raw_parameter_restores else output,
+                ),
+                removed_substitutions,
+            )
+            for index, output in enumerate(function.outputs)
+        ),
+        attrs={
+            **dict(function.attrs),
+            **({
+                "function_boundary_layout": {
+                    "inputs": tuple(sorted(layouts[function.name].inputs)),
+                    "outputs": tuple(sorted(layouts[function.name].outputs)),
+                }
+            } if function.name in layouts else {}),
+        },
+    ) for function in functions)
 
     points = tuple(
-        replace(point, owner=_resolve(point.owner, removed_owners)) if point.owner in removed_owners else point
-        for point in module.selection_points)
+        replace(point, owner=_resolve(point.owner, removed_owners))
+        if point.owner in removed_owners else point
+        for point in module.selection_points
+    )
     choices = dict(module.metadata.get("function_boundary_layout_choices", {}))
     for function_name in layouts:
         choices.pop(function_name, None)
     decisions = list(module.metadata.get("function_boundary_layout_decisions", ()))
-    decisions.extend({
-        "function": function_name,
-        "candidate": layout.candidate_id,
-        "solver": "ortools-cp-sat",
-    } for function_name, layout in sorted(layouts.items()))
+    decisions.extend(
+        {
+            "function": function_name,
+            "candidate": layout.candidate_id,
+            "solver": "ortools-cp-sat",
+        }
+        for function_name, layout in sorted(layouts.items())
+    )
     metadata = dict(module.metadata)
     if choices:
         metadata["function_boundary_layout_choices"] = choices
     else:
         metadata.pop("function_boundary_layout_choices", None)
     metadata["function_boundary_layout_decisions"] = tuple(decisions)
-    return verify_module(
-        replace(
-            module,
-            nodes=tuple(nodes),
-            functions=functions,
-            selection_points=points,
-            metadata=metadata,
-        ))
+    return verify_module(replace(
+        module,
+        nodes=tuple(nodes),
+        functions=functions,
+        selection_points=points,
+        metadata=metadata,
+    ))
 
 
 def _collect_candidate_layouts(
@@ -511,15 +552,17 @@ def _collect_candidate_layouts(
             continue
         internal = _discover_internal_layout(module, function, users)
         internal = _filter_inapplicable_inputs(module, internal, function_calls)
-        identity = _FunctionLayout(function, {}, {}, candidate_id="identity", is_identity=True)
+        identity = _FunctionLayout(
+            function, {}, {}, candidate_id="identity", is_identity=True)
         variants = [identity]
         if internal.inputs or internal.outputs:
             variants.append(internal)
         for call in function_calls if enable_caller_output_demand else ():
-            demanded = _discover_caller_output_demand(module, function, call, users)
+            demanded = _discover_caller_output_demand(
+                module, function, call, users)
             if not demanded:
                 continue
-            # reference keeps an already discovered internal output contract and
+            # nncase keeps an already discovered internal output contract and
             # fills only previously empty output ports from caller demand.
             outputs = dict(internal.outputs)
             for index, item in demanded.items():
@@ -530,14 +573,15 @@ def _collect_candidate_layouts(
                 outputs,
                 candidate_id=f"caller:{call.id}",
             )
-            variant = _filter_inapplicable_inputs(module, variant, function_calls)
+            variant = _filter_inapplicable_inputs(
+                module, variant, function_calls)
             if variant.inputs or variant.outputs:
                 variants.append(variant)
         distinct: list[_FunctionLayout] = []
         keys: set[object] = set()
         for variant in sorted(
-                variants,
-                key=lambda value: (not value.is_identity, value.candidate_id),
+            variants,
+            key=lambda value: (not value.is_identity, value.candidate_id),
         ):
             key = _layout_key(variant)
             if key in keys:
@@ -559,17 +603,28 @@ def _discover_internal_layout(
     inputs: dict[int, _InputLayout] = {}
     for index, parameter_id in enumerate(function.parameters):
         parameter = module.node_map[parameter_id]
-        candidates = tuple(node for node in users.get(parameter_id, ()) if node.id in owned and node.op in {
-            "tensors.pack",
-            "tensors.unpack",
-            "tensors.permute",
-        } and node.metadata.get("boundary_layout") != "raw_parameter_restore"
-                           and not is_transient_vectorization_boundary(module, node, retained_roots=retained_roots))
+        candidates = tuple(
+            node
+            for node in users.get(parameter_id, ())
+            if node.id in owned
+            and node.op in {
+                "tensors.pack",
+                "tensors.unpack",
+                "tensors.permute",
+            }
+            and node.metadata.get("boundary_layout") != "raw_parameter_restore"
+            and not is_transient_vectorization_boundary(
+                module, node, retained_roots=retained_roots)
+        )
         if not candidates:
             continue
         first = candidates[0]
-        different = any(node.op != first.op or node.attrs != first.attrs or node.type != first.type
-                        for node in candidates[1:])
+        different = any(
+            node.op != first.op
+            or node.attrs != first.attrs
+            or node.type != first.type
+            for node in candidates[1:]
+        )
         if different:
             first = _compatible_final_axis_pack(parameter, candidates)
             if first is None:
@@ -592,16 +647,18 @@ def _discover_internal_layout(
     for index, output_id in enumerate(function.outputs):
         output = module.node_map[output_id]
         if output.op not in {
-                "tensors.unpack",
-                "tensors.permute",
-                "tensors.bitcast",
+            "tensors.unpack",
+            "tensors.permute",
+            "tensors.bitcast",
         } or len(output.inputs) != 1:
             continue
         if output.metadata.get("boundary_layout") == "packed_output":
             # A caller-demand source transform is already the selected ABI,
             # not a fresh internal transform to hoist in reverse.
             continue
-        if is_transient_vectorization_boundary(module, output, retained_roots=retained_roots):
+        if is_transient_vectorization_boundary(
+            module, output, retained_roots=retained_roots
+        ):
             # Schedule-only Pack/Unpack expressions disappear before TIR.
             # Moving them into a reusable ABI would leave vector formals and
             # results after their compute has returned to the scalar semantic
@@ -649,21 +706,26 @@ def _discover_caller_output_demand(
     outputs: dict[int, _OutputLayout] = {}
     for index, value_id in values.items():
         demands = tuple(
-            user for user in users.get(value_id, ()) if user.op in {
+            user
+            for user in users.get(value_id, ())
+            if user.op in {
                 "tensors.pack",
                 "tensors.unpack",
                 "tensors.permute",
                 "tensors.bitcast",
-            } and len(user.inputs) == 1
+            }
+            and len(user.inputs) == 1
             # Compatibility views were inserted to preserve old users, not
             # to request a new ABI. Treating them as fresh demand makes two
             # callers' inverse views repeatedly undo the selected layout.
-            and user.metadata.get("boundary_layout") != "logical_view" and
-            not is_transient_vectorization_boundary(module, user, retained_roots=retained_roots))
+            and user.metadata.get("boundary_layout") != "logical_view"
+            and not is_transient_vectorization_boundary(
+                module, user, retained_roots=retained_roots)
+        )
         if not demands:
             continue
         first = demands[0]
-        # One call contributes one ABI variant. As in reference, deterministic
+        # One call contributes one ABI variant. As in nncase, deterministic
         # node/user order chooses the first direct demand for each tuple port;
         # other consumers retain the caller-side compatibility view.
         source_id = function.outputs[index]
@@ -693,7 +755,7 @@ def _compatible_final_axis_pack(parameter, candidates):
     for node in candidates:
         if node.op != "tensors.pack":
             return None
-        axes = node.attrs.get("axes", (node.attrs.get("axis", -1), ) * len(node.attrs["lanes"]))
+        axes = node.attrs.get("axes", (node.attrs.get("axis", -1),) * len(node.attrs["lanes"]))
         if any(axis != source.rank - 1 for axis in normalize_axes(axes, source.rank)):
             return None
     first = max(candidates, key=lambda node: tensor_of(node.type).dtype.itemsize)
@@ -702,10 +764,10 @@ def _compatible_final_axis_pack(parameter, candidates):
     for node in candidates:
         attrs = {"dtype": data_type_to_data(tensor_of(node.type).dtype)}
         try:
-            inferred = bitcast.infer_type((canonical, ), attrs)
+            inferred = bitcast.infer_type((canonical,), attrs)
         except IRSchemaError:
             return None
-        if inferred != node.type or bitcast.zero_copy_input_index((canonical, ), attrs, inferred) != 0:
+        if inferred != node.type or bitcast.zero_copy_input_index((canonical,), attrs, inferred) != 0:
             return None
     return first
 
@@ -721,15 +783,18 @@ def _select_layouts(
     try:
         from ortools.sat.python import cp_model
     except ImportError as error:  # pragma: no cover - exercised in packaging.
-        raise RuntimeError("FunctionBoundaryLayoutPropagation requires OR-Tools CP-SAT; "
-                           "install ortools==9.10.4067.") from error
+        raise RuntimeError(
+            "FunctionBoundaryLayoutPropagation requires OR-Tools CP-SAT; "
+            "install ortools==9.10.4067."
+        ) from error
 
     model = cp_model.CpModel()
     variables = {}
     for function_name, variants in candidates.items():
         choices = []
         for index, _ in enumerate(variants):
-            variable = model.NewBoolVar(f"function_layout__{_sanitize_name(function_name)}__{index}")
+            variable = model.NewBoolVar(
+                f"function_layout__{_sanitize_name(function_name)}__{index}")
             variables[(function_name, index)] = variable
             choices.append(variable)
         model.AddExactlyOne(choices)
@@ -749,7 +814,11 @@ def _select_layouts(
                 f"{function_name!r} with no candidates.",
                 stage=module.stage,
             )
-        matching = [index for index, variant in enumerate(variants) if variant.candidate_id == str(candidate_id)]
+        matching = [
+            index
+            for index, variant in enumerate(variants)
+            if variant.candidate_id == str(candidate_id)
+        ]
         if not matching:
             valid = tuple(variant.candidate_id for variant in variants)
             raise IRVerificationError(
@@ -759,16 +828,16 @@ def _select_layouts(
             )
         model.Add(variables[(str(function_name), matching[0])] == 1)
 
-    model.Minimize(
-        sum(
-            _estimate_variant_cost(
-                module,
-                variant,
-                users,
-                calls[function_name],
-            ) * variables[(function_name, index)]
-            for function_name, variants in candidates.items()
-            for index, variant in enumerate(variants)))
+    model.Minimize(sum(
+        _estimate_variant_cost(
+            module,
+            variant,
+            users,
+            calls[function_name],
+        ) * variables[(function_name, index)]
+        for function_name, variants in candidates.items()
+        for index, variant in enumerate(variants)
+    ))
     validation = model.Validate()
     if validation:
         raise IRVerificationError(
@@ -776,9 +845,10 @@ def _select_layouts(
             stage=module.stage,
         )
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = _positive_env_float("FLAGMEGA_LAYOUT_SOLVE_MAX_TIME", 10.0)
-    solver.parameters.num_search_workers = _positive_env_int("FLAGMEGA_LAYOUT_SOLVE_WORKERS",
-                                                             max((os.cpu_count() or 2) // 2, 1))
+    solver.parameters.max_time_in_seconds = _positive_env_float(
+        "FLAGMEGA_LAYOUT_SOLVE_MAX_TIME", 10.0)
+    solver.parameters.num_search_workers = _positive_env_int(
+        "FLAGMEGA_LAYOUT_SOLVE_WORKERS", max((os.cpu_count() or 2) // 2, 1))
     status = solver.Solve(model)
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         raise IRVerificationError(
@@ -788,8 +858,11 @@ def _select_layouts(
         )
     selected = {}
     for function_name, variants in candidates.items():
-        variant = next(variant for index, variant in enumerate(variants)
-                       if solver.BooleanValue(variables[(function_name, index)]))
+        variant = next(
+            variant
+            for index, variant in enumerate(variants)
+            if solver.BooleanValue(variables[(function_name, index)])
+        )
         if not variant.is_identity:
             selected[function_name] = variant
     return selected
@@ -802,30 +875,48 @@ def _estimate_variant_cost(
     calls: tuple[Node, ...],
 ) -> int:
     owned = {node.id for node in function_nodes(module, layout.function)}
-    transform_count = sum(node.op in {
-        "tensors.pack",
-        "tensors.unpack",
-        "tensors.permute",
-        "tensors.bitcast",
-    } for node in module.nodes if node.id in owned)
+    transform_count = sum(
+        node.op in {
+            "tensors.pack",
+            "tensors.unpack",
+            "tensors.permute",
+            "tensors.bitcast",
+        }
+        for node in module.nodes
+        if node.id in owned
+    )
     call_count = max(len(calls), 1)
     if layout.is_identity:
-        return (_IDENTITY_VARIANT_PENALTY + transform_count * _LOCAL_TRANSFORM_COST_SCALE) * call_count
+        return (
+            _IDENTITY_VARIANT_PENALTY
+            + transform_count * _LOCAL_TRANSFORM_COST_SCALE
+        ) * call_count
 
     removed = sum(len(item.pack_ids) for item in layout.inputs.values())
-    removed += sum(item.unpack_id is not None for item in layout.outputs.values())
+    removed += sum(
+        item.unpack_id is not None for item in layout.outputs.values())
     added = sum(
         bool(
-            tuple(user
-                  for user in users.get(item.parameter_id, ())
-                  if user.id in owned and user.id not in item.pack_ids) or item.parameter_id in layout.function.outputs
+            tuple(
+                user
+                for user in users.get(item.parameter_id, ())
+                if user.id in owned and user.id not in item.pack_ids
+            )
+            or item.parameter_id in layout.function.outputs
             or any(
-                output.packed_id == item.parameter_id or (output.source_pack and output.source_id == item.parameter_id)
-                for output in layout.outputs.values()))
-        for item in layout.inputs.values())
+                output.packed_id == item.parameter_id
+                or (output.source_pack and output.source_id == item.parameter_id)
+                for output in layout.outputs.values()
+            )
+        )
+        for item in layout.inputs.values()
+    )
     added += sum(item.source_pack for item in layout.outputs.values())
-    local_cost = (transform_count - removed + added) * _LOCAL_TRANSFORM_COST_SCALE
-    adapter_cost = len(layout.inputs) + sum(item.restore_at_caller for item in layout.outputs.values())
+    local_cost = (
+        transform_count - removed + added
+    ) * _LOCAL_TRANSFORM_COST_SCALE
+    adapter_cost = len(layout.inputs) + sum(
+        item.restore_at_caller for item in layout.outputs.values())
     satisfied_demands = 0
     for call in calls:
         values = {0: call.id}
@@ -840,9 +931,15 @@ def _estimate_variant_cost(
             if value_id is None:
                 continue
             satisfied_demands += sum(
-                user.op == item.source_op and user.attrs == item.pack_attrs and user.type == item.packed_type
-                for user in users.get(value_id, ()))
-    return ((local_cost + adapter_cost) * call_count - satisfied_demands * _LOCAL_TRANSFORM_COST_SCALE)
+                user.op == item.source_op
+                and user.attrs == item.pack_attrs
+                and user.type == item.packed_type
+                for user in users.get(value_id, ())
+            )
+    return (
+        (local_cost + adapter_cost) * call_count
+        - satisfied_demands * _LOCAL_TRANSFORM_COST_SCALE
+    )
 
 
 def _filter_inapplicable_inputs(
@@ -858,11 +955,15 @@ def _filter_inapplicable_inputs(
             argument = module.node_map[call.inputs[index]]
             if argument.type == item.packed_type:
                 continue
-            if (argument.op == item.restore_op and argument.attrs == item.restore_attrs
-                    and module.node_map[argument.inputs[0]].type == item.packed_type):
+            if (
+                argument.op == item.restore_op
+                and argument.attrs == item.restore_attrs
+                and module.node_map[argument.inputs[0]].type == item.packed_type
+            ):
                 continue
             try:
-                inferred = get_definition(item.transform_op).infer_type((argument, ), item.pack_attrs)
+                inferred = get_definition(item.transform_op).infer_type(
+                    (argument,), item.pack_attrs)
             except (KeyError, TypeError, ValueError):
                 break
             if inferred != item.packed_type:
@@ -879,16 +980,23 @@ def _rewritten_functions(
     return tuple(
         replace(
             function,
-            outputs=tuple(layouts[function.name].outputs[index].
-                          packed_id if function.name in layouts and index in layouts[function.name].outputs else output
-                          for index, output in enumerate(function.outputs)),
+            outputs=tuple(
+                layouts[function.name].outputs[index].packed_id
+                if function.name in layouts and index in layouts[function.name].outputs
+                else output
+                for index, output in enumerate(function.outputs)
+            ),
         )
-        for function in module.functions)
+        for function in module.functions
+    )
 
 
 def _result_type_after_layout(module: IRModule, layout: _FunctionLayout):
-    fields = tuple(layout.outputs[index].packed_type if index in layout.outputs else module.node_map[output].type
-                   for index, output in enumerate(layout.function.outputs))
+    fields = tuple(
+        layout.outputs[index].packed_type
+        if index in layout.outputs else module.node_map[output].type
+        for index, output in enumerate(layout.function.outputs)
+    )
     return fields[0] if len(fields) == 1 else TupleType(fields)
 
 
@@ -907,7 +1015,10 @@ def _needs_logical_projection(
         if user.op == "builtin.call":
             layout = layouts.get(str(user.attrs["callee"]))
             if layout is not None:
-                positions = tuple(index for index, value in enumerate(user.inputs) if value == projection.id)
+                positions = tuple(
+                    index for index, value in enumerate(user.inputs)
+                    if value == projection.id
+                )
                 if positions and all(index in layout.inputs for index in positions):
                     continue
         return True
@@ -916,7 +1027,11 @@ def _needs_logical_projection(
 
 def _calls_by_callee(module: IRModule) -> dict[str, tuple[Node, ...]]:
     result: dict[str, list[Node]] = {}
-    live = {node.id for function in module.functions for node in function_nodes(module, function)}
+    live = {
+        node.id
+        for function in module.functions
+        for node in function_nodes(module, function)
+    }
     for node in module.nodes:
         if node.id in live and node.op == "builtin.call":
             result.setdefault(str(node.attrs["callee"]), []).append(node)
@@ -978,7 +1093,9 @@ def _inverse_transform(
             inverse[input_axis] = output_axis
         return "tensors.permute", {"axes": tuple(inverse)}
     if transform.op == "tensors.bitcast":
-        return "tensors.bitcast", {"dtype": data_type_to_data(tensor_of(source.type).dtype)}
+        return "tensors.bitcast", {
+            "dtype": data_type_to_data(tensor_of(source.type).dtype)
+        }
     raise IRVerificationError(
         f"Unsupported function-boundary transform {transform.op!r}.",
         node_id=transform.id,
@@ -987,34 +1104,45 @@ def _inverse_transform(
 
 def _layout_key(layout: _FunctionLayout):
     if layout.is_identity:
-        return ("identity", )
+        return ("identity",)
     return (
-        tuple((
-            index,
-            item.packed_type,
-            item.transform_op,
-            _attrs_key(item.pack_attrs),
-        ) for index, item in sorted(layout.inputs.items())),
-        tuple((
-            index,
-            item.logical_type,
-            item.packed_type,
-            item.source_op,
-            _attrs_key(item.pack_attrs),
-            item.restore_op,
-            item.source_pack,
-            item.restore_at_caller,
-        ) for index, item in sorted(layout.outputs.items())),
+        tuple(
+            (
+                index,
+                item.packed_type,
+                item.transform_op,
+                _attrs_key(item.pack_attrs),
+            )
+            for index, item in sorted(layout.inputs.items())
+        ),
+        tuple(
+            (
+                index,
+                item.logical_type,
+                item.packed_type,
+                item.source_op,
+                _attrs_key(item.pack_attrs),
+                item.restore_op,
+                item.source_pack,
+                item.restore_at_caller,
+            )
+            for index, item in sorted(layout.outputs.items())
+        ),
     )
 
 
 def _attrs_key(attrs: Mapping[str, object]):
-    return tuple((key, _freeze_attr(value)) for key, value in sorted(attrs.items()))
+    return tuple(
+        (key, _freeze_attr(value))
+        for key, value in sorted(attrs.items())
+    )
 
 
 def _freeze_attr(value):
     if isinstance(value, Mapping):
-        return tuple((key, _freeze_attr(item)) for key, item in sorted(value.items()))
+        return tuple(
+            (key, _freeze_attr(item)) for key, item in sorted(value.items())
+        )
     if isinstance(value, (tuple, list)):
         return tuple(_freeze_attr(item) for item in value)
     return value

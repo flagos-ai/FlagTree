@@ -21,15 +21,17 @@ from triton.flagmega.passes.tir.bufferize.policy import NttBufferizationPolicy
 def test_chip_image_preserves_each_chip_and_block_partition(tmp_path):
     placement = fm.Placement((2, 2), "cx", "cb")
     tensor = fm.tensor_type("float32", (8, 4))
-    distributed = fm.DistributedType(tensor, (fm.SBP.split_contiguous((0, )), fm.SBP.split_contiguous((1, ))),
-                                     placement)
+    distributed = fm.DistributedType(
+        tensor, (fm.SBP.split_contiguous((0,)), fm.SBP.split_contiguous((1,))), placement
+    )
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
     weight = builder.weight("weight", distributed, source="memory", key="weight", id="weight")
-    builder.function("main", (), (weight, ))
+    builder.function("main", (), (weight,))
     module = builder.build(entry="main")
     module = replace(module, metadata={"launch_contract": {"grid_mesh": placement.to_data()}})
-    module = NttBufferizationPolicy(replace(BufferizationOptions.generic(alignment=4),
-                                            rdata_chip_sharding=True)).bufferize(module)
+    module = NttBufferizationPolicy(replace(
+        BufferizationOptions.generic(alignment=4), rdata_chip_sharding=True
+    )).bufferize(module)
     source = torch.arange(32, dtype=torch.float32).reshape(8, 4)
     checkpoint = MemoryCheckpoint({}, {"weight": TensorInfo("weight", fm.DType.FLOAT32, (8, 4), "memory")},
                                   {"weight": source})
@@ -41,7 +43,7 @@ def test_chip_image_preserves_each_chip_and_block_partition(tmp_path):
     for chip in range(2):
         for block in range(2):
             np.testing.assert_array_equal(image[chip, block], source[chip * 4:(chip + 1) * 4,
-                                                                     block * 2:(block + 1) * 2].numpy())
+                                                                    block * 2:(block + 1) * 2].numpy())
     assert verify_rdata(tmp_path, module=module)["chip_count"] == 2
 
 
@@ -50,16 +52,17 @@ def test_chip_local_broadcast_blocks_use_one_component(tmp_path):
     tensor = fm.tensor_type("float32", (16, 8, 1))
     distributed = fm.DistributedType(
         tensor,
-        (fm.SBP.split_contiguous((0, )), fm.SBP.broadcast(), fm.SBP.broadcast()),
+        (fm.SBP.split_contiguous((0,)), fm.SBP.broadcast(), fm.SBP.broadcast()),
         placement,
     )
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
     weight = builder.weight("weight", distributed, source="memory", key="weight", id="weight")
-    builder.function("main", (), (weight, ))
+    builder.function("main", (), (weight,))
     module = builder.build(entry="main")
     module = replace(module, metadata={"launch_contract": {"grid_mesh": placement.to_data()}})
-    module = NttBufferizationPolicy(replace(BufferizationOptions.generic(alignment=4),
-                                            rdata_chip_sharding=True)).bufferize(module)
+    module = NttBufferizationPolicy(replace(
+        BufferizationOptions.generic(alignment=4), rdata_chip_sharding=True
+    )).bufferize(module)
     plan = module.metadata["buffer_plan"]
     planned = next(item for item in plan["buffers"] if item["id"] == "weight")
     assert planned["distributed_storage_kind"] == "compact_per_chip"
@@ -83,27 +86,27 @@ def test_chip_local_broadcast_blocks_use_one_component(tmp_path):
         np.testing.assert_array_equal(image[chip], source[chip * 4:(chip + 1) * 4].numpy())
 
 
-@pytest.mark.parametrize("split_blocks", [(), (1, ), (2, ), (1, 2)])
+@pytest.mark.parametrize("split_blocks", [(), (1,), (2,), (1, 2)])
 @pytest.mark.parametrize("access", ["rendered", "bound"])
 def test_chip_image_read_addresses_match_block_partition(tmp_path, split_blocks, access):
     placement = fm.Placement((4, 2, 2), "cyx", "cbb")
     distributed = fm.DistributedType(
         fm.tensor_type("float32", (8, 8, 4)),
-        tuple(
-            fm.SBP.split_contiguous((axis, )) if axis == 0 or axis in split_blocks else fm.SBP.broadcast()
-            for axis in range(3)),
+        tuple(fm.SBP.split_contiguous((axis,)) if axis == 0 or axis in split_blocks
+              else fm.SBP.broadcast() for axis in range(3)),
         placement,
     )
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
     weight = builder.weight("weight", distributed, source="memory", key="weight", id="weight")
-    builder.function("main", (), (weight, ))
-    module = replace(builder.build(entry="main"), metadata={"launch_contract": {"grid_mesh": placement.to_data()}})
-    module = NttBufferizationPolicy(replace(BufferizationOptions.generic(alignment=4),
-                                            rdata_chip_sharding=True)).bufferize(module)
+    builder.function("main", (), (weight,))
+    module = replace(builder.build(entry="main"),
+                     metadata={"launch_contract": {"grid_mesh": placement.to_data()}})
+    module = NttBufferizationPolicy(replace(
+        BufferizationOptions.generic(alignment=4), rdata_chip_sharding=True
+    )).bufferize(module)
     source = torch.arange(256, dtype=torch.float32).reshape(8, 8, 4)
     checkpoint = MemoryCheckpoint(
-        {},
-        {"weight": TensorInfo("weight", fm.DType.FLOAT32, (8, 8, 4), "memory")},
+        {}, {"weight": TensorInfo("weight", fm.DType.FLOAT32, (8, 8, 4), "memory")},
         {"weight": source},
     )
     index = pack_rdata(module, checkpoint, tmp_path)
@@ -118,14 +121,11 @@ def test_chip_image_read_addresses_match_block_partition(tmp_path, split_blocks,
         owner = chip * 4 + y * 2 + x
         if access == "rendered":
             offset = eval(expression, {"__builtins__": {}}, {
-                "base": 0,
-                "block_index": y * 2 + x,
-                "shard_index": owner,
-                "shard_coord0": chip,
-                "shard_coord1": y,
-                "shard_coord2": x,
+                "base": 0, "block_index": y * 2 + x, "shard_index": owner,
+                "shard_coord0": chip, "shard_coord1": y, "shard_coord2": x,
             })
         else:
             offset = distributed_buffer_abi(buffer, owner).component_offset_elements
         assert 0 <= offset <= index["segment_nbytes"] // 4 - expected.numel()
-        np.testing.assert_array_equal(image[chip, offset:offset + expected.numel()], expected.numpy().reshape(-1))
+        np.testing.assert_array_equal(image[chip, offset:offset + expected.numel()],
+                                      expected.numpy().reshape(-1))

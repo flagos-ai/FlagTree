@@ -6,19 +6,22 @@ from triton.flagmega.codegen.triton.templates import (
     TritonTemplateRegistry,
 )
 from triton.flagmega.targets.portable_triton_implementations import (
-    portable_triton_implementation_model, )
+    portable_triton_implementation_model,
+)
 
 
 def test_every_registered_tir_implementation_template_owns_wrapper_rendering():
     registry = TritonTemplateRegistry()
     model = portable_triton_implementation_model()
     resolved = {
-        registry.resolve(KernelTemplateSpec(
-            implementation.family,
-            implementation.variant,
-            "nvidia",
-            "sm90",
-        ))
+        registry.resolve(
+            KernelTemplateSpec(
+                implementation.family,
+                implementation.variant,
+                "nvidia",
+                "sm90",
+            )
+        )
         for implementation in model.implementations
     }
 
@@ -30,7 +33,9 @@ def test_every_registered_tir_implementation_template_owns_wrapper_rendering():
 
 def test_call_graph_entrypoint_contains_only_schedule_and_resource_construction():
     registry = TritonTemplateRegistry()
-    source = (registry.root / "entrypoints/call_graph.py.jinja").read_text(encoding="utf-8")
+    source = (
+        registry.root / "entrypoints/call_graph.py.jinja"
+    ).read_text(encoding="utf-8")
 
     assert "call.family" not in source
     assert "{% for call in render_calls %}" not in source

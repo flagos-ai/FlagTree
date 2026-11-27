@@ -45,7 +45,9 @@ def _worker(artifact, elements):
 @pytest.mark.parametrize("hierarchy,levels", [((4, 2, 4), "cbb"), ((2, 4, 4), "bcb")])
 def test_replicated_add_norm_stats_four_ranks(tmp_path, variant, elements, hierarchy, levels):
     torch = pytest.importorskip("torch")
-    if torch.cuda.device_count() < 4 or any(torch.cuda.get_device_capability(rank) != (9, 0) for rank in range(4)):
+    if torch.cuda.device_count() < 4 or any(
+        torch.cuda.get_device_capability(rank) != (9, 0) for rank in range(4)
+    ):
         pytest.skip("Four SM90 CUDA devices are required")
     from triton.flagmega import ir as fm
     from triton.flagmega.artifacts import write_artifact
@@ -54,10 +56,9 @@ def test_replicated_add_norm_stats_four_ranks(tmp_path, variant, elements, hiera
     placement = fm.Placement(hierarchy, "abc", levels)
     block_axes = tuple(axis for axis, level in enumerate(levels) if level == "b")
     tensor = fm.tensor_type("bfloat16", (1, elements))
-    broadcast = fm.DistributedType(tensor, (fm.SBP.broadcast(), ) * 2, placement)
+    broadcast = fm.DistributedType(tensor, (fm.SBP.broadcast(),) * 2, placement)
 
     class Graph(fm.Module):
-
         def forward(self):
             source = self.input("source", tensor)
             residual = self.input("residual", tensor)
@@ -67,12 +68,11 @@ def test_replicated_add_norm_stats_four_ranks(tmp_path, variant, elements, hiera
             value = fm.F.tensors.get_item(combined, 0)
             stats = fm.F.tensors.get_item(combined, 1)
             split = fm.DistributedType(tensor, (
-                fm.SBP.broadcast(),
-                fm.SBP.split_contiguous(block_axes, elements // 8),
+                fm.SBP.broadcast(), fm.SBP.split_contiguous(block_axes, elements // 8),
             ), placement)
             local = fm.F.distributed.sharded_view(value, split)
             token = fm.F.nn.greedy_sample(local)
-            token = fm.F.distributed.force_boxing(token, fm.tensor_type("int32", (1, )))
+            token = fm.F.distributed.force_boxing(token, fm.tensor_type("int32", (1,)))
             value = fm.F.math.silu(local)
             value = fm.F.distributed.force_boxing(value, tensor)
             stats = fm.F.distributed.force_boxing(stats, stats.type.tensor)
@@ -80,29 +80,18 @@ def test_replicated_add_norm_stats_four_ranks(tmp_path, variant, elements, hiera
 
     compiler = Compiler()
     model = compiler.target.triton_implementation_model
-    compiler.target.triton_implementation_model = replace(
-        model, preferences={
-            **model.preferences,
-            "add_norm_stats": (f"tir.add_norm_stats.{variant}", ),
-        })
-    module = compiler.compile(
-        Graph(
-            dialect="distributed",
-            stage="frozen_constants",
-            entry="main",
-            metadata={"auto_distribution": {"placement": placement.to_data()}},
-        ).build()).module
+    compiler.target.triton_implementation_model = replace(model, preferences={
+        **model.preferences, "add_norm_stats": (f"tir.add_norm_stats.{variant}",),
+    })
+    module = compiler.compile(Graph(
+        dialect="distributed", stage="frozen_constants", entry="main",
+        metadata={"auto_distribution": {"placement": placement.to_data()}},
+    ).build()).module
     assert fm.kernel_dispatch_for_call(module, module.node_map["combine"]).microkernel.variant == variant
     artifact = write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     result = subprocess.run([
-        sys.executable,
-        "-m",
-        "torch.distributed.run",
-        "--standalone",
-        "--nproc_per_node=4",
-        str(Path(__file__).resolve()),
-        str(artifact),
-        str(elements),
+        sys.executable, "-m", "torch.distributed.run", "--standalone", "--nproc_per_node=4",
+        str(Path(__file__).resolve()), str(artifact), str(elements),
     ], capture_output=True, text=True, timeout=180)
     assert result.returncode == 0, result.stdout + result.stderr
 

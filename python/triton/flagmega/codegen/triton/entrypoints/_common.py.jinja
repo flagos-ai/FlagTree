@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% macro mesh_coordinates() -%}
+{% macro mesh_coordinates() -%}
 {% if distributed_entry %}
 {% set effective_mesh_rank = mesh_rank | default(mesh_hierarchy | length) %}
 {% set effective_mesh_levels = mesh_levels | default("b" * effective_mesh_rank) %}

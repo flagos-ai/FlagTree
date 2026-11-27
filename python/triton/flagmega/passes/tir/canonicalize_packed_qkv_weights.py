@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: MIT
 """Canonicalize three packed-QKV RHS values to one TIR ABI value.
 
-This is the FlagMega counterpart of the reference ``CanonicalizePackedQKVWeightsPass``.  It runs after TIR selection, so graph
+This is the FlagMega counterpart of nncase's
+``CanonicalizePackedQKVWeightsPass``.  It runs after TIR selection, so graph
 packing and AutoDistribution continue to reason about Q/K/V independently.
 The pass owns ABI propagation only; target tile sizes and instruction choices
 remain in the selected implementation catalog.
@@ -28,11 +29,14 @@ from triton.flagmega.ir import (
     logical_type,
 )
 from triton.flagmega.ir.tir import (
+    KernelDispatch,
     PrimFunction,
     PrimParameter,
+    Sequential,
 )
 from triton.flagmega.ir.ops.ntt.packed_qkv_parallel_linear import (
-    PackedQKVParallelLinear, )
+    PackedQKVParallelLinear,
+)
 from triton.flagmega.ir.types import VectorType
 from triton.flagmega.passes.constants import (
     ConstantPhase,
@@ -41,6 +45,7 @@ from triton.flagmega.passes.constants import (
     thaw_constant_islands,
 )
 from triton.flagmega.passes.functions import callee_first_functions, function_nodes
+
 
 _PACKED_QKV = "ntt.packed_qkv_parallel_linear"
 _PACKED_QKV_FUSED_RHS = "ntt.packed_qkv_parallel_linear_fused_rhs"
@@ -130,15 +135,24 @@ def canonicalize_packed_qkv_weights(module: IRModule) -> IRModule:
     _verify_no_independent_parameter_uses(module, function_plans)
 
     prim_functions = tuple(
-        _rewrite_kernel(function, kernel_plans[function.name]) if function.name in kernel_plans else function
-        for function in module.kernel_callable_map.values())
+        _rewrite_kernel(function, kernel_plans[function.name])
+        if function.name in kernel_plans else function
+        for function in module.kernel_callable_map.values()
+    )
     removed_parameters = {
         module.functions[index].parameters[parameter_index]
         for index, function in enumerate(module.functions)
-        for parameter_index in (value for group in function_plans[function.name].parameter_groups.values()
-                                for value in group.indices)
+        for parameter_index in (
+            value
+            for group in function_plans[function.name].parameter_groups.values()
+            for value in group.indices
+        )
     }
-    removed_parameter_adapters = {adapter for plan in function_plans.values() for adapter in plan.parameter_adapters}
+    removed_parameter_adapters = {
+        adapter
+        for plan in function_plans.values()
+        for adapter in plan.parameter_adapters
+    }
     inserted_parameters = {
         group.fused_parameter.id: group.fused_parameter
         for plan in function_plans.values()
@@ -173,13 +187,15 @@ def canonicalize_packed_qkv_weights(module: IRModule) -> IRModule:
             fused_values,
         )
         nodes.extend(helpers)
-        nodes.append(
-            replace(node, inputs=rewritten_inputs, metadata={
-                **dict(node.metadata),
-                "canonicalized_packed_qkv_rhs": True,
-            }))
+        nodes.append(replace(node, inputs=rewritten_inputs, metadata={
+            **dict(node.metadata),
+            "canonicalized_packed_qkv_rhs": True,
+        }))
 
-    functions = tuple(_rewrite_graph_function(function, function_plans[function.name]) for function in module.functions)
+    functions = tuple(
+        _rewrite_graph_function(function, function_plans[function.name])
+        for function in module.functions
+    )
     # Every synthesized parameter must have replaced exactly one original Q
     # parameter.  This catches stale plans before the ordinary verifier sees a
     # less useful missing-node error.
@@ -190,14 +206,26 @@ def canonicalize_packed_qkv_weights(module: IRModule) -> IRModule:
             f"Packed-QKV fused parameters were not materialized: {sorted(missing)}.",
             stage=module.stage,
         )
-    removed_point_ids = {point.id for point in module.selection_points if point.owner in removed_parameter_adapters}
+    removed_point_ids = {
+        point.id
+        for point in module.selection_points
+        if point.owner in removed_parameter_adapters
+    }
     result = replace_kernel_callables(
         module,
         prim_functions,
         nodes=tuple(nodes),
         functions=functions,
-        selection_points=tuple(point for point in module.selection_points if point.id not in removed_point_ids),
-        selections=tuple(selection for selection in module.selections if selection.point_id not in removed_point_ids),
+        selection_points=tuple(
+            point
+            for point in module.selection_points
+            if point.id not in removed_point_ids
+        ),
+        selections=tuple(
+            selection
+            for selection in module.selections
+            if selection.point_id not in removed_point_ids
+        ),
     )
     return freeze_constant_islands(result) if refreeze else result
 
@@ -209,7 +237,10 @@ def _discover_kernel_plans(module: IRModule) -> dict[str, _KernelPlan]:
         if dispatch is None or dispatch.semantic_op != _PACKED_QKV:
             continue
         input_arity = len(PackedQKVParallelLinear.input_parameters)
-        if (len(function.runtime_parameters) != input_arity or len(dispatch.arguments) != input_arity):
+        if (
+            len(function.runtime_parameters) != input_arity
+            or len(dispatch.arguments) != input_arity
+        ):
             raise IRVerificationError(
                 f"Packed-QKV PrimFunction @{function.name} requires "
                 f"{input_arity} input operands.",
@@ -220,7 +251,9 @@ def _discover_kernel_plans(module: IRModule) -> dict[str, _KernelPlan]:
                 "Packed-QKV TIR canonicalization requires K-major RHS values.",
                 stage=module.stage,
             )
-        source_types = tuple(function.runtime_parameters[index].type for index in _WEIGHT_INDICES)
+        source_types = tuple(
+            function.runtime_parameters[index].type for index in _WEIGHT_INDICES
+        )
         fused_type = _fused_weight_type(source_types, function.name)
         if len(function.output_parameters) != 3:
             raise IRVerificationError(
@@ -228,7 +261,9 @@ def _discover_kernel_plans(module: IRModule) -> dict[str, _KernelPlan]:
                 stage=module.stage,
             )
         capacities = tuple(
-            _projection_n_capacity(parameter.type, function.name) for parameter in function.output_parameters)
+            _projection_n_capacity(parameter.type, function.name)
+            for parameter in function.output_parameters
+        )
         plans[function.name] = _KernelPlan(
             function,
             fused_type,
@@ -243,7 +278,9 @@ def _discover_function_plans(module, kernel_plans):
     call_owners: dict[str, str] = {}
     for function in callee_first_functions(module):
         plan = _FunctionPlan(function, {}, {}, set(), set(), set())
-        parameter_indices = {parameter: index for index, parameter in enumerate(function.parameters)}
+        parameter_indices = {
+            parameter: index for index, parameter in enumerate(function.parameters)
+        }
         for node in function_nodes(module, function):
             if node.op != "tir.call":
                 continue
@@ -251,15 +288,14 @@ def _discover_function_plans(module, kernel_plans):
             groups: list[_CallGroup] = []
             kernel_plan = kernel_plans.get(callee_name)
             if kernel_plan is not None:
-                groups.append(
-                    _CallGroup(
-                        _Q_WEIGHT_INDEX,
-                        _K_WEIGHT_INDEX,
-                        _V_WEIGHT_INDEX,
-                        kernel_plan.source_types,
-                        kernel_plan.source_types,
-                        kernel_plan.fused_type,
-                    ))
+                groups.append(_CallGroup(
+                    _Q_WEIGHT_INDEX,
+                    _K_WEIGHT_INDEX,
+                    _V_WEIGHT_INDEX,
+                    kernel_plan.source_types,
+                    kernel_plan.source_types,
+                    kernel_plan.fused_type,
+                ))
             elif callee_name in plans:
                 callee_plan = plans[callee_name]
                 groups.extend(
@@ -270,7 +306,9 @@ def _discover_function_plans(module, kernel_plans):
                         group.source_types,
                         group.materialization_types,
                         group.fused_type,
-                    ) for group in callee_plan.parameter_groups.values())
+                    )
+                    for group in callee_plan.parameter_groups.values()
+                )
             if not groups:
                 continue
             plan.call_groups[node.id] = tuple(groups)
@@ -303,7 +341,10 @@ def _discover_parameter_group(module, plan, call, call_group, parameter_indices)
             stage=module.stage,
             node_id=call.id,
         )
-    traced = tuple(_trace_parameter_adapter(value, module, parameter_indices) for value in actual_ids)
+    traced = tuple(
+        _trace_parameter_adapter(value, module, parameter_indices)
+        for value in actual_ids
+    )
     root_ids = tuple(value[0] for value in traced)
     root_types = tuple(module.node_map[value].type for value in root_ids)
     adapter_chains = tuple(value[1] for value in traced)
@@ -325,7 +366,11 @@ def _discover_parameter_group(module, plan, call, call_group, parameter_indices)
         )
     existing = plan.parameter_groups.get(triple)
     if existing is None:
-        claimed = {index for group in plan.parameter_groups.values() for index in group.indices}
+        claimed = {
+            index
+            for group in plan.parameter_groups.values()
+            for index in group.indices
+        }
         if claimed.intersection(triple):
             raise IRVerificationError(
                 f"Packed-QKV parameter groups overlap in @{plan.function.name}.",
@@ -353,8 +398,11 @@ def _discover_parameter_group(module, plan, call, call_group, parameter_indices)
             call_group.fused_type,
             fused_parameter,
         )
-    elif (existing.source_types != root_types or existing.materialization_types != call_group.materialization_types
-          or existing.fused_type != call_group.fused_type):
+    elif (
+        existing.source_types != root_types
+        or existing.materialization_types != call_group.materialization_types
+        or existing.fused_type != call_group.fused_type
+    ):
         raise IRVerificationError(
             f"Packed-QKV parameter group {triple} in @{plan.function.name} "
             "has incompatible layouts.",
@@ -368,7 +416,9 @@ def _discover_parameter_group(module, plan, call, call_group, parameter_indices)
         plan.parameter_adapters.update(adapters)
         plan.allowed_parameter_uses.add((adapters[-1], 0))
         plan.allowed_adapter_uses.add((call.id, input_index))
-        plan.allowed_adapter_uses.update((outer, 0) for outer in adapters[:-1])
+        plan.allowed_adapter_uses.update(
+            (outer, 0) for outer in adapters[:-1]
+        )
 
 
 def _trace_parameter_adapter(actual_id, module, parameter_indices):
@@ -405,11 +455,18 @@ def _is_parameter_adapter(node, module) -> bool:
     if callee is None:
         return False
     dispatch = kernel_dispatch_of(callee)
-    if (dispatch is None or dispatch.semantic_op != "distributed.boxing" or len(callee.runtime_parameters) != 1):
+    if (
+        dispatch is None
+        or dispatch.semantic_op != "distributed.boxing"
+        or len(callee.runtime_parameters) != 1
+    ):
         return False
     source = module.node_map[node.inputs[0]]
-    return (source.type == callee.runtime_parameter_types[0] and node.type == callee.runtime_return_type
-            and logical_type(source.type) == logical_type(node.type))
+    return (
+        source.type == callee.runtime_parameter_types[0]
+        and node.type == callee.runtime_return_type
+        and logical_type(source.type) == logical_type(node.type)
+    )
 
 
 def _verify_no_independent_parameter_uses(module, plans):
@@ -429,14 +486,20 @@ def _verify_no_independent_parameter_uses(module, plans):
                 )
         for node in function_nodes(module, plan.function):
             for index, input_id in enumerate(node.inputs):
-                if (input_id in parameter_ids and (node.id, index) not in plan.allowed_parameter_uses):
+                if (
+                    input_id in parameter_ids
+                    and (node.id, index) not in plan.allowed_parameter_uses
+                ):
                     raise IRVerificationError(
                         f"Packed-QKV weight parameter {input_id!r} in "
                         f"@{plan.function.name} has an independent reference.",
                         stage=module.stage,
                         node_id=node.id,
                     )
-                if (input_id in plan.parameter_adapters and (node.id, index) not in plan.allowed_adapter_uses):
+                if (
+                    input_id in plan.parameter_adapters
+                    and (node.id, index) not in plan.allowed_adapter_uses
+                ):
                     raise IRVerificationError(
                         f"Packed-QKV parameter adapter {input_id!r} in "
                         f"@{plan.function.name} has an independent reference.",
@@ -469,16 +532,28 @@ def _rewrite_kernel(function, plan):
         elif index not in {_K_WEIGHT_INDEX, _V_WEIGHT_INDEX}:
             argument_names.append(name)
     removed_names = {dispatch.arguments[index] for index in _WEIGHT_INDICES}
-    reads = tuple(fused_parameter.name if value == dispatch.arguments[_Q_WEIGHT_INDEX] else value
-                  for value in dispatch.reads
-                  if value not in removed_names or value == dispatch.arguments[_Q_WEIGHT_INDEX])
+    reads = tuple(
+        fused_parameter.name
+        if value == dispatch.arguments[_Q_WEIGHT_INDEX]
+        else value
+        for value in dispatch.reads
+        if value not in removed_names
+        or value == dispatch.arguments[_Q_WEIGHT_INDEX]
+    )
     if dispatch.memory_effects:
-        fused_effect = next(effect for name, effect in dispatch.memory_effects
-                            if name == dispatch.arguments[_Q_WEIGHT_INDEX])
-        memory_effects = tuple(
-            (fused_parameter.name, fused_effect) if name == dispatch.arguments[_Q_WEIGHT_INDEX] else (name, effect)
+        fused_effect = next(
+            effect
             for name, effect in dispatch.memory_effects
-            if name not in removed_names or name == dispatch.arguments[_Q_WEIGHT_INDEX])
+            if name == dispatch.arguments[_Q_WEIGHT_INDEX]
+        )
+        memory_effects = tuple(
+            (fused_parameter.name, fused_effect)
+            if name == dispatch.arguments[_Q_WEIGHT_INDEX]
+            else (name, effect)
+            for name, effect in dispatch.memory_effects
+            if name not in removed_names
+            or name == dispatch.arguments[_Q_WEIGHT_INDEX]
+        )
     else:
         memory_effects = ()
     semantic_parameters = _rewrite_distribution_contract(
@@ -526,12 +601,18 @@ def _rewrite_distribution_contract(parameters, function, plan, *, owner):
     distribution = result.get("distribution")
     if not hasattr(distribution, "get"):
         return result
-    input_types = tuple(distribution.get("input_types", function.runtime_parameter_types))
+    input_types = tuple(distribution.get(
+        "input_types", function.runtime_parameter_types
+    ))
     if len(input_types) != len(function.runtime_parameters):
-        raise IRVerificationError(f"Packed-QKV {owner} has a stale distributed input ABI.", )
+        raise IRVerificationError(
+            f"Packed-QKV {owner} has a stale distributed input ABI.",
+        )
     if tuple(input_types[index] for index in _WEIGHT_INDICES) != plan.source_types:
-        raise IRVerificationError(f"Packed-QKV {owner} distributed RHS types disagree with its "
-                                  "PrimFunction ABI.", )
+        raise IRVerificationError(
+            f"Packed-QKV {owner} distributed RHS types disagree with its "
+            "PrimFunction ABI.",
+        )
     rewritten_inputs = []
     for index, value_type in enumerate(input_types):
         if index == _Q_WEIGHT_INDEX:
@@ -547,7 +628,11 @@ def _rewrite_distribution_contract(parameters, function, plan, *, owner):
 
 def _rewrite_graph_function(function, plan):
     by_q = {group.q_index: group for group in plan.parameter_groups.values()}
-    removed = {index for group in plan.parameter_groups.values() for index in (group.k_index, group.v_index)}
+    removed = {
+        index
+        for group in plan.parameter_groups.values()
+        for index in (group.k_index, group.v_index)
+    }
     parameters = []
     for index, parameter in enumerate(function.parameters):
         if index in removed:
@@ -559,9 +644,15 @@ def _rewrite_graph_function(function, plan):
 
 def _rewrite_call_inputs(node, groups, plan, module, fused_values):
     by_q = {group.q_index: group for group in groups}
-    removed = {index for group in groups for index in (group.k_index, group.v_index)}
-    parameter_groups = {group.indices: group for group in plan.parameter_groups.values()}
-    parameter_indices = {parameter: index for index, parameter in enumerate(plan.function.parameters)}
+    removed = {
+        index for group in groups for index in (group.k_index, group.v_index)
+    }
+    parameter_groups = {
+        group.indices: group for group in plan.parameter_groups.values()
+    }
+    parameter_indices = {
+        parameter: index for index, parameter in enumerate(plan.function.parameters)
+    }
     helpers: list[Node] = []
     inputs: list[str] = []
     for index, input_id in enumerate(node.inputs):
@@ -572,8 +663,13 @@ def _rewrite_call_inputs(node, groups, plan, module, fused_values):
             inputs.append(input_id)
             continue
         actual_ids = tuple(node.inputs[value] for value in group.indices)
-        actual_root_ids = tuple(_trace_parameter_adapter(value, module, parameter_indices)[0] for value in actual_ids)
-        actual_parameter_indices = tuple(parameter_indices.get(value, -1) for value in actual_root_ids)
+        actual_root_ids = tuple(
+            _trace_parameter_adapter(value, module, parameter_indices)[0]
+            for value in actual_ids
+        )
+        actual_parameter_indices = tuple(
+            parameter_indices.get(value, -1) for value in actual_root_ids
+        )
         parameter_group = parameter_groups.get(actual_parameter_indices)
         if parameter_group is not None:
             inputs.append(parameter_group.fused_parameter.id)
@@ -586,7 +682,10 @@ def _rewrite_call_inputs(node, groups, plan, module, fused_values):
         actual_nodes = tuple(module.node_map[value] for value in actual_ids)
         concat_inputs = actual_nodes
         concat_axis = 1
-        distributed_materialization = tuple(isinstance(value, DistributedType) for value in group.materialization_types)
+        distributed_materialization = tuple(
+            isinstance(value, DistributedType)
+            for value in group.materialization_types
+        )
         if any(distributed_materialization) and not all(distributed_materialization):
             raise IRVerificationError(
                 f"Packed-QKV call {node.id!r} has mixed materialization domains.",
@@ -596,7 +695,9 @@ def _rewrite_call_inputs(node, groups, plan, module, fused_values):
         if all(distributed_materialization):
             materialize = get_definition("distributed.materialize_local_shards")
             local_values = []
-            for ordinal, (source, desired_type) in enumerate(zip(actual_nodes, group.materialization_types)):
+            for ordinal, (source, desired_type) in enumerate(zip(
+                actual_nodes, group.materialization_types
+            )):
                 assert isinstance(desired_type, DistributedType)
                 materialize_source = source
                 if source.type != desired_type:
@@ -608,11 +709,13 @@ def _rewrite_call_inputs(node, groups, plan, module, fused_values):
                             node_id=node.id,
                         )
                     view = get_definition("distributed.sharded_view")
-                    viewed = view.prepare((source, ), {"new_type": desired_type})
+                    viewed = view.prepare(
+                        (source,), {"new_type": desired_type}
+                    )
                     materialize_source = Node(
                         f"{node.id}.{suffix}.view_{ordinal}",
                         "distributed.sharded_view",
-                        (source.id, ),
+                        (source.id,),
                         viewed.result_type,
                         viewed.effect,
                         viewed.attrs,
@@ -622,11 +725,11 @@ def _rewrite_call_inputs(node, groups, plan, module, fused_values):
                         },
                     )
                     helpers.append(materialize_source)
-                prepared = materialize.prepare((materialize_source, ), {})
+                prepared = materialize.prepare((materialize_source,), {})
                 helper = Node(
                     f"{node.id}.{suffix}.source_{ordinal}",
                     "distributed.materialize_local_shards",
-                    (materialize_source.id, ),
+                    (materialize_source.id,),
                     prepared.result_type,
                     prepared.effect,
                     prepared.attrs,
@@ -668,31 +771,53 @@ def _rewrite_call_inputs(node, groups, plan, module, fused_values):
 def _plain_tensor(value_type, owner):
     value = logical_type(value_type)
     if not isinstance(value, TensorType):
-        raise IRVerificationError(f"Packed-QKV {owner} weight must be tensor-like, got "
-                                  f"{type(value_type).__name__}.")
+        raise IRVerificationError(
+            f"Packed-QKV {owner} weight must be tensor-like, got "
+            f"{type(value_type).__name__}."
+        )
     return value
 
 
 def _fused_weight_type(source_types, owner):
     logical_types = tuple(_plain_tensor(value, owner) for value in source_types)
     if any(value.rank != 2 for value in logical_types):
-        raise IRVerificationError(f"Packed-QKV {owner} weights must be rank 2.")
+        raise IRVerificationError(
+            f"Packed-QKV {owner} weights must be rank 2."
+        )
     first = logical_types[0]
-    if any(value.dtype != first.dtype or value.layout != first.layout or value.shape[0] != first.shape[0]
-           for value in logical_types[1:]):
-        raise IRVerificationError(f"Packed-QKV {owner} weights require one dtype, layout, and K capacity.")
+    if any(
+        value.dtype != first.dtype
+        or value.layout != first.layout
+        or value.shape[0] != first.shape[0]
+        for value in logical_types[1:]
+    ):
+        raise IRVerificationError(
+            f"Packed-QKV {owner} weights require one dtype, layout, and K capacity."
+        )
     distributed = tuple(isinstance(value, DistributedType) for value in source_types)
     if any(distributed) and not all(distributed):
-        raise IRVerificationError(f"Packed-QKV {owner} cannot mix distributed and local weights.")
+        raise IRVerificationError(
+            f"Packed-QKV {owner} cannot mix distributed and local weights."
+        )
     if all(distributed):
         values = tuple(value for value in source_types if isinstance(value, DistributedType))
-        if any(value.placement != values[0].placement or value.partial is not None for value in values):
+        if any(
+            value.placement != values[0].placement or value.partial is not None
+            for value in values
+        ):
             raise IRVerificationError(
-                f"Packed-QKV {owner} distributed weights require one placement without partial values.")
+                f"Packed-QKV {owner} distributed weights require one placement without partial values."
+            )
         local_shapes = tuple(local_shape(value) for value in values)
-        if any(len(shape) != 2 or shape[0] != local_shapes[0][0] or not shape[1].is_fixed for shape in local_shapes):
+        if any(
+            len(shape) != 2
+            or shape[0] != local_shapes[0][0]
+            or not shape[1].is_fixed
+            for shape in local_shapes
+        ):
             raise IRVerificationError(
-                f"Packed-QKV {owner} distributed weights require compatible fixed local capacities.")
+                f"Packed-QKV {owner} distributed weights require compatible fixed local capacities."
+            )
         owners = prod(values[0].placement.hierarchy)
         return TensorType(
             first.dtype,
@@ -704,7 +829,9 @@ def _fused_weight_type(source_types, owner):
             first.layout,
         )
     if any(not value.shape[1].is_fixed for value in logical_types):
-        raise IRVerificationError(f"Packed-QKV {owner} weights require fixed projection capacities.")
+        raise IRVerificationError(
+            f"Packed-QKV {owner} weights require fixed projection capacities."
+        )
     return TensorType(
         first.dtype,
         (first.shape[0], sum(value.shape[1].fixed_value for value in logical_types)),
@@ -745,7 +872,9 @@ def fused_weight_n_shares(source_types):
 def _projection_n_capacity(value_type, owner):
     value = logical_type(value_type)
     if not isinstance(value, TensorType) or value.rank < 1 or not value.shape[-1].is_fixed:
-        raise IRVerificationError(f"Packed-QKV @{owner} outputs require fixed packed N capacity.")
+        raise IRVerificationError(
+            f"Packed-QKV @{owner} outputs require fixed packed N capacity."
+        )
     lanes = prod(value.dtype.lanes) if isinstance(value.dtype, VectorType) else 1
     return value.shape[-1].fixed_value * lanes
 

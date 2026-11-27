@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: gdn_recurrent/state_smem_pipeline
+# flagmega-kernel: gdn_recurrent/state_smem_pipeline
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% if gdn_helper_variant | default("state_smem_pipeline") == "state_smem_pipeline" %}
 {% include "kernels/gdn_recurrent/_helpers.py.jinja" %}

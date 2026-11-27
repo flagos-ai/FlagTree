@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
 {% if call.family == attention_combine_family|default("paged_attention_combine") and call.variant == "decode" %}
 {{ entry.kernel_decorator(call, prefer_inline=call.corex_combine_inline | default(false)) }}

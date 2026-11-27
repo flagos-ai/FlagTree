@@ -17,7 +17,9 @@ def _binding(formal, descriptor, runtime_argument):
 
 
 def _descriptor(name, dtype, shape, *, offset=0):
-    physical = fm.PhysicalBuffer(f"physical:{name}", "workspace", fm.dim(65536), 16, fm.dim(offset))
+    physical = fm.PhysicalBuffer(
+        f"physical:{name}", "workspace", fm.dim(65536), 16, fm.dim(offset)
+    )
     return fm.BufferDescriptor(
         name,
         dtype,
@@ -54,25 +56,23 @@ def test_local_norm_apply_addresses_outer_rows_mean_scale_bias_and_vector_lanes(
     result = _descriptor("result", vector, (2, 3, 2))
     call = prepare_kernel_calls(
         ({
-            "call":
-            "apply",
-            "family":
-            "norm_apply",
-            "variant":
-            "local",
-            "execution_kind":
-            "local_shard",
+            "call": "apply",
+            "family": "norm_apply",
+            "variant": "local",
+            "execution_kind": "local_shard",
             "parameters": {"block_size": 128},
             "semantic_attrs": {"axis": 1, "epsilon": 1e-5, "use_mean": True},
             "inputs": (
-                {"formal": "input", "buffers": (_binding("input", source, "source"), )},
-                {"formal": "stats", "buffers": (_binding("stats", stats, "stats"), )},
-                {"formal": "scale", "buffers": (_binding("scale", scale, "scale"), )},
-                {"formal": "bias", "buffers": (_binding("bias", bias, "bias"), )},
+                {"formal": "input", "buffers": (_binding("input", source, "source"),)},
+                {"formal": "stats", "buffers": (_binding("stats", stats, "stats"),)},
+                {"formal": "scale", "buffers": (_binding("scale", scale, "scale"),)},
+                {"formal": "bias", "buffers": (_binding("bias", bias, "bias"),)},
             ),
-            "outputs": ({"formal": "result", "buffers": (_binding("result", result, "result"), )}, ),
+            "outputs": (
+                {"formal": "result", "buffers": (_binding("result", result, "result"),)},
+            ),
             "workspaces": (),
-        }, ),
+        },),
         function_name="main",
     )[0]
 

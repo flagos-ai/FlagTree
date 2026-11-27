@@ -19,8 +19,8 @@ class VectorizedAddNormStatsCandidateProvider:
 
     def propose(self, node, context):
         inputs = tuple(context.module.node_map[k] for k in node.inputs)
-        if (not isinstance(node.type, TupleType) or len(node.type.fields) != 2 or node.attrs.get("post_ops")
-                or node.attrs.get("local_reduction_order") != LOCAL16_ORDER
+        if (not isinstance(node.type, TupleType) or len(node.type.fields) != 2
+                or node.attrs.get("post_ops") or node.attrs.get("local_reduction_order") != LOCAL16_ORDER
                 or any(has_partial_type(n.type) for n in inputs)):
             return None
         # Exact inference validates effective PreOps, packing and both owners.
@@ -37,23 +37,17 @@ class VectorizedAddNormStatsCandidateProvider:
         elements = prod(d.fixed_value for d in r.shape) * (r.dtype.lane_count if isinstance(r.dtype, VectorType) else 1)
         if elements != 16 or prod(d.fixed_value for d in p.shape) != 1 or p.dtype is not DType.FLOAT32:
             return None
-        raw_view = replace(
-            node, op="math.vectorized_binary", type=raw, attrs={
-                **binary_attrs(node.attrs), **({"pre_ops": node.attrs["pre_ops"]} if node.attrs.get("pre_ops") else {})
-            })
+        raw_view = replace(node, op="math.vectorized_binary", type=raw,
+                           attrs={**binary_attrs(node.attrs), **({"pre_ops": node.attrs["pre_ops"]} if node.attrs.get("pre_ops") else {})})
         vector = vectorization_contract(raw_view)
-        choices = tuple(
-            context.configure_implementation(
-                implementation, semantic_parameters={
-                    "vector_schedule": configured_vector_schedule(vector, lowering="packed_axes",
-                                                                  elements_per_program=16)
-                }, facts={"explicit_local16_canonical_stats": True})
-            for implementation in context.implementations("vectorized_add_norm_stats",
-                                                          local_reduction_order=LOCAL16_ORDER)
+        choices = tuple(context.configure_implementation(implementation,
+            semantic_parameters={"vector_schedule": configured_vector_schedule(vector,
+                lowering="packed_axes", elements_per_program=16)},
+            facts={"explicit_local16_canonical_stats": True})
+            for implementation in context.implementations("vectorized_add_norm_stats", local_reduction_order=LOCAL16_ORDER)
             if implementation.variant == "local16_xor_fma" and implementation.parameters.get("tile") == 16
             and not implementation.shared_workspaces and implementation.transfer_pipeline is None)
-        return None if not choices else TritonCandidateProposal(
-            choices, context.choose_default("vectorized_add_norm_stats", choices))
+        return None if not choices else TritonCandidateProposal(choices, context.choose_default("vectorized_add_norm_stats", choices))
 
 
 __all__ = ["VectorizedAddNormStatsCandidateProvider"]

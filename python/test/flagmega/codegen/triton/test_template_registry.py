@@ -26,12 +26,15 @@ def test_registry_prefers_architecture_then_platform_then_generic(tmp_path):
     )
     registry = TritonTemplateRegistry(tmp_path)
 
-    assert registry.render_kernel(KernelTemplateSpec("matmul", "gemv", "nvidia", "sm90"),
-                                  {"value": 7}).source == "sm90 7"
-    assert registry.render_kernel(KernelTemplateSpec("matmul", "gemv", "nvidia", "sm80"),
-                                  {"value": 7}).source == "nvidia 7"
-    assert registry.render_kernel(KernelTemplateSpec("matmul", "gemv", "amd", "gfx942"),
-                                  {"value": 7}).source == "generic 7"
+    assert registry.render_kernel(
+        KernelTemplateSpec("matmul", "gemv", "nvidia", "sm90"), {"value": 7}
+    ).source == "sm90 7"
+    assert registry.render_kernel(
+        KernelTemplateSpec("matmul", "gemv", "nvidia", "sm80"), {"value": 7}
+    ).source == "nvidia 7"
+    assert registry.render_kernel(
+        KernelTemplateSpec("matmul", "gemv", "amd", "gfx942"), {"value": 7}
+    ).source == "generic 7"
 
 
 def test_registry_uses_strict_undefined_and_reports_the_selected_template(tmp_path):

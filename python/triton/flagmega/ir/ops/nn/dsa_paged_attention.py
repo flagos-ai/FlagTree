@@ -56,8 +56,7 @@ class DsaPagedAttention(OpDefinition):
         attrs["layout"] = normalize_attention_layout(attrs["layout"])
         if isinstance(attrs["lanes"], bool) or not isinstance(attrs["lanes"], int) or attrs["lanes"] <= 0:
             raise IRSchemaError("DSA paged-attention lanes must be positive.")
-        if isinstance(attrs["hidden_size"],
-                      bool) or not isinstance(attrs["hidden_size"], int) or attrs["hidden_size"] <= 0:
+        if isinstance(attrs["hidden_size"], bool) or not isinstance(attrs["hidden_size"], int) or attrs["hidden_size"] <= 0:
             raise IRSchemaError("DSA paged-attention hidden_size must be positive.")
         if attrs["probability_rounding"] not in {"normalized", "online_bf16"}:
             raise IRSchemaError("DSA probability_rounding must be normalized or online_bf16.")
@@ -67,12 +66,9 @@ class DsaPagedAttention(OpDefinition):
 
     @classmethod
     def ir_attrs(cls, attrs):
-        return {
-            key: value
-            for key, value in attrs.items()
-            if not (key == "probability_rounding" and value == "normalized")
-            and not (key == "index_traversal" and value == "slots")
-        }
+        return {key: value for key, value in attrs.items()
+                if not (key == "probability_rounding" and value == "normalized")
+                and not (key == "index_traversal" and value == "slots")}
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -90,15 +86,15 @@ class DsaPagedAttention(OpDefinition):
             if logical_dim.is_fixed and logical_dim.fixed_value % lanes == 0:
                 shape = list(query.shape)
                 shape[dim_axis] = logical_dim.fixed_value // lanes
-                packed = tensor_type(VectorType(query.dtype, (lanes, )), shape, layout=query.layout)
+                packed = tensor_type(VectorType(query.dtype, (lanes,)), shape, layout=query.layout)
                 query_type = (DistributedType(packed, query_type.axis_policies, query_type.placement,
-                                              query_type.partial, query_type.exclusive) if isinstance(
-                                                  query_type, DistributedType) else packed)
+                                               query_type.partial, query_type.exclusive)
+                              if isinstance(query_type, DistributedType) else packed)
                 query = packed
         if query.shape[layout.index("head")].is_fixed and query.shape[layout.index("dim")].is_fixed:
             lanes = query.dtype.lane_count if isinstance(query.dtype, VectorType) else 1
-            if (query.shape[layout.index("head")].fixed_value * query.shape[layout.index("dim")].fixed_value * lanes
-                    != attrs["hidden_size"]):
+            if (query.shape[layout.index("head")].fixed_value
+                    * query.shape[layout.index("dim")].fixed_value * lanes != attrs["hidden_size"]):
                 raise IRSchemaError("DSA query heads/dim do not match hidden_size.")
         return query_type
 
@@ -130,7 +126,8 @@ class DsaPagedAttention(OpDefinition):
                 raise EvaluationError("DSA scalar query dimension is not divisible by the configured lanes.")
             shape = list(input_type.shape)
             shape[dim_axis] = dim // lanes
-            query_type = tensor_type(VectorType(input_type.dtype, (lanes, )), shape, layout=input_type.layout)
+            query_type = tensor_type(VectorType(input_type.dtype, (lanes,)), shape,
+                                     layout=input_type.layout)
         q = unpack_dim_to_scalar(cls.q.read(arguments), input_type, tuple(node.attrs["layout"]).index("dim"))
         q = to_seq_head_dim(q, tuple(node.attrs["layout"]))
         topk = cls.topk.read(arguments)
@@ -151,14 +148,12 @@ class DsaPagedAttention(OpDefinition):
                 raise EvaluationError("DSA top-k selection produced no visible key.")
             if node.attrs.get("probability_rounding", "normalized") == "online_bf16":
                 traversed = indices if node.attrs.get("index_traversal", "slots") == "compact" else topk[row]
-                results.append(
-                    _online_attention(context.torch, query, traversed, keys, values, length,
-                                      float(node.attrs["scale"])))
+                results.append(_online_attention(context.torch, query, traversed, keys, values,
+                                                 length, float(node.attrs["scale"])))
                 continue
             selected_keys = keys[indices]
             selected_values = values[indices]
-            scores = context.torch.einsum("hd,shd->hs", query.float(), selected_keys.float()) * float(
-                node.attrs["scale"])
+            scores = context.torch.einsum("hd,shd->hs", query.float(), selected_keys.float()) * float(node.attrs["scale"])
             probabilities = context.torch.softmax(scores, dim=-1, dtype=context.torch.float32).to(dtype=query.dtype)
             results.append(context.torch.einsum("hs,shd->hd", probabilities, selected_values))
         result = context.torch.stack(results)
@@ -169,7 +164,7 @@ class DsaPagedAttention(OpDefinition):
 
     @classmethod
     def cost(cls, node):
-        return OpCost(notes=("dsa-topk-paged-attention", ))
+        return OpCost(notes=("dsa-topk-paged-attention",))
 
 
 __all__ = ["DsaPagedAttention"]
@@ -191,9 +186,8 @@ def _online_attention(torch, query, indices, keys, values, length, scale):
         previous_scale = torch.exp(maximum - updated)
         probability = torch.exp(score - updated)
         denominator = denominator * previous_scale + probability.sum(-1, keepdim=True)
-        accumulator = accumulator * previous_scale + torch.einsum("hs,shd->hd",
-                                                                  probability.bfloat16().float(),
-                                                                  values[selected].float())
+        accumulator = accumulator * previous_scale + torch.einsum(
+            "hs,shd->hd", probability.bfloat16().float(), values[selected].float())
         maximum = updated
     return (accumulator / denominator).to(dtype=query.dtype)
 

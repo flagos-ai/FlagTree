@@ -30,7 +30,9 @@ def test_prim_function_call_memory_pool_frames_round_trip_as_typed_tir():
 def test_prim_function_call_rejects_duplicate_memory_space_frames():
     frame = fm.T.memory_pool_frame("data", "frame", 0, 64)
     with pytest.raises(IRSchemaError, match="duplicate memory-pool"):
-        fm.T.prim_function_call("invoke", "worker", memory_pools=(frame, frame))
+        fm.T.prim_function_call(
+            "invoke", "worker", memory_pools=(frame, frame)
+        )
 
 
 def test_legacy_prim_function_call_workspace_fields_upgrade_on_decode():
@@ -42,5 +44,7 @@ def test_legacy_prim_function_call_workspace_fields_upgrade_on_decode():
         "workspace_nbytes": 128,
     })
 
-    assert restored.memory_pools == (fm.T.memory_pool_frame("workspace", None, 256, 128), )
+    assert restored.memory_pools == (
+        fm.T.memory_pool_frame("workspace", None, 256, 128),
+    )
     assert "workspace_offset" not in tir_to_data(restored)

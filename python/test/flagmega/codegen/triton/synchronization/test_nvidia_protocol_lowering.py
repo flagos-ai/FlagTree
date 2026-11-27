@@ -35,17 +35,17 @@ def test_cooperative_grid_protocol_matches_lowered_cta_barriers(monkeypatch, tmp
     monkeypatch.setenv("TRITON_CACHE_DIR", str(tmp_path / "cache"))
     mesh = tle.device_mesh({"block": [("block_y", 2), ("block_x", 4)]})
     if axis_group:
-        mesh = mesh.axis_group(("block_y", ))
+        mesh = mesh.axis_group(("block_y",))
     compiled = triton.compile(
-        ASTSource(fn=_grid_protocol_witness, signature={"buf": "*i32", "out": "*i32"}, constexprs={"MESH": mesh}),
-        target=GPUTarget("cuda", 90, 32),
-        options={"num_warps": 4},
+        ASTSource(fn=_grid_protocol_witness, signature={"buf": "*i32", "out": "*i32"},
+                  constexprs={"MESH": mesh}),
+        target=GPUTarget("cuda", 90, 32), options={"num_warps": 4},
     )
     if hasattr(compiled, "result"):
         compiled = compiled.result()
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
-    value = builder.var("value", fm.tensor_type("float32", (1, )), id="value")
-    builder.function("main", (value, ), (value, ))
+    value = builder.var("value", fm.tensor_type("float32", (1,)), id="value")
+    builder.function("main", (value,), (value,))
     module = replace(builder.build(entry="main"), metadata={
         "codegen_package_plan": {"launch": {"cooperative_grid": True}},
     })

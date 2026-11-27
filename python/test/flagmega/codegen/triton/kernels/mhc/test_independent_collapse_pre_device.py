@@ -3,8 +3,7 @@
 from dataclasses import replace
 from pathlib import Path
 from math import prod
-import pytest
-import torch
+import pytest, torch
 from triton.flagmega import ir as fm
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.runtime import load
@@ -38,7 +37,7 @@ def test_independent_pre_preserves_complete_outputs(tmp_path, ctas, tokens, hc, 
         hc=hc,
         hidden=hidden,
         splits=8 if reduction == "contiguous_tf32" else splits,
-        output_lanes=(4, ),
+        output_lanes=(4,),
         collapsed_dtype="float32",
         collapse_input_dtype="bfloat16",
         collapse_reduction=collapse,
@@ -53,13 +52,20 @@ def test_independent_pre_preserves_complete_outputs(tmp_path, ctas, tokens, hc, 
             replace(
                 n,
                 attrs=MhcPre.ir_attrs(
-                    MhcPre.normalize_attrs({
-                        **n.attrs,
-                        "sinkhorn_iterations": 20,
-                        "projection_reduction": reduction,
-                        "projection_splits": splits,
-                    })),
-            ) if n.op == "nn.mhc_pre" else n for n in g.nodes),
+                    MhcPre.normalize_attrs(
+                        {
+                            **n.attrs,
+                            "sinkhorn_iterations": 20,
+                            "projection_reduction": reduction,
+                            "projection_splits": splits,
+                        }
+                    )
+                ),
+            )
+            if n.op == "nn.mhc_pre"
+            else n
+            for n in g.nodes
+        ),
     )
     fm.verify_module(g)
     runtimes = {}
@@ -72,7 +78,7 @@ def test_independent_pre_preserves_complete_outputs(tmp_path, ctas, tokens, hc, 
         t = fm.logical_type(kind)
         shape = tuple(d.fixed_value for d in t.shape) + tuple(getattr(t.dtype, "lanes", ()))
         dtype = getattr(torch, getattr(t.dtype, "elem_type", t.dtype).value)
-        storage = torch.full((prod(shape) + 32, ), 123, dtype=dtype, device="cuda")
+        storage = torch.full((prod(shape) + 32,), 123, dtype=dtype, device="cuda")
         guards.append(storage)
         return storage[16:-16].reshape(shape)
 

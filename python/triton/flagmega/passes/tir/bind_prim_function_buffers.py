@@ -31,10 +31,12 @@ from triton.flagmega.ir.tir import (
     PrimParameter,
     PrimParameterRole,
     Return,
+    ReturnBinding,
     kernel_dispatch_of,
 )
 from triton.flagmega.passes.tir.shared_workspace import (
-    shared_workspace_buffer_id, )
+    shared_workspace_buffer_id,
+)
 
 
 def bind_prim_function_buffers(
@@ -51,9 +53,15 @@ def bind_prim_function_buffers(
             functions.append(function)
             continue
         if any(parameter.buffers for parameter in function.parameters):
-            if any(parameter.role is not PrimParameterRole.METADATA and _leaf_types(parameter.type)
-                   and not parameter.buffers for parameter in function.parameters):
-                raise IRVerificationError(f"PrimFunction @{function.name} has a partially buffer-bound ABI.")
+            if any(
+                parameter.role is not PrimParameterRole.METADATA
+                and _leaf_types(parameter.type)
+                and not parameter.buffers
+                for parameter in function.parameters
+            ):
+                raise IRVerificationError(
+                    f"PrimFunction @{function.name} has a partially buffer-bound ABI."
+                )
             functions.append(_bind_shared_workspace_buffers(function, dispatch, plan))
             continue
         distributed_inputs, distributed_outputs = _distributed_signature(dispatch, function)
@@ -76,8 +84,10 @@ def bind_prim_function_buffers(
             leaves = _leaf_types(physical_type)
             layouts = actual_layouts.get(parameter.name)
             if layouts is not None and len(layouts) != len(leaves):
-                raise IRVerificationError(f"PrimFunction @{function.name} parameter {parameter.name!r} "
-                                          "layout leaf arity differs from its type.")
+                raise IRVerificationError(
+                    f"PrimFunction @{function.name} parameter {parameter.name!r} "
+                    "layout leaf arity differs from its type."
+                )
             buffers = tuple(
                 _formal_buffer(
                     function.name,
@@ -85,15 +95,20 @@ def bind_prim_function_buffers(
                     path,
                     leaf,
                     layout=None if layouts is None else layouts[ordinal],
-                    alignment=(workspace_map[parameter.name].alignment if parameter.role is
-                               PrimParameterRole.WORKSPACE else transfer_alignments.get(parameter.name)),
-                ) for ordinal, (path, leaf) in enumerate(leaves))
+                    alignment=(
+                        workspace_map[parameter.name].alignment
+                        if parameter.role is PrimParameterRole.WORKSPACE
+                        else transfer_alignments.get(parameter.name)
+                    ),
+                )
+                for ordinal, (path, leaf) in enumerate(leaves)
+            )
             parameters.append(replace(parameter, buffers=buffers))
         parameter_map = {value.name: value for value in parameters}
-        results = Return(
-            tuple(
-                replace(binding, value=parameter_map[binding.storage].buffer_value)
-                for binding in function.results.values))
+        results = Return(tuple(
+            replace(binding, value=parameter_map[binding.storage].buffer_value)
+            for binding in function.results.values
+        ))
         rewritten = replace(function, parameters=tuple(parameters), results=results)
         functions.append(_bind_shared_workspace_buffers(
             rewritten,
@@ -113,10 +128,14 @@ def _bind_shared_workspace_buffers(function, dispatch, plan):
         try:
             descriptor = descriptors[descriptor_id]
         except KeyError as error:
-            raise IRVerificationError(f"PrimFunction @{function.name} shared workspace {buffer.name!r} "
-                                      "is absent from the buffer plan.") from error
+            raise IRVerificationError(
+                f"PrimFunction @{function.name} shared workspace {buffer.name!r} "
+                "is absent from the buffer plan."
+            ) from error
         rebound.append(replace(buffer, mem_span=descriptor.mem_span))
-    rewritten_dispatch = replace(dispatch, shared_workspace_buffers=tuple(rebound))
+    rewritten_dispatch = replace(
+        dispatch, shared_workspace_buffers=tuple(rebound)
+    )
     return replace_kernel_dispatch(function, rewritten_dispatch)
 
 
@@ -129,24 +148,32 @@ def _transfer_source_alignments(dispatch) -> dict[str, int]:
     for channel in pipeline.channels:
         for index in channel.source_argument_indices:
             name = dispatch.arguments[index]
-            result[name] = max(result.get(name, 1), channel.source_alignment_bytes)
+            result[name] = max(
+                result.get(name, 1), channel.source_alignment_bytes
+            )
     return result
 
 
 def _distributed_signature(dispatch, function):
     distribution = dispatch.parameters.get("distribution")
     if not hasattr(distribution, "get"):
-        return function.runtime_parameter_types, tuple(value.type for value in function.output_parameters)
+        return function.runtime_parameter_types, tuple(
+            value.type for value in function.output_parameters
+        )
     inputs = tuple(distribution.get("input_types", function.runtime_parameter_types))
     output = distribution.get("output_type", function.runtime_return_type)
     if len(inputs) != len(function.runtime_parameters):
-        raise IRVerificationError(f"KernelDispatch {dispatch.candidate!r} distributed input ABI has the wrong arity.")
+        raise IRVerificationError(
+            f"KernelDispatch {dispatch.candidate!r} distributed input ABI has the wrong arity."
+        )
     if len(function.output_parameters) == 1:
-        outputs = (output, )
+        outputs = (output,)
     elif isinstance(output, TupleType) and len(output.fields) == len(function.output_parameters):
         outputs = output.fields
     else:
-        raise IRVerificationError(f"KernelDispatch {dispatch.candidate!r} distributed output ABI has the wrong arity.")
+        raise IRVerificationError(
+            f"KernelDispatch {dispatch.candidate!r} distributed output ABI has the wrong arity."
+        )
     return inputs, outputs
 
 
@@ -162,24 +189,41 @@ def _formal_buffer(
     logical = logical_type(value_type)
     if not isinstance(logical, TensorType):
         raise IRVerificationError(
-            f"PrimFunction @{function_name} parameter {parameter.name!r} has a non-tensor ABI leaf.")
+            f"PrimFunction @{function_name} parameter {parameter.name!r} has a non-tensor ABI leaf."
+        )
     name = parameter.name if not path else f"{parameter.name}.{path}"
     distributed = value_type if isinstance(value_type, DistributedType) else None
-    storage_kind = (layout.distributed_storage_kind if layout is not None else _default_storage_kind(
-        distributed, parameter.role))
-    backing_type = (layout.distributed_backing_type if layout is not None else None)
-    component_dimensions = (logical.shape if distributed is None or storage_kind.exposes_logical_coordinates else
-                            local_shape(backing_type or distributed))
+    storage_kind = (
+        layout.distributed_storage_kind
+        if layout is not None
+        else _default_storage_kind(distributed, parameter.role)
+    )
+    backing_type = (
+        layout.distributed_backing_type
+        if layout is not None
+        else None
+    )
+    component_dimensions = (
+        logical.shape
+        if distributed is None
+        or storage_kind.exposes_logical_coordinates
+        else local_shape(backing_type or distributed)
+    )
     size = dim(logical.dtype.itemsize)
     for dimension in component_dimensions:
         size = (size * dimension).simplify()
-    physical_size = (((layout.component_stride_bytes if layout is not None else size) *
-                      ((placement_owner_count(distributed) if storage_kind
-                        is DistributedBufferStorageKind.COMPACT_PER_OWNER else block_owner_count(distributed)) - 1) +
-                      size).simplify() if distributed is not None and storage_kind in {
-                          DistributedBufferStorageKind.COMPACT_PER_OWNER,
-                          DistributedBufferStorageKind.COMPACT_PER_CHIP,
-                      } else size)
+    physical_size = (
+        ((layout.component_stride_bytes if layout is not None else size)
+         * ((placement_owner_count(distributed)
+             if storage_kind is DistributedBufferStorageKind.COMPACT_PER_OWNER
+             else block_owner_count(distributed)) - 1) + size).simplify()
+        if distributed is not None
+        and storage_kind in {
+            DistributedBufferStorageKind.COMPACT_PER_OWNER,
+            DistributedBufferStorageKind.COMPACT_PER_CHIP,
+        }
+        else size
+    )
     # The formal buffer publishes the alignment its ABI actually requires:
     # the workspace/transfer requirement the caller was planned against, or
     # the parameter's own declared contract.  Deriving a floor from the
@@ -203,7 +247,11 @@ def _formal_buffer(
         logical.dtype,
         MemSpan(physical, dim(0), size),
         logical.shape,
-        (tuple(dim(value) for value in layout.strides) if layout is not None else _dense_strides(component_dimensions)),
+        (
+            tuple(dim(value) for value in layout.strides)
+            if layout is not None
+            else _dense_strides(component_dimensions)
+        ),
         distributed,
         storage_kind,
         backing_type,
@@ -218,7 +266,10 @@ def _actual_parameter_layouts(module, function, plan):
     descriptor_map = plan.buffer_map
     for graph_function in module.functions:
         values = dict(plan.function_map[graph_function.name].values)
-        kernel_calls = {value.call: value for value in plan.function_map[graph_function.name].kernel_calls}
+        kernel_calls = {
+            value.call: value
+            for value in plan.function_map[graph_function.name].kernel_calls
+        }
         for node in module.nodes:
             if node.op != "tir.call" or str(node.attrs.get("callee", "")) != function.name:
                 continue
@@ -226,7 +277,10 @@ def _actual_parameter_layouts(module, function, plan):
                 continue
             bindings: dict[str, tuple[str, ...]] = {}
             for parameter, input_id in zip(function.runtime_parameters, node.inputs):
-                if (parameter.role is not PrimParameterRole.METADATA and _leaf_types(parameter.type)):
+                if (
+                    parameter.role is not PrimParameterRole.METADATA
+                    and _leaf_types(parameter.type)
+                ):
                     bindings[parameter.name] = values[input_id]
             outputs = values[node.id]
             cursor = 0
@@ -236,26 +290,33 @@ def _actual_parameter_layouts(module, function, plan):
                 cursor += count
             workspace_record = kernel_calls.get(node.id)
             if workspace_record is not None:
-                bindings.update((formal, (actual, )) for formal, actual in workspace_record.workspaces)
+                bindings.update(
+                    (formal, (actual,))
+                    for formal, actual in workspace_record.workspaces
+                )
             for parameter_name, actual_ids in bindings.items():
                 observed.setdefault(parameter_name, set()).add(tuple(actual_ids))
     result = {}
     for parameter_name, signatures in observed.items():
         layouts = {
-            tuple((
-                descriptor_map[buffer_id].distributed_type,
-                descriptor_map[buffer_id].distributed_storage_kind,
-                descriptor_map[buffer_id].distributed_backing_type,
-                descriptor_map[buffer_id].strides,
-                descriptor_map[buffer_id].nbytes,
-                descriptor_map[buffer_id].component_stride_bytes,
+            tuple(
+                (
+                    descriptor_map[buffer_id].distributed_type,
+                    descriptor_map[buffer_id].distributed_storage_kind,
+                    descriptor_map[buffer_id].distributed_backing_type,
+                    descriptor_map[buffer_id].strides,
+                    descriptor_map[buffer_id].nbytes,
+                    descriptor_map[buffer_id].component_stride_bytes,
+                )
+                for buffer_id in signature
             )
-                  for buffer_id in signature)
             for signature in signatures
         }
         if len(layouts) != 1:
-            raise IRVerificationError(f"PrimFunction @{function.name} parameter {parameter_name!r} has conflicting "
-                                      "caller buffer layouts; specialize the PrimFunction before binding.")
+            raise IRVerificationError(
+                f"PrimFunction @{function.name} parameter {parameter_name!r} has conflicting "
+                "caller buffer layouts; specialize the PrimFunction before binding."
+            )
         signature = next(iter(signatures))
         result[parameter_name] = tuple(descriptor_map[value] for value in signature)
     return result
@@ -264,8 +325,10 @@ def _actual_parameter_layouts(module, function, plan):
 def _default_storage_kind(distributed, role):
     if distributed is None:
         return DistributedBufferStorageKind.COMPACT_LOCAL
-    if role is PrimParameterRole.OUTPUT and (distributed.partial is not None
-                                             or is_fully_sharded_across_placement(distributed)):
+    if role is PrimParameterRole.OUTPUT and (
+        distributed.partial is not None
+        or is_fully_sharded_across_placement(distributed)
+    ):
         return DistributedBufferStorageKind.COMPACT_PER_OWNER
     return DistributedBufferStorageKind.CANONICAL_GLOBAL
 
@@ -274,9 +337,9 @@ def _leaf_types(value_type, prefix: str = ""):
     if isinstance(value_type, NoneType):
         return ()
     if isinstance(value_type, DistributedType):
-        return ((prefix, value_type), )
+        return ((prefix, value_type),)
     if isinstance(value_type, TensorType):
-        return ((prefix, value_type), )
+        return ((prefix, value_type),)
     if isinstance(value_type, RefType):
         result = []
         for name, field in value_type.fields:

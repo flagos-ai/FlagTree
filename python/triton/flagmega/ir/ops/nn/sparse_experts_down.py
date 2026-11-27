@@ -102,8 +102,8 @@ class SparseExpertsDown(OpDefinition):
                 "activations": (token, route, intermediate_policy),
                 "router_expert_ids": (token, route),
                 "down_weight": (broadcast, scalar_output, scalar_intermediate),
-                "down_input_scale": (broadcast, ) * tensor_of(types["down_input_scale"]).rank,
-                "down_proj_scale": (broadcast, ) * tensor_of(types["down_proj_scale"]).rank,
+                "down_input_scale": (broadcast,) * tensor_of(types["down_input_scale"]).rank,
+                "down_proj_scale": (broadcast,) * tensor_of(types["down_proj_scale"]).rank,
             })
         _, _, reduction_axes, _ = role_axes(token, route, intermediate_policy, output_policy)
         if reduction_axes and attrs["round_projection"]:
@@ -136,7 +136,8 @@ def evaluate_down(values, activation_type, output_type, attrs, context):
         for route in range(ids.shape[1]):
             expert = int(ids[token, route])
             projection = scaled_projection(activation[token, route], down[expert], values["down_input_scale"][expert],
-                                           values["down_proj_scale"][expert], block_n=int(attrs["weight_block_n"]),
+                                           values["down_proj_scale"][expert],
+                                           block_n=int(attrs["weight_block_n"]),
                                            block_k=int(attrs["weight_block_k"]),
                                            activation_quantization=attrs.get("activation_quantization", "dynamic_fp8"),
                                            reduction_order=attrs.get("reduction_order", "relaxed"))
@@ -167,8 +168,9 @@ def sparse_stage_cost_factors(definition, inputs, return_type, *, gate_up):
     if isinstance(ids_type, DistributedType):
         # Each selected matrix is visited once per active token/route and N/K
         # owner. The expert-bank axis is indexed, not scanned or partitioned.
-        domain = DistributedType(tensor_type(matrix.dtype, (*ids_type.tensor.shape, *matrix_type.tensor.shape[1:])),
-                                 (*ids_type.axis_policies, *matrix_type.axis_policies[1:]), ids_type.placement)
+        domain = DistributedType(
+            tensor_type(matrix.dtype, (*ids_type.tensor.shape, *matrix_type.tensor.shape[1:])),
+            (*ids_type.axis_policies, *matrix_type.axis_policies[1:]), ids_type.placement)
         selected_elements = max_chip_active_elements(domain)
         scale_routes = max_chip_active_elements(ids_type)
     else:
@@ -184,7 +186,8 @@ def sparse_stage_cost_factors(definition, inputs, return_type, *, gate_up):
     scale_bytes = projections * scale_routes * 2 * 4
     return OpCostFactors(
         simt_fma_operations=projections * routes * matrix_elements,
-        elementwise_operations=output_elements * lanes(output.dtype) * (5 if gate_up else 1),
+        elementwise_operations=output_elements * lanes(output.dtype) *
+        (5 if gate_up else 1),
         chip_aggregate_memory_load_bytes=selected_bytes + scale_bytes,
         block_local_memory_load_bytes=small_bytes,
         block_local_memory_store_bytes=tensor_nbytes(output) or 0,

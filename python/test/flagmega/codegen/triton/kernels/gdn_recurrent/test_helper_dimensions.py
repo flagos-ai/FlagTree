@@ -24,9 +24,8 @@ def test_mixed_variants_emit_one_shared_helper_set(first, reverse_render):
     context["render_calls"] = ()
     registry = TritonTemplateRegistry()
     order = tuple(reversed(variants)) if reverse_render else variants
-    source = "\n".join(
-        registry.render_kernel(KernelTemplateSpec("gdn_recurrent", variant, "nvidia", "sm90"), context).source
-        for variant in order)
+    source = "\n".join(registry.render_kernel(
+        KernelTemplateSpec("gdn_recurrent", variant, "nvidia", "sm90"), context).source for variant in order)
     definitions = [node.name for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)]
     assert len(definitions) == len(set(definitions))
     assert definitions.count("_flagmega_gdn_recurrent_local_core_tile") == 1
@@ -58,8 +57,7 @@ def core_kernel(qkv, state, scratch, K: tl.constexpr):
         False, 1e-12, False, False)
 '''
     path = directory / "gdn_dimension_helpers.py"
-    path.write_text("import triton\nimport triton.language as tl\nfrom triton.language.extra import libdevice\n" +
-                    source + wrappers)
+    path.write_text("import triton\nimport triton.language as tl\nfrom triton.language.extra import libdevice\n" + source + wrappers)
     spec = importlib.util.spec_from_file_location("gdn_dimension_helpers", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -76,7 +74,7 @@ def test_norm_helper_uses_its_own_value_dimension(tmp_path, value_dim):
     weight = torch.ones_like(z)
     scratch = torch.arange(1, value_dim + 1, device="cuda", dtype=torch.float32)
     output = torch.empty_like(z)
-    module.norm_kernel[(1, )](z, output, weight, scratch, value_dim, num_warps=8)
+    module.norm_kernel[(1,)](z, output, weight, scratch, value_dim, num_warps=8)
     expected = (scratch * torch.rsqrt(scratch.square().mean() + 1e-6) * torch.nn.functional.silu(z.float())).bfloat16()
     torch.testing.assert_close(output, expected, rtol=0, atol=0)
 
@@ -90,6 +88,6 @@ def test_core_helper_uses_its_own_query_scale(tmp_path, key_dim):
     qkv = torch.ones(2 * key_dim + 8, device="cuda", dtype=torch.bfloat16)
     state = torch.zeros((8, key_dim), device="cuda")
     scratch = torch.empty(8, device="cuda")
-    module.core_kernel[(1, )](qkv, state, scratch, key_dim, num_warps=8)
-    torch.testing.assert_close(state, torch.full_like(state, key_dim**-.5), rtol=0, atol=0)
-    torch.testing.assert_close(scratch, torch.full_like(scratch, key_dim**-.5), rtol=0, atol=0)
+    module.core_kernel[(1,)](qkv, state, scratch, key_dim, num_warps=8)
+    torch.testing.assert_close(state, torch.full_like(state, key_dim ** -.5), rtol=0, atol=0)
+    torch.testing.assert_close(scratch, torch.full_like(scratch, key_dim ** -.5), rtol=0, atol=0)

@@ -12,6 +12,7 @@ from triton.flagmega.ir import DType, Node, TensorType, VectorType
 from triton.flagmega.ir.dim_expr import try_div_exactly
 from triton.flagmega.ir.ops.tensors.pack import Pack, axis_lane_products, normalize_axes
 from triton.flagmega.ir.ops.tensors.pad import Pad
+from triton.flagmega.ir.ops.tensors.slice_to_shape import SliceToShape
 from triton.flagmega.ir.ops.tensors.unpack import Unpack
 from triton.flagmega.rules import RewriteResult
 from triton.flagmega.rules.ntt.vectorize.base import VectorizeCandidate
@@ -32,7 +33,7 @@ def generate_axis_candidates(
     candidates: list[VectorizeCandidate] = []
     for count in range(1, min(max_axes, value_type.rank) + 1):
         for axes in combinations(range(value_type.rank), count):
-            lanes = (lane, ) * len(axes)
+            lanes = (lane,) * len(axes)
             pads = padding_for(value_type, axes, lanes)
             if pads is None:
                 continue
@@ -40,18 +41,17 @@ def generate_axis_candidates(
                 # SliceToShape deliberately stores an editable static shape;
                 # dynamic padding needs a future shape-expression Slice op.
                 continue
-            candidate_id = "vectorization.last_axis" if axes == (value_type.rank -
-                                                                 1, ) else ("vectorization.axes_" +
-                                                                            "_".join(str(axis) for axis in axes))
-            candidates.append(
-                VectorizeCandidate(
-                    candidate_id,
-                    rule,
-                    axes,
-                    lanes,
-                    {"axes": list(axes), "lanes": list(lanes), "vector_bytes": lane_bytes},
-                    {"padding": list(pads), "egraph_equivalent": True},
-                ))
+            candidate_id = "vectorization.last_axis" if axes == (value_type.rank - 1,) else (
+                "vectorization.axes_" + "_".join(str(axis) for axis in axes)
+            )
+            candidates.append(VectorizeCandidate(
+                candidate_id,
+                rule,
+                axes,
+                lanes,
+                {"axes": list(axes), "lanes": list(lanes), "vector_bytes": lane_bytes},
+                {"padding": list(pads), "egraph_equivalent": True},
+            ))
     return tuple(candidates)
 
 
@@ -86,22 +86,22 @@ def prepare_packed_input(
     current = value
     if any(pads):
         attrs = {"pad_end": tuple(pads), "pad_value": pad_value}
-        pad_type = Pad.infer_type((current, ), attrs)
+        pad_type = Pad.infer_type((current,), attrs)
         current = Node(
             f"{root_id}.vectorized.pad{input_index}",
             "tensors.pad",
-            (current.id, ),
+            (current.id,),
             pad_type,
             attrs=attrs,
             metadata=internal_metadata(root_id, "pad"),
         )
         helpers.append(current)
     pack_attrs = {"lanes": lanes, "axes": axes}
-    pack_type = Pack.infer_type((current, ), pack_attrs)
+    pack_type = Pack.infer_type((current,), pack_attrs)
     current = Node(
         f"{root_id}.vectorized.pack{input_index}",
         "tensors.pack",
-        (current.id, ),
+        (current.id,),
         pack_type,
         attrs=pack_attrs,
         metadata=internal_metadata(root_id, "pack"),
@@ -128,12 +128,12 @@ def finish_vector_result(
             tuple(helpers),
         )
     unpack_attrs = {"axes": axes}
-    unpack_type = Unpack.infer_type((compute, ), unpack_attrs)
+    unpack_type = Unpack.infer_type((compute,), unpack_attrs)
     if any(pads):
         unpack = Node(
             f"{original.id}.vectorized.unpack",
             "tensors.unpack",
-            (compute.id, ),
+            (compute.id,),
             unpack_type,
             attrs=unpack_attrs,
             metadata=internal_metadata(original.id, "unpack"),
@@ -143,7 +143,7 @@ def finish_vector_result(
         replacement = Node(
             original.id,
             "tensors.slice_to_shape",
-            (unpack.id, ),
+            (unpack.id,),
             original.type,
             original.effect,
             {"shape": shape},
@@ -154,7 +154,7 @@ def finish_vector_result(
         replacement = Node(
             original.id,
             "tensors.unpack",
-            (compute.id, ),
+            (compute.id,),
             original.type,
             original.effect,
             unpack_attrs,
@@ -205,7 +205,9 @@ def propagation_result_metadata(
         "vectorization_inputs": list(semantic.inputs),
         "vectorization_attrs": dict(semantic.attrs),
         "vectorization_semantic_id": semantic.id,
-        "vectorization_candidate": str(boundary.metadata.get("vectorization_candidate", "vectorization.propagated")),
+        "vectorization_candidate": str(
+            boundary.metadata.get("vectorization_candidate", "vectorization.propagated")
+        ),
         "vector_lanes": [int(value) for value in lanes],
         "vector_axes": [int(value) for value in axes],
         "vectorization_rule": rule,
@@ -215,7 +217,8 @@ def propagation_result_metadata(
             internal_metadata(
                 str(boundary.metadata.get("vectorization_root", boundary.id)),
                 internal_role,
-            ))
+            )
+        )
     return metadata
 
 
@@ -233,13 +236,7 @@ def root_metadata(original: Node, candidate: VectorizeCandidate) -> Mapping[str,
 
 
 __all__ = [
-    "finish_vector_result",
-    "generate_axis_candidates",
-    "internal_metadata",
-    "padding_for",
-    "is_generated_boundary",
-    "prepare_packed_input",
-    "propagation_helper_metadata",
-    "propagation_result_metadata",
-    "root_metadata",
+    "finish_vector_result", "generate_axis_candidates", "internal_metadata", "padding_for",
+    "is_generated_boundary", "prepare_packed_input", "propagation_helper_metadata",
+    "propagation_result_metadata", "root_metadata",
 ]

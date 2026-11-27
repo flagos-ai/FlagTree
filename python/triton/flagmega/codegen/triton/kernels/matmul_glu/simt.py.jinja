@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: matmul_glu/simt platform=generic
+# flagmega-kernel: matmul_glu/simt platform=generic
 {% set matmul_glu_variant = "simt" %}
 {% include "kernels/_activation_quantization.py.jinja" %}
 @triton.jit

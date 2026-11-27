@@ -1,0 +1,5 @@
+// flagmega-kernel: dense_matmul_glu/gemv platform=generic
+{% set dense_matmul_glu_variant = "gemv" %}
+{% if render_calls is defined %}
+{% include "kernels/dense_matmul_glu/_function.cpp.jinja" %}
+{% endif %}

@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
 {% if call.family == "norm_stats" and call.variant == "local" %}
 {% if call.norm_stats_reduction_algorithm == "fma_1024" %}

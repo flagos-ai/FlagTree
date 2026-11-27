@@ -8,9 +8,11 @@ import pytest
 from triton.flagmega import ir as fm
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.passes.auto_distributed import (
-    PyNttDistributedReshardRealizationPolicy, )
+    PyNttDistributedReshardRealizationPolicy,
+)
 from triton.flagmega.passes.functions import (
-    propagate_post_auto_distributed_function_boundary_layouts, )
+    propagate_post_auto_distributed_function_boundary_layouts,
+)
 
 
 def _module():
@@ -28,7 +30,6 @@ def _module():
     )
 
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="ntt", stage="distributed", entry="main")
 
@@ -42,13 +43,15 @@ def _module():
                 key="weight",
                 id="weight",
             )
-            value = fm.F.distributed.sharded_view(weight, broadcast, name="weight.broadcast")
-            call = fm.F.builtin.call(value, result_type=split, callee="layer", name="call")
-            self.function("main", (), (call, ))
+            value = fm.F.distributed.sharded_view(
+                weight, broadcast, name="weight.broadcast")
+            call = fm.F.builtin.call(
+                value, result_type=split, callee="layer", name="call")
+            self.function("main", (), (call,))
             self.function(
                 "layer",
-                (parameter, ),
-                (local, ),
+                (parameter,),
+                (local,),
                 attrs={"reusable": True, "noinline": True},
             )
 
@@ -97,8 +100,10 @@ def test_invalid_agent_override_reports_valid_candidate_ids():
 def test_distributed_cp_sat_decision_is_serialized_in_editable_module_metadata():
     rewritten = _run(_module())
 
-    assert rewritten.metadata["distributed_function_boundary_layout_decisions"] == ({
+    assert rewritten.metadata[
+        "distributed_function_boundary_layout_decisions"
+    ] == ({
         "function": "layer",
         "candidate": "internal",
         "solver": "ortools-cp-sat",
-    }, )
+    },)

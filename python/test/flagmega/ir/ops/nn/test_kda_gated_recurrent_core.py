@@ -28,15 +28,13 @@ def _node(name, value_type):
 
 
 def _broadcast(tensor, placement):
-    return fm.DistributedType(tensor, (fm.SBP.broadcast(), ) * tensor.rank, placement)
+    return fm.DistributedType(tensor, (fm.SBP.broadcast(),) * tensor.rank, placement)
 
 
 def _operand_types(*, gate_dtype="bfloat16", beta_dtype="bfloat16"):
     activation = fm.tensor_type("bfloat16", (1, HEADS, DIM))
     return (
-        activation,
-        activation,
-        activation,
+        activation, activation, activation,
         fm.tensor_type(gate_dtype, (1, HEADS, DIM)),
         fm.tensor_type("float32", (1, HEADS, DIM)),
         fm.tensor_type("float32", (1, HEADS, DIM)),
@@ -54,12 +52,12 @@ def _module(*, l2norm=True, gate_dtype="bfloat16", beta_dtype="bfloat16", query_
     types = _operand_types(gate_dtype=gate_dtype, beta_dtype=beta_dtype)
 
     class Graph(fm.Module):
-
         def forward(self):
-            operands = tuple(self.input(name, value_type, id=name) for name, value_type in zip(names, types))
-            pair = fm.F.nn.kda_gated_recurrent_core(*operands, lower_bound=LOWER_BOUND, epsilon=1e-6,
-                                                    l2norm_in_kernel=l2norm,
-                                                    **({"query_scale": query_scale} if query_scale is not None else {}))
+            operands = tuple(self.input(name, value_type, id=name)
+                             for name, value_type in zip(names, types))
+            pair = fm.F.nn.kda_gated_recurrent_core(
+                *operands, lower_bound=LOWER_BOUND, epsilon=1e-6, l2norm_in_kernel=l2norm,
+                **({"query_scale": query_scale} if query_scale is not None else {}))
             output, new_state = fm.F.tensors.get_items(pair, 0, 1, name_prefix="recurrent")
             self.function("main", operands, (output, new_state))
 
@@ -121,7 +119,8 @@ def test_the_graph_expansion_of_the_gate_is_observably_different():
     # nn.kda_recurrent_core's operand contract forces an FP32 decay, so the
     # expansion's rounding lands on the intermediate add/mul instead.
     rounded_gate = (values["g"].float() + values["gate_bias"].float()).bfloat16().float()
-    rounded_decay = (LOWER_BOUND * torch.sigmoid((values["decay_rate"].float() * rounded_gate).bfloat16().float()))
+    rounded_decay = (LOWER_BOUND * torch.sigmoid(
+        (values["decay_rate"].float() * rounded_gate).bfloat16().float()))
     beta = torch.sigmoid(values["beta"].float().bfloat16().float())
     query, key = values["q"].float(), values["k"].float()
     query = query / torch.sqrt((query * query).sum(-1, keepdim=True) + 1e-6)
@@ -131,14 +130,16 @@ def test_the_graph_expansion_of_the_gate_is_observably_different():
     state = state + key.unsqueeze(-1) * delta.unsqueeze(-2)
     expanded = (state * query.unsqueeze(-1)).sum(-2).bfloat16()
 
-    assert torch.count_nonzero(
-        expected != expanded), ("This fixture no longer separates the FP32 in-kernel gate from the "
-                                "rounded graph expansion, so the bit-exact test above is vacuous.")
+    assert torch.count_nonzero(expected != expanded), (
+        "This fixture no longer separates the FP32 in-kernel gate from the "
+        "rounded graph expansion, so the bit-exact test above is vacuous."
+    )
 
 
 def test_evaluator_honors_disabled_l2_normalization():
     values = _inputs(seed=13)
-    actual, actual_state = TorchEvaluator(DictWeightResolver({})).run(_module(l2norm=False), values)
+    actual, actual_state = TorchEvaluator(DictWeightResolver({})).run(
+        _module(l2norm=False), values)
     expected, expected_state = _reference(values, l2norm=False)
 
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
@@ -150,7 +151,8 @@ def test_the_raw_gate_may_arrive_in_either_activation_dtype(gate_dtype):
     """Upstream keeps ``g`` in the activation dtype; FP32 is also admissible."""
     torch_dtype = torch.bfloat16 if gate_dtype == "bfloat16" else torch.float32
     values = _inputs(seed=17, gate_dtype=torch_dtype)
-    actual, _ = TorchEvaluator(DictWeightResolver({})).run(_module(gate_dtype=gate_dtype), values)
+    actual, _ = TorchEvaluator(DictWeightResolver({})).run(
+        _module(gate_dtype=gate_dtype), values)
     expected, _ = _reference(values)
 
     torch.testing.assert_close(actual, expected, rtol=0, atol=0)
@@ -166,15 +168,16 @@ def test_a_non_negative_lower_bound_is_rejected(bound):
 def test_weight_maps_must_arrive_in_head_layout():
     """The exp/broadcast belongs to the constant island, not the runtime graph."""
     types = list(_operand_types())
-    types[4] = fm.tensor_type("float32", (HEADS, ))
+    types[4] = fm.tensor_type("float32", (HEADS,))
     inputs = tuple(_node(str(index), value) for index, value in enumerate(types))
     with pytest.raises(IRSchemaError, match="decay_rate/gate_bias maps must be"):
         KdaGatedRecurrentCore.infer_type(inputs, _attrs())
 
 
 def test_preserves_one_common_broadcast_placement():
-    placement = fm.Placement((4, ), "x", "b")
-    inputs = tuple(_node(str(index), _broadcast(value, placement)) for index, value in enumerate(_operand_types()))
+    placement = fm.Placement((4,), "x", "b")
+    inputs = tuple(_node(str(index), _broadcast(value, placement))
+                   for index, value in enumerate(_operand_types()))
     result = KdaGatedRecurrentCore.infer_type(inputs, _attrs())
 
     assert all(isinstance(field, fm.DistributedType) for field in result.fields)
@@ -182,14 +185,16 @@ def test_preserves_one_common_broadcast_placement():
 
 
 def test_rejects_mixed_or_mismatched_distributed_inputs():
-    placement = fm.Placement((4, ), "x", "b")
-    other = fm.Placement((2, ), "x", "b")
+    placement = fm.Placement((4,), "x", "b")
+    other = fm.Placement((2,), "x", "b")
     plain = _operand_types()
     mixed = (*plain[:1], _broadcast(plain[1], placement), *plain[2:])
     with pytest.raises(IRSchemaError, match="all plain or all distributed"):
-        KdaGatedRecurrentCore.infer_type(tuple(_node(str(index), value) for index, value in enumerate(mixed)), _attrs())
+        KdaGatedRecurrentCore.infer_type(
+            tuple(_node(str(index), value) for index, value in enumerate(mixed)), _attrs())
 
-    mismatched = tuple(_broadcast(value, other if index == 1 else placement) for index, value in enumerate(plain))
+    mismatched = tuple(_broadcast(value, other if index == 1 else placement)
+                       for index, value in enumerate(plain))
     with pytest.raises(IRSchemaError, match="one placement"):
-        KdaGatedRecurrentCore.infer_type(tuple(_node(str(index), value) for index, value in enumerate(mismatched)),
-                                         _attrs())
+        KdaGatedRecurrentCore.infer_type(
+            tuple(_node(str(index), value) for index, value in enumerate(mismatched)), _attrs())

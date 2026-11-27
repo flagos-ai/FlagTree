@@ -40,30 +40,32 @@ class AmdCapability:
         if not isinstance(self.gfx_arch, str) or not self.gfx_arch:
             raise IRSchemaError("AmdCapability requires a non-empty gfx_arch string.")
         for name in (
-                "warp_size",
-                "max_threads_per_block",
-                "max_threads_per_sm",
-                "max_registers_per_sm",
-                "max_shared_memory_bytes",
+            "warp_size",
+            "max_threads_per_block",
+            "max_threads_per_sm",
+            "max_registers_per_sm",
+            "max_shared_memory_bytes",
         ):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                 raise IRSchemaError(f"AmdCapability {name} must be positive.")
         for name in (
-                "supports_wmma",
-                "supports_fp8",
-                "supports_fp8_mma",
-                "supports_async_copy",
-                "supports_cooperative_grid",
-                "supports_tma",
-                "supports_warp_specialize",
-                "supports_grid_sync",
-                "supports_mma_v3",
+            "supports_wmma",
+            "supports_fp8",
+            "supports_fp8_mma",
+            "supports_async_copy",
+            "supports_cooperative_grid",
+            "supports_tma",
+            "supports_warp_specialize",
+            "supports_grid_sync",
+            "supports_mma_v3",
         ):
             if not isinstance(getattr(self, name), bool):
                 raise IRSchemaError(f"AmdCapability {name} must be bool.")
         if self.max_threads_per_block > self.max_threads_per_sm:
-            raise IRSchemaError("AMD max_threads_per_block cannot exceed max_threads_per_sm.")
+            raise IRSchemaError(
+                "AMD max_threads_per_block cannot exceed max_threads_per_sm."
+            )
 
     @property
     def package_profile(self) -> str:
@@ -120,7 +122,9 @@ class AmdCapability:
     @classmethod
     def from_data(cls, data: Mapping[str, object]) -> "AmdCapability":
         if data.get("schema") != "flagmega.amd-rdna-capability/v1":
-            raise IRSchemaError(f"Unsupported AMD capability schema {data.get('schema')!r}.")
+            raise IRSchemaError(
+                f"Unsupported AMD capability schema {data.get('schema')!r}."
+            )
         fields = {k: v for k, v in data.items() if k != "schema"}
         return cls(**fields)
 

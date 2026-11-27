@@ -23,18 +23,30 @@ class ProducerConsumerRegion(TIRStmt):
     consume_body: Sequential
 
     def __post_init__(self) -> None:
-        if not isinstance(self.produce_body, Sequential) or not isinstance(self.consume_body, Sequential):
-            raise IRSchemaError("ProducerConsumerRegion requires Sequential task bodies.")
+        if not isinstance(self.produce_body, Sequential) or not isinstance(
+            self.consume_body, Sequential
+        ):
+            raise IRSchemaError(
+                "ProducerConsumerRegion requires Sequential task bodies."
+            )
         produce = _collect_structure(self.produce_body, "producer")
         consume = _collect_structure(self.consume_body, "consumer")
         if not produce.stage_ids or not consume.stage_ids:
-            raise IRSchemaError("Producer/consumer regions must contain at least one pipeline stage.")
+            raise IRSchemaError(
+                "Producer/consumer regions must contain at least one pipeline stage."
+            )
         if produce.stage_ids != consume.stage_ids:
-            raise IRSchemaError("Producer and consumer pipeline stages must have identical IDs and order.")
+            raise IRSchemaError(
+                "Producer and consumer pipeline stages must have identical IDs and order."
+            )
         if produce.drain_ids != consume.drain_ids:
-            raise IRSchemaError("Producer and consumer pipeline drain sets must be identical.")
+            raise IRSchemaError(
+                "Producer and consumer pipeline drain sets must be identical."
+            )
         if produce.handoff_ids != consume.handoff_ids:
-            raise IRSchemaError("Producer and consumer handoffs must have identical IDs.")
+            raise IRSchemaError(
+                "Producer and consumer handoffs must have identical IDs."
+            )
 
 
 @dataclass(frozen=True)
@@ -60,8 +72,10 @@ def _collect_structure(body: Sequential, role: str) -> _RegionStructure:
     def visit(statement: TIRStmt) -> None:
         if isinstance(statement, PipelineStage):
             if statement.stage_id in seen_stages:
-                raise IRSchemaError(f"{role} body contains duplicate pipeline stage "
-                                    f"{statement.stage_id!r}.")
+                raise IRSchemaError(
+                    f"{role} body contains duplicate pipeline stage "
+                    f"{statement.stage_id!r}."
+                )
             seen_stages.add(statement.stage_id)
             stage_ids.append(statement.stage_id)
             if role == "producer" and statement.source_readiness is not None:
@@ -72,17 +86,23 @@ def _collect_structure(body: Sequential, role: str) -> _RegionStructure:
             return
         if isinstance(statement, PipelineDrain):
             if statement.stage_id not in seen_stages:
-                raise IRSchemaError(f"{role} body drains pipeline stage {statement.stage_id!r} "
-                                    "before executing it.")
+                raise IRSchemaError(
+                    f"{role} body drains pipeline stage {statement.stage_id!r} "
+                    "before executing it."
+                )
             if statement.stage_id in drains:
-                raise IRSchemaError(f"{role} body drains pipeline stage {statement.stage_id!r} "
-                                    "more than once.")
+                raise IRSchemaError(
+                    f"{role} body drains pipeline stage {statement.stage_id!r} "
+                    "more than once."
+                )
             drains.add(statement.stage_id)
             return
         if isinstance(statement, PipelineHandoff):
             if statement.handoff_id in handoffs:
-                raise IRSchemaError(f"{role} body contains duplicate pipeline handoff "
-                                    f"{statement.handoff_id!r}.")
+                raise IRSchemaError(
+                    f"{role} body contains duplicate pipeline handoff "
+                    f"{statement.handoff_id!r}."
+                )
             handoffs.add(statement.handoff_id)
             return
         if isinstance(statement, Sequential):

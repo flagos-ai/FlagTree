@@ -13,12 +13,12 @@ from triton.flagmega.rules import RewriteRule
 
 def _nested_module() -> fm.IRModule:
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
-    tensor = fm.tensor_type("float32", (8, ))
+    tensor = fm.tensor_type("float32", (8,))
     x = builder.var("x", tensor, id="x")
     y = builder.var("y", tensor, id="y")
-    activated = builder.call("math.silu", (x, ), tensor, id="activated")
+    activated = builder.call("math.silu", (x,), tensor, id="activated")
     root = builder.call("math.add", (activated, y), tensor, id="root")
-    builder.function("main", (x, y), (root, ))
+    builder.function("main", (x, y), (root,))
     return fm.verify_module(builder.build(entry="main"))
 
 
@@ -66,6 +66,6 @@ def test_repeated_pattern_capture_uses_expression_identity_not_stable_id():
         lambda match, _module: replace(match.root, op="math.mul"),
     )
 
-    result = EGraphRewriter((add_same, )).rewrite(_nested_module())
+    result = EGraphRewriter((add_same,)).rewrite(_nested_module())
 
     assert result.node_map["root"].op == "math.add"

@@ -1,5 +1,3 @@
-# Copyright 2026 FlagOS Contributors
-# SPDX-License-Identifier: MIT
 """A wide activation never authorizes removing the projection casts."""
 
 import pytest
@@ -29,9 +27,8 @@ def test_wide_activation_preserves_both_bf16_projection_boundaries(tmp_path, imp
     up[1::3, 1] = 1 / 256
     up[2::3, 0] = 129 / 128
     weights = {"gate": gate, "up": up}
-    checkpoint = MemoryCheckpoint(
-        {}, {name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
-             for name, value in weights.items()}, weights)
+    checkpoint = MemoryCheckpoint({}, {name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
+                                       for name, value in weights.items()}, weights)
     artifact = write_artifact(module, tmp_path / "wide_glu", target="nvidia-sm90", checkpoint=checkpoint,
                               emit_executable=True)
     runtime = load(artifact, device="cuda:0")

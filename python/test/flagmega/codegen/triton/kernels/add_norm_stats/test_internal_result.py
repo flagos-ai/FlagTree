@@ -20,14 +20,12 @@ def test_stats_publishes_internal_results(tmp_path, private_residual, dtype, var
         pytest.skip("SM90 CUDA is required")
     placement = fm.Placement((2, 4), "yx", "bb")
     tensor = fm.tensor_type(dtype, (1, 32))
-    broadcast = fm.DistributedType(tensor, (fm.SBP.broadcast(), ) * 2, placement)
+    broadcast = fm.DistributedType(tensor, (fm.SBP.broadcast(),) * 2, placement)
     split = fm.DistributedType(tensor, (
-        fm.SBP.broadcast(),
-        fm.SBP.split_contiguous((0, 1), 4),
+        fm.SBP.broadcast(), fm.SBP.split_contiguous((0, 1), 4),
     ), placement)
 
     class Graph(fm.Module):
-
         def forward(self):
             source = self.input("source", tensor)
             residual = self.input("residual", tensor)
@@ -36,11 +34,7 @@ def test_stats_publishes_internal_results(tmp_path, private_residual, dtype, var
             if private_residual:
                 addend = fm.F.math.silu(addend, name="private_residual")
             combined = fm.F.ntt.add_norm_stats(
-                value,
-                addend,
-                axis=-1,
-                use_mean=False,
-                name="combine",
+                value, addend, axis=-1, use_mean=False, name="combine",
             )
             value = fm.F.tensors.get_item(combined, 0)
             stats = fm.F.tensors.get_item(combined, 1)
@@ -53,23 +47,20 @@ def test_stats_publishes_internal_results(tmp_path, private_residual, dtype, var
     compiler = Compiler()
     model = compiler.target.triton_implementation_model
     identity = f"tir.add_norm_stats.{variant}"
-    compiler.target.triton_implementation_model = replace(
-        model, preferences={
-            **model.preferences,
-            "add_norm_stats": (identity, ),
-        })
-    module = compiler.compile(
-        Graph(
-            dialect="distributed",
-            stage="frozen_constants",
-            entry="main",
-            metadata={"auto_distribution": {"placement": placement.to_data()}},
-        ).build()).module
+    compiler.target.triton_implementation_model = replace(model, preferences={
+        **model.preferences, "add_norm_stats": (identity,),
+    })
+    module = compiler.compile(Graph(
+        dialect="distributed", stage="frozen_constants", entry="main",
+        metadata={"auto_distribution": {"placement": placement.to_data()}},
+    ).build()).module
     dispatch = fm.kernel_dispatch_for_call(module, module.node_map["combine"])
     assert dispatch.microkernel.variant == variant
     plan = fm.verify_buffer_plan(module)
     for name in ("combine.0", "combine.1"):
-        assert plan.buffer_map[name].distributed_storage_kind == (fm.DistributedBufferStorageKind.CANONICAL_GLOBAL)
+        assert plan.buffer_map[name].distributed_storage_kind == (
+            fm.DistributedBufferStorageKind.CANONICAL_GLOBAL
+        )
     artifact = write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     runtime = load(artifact, device="cuda:0")
     source = ((torch.arange(32, device="cuda") % 17 - 8).reshape(1, 32) / 4).to(getattr(torch, dtype))

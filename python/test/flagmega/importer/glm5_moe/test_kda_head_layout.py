@@ -32,7 +32,8 @@ PREFIX = "decode_linear_attention_dense"
 
 def _imported(*, with_values=False):
     scale = dict(REDUCED)
-    source = checkpoint(scale, with_values=with_values, full_model=True, expert_layout="separate")
+    source = checkpoint(scale, with_values=with_values, full_model=True,
+                        expert_layout="separate")
     importer = Glm5MoeModelImporter(source, block_size=8, num_blocks=3)
     return source, importer, importer.import_module(), configuration(scale)["text_config"]
 
@@ -49,7 +50,8 @@ def _states(text, importer):
     inputs = {}
     for layer in importer.kda_layers:
         inputs[f"kda_conv_state_{layer}"] = torch.zeros(
-            (3, text["kda_num_heads"], text["kda_head_dim"], text["kda_conv_kernel_size"] - 1), dtype=torch.bfloat16)
+            (3, text["kda_num_heads"], text["kda_head_dim"], text["kda_conv_kernel_size"] - 1),
+            dtype=torch.bfloat16)
         inputs[f"kda_recurrent_state_{layer}"] = torch.zeros(
             (1, text["kda_num_heads"], text["kda_head_dim"], text["kda_head_dim"]), dtype=torch.float32)
     return inputs
@@ -64,7 +66,8 @@ def test_the_convolution_takes_three_head_major_projections():
     for node in nodes:
         types = [module.node_map[value].type for value in node.inputs]
         projections, state, weight = types[:3], types[3], types[4]
-        assert all(tuple(d.fixed_value for d in value.shape) == (1, heads, dim) for value in projections)
+        assert all(tuple(d.fixed_value for d in value.shape) == (1, heads, dim)
+                   for value in projections)
         assert tuple(d.fixed_value for d in state.shape) == (3, heads, dim, kernel - 1)
         assert tuple(d.fixed_value for d in weight.shape) == (3, heads, dim, kernel)
 
@@ -75,8 +78,10 @@ def test_the_convolution_publishes_q_k_v_and_the_state_separately():
     for node in _conv_nodes(module):
         fields = node.type.fields
         assert len(fields) == 4
-        assert all(tuple(d.fixed_value for d in field.shape) == (1, heads, dim) for field in fields[:3])
-        assert tuple(d.fixed_value for d in fields[3].shape) == (3, heads, dim, text["kda_conv_kernel_size"] - 1)
+        assert all(tuple(d.fixed_value for d in field.shape) == (1, heads, dim)
+                   for field in fields[:3])
+        assert tuple(d.fixed_value for d in fields[3].shape) == (
+            3, heads, dim, text["kda_conv_kernel_size"] - 1)
 
 
 def test_no_flat_channel_reshuffle_survives_between_the_projections_and_the_recurrence():
@@ -98,13 +103,15 @@ def test_the_conv_weight_island_keeps_the_published_tensors_apart():
     _, _, module, text = _imported(with_values=False)
     heads, dim = text["kda_num_heads"], text["kda_head_dim"]
     kernel = text["kda_conv_kernel_size"]
-    joins = [node for node in module.nodes if node.op == "tensors.concat" and node.id.endswith("qkv_conv_weight")]
+    joins = [node for node in module.nodes
+             if node.op == "tensors.concat" and node.id.endswith("qkv_conv_weight")]
     assert joins, "the constant island must still assemble one conv weight per layer"
     for node in joins:
         assert int(node.attrs["axis"]) == 0
         assert tuple(d.fixed_value for d in node.type.shape) == (3, heads, dim, kernel)
         for value in node.inputs:
-            assert tuple(d.fixed_value for d in module.node_map[value].type.shape) == (1, heads, dim, kernel)
+            assert tuple(d.fixed_value for d in module.node_map[value].type.shape) == (
+                1, heads, dim, kernel)
 
 
 def test_the_head_major_convolution_matches_the_flat_reference():
@@ -114,10 +121,8 @@ def test_the_head_major_convolution_matches_the_flat_reference():
     heads, dim = text["kda_num_heads"], text["kda_head_dim"]
     kernel = text["kda_conv_kernel_size"]
     generator = torch.Generator().manual_seed(21)
-    inputs = {
-        "input_ids": torch.tensor([7], dtype=torch.int32), "paged_attention_state":
-        create_paged_attention_state(importer.paged_config)
-    }
+    inputs = {"input_ids": torch.tensor([7], dtype=torch.int32),
+              "paged_attention_state": create_paged_attention_state(importer.paged_config)}
     inputs.update(_states(text, importer))
     layer = importer.kda_layers[0]
     state = torch.randn((3, heads, dim, kernel - 1), generator=generator).bfloat16()
@@ -131,7 +136,8 @@ def test_the_head_major_convolution_matches_the_flat_reference():
     # The published shift is per (part, head, channel) regardless of layout, so
     # the flat reference is the same tensor viewed as [3*H*D, K-1].
     flat_state = state.reshape(3 * heads * dim, kernel - 1)
-    assert torch.equal(actual.reshape(3 * heads * dim, kernel - 1)[:, :kernel - 2], flat_state[:, 1:])
+    assert torch.equal(actual.reshape(3 * heads * dim, kernel - 1)[:, : kernel - 2],
+                       flat_state[:, 1:])
 
 
 @pytest.mark.parametrize("field", (0, 1, 2))

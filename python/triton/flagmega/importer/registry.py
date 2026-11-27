@@ -12,6 +12,7 @@ from triton.flagmega.errors import ImporterError
 from triton.flagmega.importer.checkpoint import Checkpoint
 from triton.flagmega.ir import IRModule
 
+
 LayerImporter = Callable[[Checkpoint, int, str | None], IRModule]
 ModelImporter = Callable[[Checkpoint, str | None], IRModule]
 
@@ -40,18 +41,18 @@ class ModelImporterSpec:
         if not callable(self.import_layer) or self.import_model is not None and not callable(self.import_model):
             raise ImporterError(f"Importer spec {self.name!r} callbacks must be callable.")
         profiles = dict(self.numerical_profiles)
-        if any(not isinstance(name, str) or not name or name == "default" or not callable(callback)
+        if any(not isinstance(name, str) or not name or name == "nncase" or not callable(callback)
                for name, callback in profiles.items()):
-            raise ImporterError(
-                "Numerical profiles require nonempty names and callable import transforms; reference is reserved.")
+            raise ImporterError("Numerical profiles require nonempty names and callable import transforms; nncase is reserved.")
         object.__setattr__(self, "numerical_profiles", MappingProxyType(profiles))
 
     def numerical_transform(self, profile: str) -> Callable[[IRModule], IRModule]:
-        if profile == "default":
+        if profile == "nncase":
             return lambda module: module
         if profile not in self.numerical_profiles:
-            raise ImporterError(f"Importer {self.name!r} does not support numerical profile {profile!r}; "
-                                f"available: {('default', *self.numerical_profiles)}.")
+            raise ImporterError(
+                f"Importer {self.name!r} does not support numerical profile {profile!r}; "
+                f"available: {('nncase', *self.numerical_profiles)}.")
         return self.numerical_profiles[profile]
 
     def matches(self, config: Mapping[str, object]) -> bool:
@@ -61,7 +62,6 @@ class ModelImporterSpec:
 
 
 class ModelImporterRegistry:
-
     def __init__(self) -> None:
         self._specs: dict[str, ModelImporterSpec] = {}
 
@@ -76,14 +76,17 @@ class ModelImporterRegistry:
         architectures = tuple(str(value) for value in config.get("architectures", ()))
         model_type = str(config.get("model_type", ""))
         if not matched:
-            raise ImporterError(f"FlagMega has no {'full-model' if full_model else 'layer'} importer for "
-                                f"architectures={architectures!r}, model_type={model_type!r}.")
+            raise ImporterError(
+                f"FlagMega has no {'full-model' if full_model else 'layer'} importer for "
+                f"architectures={architectures!r}, model_type={model_type!r}.")
         if len(matched) != 1:
-            raise ImporterError(f"Importer dispatch is ambiguous for architectures={architectures!r}, "
-                                f"model_type={model_type!r}: {[value.name for value in matched]}.")
+            raise ImporterError(
+                f"Importer dispatch is ambiguous for architectures={architectures!r}, "
+                f"model_type={model_type!r}: {[value.name for value in matched]}.")
         spec = matched[0]
         if full_model and spec.import_model is None:
-            raise ImporterError(f"Importer {spec.name!r} supports layer import but has no full-model importer.")
+            raise ImporterError(
+                f"Importer {spec.name!r} supports layer import but has no full-model importer.")
         return spec
 
     @property

@@ -1,22 +1,28 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
 {% if call.family == "matmul_glu" and call.variant == matmul_glu_variant %}
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
+{% if call.local_m | default(1) != 1 %}
+    # One owner-local row per iteration: row r walks K in decode-1's order over
+    # its own activation row. The gate/up weight tiles are read once per row and
+    # are never folded into a wider reduction.
+    for linear_row in tl.range(0, {{ call.local_m }}):
+{% endif %}
+{% filter indent(4 if call.local_m | default(1) != 1 else 0, first=True) %}
 {% if call.weight_encoding in ("IQ4_XS", "Q4_K") %}
     for local_n_start in tl.range(0, {{ call.local_n_capacity }}, {{ call.tile_n }}):
         local_n_offsets = local_n_start + tl.arange(0, {{ call.tile_n }})
-        n_mask = local_n_offsets < ({{ call.active_n }})
+        n_mask = {{ call.n_mask }}
         weight_rows = {{ call.weight_row_offset }}
         destination_offsets = {{ call.destination_offset }}
 {% if call.weight_encoding == "IQ4_XS" %}
-        gate = _flagmega_iq4_xs_dot({{ call.value }}, {{ call.gate_weight }}, weight_rows, n_mask, {{ call.k }})
-        up = _flagmega_iq4_xs_dot({{ call.value }}, {{ call.up_weight }}, weight_rows, n_mask, {{ call.k }})
+        gate = _flagmega_iq4_xs_dot({{ call.value_row | default(call.value) }}, {{ call.gate_weight }}, weight_rows, n_mask, {{ call.k }})
+        up = _flagmega_iq4_xs_dot({{ call.value_row | default(call.value) }}, {{ call.up_weight }}, weight_rows, n_mask, {{ call.k }})
 {% else %}
-        gate = _flagmega_q4_k_dot({{ call.value }}, {{ call.gate_weight }}, weight_rows, n_mask, {{ call.k }})
-        up = _flagmega_q4_k_dot({{ call.value }}, {{ call.up_weight }}, weight_rows, n_mask, {{ call.k }})
+        gate = _flagmega_q4_k_dot({{ call.value_row | default(call.value) }}, {{ call.gate_weight }}, weight_rows, n_mask, {{ call.k }})
+        up = _flagmega_q4_k_dot({{ call.value_row | default(call.value) }}, {{ call.up_weight }}, weight_rows, n_mask, {{ call.k }})
 {% endif %}
         tl.store({{ call.result }} + destination_offsets, (_flagmega_silu(gate) * up).to(tl.bfloat16), mask=n_mask)
 {% else %}
@@ -24,13 +30,13 @@ def {{ call.symbol }}({{ call.signature }}):
         0, {{ call.local_n_capacity }}, {{ call.tile_n }}
     ):
         local_n_offsets = local_n_start + tl.arange(0, {{ call.tile_n }})
-        n_mask = local_n_offsets < ({{ call.active_n }})
+        n_mask = {{ call.n_mask }}
         weight_rows = {{ call.weight_row_offset }}
         up_weight_rows = {{ call.up_weight_row_offset }}
         scale_rows = {{ call.scale_row_offset }}
         destination_offsets = {{ call.destination_offset }}
         _flagmega_block_glu_local_tile(
-            {{ call.value }}, {{ call.gate_weight }}, {{ call.up_weight }},
+            {{ call.value_row | default(call.value) }}, {{ call.gate_weight }}, {{ call.up_weight }},
             {{ call.gate_scale }}, {{ call.up_scale }}, {{ call.result }},
             weight_rows, up_weight_rows, scale_rows, destination_offsets, n_mask,
             {{ call.k }}, {{ call.block_k }},
@@ -41,6 +47,7 @@ def {{ call.symbol }}({{ call.signature }}):
 {% endif %}
         )
 {% endif %}
+{% endfilter %}
 
 
 {% endif %}

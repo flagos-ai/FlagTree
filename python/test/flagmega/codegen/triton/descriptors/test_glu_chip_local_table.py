@@ -49,7 +49,9 @@ class _PackedGlu(fm.Module):
         n_policy = fm.SBP.split_contiguous(self.feature_axes)
         value = self.input(
             "value",
-            fm.DistributedType(fm.tensor_type("bfloat16", (1, K)), (broadcast, broadcast), PLACEMENT),
+            fm.DistributedType(
+                fm.tensor_type("bfloat16", (1, K)), (broadcast, broadcast), PLACEMENT
+            ),
         )
         weight_type = fm.DistributedType(
             fm.tensor_type("bfloat16", (K // 16, N // 8, 2, 64)),
@@ -94,7 +96,9 @@ def test_chip_split_glu_drops_the_single_map_and_keeps_a_table():
     """Selection must leave the table variant, not just remove the single map."""
 
     single, table = _descriptor_candidates((0, 1, 2))
-    assert not single, (f"a single tensor map replicates the whole GLU weight: {sorted(single)}")
+    assert not single, (
+        f"a single tensor map replicates the whole GLU weight: {sorted(single)}"
+    )
     assert table, "a chip-split GLU weight must still have a table candidate"
 
 

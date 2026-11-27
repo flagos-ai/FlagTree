@@ -39,8 +39,13 @@ def test_schedule_and_codegen_flags_index_real_renderer_artifacts(tmp_path):
     assert ("codegen", "triton.python-source/v1") in indexed
     schedules = tuple(
         json.loads(path.read_text(encoding="utf-8"))
-        for path in (tmp_path / "dumps" / "Schedule").glob("*.schedule.json"))
-    schedule_data = next(value for value in schedules if value["dispatch"]["candidate"] == "tir.elementwise.add")
+        for path in (tmp_path / "dumps" / "Schedule").glob("*.schedule.json")
+    )
+    schedule_data = next(
+        value
+        for value in schedules
+        if value["dispatch"]["candidate"] == "tir.elementwise.add"
+    )
     assert schedule_data["dispatch"]["candidate"] == "tir.elementwise.add"
     assert schedule_data["function"].startswith("kernel_elementwise_add")
     package = json.loads((tmp_path / "dumps" / "CodeGen" / "package.json").read_text(encoding="utf-8"))
@@ -61,11 +66,17 @@ def test_schedule_dump_does_not_require_executable_codegen(tmp_path):
     )
 
     call_schedule = json.loads(
-        (tmp_path / "dumps" / "Schedule" / "main.call_schedule.json").read_text(encoding="utf-8"))
+        (tmp_path / "dumps" / "Schedule" / "main.call_schedule.json")
+        .read_text(encoding="utf-8")
+    )
     assert call_schedule["schema"] == "flagmega.triton-function-schedule/v2"
-    assert call_schedule["regions"][0]["execution_domain"] == ("dense_local_shard")
+    assert call_schedule["regions"][0]["execution_domain"] == (
+        "dense_local_shard"
+    )
     runtime_binding = json.loads(
-        (tmp_path / "dumps" / "Schedule" / "main.runtime_binding.json").read_text(encoding="utf-8"))
+        (tmp_path / "dumps" / "Schedule" / "main.runtime_binding.json")
+        .read_text(encoding="utf-8")
+    )
     assert runtime_binding["signature"][:3] == ["lhs", "rhs", "output"]
     assert runtime_binding["signature"][3:] == ["workspace", "block_local_data"]
     assert [pool["storage"] for pool in runtime_binding["pools"]] == [

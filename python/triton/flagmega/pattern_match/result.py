@@ -11,7 +11,6 @@ from triton.flagmega.pattern_match.pattern import Pattern
 
 
 class MatchResult(Mapping[Pattern, object]):
-
     def __init__(self, root: object, matches: Mapping[Pattern, object]) -> None:
         self.root = root
         self._pattern_map = MappingProxyType(dict(matches))

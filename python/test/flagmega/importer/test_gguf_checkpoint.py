@@ -159,3 +159,95 @@ def test_dense_gguf_imports_all_layers_with_exact_packed_storage(checkpoint, tmp
     assert index['entries']
     logits = next(n for n in imported.nodes if n.id == 'logits')
     assert logits.type.dtype == DType.FLOAT32
+
+
+def _write_qwen3_gguf(path, *, tied, metadata=None):
+    writer = gguf.GGUFWriter(path, arch='qwen3')
+    fields = {
+        'embedding_length': 256, 'feed_forward_length': 512, 'block_count': 1,
+        'context_length': 4096, 'attention.head_count': 4, 'attention.head_count_kv': 2,
+        'attention.key_length': 128, 'attention.value_length': 128, 'rope.dimension_count': 128,
+    }
+    fields.update(metadata or {})
+    for key, value in fields.items():
+        writer.add_uint32('qwen3.' + key, value)
+    writer.add_float32('qwen3.attention.layer_norm_rms_epsilon', 1e-6)
+    writer.add_float32('qwen3.rope.freq_base', 1000000.0)
+    writer.add_uint32('tokenizer.ggml.padding_token_id', 3)
+    writer.add_tensor('token_embd.weight', np.zeros((16, 136), np.uint8),
+                      raw_dtype=gguf.GGMLQuantizationType.IQ4_XS)
+    if not tied:
+        writer.add_tensor('output.weight', np.zeros((16, 210), np.uint8),
+                          raw_dtype=gguf.GGMLQuantizationType.Q6_K)
+    for name, size in (('output_norm.weight', 256), ('blk.0.attn_norm.weight', 256),
+                       ('blk.0.ffn_norm.weight', 256), ('blk.0.attn_q_norm.weight', 128),
+                       ('blk.0.attn_k_norm.weight', 128)):
+        writer.add_tensor(name, np.full((size,), 1.25, np.float32))
+    writer.add_tensor('blk.0.attn_q.weight', np.zeros((512, 136), np.uint8),
+                      raw_dtype=gguf.GGMLQuantizationType.IQ4_XS)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path
+
+
+@pytest.mark.parametrize('tied', [False, True])
+def test_qwen3_gguf_preserves_mixed_weights_and_standard_norms(tmp_path, tied):
+    source = GGUFCheckpoint(_write_qwen3_gguf(tmp_path / 'qwen3.gguf', tied=tied))
+    config = source.config
+    assert config['model_type'] == 'qwen3'
+    assert config['architectures'] == ['Qwen3ForCausalLM']
+    assert config['num_hidden_layers'] == 1
+    assert config['hidden_size'] == 256
+    assert config['intermediate_size'] == 512
+    assert config['vocab_size'] == 16
+    assert config['num_attention_heads'] == 4
+    assert config['num_key_value_heads'] == 2
+    assert config['head_dim'] == 128
+    assert config['max_position_embeddings'] == 4096
+    assert config['rms_norm_eps'] == pytest.approx(1e-6)
+    assert config['rope_theta'] == 1000000.0
+    assert config['tie_word_embeddings'] is tied
+    assert config['pad_token_id'] is None
+    assert config['gguf']['padding_token_id'] == 3
+    assert config['quantization_config']['quant_method'] == 'gguf'
+    assert source.tensor_info('model.layers.0.self_attn.q_proj.weight').shape == (512, 256)
+    assert not any(key.startswith('model.language_model.') for key in source.keys)
+    for key, raw in (
+        ('model.norm.weight', 'output_norm.weight'),
+        ('model.layers.0.input_layernorm.weight', 'blk.0.attn_norm.weight'),
+        ('model.layers.0.post_attention_layernorm.weight', 'blk.0.ffn_norm.weight'),
+        ('model.layers.0.self_attn.q_norm.weight', 'blk.0.attn_q_norm.weight'),
+        ('model.layers.0.self_attn.k_norm.weight', 'blk.0.attn_k_norm.weight'),
+    ):
+        torch.testing.assert_close(source.load_tensor(key), source.load_tensor(raw), rtol=0, atol=0)
+        assert torch.all(source.load_tensor(key) == 1.25)
+    weights = [('model.embed_tokens.weight', 'token_embd.weight', 'IQ4_XS', 136)]
+    if tied:
+        assert 'lm_head.weight' not in source.keys
+    else:
+        weights.append(('lm_head.weight', 'output.weight', 'Q6_K', 210))
+    for key, raw, encoding, block_bytes in weights:
+        info = source.tensor_info(key)
+        assert info.shape == (16, 256)
+        assert info.physical_shape == (16, block_bytes)
+        assert source.quantization_of(key) == encoding
+        span = source.tensor_byte_range(key)
+        assert span.nbytes == 16 * block_bytes
+        with source.path.open('rb') as stream:
+            stream.seek(span.offset)
+            assert stream.read(span.nbytes) == source._raw[raw].data.tobytes()
+        with pytest.raises(ImporterError, match='native quantized'):
+            source.load_tensor(key)
+
+
+@pytest.mark.parametrize('metadata, match', [
+    ({'context_length': 0}, 'context_length'),
+    ({'attention.head_count_kv': 3}, 'divisible'),
+    ({'attention.value_length': 64}, 'head dimensions'),
+])
+def test_qwen3_gguf_rejects_invalid_attention_metadata(tmp_path, metadata, match):
+    path = _write_qwen3_gguf(tmp_path / 'invalid-qwen3.gguf', tied=True, metadata=metadata)
+    with pytest.raises(ImporterError, match=match):
+        GGUFCheckpoint(path)

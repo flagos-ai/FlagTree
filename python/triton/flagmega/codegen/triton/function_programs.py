@@ -7,13 +7,11 @@ from copy import deepcopy
 from triton.flagmega.codegen.triton.function_pool_abi import CALL_RECORD, OFFSET_TABLE, ROW_INDEX, pool_parameter
 from triton.flagmega.codegen.triton.physical_access import emit_triton_scalar_type
 from triton.flagmega.codegen.triton.runtime_binding import (
-    DEVICE_CONTEXT_ARGUMENTS,
-    DEVICE_CONTEXT_HANDLES,
-    DEVICE_CONTEXT_MODE,
-    describe_function_runtime_binding,
+    DEVICE_CONTEXT_ARGUMENTS, DEVICE_CONTEXT_HANDLES, DEVICE_CONTEXT_MODE, describe_function_runtime_binding,
 )
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import verify_buffer_plan
+
 
 KERNEL_PROGRAM_FUNCTION_SCHEMA = "flagmega.kernel-programs/v4-functions"
 
@@ -33,9 +31,10 @@ def pipeline_entry_identity(pipeline):
             return tuple(freeze(item) for item in value)
         return value
 
-    keys = ("stages", "handoffs", "producer_events", "consumer_endpoints", "producer_endpoints", "auxiliary_endpoints",
-            "auxiliary_events", "shared_arena_required_nbytes", "shared_arena_nbytes", "shared_arena_alignment_bytes",
-            "consumer_warps", "producer_warps", "producer_registers")
+    keys = ("stages", "handoffs", "producer_events", "consumer_endpoints", "producer_endpoints",
+            "auxiliary_endpoints", "auxiliary_events", "shared_arena_required_nbytes",
+            "shared_arena_nbytes", "shared_arena_alignment_bytes", "consumer_warps",
+            "producer_warps", "producer_registers")
     return freeze({key: pipeline.get(key) for key in keys})
 
 
@@ -70,12 +69,10 @@ def _canonical_pipeline(program, definition, call, names):
         for key in ("producer_warps", "producer_registers", "auxiliary_consumer"):
             if instance.get(key) != stage.get(key):
                 raise CodegenError("Reusable pipeline entry changes its selected role contract.")
-        if len(instance["workspaces"]) != len(stage["workspaces"]) or len(instance["channels"]) != len(
-                stage["channels"]):
+        if len(instance["workspaces"]) != len(stage["workspaces"]) or len(instance["channels"]) != len(stage["channels"]):
             raise CodegenError("Reusable pipeline entry changes its Shared workspace ABI.")
         for workspace, bound in zip(stage["workspaces"], instance["workspaces"], strict=True):
-            for key in ("shape", "dtype", "element_type", "strides", "nbytes", "matrix_compatible", "pipe_owned",
-                        "consumer_owned"):
+            for key in ("shape", "dtype", "element_type", "strides", "nbytes", "matrix_compatible", "pipe_owned", "consumer_owned"):
                 if bound.get(key) != workspace.get(key):
                     raise CodegenError("Reusable pipeline entry changes its Shared payload ABI.")
             rename[bound["variable"]] = workspace["variable"]
@@ -115,11 +112,8 @@ def _canonical_pipeline(program, definition, call, names):
         for event in result[role + "_events"]:
             if event["kind"] == "function_call":
                 arguments = (*formal[role + "_endpoints"], *names)
-                event = {
-                    **event, "arguments": ", ".join(arguments), "argument_expressions": arguments, "endpoint_bindings":
-                    {name: name
-                     for name in formal[role + "_endpoints"]}
-                }
+                event = {**event, "arguments": ", ".join(arguments), "argument_expressions": arguments,
+                         "endpoint_bindings": {name: name for name in formal[role + "_endpoints"]}}
             rewritten.append(event)
         result[role + "_events"] = rewritten
     return result
@@ -162,8 +156,8 @@ def _actual_bindings(module, root, definition, call, signature, callee, physical
         else:
             if "view_byte_offset" in abi:
                 raise CodegenError("Shared GPU entries require a root-addressable view offset.")
-            value = _pointer(edge["actual_runtime_argument"], abi["scalar_dtype"], int(abi.get("pool_byte_offset", 0)),
-                             int(abi.get("pool_scope_stride_bytes", 0)))
+            value = _pointer(edge["actual_runtime_argument"], abi["scalar_dtype"],
+                             int(abi.get("pool_byte_offset", 0)), int(abi.get("pool_scope_stride_bytes", 0)))
         actuals[argument["name"]] = value
     pools = {p["storage"]: p for p in root["pools"]}
     frames = {f["memory_space"]: f for f in physical["memory_pools"]}
@@ -174,8 +168,7 @@ def _actual_bindings(module, root, definition, call, signature, callee, physical
         parent = pools[storage]
         frame = frames.get(storage)
         actuals[pool["name"]] = _pointer(
-            parent["name"], "uint8",
-            int(frame["offset"]) if frame else 0,
+            parent["name"], "uint8", int(frame["offset"]) if frame else 0,
             int(parent.get("scope_nbytes", 0)) if frame and int(parent.get("scope_count", 1)) > 1 else 0)
     actuals.update(call["descriptor_argument_bindings"])
     plan = definition["function_pool_abi"]
@@ -194,12 +187,9 @@ def _actual_bindings(module, root, definition, call, signature, callee, physical
 
 def project_function_programs(module, descriptor, programs, launches):
     """Keep invocation IDs/DAGs; canonicalize code only by its complete ABI."""
-    if not any(
-            sum(e["kind"] not in {"barrier", "drain"}
-                for e in p["entry_events"]) == 1 and any(
-                    e["kind"] == "function_call" and (not e.get("endpoint_bindings") or p.get("pipeline_schedule"))
-                    for e in p["entry_events"])
-            for p in programs):
+    if not any(sum(e["kind"] not in {"barrier", "drain"} for e in p["entry_events"]) == 1
+               and any(e["kind"] == "function_call" and (not e.get("endpoint_bindings") or p.get("pipeline_schedule"))
+                       for e in p["entry_events"]) for p in programs):
         return False
     root = descriptor["runtime_binding"]
     signature = descriptor["signature_arguments"]
@@ -211,9 +201,8 @@ def project_function_programs(module, descriptor, programs, launches):
     for program, launch in zip(programs, launches, strict=True):
         events = program["entry_events"]
         body = [e for e in events if e["kind"] not in {"barrier", "drain"}]
-        function = body[0]["callee"] if (
-            len(body) == 1 and body[0]["kind"] == "function_call" and
-            (not body[0].get("endpoint_bindings") or program.get("pipeline_schedule"))) else None
+        function = body[0]["callee"] if (len(body) == 1 and body[0]["kind"] == "function_call"
+                                         and (not body[0].get("endpoint_bindings") or program.get("pipeline_schedule"))) else None
         launch["entry_function"] = function
         if function is None:
             launch["entry_symbol"] = program["symbol"]
@@ -221,20 +210,18 @@ def project_function_programs(module, descriptor, programs, launches):
             continue
         definition = next(d for d in program["device_functions"] if d["function"] == function)
         names = definition["signature_arguments"]
-        pipeline = _canonical_pipeline(program, definition, body[0],
-                                       names) if program.get("pipeline_schedule") else None
+        pipeline = _canonical_pipeline(program, definition, body[0], names) if program.get("pipeline_schedule") else None
         if pipeline is not None:
             events = pipeline["consumer_events"]
             body = [e for e in events if e["kind"] not in {"barrier", "drain"}]
         if function not in callees:
             callees[function] = describe_function_runtime_binding(module, function_name=function)
-        actuals = _actual_bindings(module, root, definition, body[0], names, callees[function],
-                                   physical_calls[body[0]["call"]])
+        actuals = _actual_bindings(module, root, definition, body[0], names,
+                                   callees[function], physical_calls[body[0]["call"]])
         bindings, parameters, typed, scalars, scoped = [], [], [], [], []
         for name in names:
             if name == "device_dptr":
-                context = DEVICE_CONTEXT_ARGUMENTS if descriptor[
-                    "device_context_abi"] == "runtime-handles/v2" else DEVICE_CONTEXT_HANDLES
+                context = DEVICE_CONTEXT_ARGUMENTS if descriptor["device_context_abi"] == "runtime-handles/v2" else DEVICE_CONTEXT_HANDLES
                 for field in context:
                     bindings.append(dict(kind="argument", source=indices[field]))
                     parameters.append(field)
@@ -257,23 +244,22 @@ def project_function_programs(module, descriptor, programs, launches):
                     scoped.append(dict(name=name, stride=stride, dtype=emit_triton_scalar_type(value["dtype"])))
         # Fences can differ at the first use or after a peer completion.
         # Their executable scope/axis is part of entry identity, not call IDs.
-        fences = tuple(("call", ) if e is body[0] else ("drain", tuple(e["endpoints"])) if e["kind"] == "drain" else (
-            "barrier", e["scope"], e.get("barrier_axis_group_key")) for e in events)
+        fences = tuple(("call",) if e is body[0] else ("drain", tuple(e["endpoints"])) if e["kind"] == "drain" else
+                       ("barrier", e["scope"], e.get("barrier_axis_group_key")) for e in events)
         key = (function, launch["num_warps"], tuple(launch["grid"]), fences,
-               tuple((v["name"], v["stride"], v["dtype"])
-                     for v in scoped), tuple(typed), body[0].get("participation_active",
-                                                                 "True"), pipeline_entry_identity(pipeline))
+               tuple((v["name"], v["stride"], v["dtype"]) for v in scoped),
+               tuple(typed), body[0].get("participation_active", "True"), pipeline_entry_identity(pipeline))
         canonical = entries.setdefault(key, program["symbol"])
         launch["entry_symbol"] = canonical
         launch["argument_bindings"] = bindings
-        launch["dynamic_argument_indices"] = [
-            i for i, v in enumerate(bindings) if v["kind"] != "immediate" and v["source"] in dynamic
-        ]
+        launch["dynamic_argument_indices"] = [i for i, v in enumerate(bindings)
+                                               if v["kind"] != "immediate" and v["source"] in dynamic]
         if canonical != program["symbol"]:
             program["entry_alias"] = canonical
             continue
-        program.update(signature=",\n    ".join(typed), signature_arguments=parameters, typed_signature_arguments=typed,
-                       scalar_arguments=scalars, scoped_entry_arguments=scoped, entry_inline_function=function)
+        program.update(signature=",\n    ".join(typed), signature_arguments=parameters,
+                       typed_signature_arguments=typed, scalar_arguments=scalars,
+                       scoped_entry_arguments=scoped, entry_inline_function=function)
         # This entry invokes the complete root once. Keeping another device
         # call here forces all invocation parameters into a fixed call ABI
         # before their first use. Inline this wrapper so constants can be

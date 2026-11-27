@@ -29,7 +29,11 @@ class WorkspaceRequirement(TIRNode):
     def __post_init__(self) -> None:
         if not self.name or not isinstance(self.type, TensorType) or not self.memory_space:
             raise IRSchemaError("WorkspaceRequirement requires a name, TensorType and memory space.")
-        if (isinstance(self.alignment, bool) or self.alignment <= 0 or self.alignment & (self.alignment - 1)):
+        if (
+            isinstance(self.alignment, bool)
+            or self.alignment <= 0
+            or self.alignment & (self.alignment - 1)
+        ):
             raise IRSchemaError("WorkspaceRequirement alignment must be a positive power of two.")
         object.__setattr__(self, "lifetime", WorkspaceLifetime(self.lifetime))
 

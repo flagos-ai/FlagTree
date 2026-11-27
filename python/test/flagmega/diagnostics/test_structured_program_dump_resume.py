@@ -14,51 +14,49 @@ from python.test.flagmega.ir.tir.test_prim_function import make_prim_module
 
 def structured_module(kind='call'):
     primitive = make_prim_module().prim_functions[0]
-    tensor = fm.tensor_type('float32', (4, ))
+    tensor = fm.tensor_type('float32', (4,))
     b = fm.IRBuilder(dialect='semantic_tir', stage='tir_selected')
     b.prim_function(primitive)
     worker_arg = b.var('worker_arg', tensor, id='worker_arg')
-    first = b.call('tir.call', (worker_arg, ), tensor, id='first', attrs={'callee': 'copy_4'})
-    second = b.call('tir.call', (first, ), tensor, id='second', attrs={'callee': 'copy_4'})
+    first = b.call('tir.call', (worker_arg,), tensor, id='first', attrs={'callee': 'copy_4'})
+    second = b.call('tir.call', (first,), tensor, id='second', attrs={'callee': 'copy_4'})
     value = b.var('value', tensor, id='value')
     if kind == 'loop':
         from triton.flagmega.ir.ops.core import construction_scope
         index_type = fm.tensor_type('int64', ())
         iv = b.var('iv', index_type, id='iv')
-        body = b.region('worker', (iv, worker_arg), (second, ), iter_count=1)
+        body = b.region('worker', (iv, worker_arg), (second,), iter_count=1)
         with construction_scope(b):
             lower = fm.F.builtin.scalar_const(index_type, 0, name='lower')
             upper = fm.F.builtin.scalar_const(index_type, 3, name='upper')
             stride = fm.F.builtin.scalar_const(index_type, 1, name='stride')
             loop = fm.F.control.for_loop(lower, upper, stride, value, body=body, name='nested')
             out = fm.F.tensors.get_item(loop, 0, name='output')
-        main_steps = (fm.LoopInvocation('nested', 'worker', 0, 3, 1), )
+        main_steps = (fm.LoopInvocation('nested', 'worker', 0, 3, 1),)
     else:
-        b.function('worker', (worker_arg, ), (second, ))
-        out = b.call('tir.call', (value, ), tensor, id='nested', attrs={'callee': 'worker'})
-        main_steps = (fm.CallInvocation('nested', 'worker'), )
-    b.function('main', (value, ), (out, ))
+        b.function('worker', (worker_arg,), (second,))
+        out = b.call('tir.call', (value,), tensor, id='nested', attrs={'callee': 'worker'})
+        main_steps = (fm.CallInvocation('nested', 'worker'),)
+    b.function('main', (value,), (out,))
     plan = fm.ProgramExecution('main', (
         fm.FunctionProgramExecution('main', main_steps),
         fm.FunctionProgramExecution('worker', (fm.ProgramInvocation('p0'), fm.ProgramInvocation('p1'))),
     ))
     source = b.build(entry='main')
-    return fm.verify_module(
-        replace(
-            source, metadata={
-                'kernel_program_execution':
-                plan.to_data(),
-                'kernel_program_partition': (
-                    {'symbol': 'p0', 'function': 'worker', 'calls': ('first', )},
-                    {'symbol': 'p1', 'function': 'worker', 'calls': ('second', )},
-                ),
-            }))
+    return fm.verify_module(replace(source, metadata={
+        'kernel_program_execution': plan.to_data(),
+        'kernel_program_partition': (
+            {'symbol': 'p0', 'function': 'worker', 'calls': ('first',)},
+            {'symbol': 'p1', 'function': 'worker', 'calls': ('second',)},
+        ),
+    }))
 
 
 @pytest.mark.parametrize('kind', ['call', 'loop'])
 def test_structured_program_function_dumps_load_and_merge(tmp_path, kind):
     module = structured_module(kind)
-    dumped = DumpManager(tmp_path, DumpFlags.PASS_IR).root.dump_module(module, 'After', category=DumpFlags.PASS_IR)
+    dumped = DumpManager(tmp_path, DumpFlags.PASS_IR).root.dump_module(
+        module, 'After', category=DumpFlags.PASS_IR)
     for name in ('worker', 'main'):
         fragment = fm.load_module(dumped.directory / f'{name}.py')
         assert fragment.entry == name
@@ -132,7 +130,8 @@ def test_module_entry_mismatch_remains_invalid():
 
 def test_merge_rejects_inconsistent_plan_edits(tmp_path):
     module = structured_module()
-    dumped = DumpManager(tmp_path, DumpFlags.PASS_IR).root.dump_module(module, 'After', category=DumpFlags.PASS_IR)
+    dumped = DumpManager(tmp_path, DumpFlags.PASS_IR).root.dump_module(
+        module, 'After', category=DumpFlags.PASS_IR)
     # The worker view cannot inspect main's absent typed call; the main view
     # still checks it, and the directory rejects conflicting complete plans.
     worker_path = dumped.directory / 'worker.py'

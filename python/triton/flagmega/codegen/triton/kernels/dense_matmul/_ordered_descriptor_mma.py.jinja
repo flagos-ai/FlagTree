@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{# Keep the FP32 fragment across every TMA slot; rounding a slot result or
+{# Keep the FP32 fragment across every TMA slot; rounding a slot result or
    adding independent slot sums would change the complete-K MMA reduction. #}
 {{ call.symbol }}__mma_layout = tl.constexpr(tle.gpu.MmaEncoding(
     [2, 0], [1, {{ num_warps }}], [16, 8],

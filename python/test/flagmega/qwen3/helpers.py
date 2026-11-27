@@ -8,6 +8,7 @@ import torch
 from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType
 
+
 PREFIX = "model.layers.0."
 
 
@@ -36,18 +37,18 @@ def config() -> dict[str, object]:
 def tensor_specs() -> dict[str, tuple[int, ...]]:
     return {
         "model.embed_tokens.weight": (32, 16),
-        PREFIX + "input_layernorm.weight": (16, ),
+        PREFIX + "input_layernorm.weight": (16,),
         PREFIX + "self_attn.q_proj.weight": (16, 16),
         PREFIX + "self_attn.k_proj.weight": (8, 16),
         PREFIX + "self_attn.v_proj.weight": (8, 16),
-        PREFIX + "self_attn.q_norm.weight": (8, ),
-        PREFIX + "self_attn.k_norm.weight": (8, ),
+        PREFIX + "self_attn.q_norm.weight": (8,),
+        PREFIX + "self_attn.k_norm.weight": (8,),
         PREFIX + "self_attn.o_proj.weight": (16, 16),
-        PREFIX + "post_attention_layernorm.weight": (16, ),
+        PREFIX + "post_attention_layernorm.weight": (16,),
         PREFIX + "mlp.gate_proj.weight": (32, 16),
         PREFIX + "mlp.up_proj.weight": (32, 16),
         PREFIX + "mlp.down_proj.weight": (16, 32),
-        "model.norm.weight": (16, ),
+        "model.norm.weight": (16,),
     }
 
 
@@ -69,19 +70,19 @@ def full_checkpoint(*, num_hidden_layers: int = 2, seed: int = 1234) -> MemoryCh
     model_config = {**config(), "num_hidden_layers": num_hidden_layers}
     specs = {
         "model.embed_tokens.weight": (32, 16),
-        "model.norm.weight": (16, ),
+        "model.norm.weight": (16,),
     }
     for layer in range(num_hidden_layers):
         prefix = f"model.layers.{layer}."
         specs.update({
-            prefix + "input_layernorm.weight": (16, ),
+            prefix + "input_layernorm.weight": (16,),
             prefix + "self_attn.q_proj.weight": (16, 16),
             prefix + "self_attn.k_proj.weight": (8, 16),
             prefix + "self_attn.v_proj.weight": (8, 16),
-            prefix + "self_attn.q_norm.weight": (8, ),
-            prefix + "self_attn.k_norm.weight": (8, ),
+            prefix + "self_attn.q_norm.weight": (8,),
+            prefix + "self_attn.k_norm.weight": (8,),
             prefix + "self_attn.o_proj.weight": (16, 16),
-            prefix + "post_attention_layernorm.weight": (16, ),
+            prefix + "post_attention_layernorm.weight": (16,),
             prefix + "mlp.gate_proj.weight": (32, 16),
             prefix + "mlp.up_proj.weight": (32, 16),
             prefix + "mlp.down_proj.weight": (16, 32),
@@ -128,19 +129,19 @@ def full_checkpoint_wmma(
     }
     specs = {
         "model.embed_tokens.weight": (vocab, hidden),
-        "model.norm.weight": (hidden, ),
+        "model.norm.weight": (hidden,),
     }
     for layer in range(num_hidden_layers):
         prefix = f"model.layers.{layer}."
         specs.update({
-            prefix + "input_layernorm.weight": (hidden, ),
+            prefix + "input_layernorm.weight": (hidden,),
             prefix + "self_attn.q_proj.weight": (query_size, hidden),
             prefix + "self_attn.k_proj.weight": (kv_size, hidden),
             prefix + "self_attn.v_proj.weight": (kv_size, hidden),
-            prefix + "self_attn.q_norm.weight": (head_dim, ),
-            prefix + "self_attn.k_norm.weight": (head_dim, ),
+            prefix + "self_attn.q_norm.weight": (head_dim,),
+            prefix + "self_attn.k_norm.weight": (head_dim,),
             prefix + "self_attn.o_proj.weight": (hidden, query_size),
-            prefix + "post_attention_layernorm.weight": (hidden, ),
+            prefix + "post_attention_layernorm.weight": (hidden,),
             prefix + "mlp.gate_proj.weight": (intermediate, hidden),
             prefix + "mlp.up_proj.weight": (intermediate, hidden),
             prefix + "mlp.down_proj.weight": (hidden, intermediate),
@@ -158,12 +159,11 @@ def full_checkpoint_wmma(
     return MemoryCheckpoint(model_config, infos, values)
 
 
-def full_metadata_checkpoint(*, num_hidden_layers: int = 2) -> MemoryCheckpoint:
+def full_metadata_checkpoint(
+    *, num_hidden_layers: int = 2, hidden: int = 2048, intermediate: int = 6144, vocab: int = 4096
+) -> MemoryCheckpoint:
     """Shape-realistic checkpoint metadata without allocating model weights."""
 
-    hidden = 2048
-    intermediate = 6144
-    vocab = 4096
     model_config = {
         **config(),
         "vocab_size": vocab,
@@ -176,22 +176,25 @@ def full_metadata_checkpoint(*, num_hidden_layers: int = 2) -> MemoryCheckpoint:
     }
     specs = {
         "model.embed_tokens.weight": (vocab, hidden),
-        "model.norm.weight": (hidden, ),
+        "model.norm.weight": (hidden,),
     }
     for layer in range(num_hidden_layers):
         prefix = f"model.layers.{layer}."
         specs.update({
-            prefix + "input_layernorm.weight": (hidden, ),
-            prefix + "self_attn.q_proj.weight": (hidden, hidden),
+            prefix + "input_layernorm.weight": (hidden,),
+            prefix + "self_attn.q_proj.weight": (2048, hidden),
             prefix + "self_attn.k_proj.weight": (1024, hidden),
             prefix + "self_attn.v_proj.weight": (1024, hidden),
-            prefix + "self_attn.q_norm.weight": (128, ),
-            prefix + "self_attn.k_norm.weight": (128, ),
-            prefix + "self_attn.o_proj.weight": (hidden, hidden),
-            prefix + "post_attention_layernorm.weight": (hidden, ),
+            prefix + "self_attn.q_norm.weight": (128,),
+            prefix + "self_attn.k_norm.weight": (128,),
+            prefix + "self_attn.o_proj.weight": (hidden, 2048),
+            prefix + "post_attention_layernorm.weight": (hidden,),
             prefix + "mlp.gate_proj.weight": (intermediate, hidden),
             prefix + "mlp.up_proj.weight": (intermediate, hidden),
             prefix + "mlp.down_proj.weight": (hidden, intermediate),
         })
-    infos = {key: TensorInfo(key, DType.BFLOAT16, shape, "qwen3-metadata.safetensors") for key, shape in specs.items()}
+    infos = {
+        key: TensorInfo(key, DType.BFLOAT16, shape, "qwen3-metadata.safetensors")
+        for key, shape in specs.items()
+    }
     return MemoryCheckpoint(model_config, infos)

@@ -25,8 +25,11 @@ class VectorizeBinary:
         self.max_axes = max_axes
 
     def candidates(self, node: Node, module: IRModule) -> tuple[VectorizeCandidate, ...]:
-        if (node.op not in {"math.add", "math.mul"} or not node.effect.is_pure or not isinstance(node.type, TensorType)
-                or node.type.dtype not in {DType.BFLOAT16, DType.FLOAT32}):
+        if (
+            node.op not in {"math.add", "math.mul"} or not node.effect.is_pure
+            or not isinstance(node.type, TensorType)
+            or node.type.dtype not in {DType.BFLOAT16, DType.FLOAT32}
+        ):
             return ()
         candidates = generate_axis_candidates(
             node.type,

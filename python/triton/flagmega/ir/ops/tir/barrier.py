@@ -39,11 +39,11 @@ class Barrier(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(notes=("synchronization", ))
+        return OpCost(notes=("synchronization",))
 
     @classmethod
     def python_call(cls, node: Node) -> PythonCall:
         keywords: dict[str, object] = {"attrs": node.attrs, "name": node.id}
         if node.metadata:
             keywords["metadata"] = node.metadata
-        return PythonCall("F.tir.barrier", (node.type, ), keywords)
+        return PythonCall("F.tir.barrier", (node.type,), keywords)

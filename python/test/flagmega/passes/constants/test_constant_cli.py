@@ -15,11 +15,11 @@ def _frozen_module(op: str):
     runtime = builder.var("runtime", value_type, id="runtime")
     weight = builder.weight("weight", value_type, source="memory", key="weight", id="weight")
     if op == "math.silu":
-        constant = builder.call(op, (weight, ), value_type, id="constant")
+        constant = builder.call(op, (weight,), value_type, id="constant")
     else:
         constant = builder.call(op, (weight, weight), value_type, id="constant")
     output = builder.call("math.add", (runtime, constant), value_type, id="output")
-    builder.function("main", (runtime, ), (output, ))
+    builder.function("main", (runtime,), (output,))
     return replace(freeze_constant_islands(builder.build(entry="main")), stage="frozen_constants")
 
 

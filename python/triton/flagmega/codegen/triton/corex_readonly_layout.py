@@ -3,13 +3,12 @@
 """Owner-contiguous readonly K walks for proven BI-V150 packed weights."""
 
 from triton.flagmega.codegen.readonly_layout import (
-    READONLY_DEVICE_LAYOUT_SCHEMA,
-    readonly_roots,
-    owner_major_weight_records,
+    READONLY_DEVICE_LAYOUT_SCHEMA, readonly_roots, owner_major_weight_records,
 )
 from triton.flagmega.codegen.triton.physical_access import emit_buffer_pointer
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.ir import verify_buffer_plan
+
 
 _weight_layout_records = owner_major_weight_records
 
@@ -26,7 +25,7 @@ def select_readonly_layouts(module, calls):
     for call in calls:
         if "corex_flat_sme_down" in call:
             sme = call["corex_flat_sme_down"]
-            roles = (("rhs", "weight"), )
+            roles = (("rhs", "weight"),)
         elif "corex_flat_sme_glu" in call:
             sme = call["corex_flat_sme_glu"]
             roles = (("gate_weight", "gate_weight"), ("up_weight", "up_weight"))
@@ -57,7 +56,8 @@ def select_readonly_layouts(module, calls):
         for argument in call.get("inputs", ()):
             for binding in argument.get("buffers", ()):
                 roots = readonly_roots(plan, plan.buffer_map[binding["actual"]])
-                if any(root.offset in layouts for root in roots) and ((id(call), id(binding)) not in selected_bindings):
+                if any(root.offset in layouts for root in roots) and (
+                        (id(call), id(binding)) not in selected_bindings):
                     raise CodegenError("A COREX readonly layout has a consumer without its device-address contract.")
     # Validation must finish before modifying any call's address expressions.
     for call, binding, sme, field, group, owner_size in selected:
@@ -65,6 +65,5 @@ def select_readonly_layouts(module, calls):
         pointer = emit_buffer_pointer(abi, binding["runtime_argument"])
         sme[field] = f"({pointer} + ({abi['owner_index_expression']}) * {owner_size})"
         sme["weight_k_group_stride"] = group
-    return {
-        "schema": READONLY_DEVICE_LAYOUT_SCHEMA, "buffers": sorted(layouts.values(), key=lambda item: item["offset"])
-    }
+    return {"schema": READONLY_DEVICE_LAYOUT_SCHEMA,
+            "buffers": sorted(layouts.values(), key=lambda item: item["offset"])}

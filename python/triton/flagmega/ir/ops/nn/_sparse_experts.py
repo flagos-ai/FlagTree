@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Shared shape/packing contracts for sparse expert stages.
+"""Shared shape/packing contracts for nncase-style sparse expert stages.
 
 Expert weights remain scalar [expert, N, K]. Vector lanes on activations and
 results belong to their last axis; router and per-expert scale axes are scalar.
@@ -34,10 +34,12 @@ def normalize_projection_order(attrs):
 def validate_projection_order(attrs, activation_type, *weight_types):
     if attrs.get("reduction_order", "relaxed") != "mma_k16":
         return
-    if any(element_type(tensor_of(value).dtype) != DType.BFLOAT16 for value in (activation_type, *weight_types)):
+    if any(element_type(tensor_of(value).dtype) != DType.BFLOAT16
+           for value in (activation_type, *weight_types)):
         raise IRSchemaError("Ordered expert MMA projections require BF16 operands.")
-    if isinstance(activation_type, DistributedType) and (activation_type.partial is not None
-                                                         or activation_type.axis_policies[-1] != SBP.broadcast()):
+    if isinstance(activation_type, DistributedType) and (
+        activation_type.partial is not None or activation_type.axis_policies[-1] != SBP.broadcast()
+    ):
         raise IRSchemaError("Ordered expert projections require unpartitioned K.")
 
 
@@ -97,14 +99,13 @@ def verify_sparse_quantization(activation, weight, projection_scale, attrs):
 def verify_quantization_group_shards(weight_type, projection_scale, block_k):
     if projection_scale.rank != 3 or not isinstance(weight_type, DistributedType):
         return
-    descriptor = local_shard_descriptor(weight_type,
-                                        tuple(f"owner_{axis}" for axis in range(weight_type.placement.rank)))
+    descriptor = local_shard_descriptor(weight_type, tuple(f"owner_{axis}" for axis in range(weight_type.placement.rank)))
     for stage in descriptor.axes[-1].stages:
         if stage.shard_count == 1:
             continue
         distribution = stage.stage.distribution
-        span = (distribution.block_size if isinstance(distribution, BlockCyclicSplit) else
-                stage.local_capacity.fixed_value if stage.local_capacity.is_fixed else None)
+        span = (distribution.block_size if isinstance(distribution, BlockCyclicSplit)
+                else stage.local_capacity.fixed_value if stage.local_capacity.is_fixed else None)
         # A stage contained in one ownership block does not actually split
         # the active reduction. Otherwise each boundary must preserve groups;
         # a later partial sum cannot repair quantization with a partial amax.
@@ -228,15 +229,16 @@ def scaled_projection(value, weight, input_scale, projection_scale, *, block_n=1
         else:
             projection = value.float() @ weight.float().T
         return projection * projection_scale
-    # Rank-2 scales are the historical reference per-expert contract. Rank-3
+    # Rank-2 scales are the historical nncase per-expert contract. Rank-3
     # scales are native FP8 inverse scales laid out as [expert, N-block, K-block].
     if projection_scale.ndim == 2:
         from triton.flagmega.ir.ops.math._block_scaled import block_scaled_linear
-        result = block_scaled_linear(
-            value.unsqueeze(0), weight, projection_scale, block_n=block_n, block_k=block_k,
-            # Projection rounding belongs to the stage's
-            # explicit flag, after its input scale.
-            output_dtype=projection_scale.dtype, activation_quantization=activation_quantization).squeeze(0)
+        result = block_scaled_linear(value.unsqueeze(0), weight, projection_scale,
+                                     block_n=block_n, block_k=block_k,
+                                     # Projection rounding belongs to the stage's
+                                     # explicit flag, after its input scale.
+                                     output_dtype=projection_scale.dtype,
+                                     activation_quantization=activation_quantization).squeeze(0)
         return result * input_scale
     return ((value.float() / input_scale) @ weight.float().T) * input_scale * projection_scale
 

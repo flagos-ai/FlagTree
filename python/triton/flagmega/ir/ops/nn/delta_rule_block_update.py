@@ -205,7 +205,6 @@ def state_field_layout(field_type, attrs, value_type, key_type):
 
 
 def delta_rule_block_update(query, key, value, coefficients, log_prefix, initial, *, scale=None, torch):
-
     def mma(left, right):
         return _rounded_mma(left, right, dtype=torch.bfloat16, torch=torch)
 

@@ -14,13 +14,13 @@ from triton.flagmega import pattern_match as pm
 
 
 class _RotaryEmbeddingGraph(fm.Module):
-
     def __init__(self):
         super().__init__(dialect="high_level", stage="imported", entry="main")
 
     def forward(self):
         reference = self.input("reference", fm.tensor_type("bfloat16", (1, 16)))
-        state = self.input("state", PagedAttentionStateConfig(1, 2, 8, block_size=4, num_blocks=2).ref_type)
+        state = self.input(
+            "state", PagedAttentionStateConfig(1, 2, 8, block_size=4, num_blocks=2).ref_type)
         pair = fm.F.nn.rotary_embedding(
             reference,
             state,
@@ -35,14 +35,16 @@ class _RotaryEmbeddingGraph(fm.Module):
 
 def test_rotary_embedding_uses_cache_position_and_has_named_parameters():
     module = _RotaryEmbeddingGraph().build()
-    state = create_paged_attention_state(PagedAttentionStateConfig(1, 2, 8, block_size=4, num_blocks=2))
+    state = create_paged_attention_state(
+        PagedAttentionStateConfig(1, 2, 8, block_size=4, num_blocks=2))
     state.seq_lens[0] = 3
     reference = torch.zeros((1, 16), dtype=torch.bfloat16)
 
-    cos, sin = TorchEvaluator(DictWeightResolver({})).run(module, {"reference": reference, "state": state})
+    cos, sin = TorchEvaluator(DictWeightResolver({})).run(
+        module, {"reference": reference, "state": state})
 
     indices = torch.arange(0, 8, 2, dtype=torch.float32)
-    angle = 3 * (10000.0**(-indices / 8))
+    angle = 3 * (10000.0 ** (-indices / 8))
     frequency = torch.cat((angle, angle)).reshape(1, 1, 8)
     torch.testing.assert_close(cos, frequency.cos())
     torch.testing.assert_close(sin, frequency.sin())

@@ -62,13 +62,17 @@ class AliasAnalysis:
         try:
             source_view = self._views[source]
         except KeyError as error:
-            raise IRVerificationError(f"Alias {logical_id!r} references unknown source {source!r}.") from error
+            raise IRVerificationError(
+                f"Alias {logical_id!r} references unknown source {source!r}."
+            ) from error
         relative = dim(byte_offset)
         size = source_view.mem_span.size - relative if nbytes is None else dim(nbytes)
         remaining = (source_view.mem_span.size - relative - size).simplify()
         if (relative.minimum is None or relative.minimum < 0 or size.minimum is None or size.minimum < 0
                 or remaining.minimum is None or remaining.minimum < 0):
-            raise IRVerificationError(f"Alias {logical_id!r} exceeds source {source!r} byte range.")
+            raise IRVerificationError(
+                f"Alias {logical_id!r} exceeds source {source!r} byte range."
+            )
         return self._insert(
             BufferView(
                 logical_id,
@@ -106,7 +110,10 @@ class AliasAnalysis:
         values: dict[str, list[str]] = {}
         for view in self._views.values():
             values.setdefault(view.physical_id, []).append(view.logical_id)
-        return tuple((physical_id, tuple(logical_ids)) for physical_id, logical_ids in sorted(values.items()))
+        return tuple(
+            (physical_id, tuple(logical_ids))
+            for physical_id, logical_ids in sorted(values.items())
+        )
 
     def _insert(self, view: BufferView) -> BufferView:
         minimum_size = view.mem_span.size.minimum
@@ -119,5 +126,6 @@ class AliasAnalysis:
 
 
 PhysicalView = BufferView
+
 
 __all__ = ["AliasAnalysis", "AliasKind", "BufferView", "PhysicalView"]

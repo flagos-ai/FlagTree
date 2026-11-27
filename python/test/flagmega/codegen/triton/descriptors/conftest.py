@@ -14,7 +14,8 @@ from triton.flagmega.passes.auto_distributed import (
     solve_search_graph,
 )
 from triton.flagmega.passes.auto_distributed.materializer import (
-    distribution_selection_state, )
+    distribution_selection_state,
+)
 from triton.flagmega.selection import override_plan
 
 
@@ -33,15 +34,13 @@ def _two_call_descriptor_module(*, transpose_b: bool = False, program_dag: bool 
         value_type,
         id="projection",
         attrs={"transpose_a": False, "transpose_b": transpose_b},
-        metadata={
-            "selected_vectorization": "vectorization.matmul.n", "selected_vector_axes": (1, ), "selected_vector_lanes":
-            (8, )
-        },
+        metadata={"selected_vectorization": "vectorization.matmul.n",
+                  "selected_vector_axes": (1,), "selected_vector_lanes": (8,)},
     )
     builder.function(
         "worker",
         (worker_value, worker_weight),
-        (projection, ),
+        (projection,),
         attrs={"calling_convention": "device", "noinline": True, "reusable": True},
     )
 
@@ -49,23 +48,19 @@ def _two_call_descriptor_module(*, transpose_b: bool = False, program_dag: bool 
     first_weight = builder.var("first_weight", weight_type, id="first_weight")
     second_weight = builder.var("second_weight", weight_type, id="second_weight")
     first = builder.call(
-        "builtin.call",
-        (value, first_weight),
-        value_type,
-        id="first",
-        attrs={"callee": "worker"},
+        "builtin.call", (value, first_weight), value_type,
+        id="first", attrs={"callee": "worker"},
     )
     second = builder.call(
-        "builtin.call",
-        (first, second_weight),
-        value_type,
-        id="second",
-        attrs={"callee": "worker"},
+        "builtin.call", (first, second_weight), value_type,
+        id="second", attrs={"callee": "worker"},
     )
-    builder.function("main", (value, first_weight, second_weight), (second, ))
+    builder.function("main", (value, first_weight, second_weight), (second,))
 
     compiler = Compiler()
-    proposed_tir = compiler.compile(builder.build(entry="main"), stop_after="propose-tir").module
+    proposed_tir = compiler.compile(
+        builder.build(entry="main"), stop_after="propose-tir"
+    ).module
     projection_point = next(point for point in proposed_tir.selection_points
                             if point.kind == "tir" and point.owner == projection.id)
     selected_tir = compiler.run_stage(
@@ -73,7 +68,7 @@ def _two_call_descriptor_module(*, transpose_b: bool = False, program_dag: bool 
         "lower-tir",
         plan=override_plan(
             proposed_tir,
-            ((projection_point.id, "tir.dense_matmul.tensor_descriptor_gemv"), ),
+            ((projection_point.id, "tir.dense_matmul.tensor_descriptor_gemv"),),
         ),
     ).module
     if program_dag:
@@ -81,40 +76,31 @@ def _two_call_descriptor_module(*, transpose_b: bool = False, program_dag: bool 
         from triton.flagmega.passes.functions import function_nodes
 
         selected_tir = compiler.compile(selected_tir, stop_after="select-microkernels").module
-        calls = [
-            n.id
-            for n in function_nodes(selected_tir, selected_tir.function_map[selected_tir.entry])
-            if n.op in {"tir.call", "builtin.call", "tir.kernel"}
-        ]
-        symbols = {
-            name: "program_" + name if name in {"first", "second"} else f"program_adapter_{index}"
-            for index, name in enumerate(calls)
-        }
-        programs = tuple(
-            dict(symbol=symbols[name], calls=(name, ), num_warps=4, depends_on=(symbols[calls[index -
-                                                                                              1]], ) if index else ())
-            for index, name in enumerate(calls))
-        selected_tir = PassManager().add(
-            FunctionalPass("TestDescriptorPrograms",
-                           lambda m: replace(m, metadata={**m.metadata, "kernel_program_partition": programs}))).run(
-                               selected_tir).module
+        calls = [n.id for n in function_nodes(selected_tir, selected_tir.function_map[selected_tir.entry])
+                 if n.op in {"tir.call", "builtin.call", "tir.kernel"}]
+        symbols = {name: "program_"+name if name in {"first", "second"} else f"program_adapter_{index}"
+                   for index, name in enumerate(calls)}
+        programs = tuple(dict(symbol=symbols[name], calls=(name,), num_warps=4,
+                              depends_on=(symbols[calls[index-1]],) if index else ())
+                         for index, name in enumerate(calls))
+        selected_tir = PassManager().add(FunctionalPass("TestDescriptorPrograms", lambda m: replace(
+            m, metadata={**m.metadata, "kernel_program_partition": programs}))).run(selected_tir).module
     return compiler.compile(selected_tir).module
 
 
 def _packed_descriptor_pipeline_module(
-    implementation: str = ("tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv"),
-    *,
-    k: int = 2048,
-    n: int = 2048,
-    reduction_order: str = "relaxed",
+    implementation: str = (
+        "tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv"
+    ),
+    *, k: int = 2048, n: int = 2048, reduction_order: str = "relaxed",
     output_policy: fm.SBPSplit | None = None,
     compiler: Compiler | None = None,
 ) -> fm.IRModule:
-
     class DenseProjection(fm.Module):
-
         def __init__(self):
-            super().__init__(dialect="high_level", stage="imported", entry="main")
+            super().__init__(
+                dialect="high_level", stage="imported", entry="main"
+            )
 
         def forward(self):
             value = self.input(
@@ -136,7 +122,7 @@ def _packed_descriptor_pipeline_module(
                 reduction_order=reduction_order,
                 name="projection",
             )
-            self.function("main", (value, ), (projection, ))
+            self.function("main", (value,), (projection,))
 
     compiler = compiler or Compiler()
     source = DenseProjection().build()
@@ -145,42 +131,45 @@ def _packed_descriptor_pipeline_module(
 
         distribution = compiler.compile(source, stop_after="propose-distribution").module
         graph = AutoDistributedPass._build_graph(distribution, compiler.target)
-        projection = next(bucket for bucket in graph.buckets
-                          if distribution.node_map[bucket.node_id].op == "ntt.packed_matmul")
-        candidate = next(
-            candidate for candidate in projection.candidates
-            if candidate.return_type.partial is None and candidate.return_type.axis_policies == (fm.SBP.broadcast(),
-                                                                                                 output_policy))
+        projection = next(bucket for bucket in graph.buckets if distribution.node_map[bucket.node_id].op == "ntt.packed_matmul")
+        candidate = next(candidate for candidate in projection.candidates
+                         if candidate.return_type.partial is None
+                         and candidate.return_type.axis_policies == (fm.SBP.broadcast(), output_policy))
         result = solve_search_graph(graph, fixed_selections={projection.node_id: candidate.id})
         _, records = distribution_selection_state(result, policy=compiler.target.distribution_policy.identity)
-        source = compiler.run_stage(
-            distribution, "auto-distributed",
-            plan=override_plan(distribution, tuple((r.point_id, r.candidate_id) for r in records))).module
+        source = compiler.run_stage(distribution, "auto-distributed", plan=override_plan(
+            distribution, tuple((r.point_id, r.candidate_id) for r in records))).module
     proposed = compiler.compile(source, stop_after="propose-tir").module
-    point = next(value for value in proposed.selection_points if value.id == "tir.projection.vectorized.compute")
-    assert implementation in {candidate.id for candidate in point.candidates}
+    point = next(
+        value
+        for value in proposed.selection_points
+        if value.id == "tir.projection.vectorized.compute"
+    )
+    assert implementation in {
+        candidate.id for candidate in point.candidates
+    }
     selected = compiler.run_stage(
         proposed,
         "lower-tir",
-        plan=override_plan(proposed, ((point.id, implementation), )),
+        plan=override_plan(proposed, ((point.id, implementation),)),
     ).module
     return compiler.compile(selected).module
 
 
 def _packed_glu_descriptor_pipeline_module(
-    implementation: str = ("tir.dense_matmul_glu."
-                           "packed_tensor_descriptor_smem_pipeline_full_lhs_gemv"),
-    *,
-    reduction_extent: int = 2048,
-    output_extent: int = 2048,
+    implementation: str = (
+        "tir.dense_matmul_glu."
+        "packed_tensor_descriptor_smem_pipeline_full_lhs_gemv"
+    ),
+    *, reduction_extent: int = 2048, output_extent: int = 2048,
     compiler: Compiler | None = None,
     round_activation: bool = True,
 ) -> fm.IRModule:
-
     class DenseGlu(fm.Module):
-
         def __init__(self):
-            super().__init__(dialect="high_level", stage="imported", entry="main")
+            super().__init__(
+                dialect="high_level", stage="imported", entry="main"
+            )
 
         def forward(self):
             value = self.input(
@@ -210,40 +199,43 @@ def _packed_glu_descriptor_pipeline_module(
                 round_activation=round_activation,
                 name="glu",
             )
-            self.function("main", (value, ), (output, ))
+            self.function("main", (value,), (output,))
 
     compiler = compiler or Compiler()
-    proposed = compiler.compile(DenseGlu().build(), stop_after="propose-tir").module
-    eligible = tuple(value for value in proposed.selection_points
-                     if implementation in {candidate.id
-                                           for candidate in value.candidates})
+    proposed = compiler.compile(
+        DenseGlu().build(), stop_after="propose-tir"
+    ).module
+    eligible = tuple(
+        value
+        for value in proposed.selection_points
+        if implementation in {candidate.id for candidate in value.candidates}
+    )
     assert eligible, tuple(
-        (value.id, tuple(candidate.id for candidate in value.candidates)) for value in proposed.selection_points)
+        (value.id, tuple(candidate.id for candidate in value.candidates))
+        for value in proposed.selection_points
+    )
     point = eligible[0]
     selected = compiler.run_stage(
         proposed,
         "lower-tir",
-        plan=override_plan(proposed, ((point.id, implementation), )),
+        plan=override_plan(proposed, ((point.id, implementation),)),
     ).module
     return compiler.compile(selected).module
 
 
 def _packed_norm_stats_pipeline_module(
-        implementation: str,
-        *,
-        reduction_extent: int = 2048,
-        output_extent: int = 2048,
-        compiler: Compiler | None = None,
-        output_policy: fm.SBPSplit | None = None,
-        wide: bool = False,
-        addend_cast_dtypes: tuple[str, ...] = (),
-        projection_output_data_type: str = "bfloat16",
+    implementation: str, *, reduction_extent: int = 2048, output_extent: int = 2048,
+    compiler: Compiler | None = None,
+    output_policy: fm.SBPSplit | None = None,
+    wide: bool = False,
+    addend_cast_dtypes: tuple[str, ...] = (),
+    projection_output_data_type: str = "bfloat16",
 ) -> fm.IRModule:
-
     class DenseResidualNorm(fm.Module):
-
         def __init__(self):
-            super().__init__(dialect="high_level", stage="imported", entry="main")
+            super().__init__(
+                dialect="high_level", stage="imported", entry="main"
+            )
 
         def forward(self):
             value = self.input(
@@ -265,14 +257,14 @@ def _packed_norm_stats_pipeline_module(
             )
             scale = self.weight(
                 "scale",
-                fm.tensor_type("bfloat16", (output_extent, )),
+                fm.tensor_type("bfloat16", (output_extent,)),
                 source="memory",
                 key="scale",
                 id="scale",
             )
             bias = self.weight(
                 "bias",
-                fm.tensor_type("bfloat16", (output_extent, )),
+                fm.tensor_type("bfloat16", (output_extent,)),
                 source="memory",
                 key="bias",
                 id="bias",
@@ -285,7 +277,9 @@ def _packed_norm_stats_pipeline_module(
             )
             if wide:
                 projection = fm.F.tensors.cast(projection, dtype="float32", name="wide_projection")
-            combined = fm.F.math.add(projection, residual, name="combined")
+            combined = fm.F.math.add(
+                projection, residual, name="combined"
+            )
             stats = fm.F.nn.norm_stats(
                 combined,
                 axis=-1,
@@ -302,7 +296,7 @@ def _packed_norm_stats_pipeline_module(
                 use_mean=False,
                 name="normalized",
             )
-            self.function("main", (value, residual), (normalized, ))
+            self.function("main", (value, residual), (normalized,))
 
     compiler = compiler or Compiler()
     source = DenseResidualNorm().build()
@@ -311,64 +305,53 @@ def _packed_norm_stats_pipeline_module(
 
         distribution = compiler.compile(source, stop_after="propose-distribution").module
         graph = AutoDistributedPass._build_graph(distribution, compiler.target)
-        projection = next(bucket for bucket in graph.buckets
-                          if distribution.node_map[bucket.node_id].op == "ntt.packed_matmul")
-        projection_candidate = next(
-            candidate for candidate in projection.candidates
-            if candidate.return_type.partial is None and candidate.return_type.axis_policies == (fm.SBP.broadcast(),
-                                                                                                 output_policy))
-        combine = next(bucket for bucket in graph.buckets
-                       if distribution.node_map[bucket.node_id].op == "ntt.add_norm_stats")
+        projection = next(bucket for bucket in graph.buckets if distribution.node_map[bucket.node_id].op == "ntt.packed_matmul")
+        projection_candidate = next(candidate for candidate in projection.candidates
+            if candidate.return_type.partial is None
+            and candidate.return_type.axis_policies == (fm.SBP.broadcast(), output_policy))
+        combine = next(bucket for bucket in graph.buckets if distribution.node_map[bucket.node_id].op == "ntt.add_norm_stats")
         combine_candidate = next(candidate for candidate in combine.candidates
-                                 if candidate.input_types == (projection_candidate.return_type,
-                                                              projection_candidate.return_type))
-        result = solve_search_graph(
-            graph, fixed_selections={
-                projection.node_id: projection_candidate.id,
-                combine.node_id: combine_candidate.id,
-            })
+            if candidate.input_types == (projection_candidate.return_type, projection_candidate.return_type))
+        result = solve_search_graph(graph, fixed_selections={
+            projection.node_id: projection_candidate.id, combine.node_id: combine_candidate.id,
+        })
         _, records = distribution_selection_state(result, policy=compiler.target.distribution_policy.identity)
-        source = compiler.run_stage(
-            distribution, "auto-distributed",
-            plan=override_plan(distribution, tuple((r.point_id, r.candidate_id) for r in records))).module
+        source = compiler.run_stage(distribution, "auto-distributed", plan=override_plan(
+            distribution, tuple((r.point_id, r.candidate_id) for r in records))).module
     proposed = compiler.compile(source, stop_after="propose-tir").module
     if addend_cast_dtypes or wide:
         # Build the explicit epilogue contract for kernel-unit coverage. Graph
         # discovery/private-use legality is exercised in the rewrite tests.
-        proposed = fm.verify_module(
-            replace(
-                proposed, nodes=tuple(
-                    replace(
-                        node, attrs=fm.get_definition(node.op).
-                        normalize_attrs({
-                            **node.attrs, "addend_cast_dtypes": addend_cast_dtypes, "output_data_type":
-                            projection_output_data_type
-                        })) if node.op == "ntt.matmul_norm_stats" else node for node in proposed.nodes)))
-    point = next(value for value in proposed.selection_points
-                 if implementation in {candidate.id
-                                       for candidate in value.candidates})
+        proposed = fm.verify_module(replace(proposed, nodes=tuple(
+            replace(node, attrs=fm.get_definition(node.op).normalize_attrs({
+                **node.attrs, "addend_cast_dtypes": addend_cast_dtypes,
+                "output_data_type": projection_output_data_type}))
+            if node.op == "ntt.matmul_norm_stats" else node for node in proposed.nodes)))
+    point = next(
+        value
+        for value in proposed.selection_points
+        if implementation in {candidate.id for candidate in value.candidates}
+    )
     selected = compiler.run_stage(
         proposed,
         "lower-tir",
-        plan=override_plan(proposed, ((point.id, implementation), )),
+        plan=override_plan(proposed, ((point.id, implementation),)),
     ).module
     return compiler.compile(selected).module
 
 
 def _packed_qkv_mma_pipeline_module(
-        implementation: str = ("tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline"),
-        *,
-        output_partition: bool = False,
-        target=None,
-        projection_widths=(2048, 1024, 1024),
-        num_kv_heads=8,
-        input_extent=2048,
+    implementation: str = (
+        "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline"
+    ),
+    *, output_partition: bool = False, target=None,
+    projection_widths=(2048, 1024, 1024), num_kv_heads=8, input_extent=2048,
 ) -> fm.IRModule:
-
     class PackedQKV(fm.Module):
-
         def __init__(self):
-            super().__init__(dialect="high_level", stage="imported", entry="main")
+            super().__init__(
+                dialect="high_level", stage="imported", entry="main"
+            )
 
         def forward(self):
             value = self.input(
@@ -418,7 +401,7 @@ def _packed_qkv_mma_pipeline_module(
                 name="qkv",
             )
             q, k, v = fm.F.tensors.get_items(qkv, 0, 1, 2, name_prefix="qkv")
-            self.function("main", (value, ), (q, k, v))
+            self.function("main", (value,), (q, k, v))
 
     # This fixture exercises the split-K physical contract.  Q/K/V are direct
     # program outputs in this deliberately small graph, so AutoDistribution's
@@ -429,15 +412,24 @@ def _packed_qkv_mma_pipeline_module(
     compiler = Compiler()
     if target is not None:
         compiler.target = target
-    distribution_proposal = compiler.compile(PackedQKV().build(), stop_after="propose-distribution").module
-    qkv_point = next(value for value in distribution_proposal.selection_points
-                     if value.id == "distribution.qkv.packed_projection")
+    distribution_proposal = compiler.compile(
+        PackedQKV().build(), stop_after="propose-distribution"
+    ).module
+    qkv_point = next(
+        value
+        for value in distribution_proposal.selection_points
+        if value.id == "distribution.qkv.packed_projection"
+    )
     split_k_candidate = next(
         candidate.id
         for candidate in qkv_point.candidates
-        if (".out_tuple_d_b_s_bc_h0_1_b2__d_b_s_bc_h0_1_b1__d_b_s_bc_h0_1_b1" in
-            candidate.id if output_partition else candidate.parameters["reason"] == "packed-qkv-output-K-sbp-partial"
-            and ".out_tuple_d_b_s_bc_h1_b8_partial_p_sum_h0" in candidate.id))
+        if (
+            ".out_tuple_d_b_s_bc_h0_1_b2__d_b_s_bc_h0_1_b1__d_b_s_bc_h0_1_b1" in candidate.id
+            if output_partition else
+            candidate.parameters["reason"] == "packed-qkv-output-K-sbp-partial"
+            and ".out_tuple_d_b_s_bc_h1_b8_partial_p_sum_h0" in candidate.id
+        )
+    )
     registry = DistributedCandidateProviderRegistry()
     compiler.target.register_auto_distributed_candidate_providers(registry)
     graph = build_search_graph(
@@ -464,17 +456,23 @@ def _packed_qkv_mma_pipeline_module(
             tuple((record.point_id, record.candidate_id) for record in records),
         ),
     ).module
-    proposed = compiler.compile(distributed, stop_after="propose-microkernels").module
-    eligible = tuple(value for value in proposed.selection_points
-                     if implementation in {candidate.id
-                                           for candidate in value.candidates})
+    proposed = compiler.compile(
+        distributed, stop_after="propose-microkernels"
+    ).module
+    eligible = tuple(
+        value
+        for value in proposed.selection_points
+        if implementation in {candidate.id for candidate in value.candidates}
+    )
     assert eligible, tuple(
-        (value.id, tuple(candidate.id for candidate in value.candidates)) for value in proposed.selection_points)
+        (value.id, tuple(candidate.id for candidate in value.candidates))
+        for value in proposed.selection_points
+    )
     point = eligible[0]
     selected = compiler.run_stage(
         proposed,
         "select-microkernels",
-        plan=override_plan(proposed, ((point.id, implementation), )),
+        plan=override_plan(proposed, ((point.id, implementation),)),
     ).module
     return compiler.compile(selected).module
 
@@ -486,21 +484,19 @@ def packed_qkv_mma_aligned_pipeline_module():
     from triton.flagmega.targets.portable_triton_implementations import portable_triton_implementation_model
 
     model = portable_triton_implementation_model()
-    model = replace(
-        model, implementations=tuple(
-            replace(
-                implementation, shared_workspaces=tuple(
-                    replace(value, alignment_bytes=max(value.alignment_bytes, 2048)) if value.
-                    matrix_compatible else value
-                    for value in implementation.shared_workspaces))
-            for implementation in model.implementations))
+    model = replace(model, implementations=tuple(replace(implementation, shared_workspaces=tuple(
+        replace(value, alignment_bytes=max(value.alignment_bytes, 2048))
+        if value.matrix_compatible else value for value in implementation.shared_workspaces))
+        for implementation in model.implementations))
     return _packed_qkv_mma_pipeline_module(target=NvidiaSm90Target(triton_implementation_model=model))
 
 
 @pytest.fixture(scope="module")
 def packed_qkv_mma_descriptor_table_pipeline_module() -> fm.IRModule:
-    return _packed_qkv_mma_pipeline_module("tir.qkv_parallel_linear."
-                                           "packed_partial_mma_descriptor_table_smem_pipeline")
+    return _packed_qkv_mma_pipeline_module(
+        "tir.qkv_parallel_linear."
+        "packed_partial_mma_descriptor_table_smem_pipeline"
+    )
 
 
 @pytest.fixture
@@ -520,8 +516,10 @@ def packed_descriptor_pipeline_module():
 
 @pytest.fixture(scope="module")
 def packed_descriptor_table_pipeline_module():
-    return _packed_descriptor_pipeline_module("tir.dense_matmul."
-                                              "packed_tensor_descriptor_table_smem_pipeline_gemv")
+    return _packed_descriptor_pipeline_module(
+        "tir.dense_matmul."
+        "packed_tensor_descriptor_table_smem_pipeline_gemv"
+    )
 
 
 @pytest.fixture(scope="module")
@@ -531,59 +529,79 @@ def packed_glu_descriptor_pipeline_module():
 
 @pytest.fixture(scope="module")
 def packed_glu_portable_pipeline_module():
-    return _packed_glu_descriptor_pipeline_module("tir.dense_matmul_glu.packed_k_major_gemv_tn16")
+    return _packed_glu_descriptor_pipeline_module(
+        "tir.dense_matmul_glu.packed_k_major_gemv_tn16"
+    )
 
 
 @pytest.fixture(scope="module")
 def packed_glu_direct_lhs_descriptor_pipeline_module():
-    return _packed_glu_descriptor_pipeline_module("tir.dense_matmul_glu.packed_tensor_descriptor_smem_pipeline_gemv")
+    return _packed_glu_descriptor_pipeline_module(
+        "tir.dense_matmul_glu.packed_tensor_descriptor_smem_pipeline_gemv"
+    )
 
 
 @pytest.fixture(scope="module")
 def packed_glu_inline_descriptor_pipeline_module():
-    return _packed_glu_descriptor_pipeline_module("tir.dense_matmul_glu."
-                                                  "packed_tensor_descriptor_smem_pipeline_inline_gemv")
+    return _packed_glu_descriptor_pipeline_module(
+        "tir.dense_matmul_glu."
+        "packed_tensor_descriptor_smem_pipeline_inline_gemv"
+    )
 
 
 @pytest.fixture(scope="module")
 def packed_glu_paired_inline_descriptor_pipeline_module():
-    return _packed_glu_descriptor_pipeline_module("tir.dense_matmul_glu."
-                                                  "packed_tensor_descriptor_paired_smem_pipeline_inline_gemv")
+    return _packed_glu_descriptor_pipeline_module(
+        "tir.dense_matmul_glu."
+        "packed_tensor_descriptor_paired_smem_pipeline_inline_gemv"
+    )
 
 
 @pytest.fixture(scope="module")
 def packed_glu_paired_table_inline_descriptor_pipeline_module():
-    return _packed_glu_descriptor_pipeline_module("tir.dense_matmul_glu."
-                                                  "packed_tensor_descriptor_table_paired_smem_pipeline_inline_gemv")
+    return _packed_glu_descriptor_pipeline_module(
+        "tir.dense_matmul_glu."
+        "packed_tensor_descriptor_table_paired_smem_pipeline_inline_gemv"
+    )
 
 
 @pytest.fixture(scope="module")
 def packed_glu_paired_full_lhs_descriptor_pipeline_module():
-    return _packed_glu_descriptor_pipeline_module("tir.dense_matmul_glu."
-                                                  "packed_tensor_descriptor_paired_smem_pipeline_full_lhs_gemv")
+    return _packed_glu_descriptor_pipeline_module(
+        "tir.dense_matmul_glu."
+        "packed_tensor_descriptor_paired_smem_pipeline_full_lhs_gemv"
+    )
 
 
 @pytest.fixture(scope="module")
 def packed_glu_full_lhs_inline_descriptor_pipeline_module():
-    return _packed_glu_descriptor_pipeline_module("tir.dense_matmul_glu."
-                                                  "packed_tensor_descriptor_smem_pipeline_full_lhs_inline_gemv")
+    return _packed_glu_descriptor_pipeline_module(
+        "tir.dense_matmul_glu."
+        "packed_tensor_descriptor_smem_pipeline_full_lhs_inline_gemv"
+    )
 
 
 @pytest.fixture(scope="module")
 def packed_norm_stats_descriptor_pipeline_module():
-    return _packed_norm_stats_pipeline_module("tir.dense_matmul."
-                                              "packed_tensor_descriptor_smem_pipeline_gemv_norm_stats")
+    return _packed_norm_stats_pipeline_module(
+        "tir.dense_matmul."
+        "packed_tensor_descriptor_smem_pipeline_gemv_norm_stats"
+    )
 
 
 @pytest.fixture(scope="module")
 def packed_norm_stats_descriptor_table_pipeline_module():
-    return _packed_norm_stats_pipeline_module("tir.dense_matmul."
-                                              "packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats")
+    return _packed_norm_stats_pipeline_module(
+        "tir.dense_matmul."
+        "packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats"
+    )
 
 
 @pytest.fixture(scope="module")
 def packed_norm_stats_portable_pipeline_module():
-    return _packed_norm_stats_pipeline_module("tir.dense_matmul.packed_k_major_gemv_norm_stats")
+    return _packed_norm_stats_pipeline_module(
+        "tir.dense_matmul.packed_k_major_gemv_norm_stats"
+    )
 
 
 @pytest.fixture(scope="module")
@@ -594,6 +612,5 @@ def packed_qkv_mma_pipeline_module():
 @pytest.fixture(scope="module")
 def packed_qkv_simt_pipeline_module():
     return _packed_qkv_mma_pipeline_module(
-        "tir.qkv_parallel_linear.packed_gemv_smem_pipeline",
-        output_partition=True,
+        "tir.qkv_parallel_linear.packed_gemv_smem_pipeline", output_partition=True,
     )

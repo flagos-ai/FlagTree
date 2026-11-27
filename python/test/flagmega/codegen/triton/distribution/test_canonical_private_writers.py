@@ -8,7 +8,7 @@ from python.test.flagmega.codegen.triton.distribution.test_rank_generic_mesh imp
 
 
 @pytest.mark.parametrize("levels", ["bbb", "cbb", "bcb"])
-@pytest.mark.parametrize("split_axes", [(), (1, )])
+@pytest.mark.parametrize("split_axes", [(), (1,)])
 def test_every_private_canonical_component_is_populated(levels, split_axes):
     abi = _distributed_abi(hierarchy=(4, 8, 16), split_axes=split_axes)
     abi["distributed_type"]["placement"]["hierarchy_levels"] = levels
@@ -20,7 +20,7 @@ def test_every_private_canonical_component_is_populated(levels, split_axes):
 def test_boxing_writer_uses_destination_allocation_and_iteration_domain():
     destination = _distributed_abi(hierarchy=(4, 8, 16))
     destination["distributed_type"]["placement"]["hierarchy_levels"] = "cbb"
-    iteration = _distributed_abi(hierarchy=(4, 8, 16), split_axes=(1, ))
+    iteration = _distributed_abi(hierarchy=(4, 8, 16), split_axes=(1,))
     iteration["distributed_type"]["placement"]["hierarchy_levels"] = "cbb"
     iteration["memory_sharing_scope"] = "block"
     # A shared destination still elects one writer per disjoint source shard,
@@ -31,9 +31,12 @@ def test_boxing_writer_uses_destination_allocation_and_iteration_domain():
     # private allocation instance and is never elected away.  Which physical
     # block is elected is a placement choice, so assert the contract.
     from python.test.flagmega.codegen.triton.distribution.test_rank_generic_mesh import (
-        _owner_coordinates, )
+        _owner_coordinates,
+    )
 
-    owners = _owner_coordinates(_canonical_writer_active(destination, iteration_abi=iteration), (4, 8, 16))
+    owners = _owner_coordinates(
+        _canonical_writer_active(destination, iteration_abi=iteration), (4, 8, 16)
+    )
     assert len({coordinate[0] for coordinate in owners}) == 4
     assert len(owners) == 4 * 8
     destination["memory_sharing_scope"] = "block"
@@ -55,12 +58,11 @@ def test_canonical_private_copies_are_read_by_each_physical_owner(tmp_path):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("requires SM90")
     mesh = fm.Placement((2, 2), "yx", "bb")
-    kind = fm.tensor_type("float32", (128, ))
-    broadcast = fm.DistributedType(kind, (fm.SBP.broadcast(), ), mesh)
-    split = fm.DistributedType(kind, (fm.SBP.split_contiguous((0, ), 64), ), mesh)
+    kind = fm.tensor_type("float32", (128,))
+    broadcast = fm.DistributedType(kind, (fm.SBP.broadcast(),), mesh)
+    split = fm.DistributedType(kind, (fm.SBP.split_contiguous((0,), 64),), mesh)
 
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("x", kind, id="x")
             copied = fm.F.distributed.force_boxing(x, broadcast)
@@ -68,7 +70,7 @@ def test_canonical_private_copies_are_read_by_each_physical_owner(tmp_path):
             owned = fm.F.distributed.force_boxing(first, split)
             second = fm.F.math.add(owned, owned)
             result = fm.F.distributed.force_boxing(second, kind)
-            self.function("main", (x, ), (result, ))
+            self.function("main", (x,), (result,))
 
     source = Graph(dialect="distributed", stage="frozen_constants", entry="main",
                    metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()
@@ -76,11 +78,10 @@ def test_canonical_private_copies_are_read_by_each_physical_owner(tmp_path):
     base = compiler.target
     # Canonical arguments are a normal kernel capability. This reproduces the
     # private canonical allocation without relying on MLA or a local override.
-    catalog = replace(
-        base.triton_implementation_model, implementations=tuple(
-            replace(i, facts={**i.facts, "canonical_global_arguments": (
-                "lhs", "rhs")}) if i.family == "elementwise" and i.variant == "add" else i
-            for i in base.triton_implementation_model.implementations))
+    catalog = replace(base.triton_implementation_model, implementations=tuple(
+        replace(i, facts={**i.facts, "canonical_global_arguments": ("lhs", "rhs")})
+        if i.family == "elementwise" and i.variant == "add" else i
+        for i in base.triton_implementation_model.implementations))
     compiler.target = NvidiaSm90Target(options=base.options, triton_implementation_model=catalog)
     module = compiler.compile(source).module
     plan = fm.verify_buffer_plan(module)
@@ -90,7 +91,7 @@ def test_canonical_private_copies_are_read_by_each_physical_owner(tmp_path):
     runtime = load(write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True),
                    device="cuda:0")
     x = torch.empty(128, dtype=torch.float32, device="cuda")
-    storage = torch.full((160, ), 123., device="cuda")
+    storage = torch.full((160,), 123., device="cuda")
     output = storage[16:-16]
     args = tuple(output if s["role"] == "result" else x for s in runtime.external_arguments)
     try:

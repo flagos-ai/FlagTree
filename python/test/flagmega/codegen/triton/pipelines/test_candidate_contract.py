@@ -5,6 +5,7 @@ from triton.flagmega import ir as fm
 from triton.flagmega.compiler import Compiler
 from triton.flagmega.selection import override_plan
 
+
 _PIPELINE = "tir.dense_matmul.tensor_descriptor_smem_pipeline_gemv"
 
 
@@ -22,12 +23,10 @@ def _proposed(*, transpose_b: bool):
         value_type,
         id="projection",
         attrs={"transpose_a": False, "transpose_b": transpose_b},
-        metadata={
-            "selected_vectorization": "vectorization.matmul.n", "selected_vector_axes": (1, ), "selected_vector_lanes":
-            (8, )
-        },
+        metadata={"selected_vectorization": "vectorization.matmul.n",
+                  "selected_vector_axes": (1,), "selected_vector_lanes": (8,)},
     )
-    builder.function("main", (value, weight), (projection, ))
+    builder.function("main", (value, weight), (projection,))
     return Compiler().compile(builder.build(entry="main"), stop_after="propose-tir").module
 
 
@@ -43,7 +42,9 @@ def test_pipeline_candidate_is_typed_non_default_and_layout_guarded():
     assert _PIPELINE not in {
         value.id
         for value in next(
-            point for point in _proposed(transpose_b=False).selection_points if point.id == "tir.projection").candidates
+            point for point in _proposed(transpose_b=False).selection_points
+            if point.id == "tir.projection"
+        ).candidates
     }
 
 
@@ -52,7 +53,7 @@ def test_direct_selection_materializes_catalog_resources_before_bufferize():
     selected = Compiler().run_stage(
         proposed,
         "lower-tir",
-        plan=override_plan(proposed, (("tir.projection", _PIPELINE), )),
+        plan=override_plan(proposed, (("tir.projection", _PIPELINE),)),
     ).module
     dispatch = fm.kernel_dispatch_of(selected.kernel_definitions[-1])
 
@@ -60,5 +61,9 @@ def test_direct_selection_materializes_catalog_resources_before_bufferize():
     assert dispatch.microkernel is not None
     assert dispatch.microkernel.transfer_pipeline is not None
     assert dispatch.microkernel.transfer_pipeline.capacity == 2
-    assert tuple(value.name for value in dispatch.microkernel.shared_workspaces) == ("weight_stage", )
-    assert dispatch.shared_workspace_buffers[0].dimensions == tuple(fm.dim(value) for value in (2, 16, 128))
+    assert tuple(value.name for value in dispatch.microkernel.shared_workspaces) == (
+        "weight_stage",
+    )
+    assert dispatch.shared_workspace_buffers[0].dimensions == tuple(
+        fm.dim(value) for value in (2, 16, 128)
+    )

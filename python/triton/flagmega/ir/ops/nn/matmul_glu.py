@@ -45,6 +45,7 @@ class MatMulGlu(OpDefinition):
     gate_clamp_max = attribute_parameter(default=None)
     up_clamp = attribute_parameter(default=None)
     activation_quantization = attribute_parameter(default="dynamic_fp8")
+    native_compute_profile = attribute_parameter(default="f32")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -57,14 +58,12 @@ class MatMulGlu(OpDefinition):
             raise IRSchemaError("MatMulGlu block sizes must be positive.")
         for name in ("gate_clamp_max", "up_clamp"):
             value = attributes[name]
-            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0):
+            if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                      or value <= 0):
                 raise IRSchemaError(f"MatMulGlu {name} must be a positive number or None.")
         result = {
-            "activation": "silu",
-            "weight_block_n": block_n,
-            "weight_block_k": block_k,
-            "gate_clamp_max": attributes["gate_clamp_max"],
-            "up_clamp": attributes["up_clamp"],
+            "activation": "silu", "weight_block_n": block_n, "weight_block_k": block_k,
+            "gate_clamp_max": attributes["gate_clamp_max"], "up_clamp": attributes["up_clamp"],
         }
         for name in ("gate_weight_encoding", "up_weight_encoding"):
             value = attributes.get(name)
@@ -74,10 +73,14 @@ class MatMulGlu(OpDefinition):
                 result[name] = value
         if result.get("gate_weight_encoding") != result.get("up_weight_encoding"):
             raise IRSchemaError("MatMulGlu gate/up native encodings must match.")
-        if result.get("gate_weight_encoding") is not None and any(result[name] is not None
-                                                                  for name in ("gate_clamp_max", "up_clamp")):
+        if result.get("gate_weight_encoding") is not None and any(
+                result[name] is not None for name in ("gate_clamp_max", "up_clamp")):
             raise IRSchemaError("Native MatMulGlu does not support clamp attributes.")
         result.update(normalize_glu_activation_quantization(attributes, "MatMulGlu"))
+        from triton.flagmega.ir.ops._compute_profile import normalize_compute_profile
+        profile = normalize_compute_profile(attributes, "MatMulGlu", key="native_compute_profile",
+                                            default="f32", supported=())
+        result.update(profile)
         return result
 
     @classmethod
@@ -98,8 +101,8 @@ class MatMulGlu(OpDefinition):
             raise IRSchemaError("MatMulGlu value/weight K dimensions must match.")
         for weight, scale, encoding in ((gate, tensor_of(gate_scale_type), attrs.get("gate_weight_encoding")),
                                         (up, tensor_of(up_scale_type), attrs.get("up_weight_encoding"))):
-            verify_native_scale_type(value, weight, scale, encoding=encoding, block_n=attrs["weight_block_n"],
-                                     block_k=attrs["weight_block_k"], opname="MatMulGlu")
+            verify_native_scale_type(value, weight, scale, encoding=encoding,
+                                     block_n=attrs["weight_block_n"], block_k=attrs["weight_block_k"], opname="MatMulGlu")
         output = tensor_type(value.dtype, (value.shape[0], gate.shape[0]))
         placement = placement_of(*input_types)
         if placement is None:
@@ -116,13 +119,13 @@ class MatMulGlu(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
+        from triton.flagmega.ir.ops._compute_profile import require_host_reference
+        require_host_reference(node, key="native_compute_profile", default="f32")
         native = node.attrs.get("gate_weight_encoding") is not None
         output_dtype = context.torch_dtype(tensor_of(node.type).dtype)
         projection_dtype = context.torch.float32 if native else output_dtype
         gate = block_scaled_linear(
-            cls.value.read(arguments),
-            cls.gate_weight.read(arguments),
-            cls.gate_scale.read(arguments),
+            cls.value.read(arguments), cls.gate_weight.read(arguments), cls.gate_scale.read(arguments),
             weight_encoding=node.attrs.get("gate_weight_encoding"),
             block_n=int(cls.weight_block_n.read(arguments, node.attrs)),
             block_k=int(cls.weight_block_k.read(arguments, node.attrs)),
@@ -130,9 +133,7 @@ class MatMulGlu(OpDefinition):
             activation_quantization=node.attrs.get("activation_quantization", "dynamic_fp8"),
         )
         up = block_scaled_linear(
-            cls.value.read(arguments),
-            cls.up_weight.read(arguments),
-            cls.up_scale.read(arguments),
+            cls.value.read(arguments), cls.up_weight.read(arguments), cls.up_scale.read(arguments),
             weight_encoding=node.attrs.get("up_weight_encoding"),
             block_n=int(cls.weight_block_n.read(arguments, node.attrs)),
             block_k=int(cls.weight_block_k.read(arguments, node.attrs)),
@@ -148,4 +149,4 @@ class MatMulGlu(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         size = tensor_nbytes(node.type) if hasattr(node.type, "shape") else None
-        return OpCost(flops=None, bytes_read=None, bytes_written=size, notes=("two-block-fp8-matmuls+glu", ))
+        return OpCost(flops=None, bytes_read=None, bytes_written=size, notes=("two-block-fp8-matmuls+glu",))

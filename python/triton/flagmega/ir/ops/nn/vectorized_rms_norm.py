@@ -49,9 +49,11 @@ class VectorizedRMSNorm(OpDefinition):
         value = cls.value.type_of(inputs)
         weight = cls.weight.type_of(inputs)
         assert isinstance(value, TensorType) and isinstance(weight, TensorType)
-        if (not isinstance(value.dtype, VectorType) or not isinstance(weight.dtype, VectorType)
-                or value.dtype != weight.dtype or value.dtype.elem_type != weight.dtype.elem_type or value.rank < 1
-                or weight.rank != 1):
+        if (
+            not isinstance(value.dtype, VectorType) or not isinstance(weight.dtype, VectorType)
+            or value.dtype != weight.dtype or value.dtype.elem_type != weight.dtype.elem_type
+            or value.rank < 1 or weight.rank != 1
+        ):
             raise IRSchemaError("VectorizedRMSNorm requires compatible packed value and weight tensors.")
         return value
 
@@ -81,8 +83,7 @@ class VectorizedRMSNorm(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         assert isinstance(node.type, TensorType)
-        return OpCost(flops=None, bytes_read=None, bytes_written=tensor_nbytes(node.type),
-                      notes=("vectorized-rms-norm", ))
+        return OpCost(flops=None, bytes_read=None, bytes_written=tensor_nbytes(node.type), notes=("vectorized-rms-norm",))
 
 
 __all__ = ["VectorizedRMSNorm"]

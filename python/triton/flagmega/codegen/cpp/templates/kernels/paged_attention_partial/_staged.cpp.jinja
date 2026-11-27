@@ -1,0 +1,183 @@
+{# Stage 64 tokens cooperatively, but retain four canonical 16-token online
+   updates, ordered probability/value sums and fused multiply-adds. Two value
+   partial buffers alternate so readers finish before their slot is reused. #}
+    constexpr int HEADS={{ call.cpp_attention_staging.heads }}, THREADS={{ block_threads }} / HEADS;
+    constexpr int TILE={{ call.cpp_attention_staging.token_tile }}, DIM={{ call.head_dim }}, GROUPS=8;
+    const int head_lane=ftt_thread / THREADS;
+    const int thread=ftt_thread % THREADS;
+    auto *scores=reinterpret_cast<float *>(_ftt_sme_arena);
+    auto *probabilities=scores+HEADS*TILE;
+    auto *scales=probabilities+HEADS*TILE;
+    auto *values=scales+HEADS*16;
+    const ftt::dim_t attention_context_shard={{ call.context_shard | cppexpr }};
+    const ftt::dim_t attention_layer_id={{ call.layer_id | cppexpr }};
+    for(ftt::dim_t head_base=0;head_base<{{ call.local_capacity }}LL;head_base+=HEADS){
+        const ftt::dim_t attention_state_offsets=head_base+head_lane;
+        const ftt::dim_t attention_head={{ call.head | cppexpr }};
+        const bool active=attention_state_offsets<{{ call.local_capacity }}LL && ({{ call.active | cppexpr }}) && attention_head<{{ call.num_query_heads }}LL;
+        auto *ftt_query={{ call.query | cppexpr }};
+        auto *ftt_kv_cache={{ call.kv_cache | cppexpr }};
+        auto *ftt_slot_mapping={{ call.slot_mapping | cppexpr }};
+        auto *ftt_block_table={{ call.block_table | cppexpr }};
+        auto *ftt_partial_max={{ call.partial_max | cppexpr }};
+        auto *ftt_partial_sum={{ call.partial_sum | cppexpr }};
+        auto *ftt_partial_accumulator={{ call.partial_accumulator | cppexpr }};
+        const ftt::dim_t context_length=static_cast<ftt::dim_t>(ftt_slot_mapping[0])+({{ call.query_token | cppexpr }})+1;
+        const ftt::dim_t token_begin=(context_length*attention_context_shard)/{{ call.context_shards }}LL;
+        const ftt::dim_t token_end=(context_length*(attention_context_shard+1))/{{ call.context_shards }}LL;
+        const ftt::dim_t kv_head=attention_head/({{ call.num_query_heads }}LL/{{ call.num_kv_heads }}LL);
+        float running_max=-__builtin_inff(),running_sum=0.0f;
+        constexpr int VALUE_LANES=THREADS/GROUPS;
+        float accumulator[(DIM+VALUE_LANES-1)/VALUE_LANES]={};
+        auto *stage=reinterpret_cast<ftt::bfloat16_t *>(values+HEADS*2*GROUPS*DIM);
+        constexpr int PREFETCH=64, STAGEDIM=DIM+{{ call.cpp_attention_staging.padding }};
+        // The query is invariant across every KV batch. Retain this lane's
+        // four low/high dimensions in registers instead of reloading them.
+        const int query_base=(thread%16)*4;
+        float query_low[4],query_high[4];
+        FTT_UNROLL
+        for(int g=0;g<4;++g){
+            const int dimension=query_base+g;
+            query_low[g]=active?ftt::to_float(ftt_query[
+                (dimension/{{ call.query_lanes }}LL)*{{ call.query_dim_stride }}LL
+                +dimension%{{ call.query_lanes }}LL]):0.0f;
+            query_high[g]=active?ftt::to_float(ftt_query[
+                ((dimension+64)/{{ call.query_lanes }}LL)*{{ call.query_dim_stride }}LL
+                +(dimension+64)%{{ call.query_lanes }}LL]):0.0f;
+        }
+        for(ftt::dim_t batch_start=token_begin;batch_start<token_end;batch_start+=PREFETCH){
+            FTT_UNROLL
+            for(int item=thread+(head_lane%2)*THREADS;item<PREFETCH*DIM/8;item+=THREADS*2){
+                int t=item/(DIM/8),dimension=(item%(DIM/8))*8;
+                ftt::dim_t token=batch_start+t;
+                ftt::bf16_run_t<8> k={},v={};
+                if(active && token<token_end){
+                    ftt::dim_t page=static_cast<ftt::dim_t>(ftt_block_table[token/{{ call.block_size }}LL]);
+                    page=ftt::min(ftt::max(page,(ftt::dim_t)0),(ftt::dim_t)({{ call.num_blocks }}LL-1));
+                    ftt::dim_t key=((((page*{{ call.num_layers }}LL+attention_layer_id)*2LL)*{{ call.block_size }}LL+token%{{ call.block_size }}LL)*{{ call.num_kv_heads }}LL+kv_head)*DIM;
+                    const auto *kp=ftt_kv_cache+key+dimension;
+                    const auto *vp=kp+{{ call.block_size }}LL*{{ call.num_kv_heads }}LL*DIM;
+                    if((reinterpret_cast<unsigned long long>(ftt_kv_cache)&15ULL)==0){
+                        k=ftt::load_run<8>(kp);v=ftt::load_run<8>(vp);
+                    }else{
+                        FTT_UNROLL
+                        for(int w=0;w<4;++w){
+                            const auto *kb=reinterpret_cast<const unsigned short *>(kp);
+                            const auto *vb=reinterpret_cast<const unsigned short *>(vp);
+                            k.word[w]=static_cast<unsigned int>(kb[2*w])|(static_cast<unsigned int>(kb[2*w+1])<<16);
+                            v.word[w]=static_cast<unsigned int>(vb[2*w])|(static_cast<unsigned int>(vb[2*w+1])<<16);
+                        }
+                    }
+                }
+                auto *ks=reinterpret_cast<unsigned int *>(stage+((head_lane/2)*2)*PREFETCH*STAGEDIM+t*STAGEDIM+dimension);
+                auto *vs=reinterpret_cast<unsigned int *>(stage+((head_lane/2)*2+1)*PREFETCH*STAGEDIM+t*STAGEDIM+dimension);
+                FTT_UNROLL
+                for(int w=0;w<4;++w){ks[w]=k.word[w];vs[w]=v.word[w];}
+            }
+            ftt::arch::cta_sync();
+            for(int local_tile=0;local_tile<PREFETCH && batch_start+local_tile<token_end;local_tile+=TILE){
+            const ftt::dim_t token_start=batch_start+local_tile;
+            for(int token_lane=thread/16;token_lane<TILE;token_lane+=THREADS/16){
+                const int dim_lane=thread%16;
+                const ftt::dim_t token=token_start+token_lane;
+                float score=0;
+                if(active && token<token_end){
+                    ftt::dim_t page=static_cast<ftt::dim_t>(ftt_block_table[token/{{ call.block_size }}LL]);
+                    page=ftt::min(ftt::max(page,(ftt::dim_t)0),(ftt::dim_t)({{ call.num_blocks }}LL-1));
+                    const ftt::dim_t key=((((page*{{ call.num_layers }}LL+attention_layer_id)*2LL)*{{ call.block_size }}LL+token%{{ call.block_size }}LL)*{{ call.num_kv_heads }}LL+kv_head)*DIM;
+                    const int base=dim_lane*4;
+                    float partial[4];
+                    FTT_UNROLL
+                    for(int g=0;g<4;++g){
+                        partial[g]=ftt::to_float(stage[((head_lane/2)*2)*PREFETCH*STAGEDIM+(local_tile+token_lane)*STAGEDIM+base+g])*query_low[g];
+                        partial[g]+=ftt::to_float(stage[((head_lane/2)*2)*PREFETCH*STAGEDIM+(local_tile+token_lane)*STAGEDIM+base+g+64])*query_high[g];
+                    }
+                    FTT_UNROLL
+                    for(int offset=8;offset>0;offset>>=1){
+                        FTT_UNROLL
+                        for(int g=0;g<4;++g)partial[g]+=ftt::arch::shuffle(partial[g],((thread%{{ warp_size }})^offset));
+                    }
+                    score=(partial[0]+partial[2])+(partial[1]+partial[3]);
+                }
+                if(dim_lane==0)scores[head_lane*TILE+token_lane]=(active && token<token_end)?score*{{ call.scale }}f:-__builtin_inff();
+            }
+            ftt::arch::cta_sync();
+            // Four 16-token softmax updates preserve the canonical fold.
+            // Compute exponentials concurrently after deriving the prefix maxima.
+            if(thread<64){
+                const int subtile=thread/16, lane=thread%16;
+                const float own_score=scores[head_lane*TILE+thread];
+                float tile_max=own_score;
+                FTT_UNROLL
+                for(int offset=8;offset>0;offset>>=1)
+                    tile_max=ftt::max(tile_max,ftt::arch::shuffle(tile_max,((thread%{{ warp_size }})^offset)));
+                float updated_max=running_max;
+                FTT_UNROLL
+                for(int t=0;t<4;++t){
+                    float earlier=ftt::arch::shuffle(tile_max,t*16);
+                    if(t<=subtile)updated_max=ftt::max(updated_max,earlier);
+                }
+                probabilities[head_lane*TILE+thread]=(active && token_start+thread<token_end)?ftt::exp(own_score-updated_max):0.0f;
+                if(lane==0){
+                    float previous_max=running_max;
+                    FTT_UNROLL
+                    for(int t=0;t<4;++t){
+                        float earlier=ftt::arch::shuffle(tile_max,t*16);
+                        if(t<subtile)previous_max=ftt::max(previous_max,earlier);
+                    }
+                    scales[head_lane*16+subtile*4]=ftt::exp(previous_max-updated_max);
+                    scales[head_lane*16+subtile*4+1]=updated_max;
+                }
+            }
+            ftt::arch::cta_sync();
+            if(thread<64 && thread%16==0){
+                float sum=0.0f;
+                FTT_UNROLL
+                for(int t=0;t<16;++t)sum+=probabilities[head_lane*TILE+thread+t];
+                scales[head_lane*16+(thread/16)*4+2]=sum;
+            }
+            for(int subtile=0;subtile<4 && token_start+subtile*16<token_end;++subtile){
+            const float previous_scale=scales[head_lane*16+subtile*4],updated_max=scales[head_lane*16+subtile*4+1];
+            const int group=thread/32,dim_lane=thread%32;
+            for(int dimension=dim_lane,slot=0;dimension<DIM;dimension+=32,++slot){
+                const int t0=group+subtile*16,t1=t0+8;
+                const float p0=probabilities[head_lane*TILE+t0],p1=probabilities[head_lane*TILE+t1];
+                const float v0=ftt::to_float(stage[((head_lane/2)*2+1)*PREFETCH*STAGEDIM+(local_tile+t0)*STAGEDIM+dimension]);
+                const float v1=ftt::to_float(stage[((head_lane/2)*2+1)*PREFETCH*STAGEDIM+(local_tile+t1)*STAGEDIM+dimension]);
+                float weighted=0;
+                if(active && token_start+t0<token_end)weighted=__builtin_fmaf(p0,v0,weighted);
+                if(active && token_start+t1<token_end)weighted=__builtin_fmaf(p1,v1,weighted);
+                values[((head_lane*2+(subtile&1))*8+group)*DIM+dimension]=weighted;
+            }
+            ftt::arch::cta_sync();
+            // All dimension lanes read eight groups together to hide shared
+            // latency; groups finish before the state write in registers.
+            if(group==0){
+                float gathered[4][8];
+                FTT_UNROLL
+                for(int slot=0;slot<4;++slot){
+                    FTT_UNROLL
+                    for(int g=0;g<8;++g)gathered[slot][g]=values[((head_lane*2+(subtile&1))*8+g)*DIM+dim_lane+slot*32];
+                }
+                FTT_UNROLL
+                for(int slot=0;slot<4;++slot){
+                    float sum=gathered[slot][0];
+                    FTT_UNROLL
+                    for(int g=1;g<8;++g)sum+=gathered[slot][g];
+                    accumulator[slot]=__builtin_fmaf(accumulator[slot],previous_scale,sum);
+                }
+            }
+            running_sum=__builtin_fmaf(running_sum,previous_scale,scales[head_lane*16+subtile*4+2]);
+            running_max=updated_max;
+            }
+            ftt::arch::cta_sync();
+            }
+        }
+        if(active){
+            if(thread==0){ftt_partial_max[0]=ftt::store_as(ftt_partial_max,running_max);ftt_partial_sum[0]=ftt::store_as(ftt_partial_sum,running_sum);}
+            if(thread< VALUE_LANES){
+                for(int dimension=thread,slot=0;dimension<DIM;dimension+=VALUE_LANES,++slot)ftt_partial_accumulator[dimension*{{ call.accumulator_dim_stride }}LL]=ftt::store_as(ftt_partial_accumulator,accumulator[slot]);
+            }
+        }
+        ftt::arch::cta_sync();
+    }

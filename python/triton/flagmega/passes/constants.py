@@ -28,8 +28,8 @@ def constant_phase(module: IRModule) -> ConstantPhase:
     try:
         return ConstantPhase(str(module.metadata.get("constant_phase", ConstantPhase.OPEN.value)))
     except ValueError as error:
-        raise IRVerificationError(f"Unknown constant phase {module.metadata.get('constant_phase')!r}.",
-                                  stage=module.stage) from error
+        raise IRVerificationError(
+            f"Unknown constant phase {module.metadata.get('constant_phase')!r}.", stage=module.stage) from error
 
 
 def require_constants_open(module: IRModule, owner: str) -> None:
@@ -71,8 +71,13 @@ class ConstnessAnalysis:
                     )
                 constants.add(node.id)
                 continue
-            if (definition.const_evaluable and definition.deterministic and node.effect.is_pure and node.inputs
-                    and all(value in constants for value in node.inputs)):
+            if (
+                definition.const_evaluable
+                and definition.deterministic
+                and node.effect.is_pure
+                and node.inputs
+                and all(value in constants for value in node.inputs)
+            ):
                 constants.add(node.id)
         return ConstnessResult(frozenset(constants))
 
@@ -110,15 +115,15 @@ class ConstantCSEPass:
 
         if not aliases:
             return module
-        functions = tuple(
-            replace(
-                function,
-                parameters=tuple(resolve(value) for value in function.parameters),
-                outputs=tuple(resolve(value) for value in function.outputs),
-            ) for function in module.functions)
+        functions = tuple(replace(
+            function,
+            parameters=tuple(resolve(value) for value in function.parameters),
+            outputs=tuple(resolve(value) for value in function.outputs),
+        ) for function in module.functions)
         points = tuple(
             replace(point, owner=resolve(point.owner)) if point.owner is not None else point
-            for point in module.selection_points)
+            for point in module.selection_points
+        )
         return verify_module(replace(module, nodes=tuple(nodes), functions=functions, selection_points=points))
 
 
@@ -147,8 +152,11 @@ def freeze_constant_islands(module: IRModule) -> IRModule:
     boundaries = {
         node_id
         for node_id in const_ids
-        if _is_materializable_constant_type(node_map[node_id].type) and (node_id in function_outputs or any(
-            user not in const_ids for user in users[node_id]))
+        if _is_materializable_constant_type(node_map[node_id].type)
+        and (
+            node_id in function_outputs
+            or any(user not in const_ids for user in users[node_id])
+        )
     }
 
     required: set[str] = set()
@@ -217,11 +225,19 @@ def freeze_constant_islands(module: IRModule) -> IRModule:
                     if node_id in reachable:
                         continue
                     reachable.add(node_id)
-                    pending.extend(value for value in node_map[node_id].inputs if value in component)
+                    pending.extend(
+                        value for value in node_map[node_id].inputs
+                        if value in component
+                    )
                 source_weights = [
-                    node_map[node_id] for node_id in reachable if node_map[node_id].op == "builtin.weight"
+                    node_map[node_id]
+                    for node_id in reachable
+                    if node_map[node_id].op == "builtin.weight"
                 ]
-                if (len(source_weights) == 1 and "rdata_group" in source_weights[0].metadata):
+                if (
+                    len(source_weights) == 1
+                    and "rdata_group" in source_weights[0].metadata
+                ):
                     asset_metadata["rdata_group"] = source_weights[0].metadata["rdata_group"]
             asset_by_output[output] = Node(
                 id=output,
@@ -239,31 +255,40 @@ def freeze_constant_islands(module: IRModule) -> IRModule:
     # ``const_asset`` boundary and can no longer be re-selected independently.
     # The editable recipe IR (including its node types/metadata) is the source
     # of truth after this one-way boundary.
-    frozen_point_ids = {point.id for point in module.selection_points if point.owner in required}
-    selection_points = tuple(point for point in module.selection_points if point.id not in frozen_point_ids)
-    selections = tuple(record for record in module.selections if record.point_id not in frozen_point_ids)
+    frozen_point_ids = {
+        point.id for point in module.selection_points if point.owner in required
+    }
+    selection_points = tuple(
+        point for point in module.selection_points if point.id not in frozen_point_ids
+    )
+    selections = tuple(
+        record for record in module.selections if record.point_id not in frozen_point_ids
+    )
 
     nodes = tuple(
         asset_by_output.get(node.id, node)
         for node in module.nodes
-        if node.id not in required or node.id in asset_by_output)
+        if node.id not in required or node.id in asset_by_output
+    )
     metadata = {**dict(module.metadata), "constant_phase": ConstantPhase.FROZEN.value}
-    return verify_module(
-        replace(
-            module,
-            nodes=nodes,
-            metadata=metadata,
-            constant_recipes=tuple(recipes),
-            selection_points=selection_points,
-            selections=selections,
-        ))
+    return verify_module(replace(
+        module,
+        nodes=nodes,
+        metadata=metadata,
+        constant_recipes=tuple(recipes),
+        selection_points=selection_points,
+        selections=selections,
+    ))
 
 
 def _is_materializable_constant_type(value_type) -> bool:
     if isinstance(value_type, (TensorType, DistributedType)):
         return True
-    return (isinstance(value_type, TupleType) and bool(value_type.fields)
-            and all(_is_materializable_constant_type(field) for field in value_type.fields))
+    return (
+        isinstance(value_type, TupleType)
+        and bool(value_type.fields)
+        and all(_is_materializable_constant_type(field) for field in value_type.fields)
+    )
 
 
 def thaw_constant_islands(module: IRModule) -> IRModule:
@@ -282,16 +307,22 @@ def thaw_constant_islands(module: IRModule) -> IRModule:
             "thaw_constant_islands requires frozen constant recipes.",
             stage=module.stage,
         )
-    buffered = tuple(node.id for node in module.nodes if node.op == "tir.buffer" and "constant_recipe" in node.metadata)
+    buffered = tuple(
+        node.id
+        for node in module.nodes
+        if node.op == "tir.buffer" and "constant_recipe" in node.metadata
+    )
     if buffered:
         raise StageError(
             "Cannot thaw bufferized constant assets; resume before Bufferize: "
             f"{buffered}.",
             stage=module.stage,
         )
-    assets = {(str(node.attrs["recipe"]), str(node.attrs["output"])): node
-              for node in module.nodes
-              if node.op == "builtin.const_asset"}
+    assets = {
+        (str(node.attrs["recipe"]), str(node.attrs["output"])): node
+        for node in module.nodes
+        if node.op == "builtin.const_asset"
+    }
     recipe_map = {recipe.id: recipe for recipe in module.constant_recipes}
     occupied = set(module.node_map)
 
@@ -316,8 +347,11 @@ def thaw_constant_islands(module: IRModule) -> IRModule:
         recipe = recipe_map[recipe_id]
         outputs = {output: assets[(recipe_id, output)] for output in recipe.outputs}
         identities = {
-            original.id: (outputs[original.id].id if original.id in outputs
-                          and outputs[original.id].type == original.type else claim(recipe_id, original.id))
+            original.id: (
+                outputs[original.id].id
+                if original.id in outputs and outputs[original.id].type == original.type
+                else claim(recipe_id, original.id)
+            )
             for original in recipe.nodes
         }
         for recipe_node in recipe.nodes:
@@ -330,24 +364,23 @@ def thaw_constant_islands(module: IRModule) -> IRModule:
             # Python equality equates True/1 and can hide a real JSON metadata
             # edit. Reuse only the original frozen values, never equal copies.
             unchanged_metadata = len(metadata) == len(recipe_node.metadata) and all(
-                key in recipe_node.metadata and recipe_node.metadata[key] is value for key, value in metadata.items())
-            nodes.append(recipe_node if identity == recipe_node.id and inputs == recipe_node.inputs and
-                         unchanged_metadata else replace(recipe_node, id=identity, inputs=inputs, metadata=metadata))
+                key in recipe_node.metadata and recipe_node.metadata[key] is value
+                for key, value in metadata.items()
+            )
+            nodes.append(
+                recipe_node
+                if identity == recipe_node.id and inputs == recipe_node.inputs and unchanged_metadata
+                else replace(recipe_node, id=identity, inputs=inputs, metadata=metadata)
+            )
         for output, asset in outputs.items():
             if asset.type != recipe.node_map[output].type:
                 # A distribution annotation cannot be copied onto an internal
                 # op: its operands still have the original recipe-local types.
-                nodes.append(
-                    Node(
-                        asset.id,
-                        "distributed.boxing",
-                        (identities[output], ),
-                        asset.type,
-                        attrs={"new_type": asset.type},
-                        metadata={key: value
-                                  for key, value in asset.metadata.items()
-                                  if key != "frozen_constant"},
-                    ))
+                nodes.append(Node(
+                    asset.id, "distributed.boxing", (identities[output],), asset.type,
+                    attrs={"new_type": asset.type},
+                    metadata={key: value for key, value in asset.metadata.items() if key != "frozen_constant"},
+                ))
         emitted.add(recipe_id)
     if emitted != set(recipe_map):
         raise IRVerificationError(
@@ -355,16 +388,15 @@ def thaw_constant_islands(module: IRModule) -> IRModule:
             f"{sorted(set(recipe_map) - emitted)}.",
             stage=module.stage,
         )
-    return verify_module(
-        replace(
-            module,
-            nodes=tuple(nodes),
-            metadata={
-                **dict(module.metadata),
-                "constant_phase": ConstantPhase.OPEN.value,
-            },
-            constant_recipes=(),
-        ))
+    return verify_module(replace(
+        module,
+        nodes=tuple(nodes),
+        metadata={
+            **dict(module.metadata),
+            "constant_phase": ConstantPhase.OPEN.value,
+        },
+        constant_recipes=(),
+    ))
 
 
 def _constant_cse_key(node: Node, encoded_attrs: dict[int, str] | None = None) -> str:
@@ -378,9 +410,9 @@ def _constant_cse_key(node: Node, encoded_attrs: dict[int, str] | None = None) -
         attrs = _canonical_json(_plain(node.attrs))
         if encoded_attrs is not None:
             encoded_attrs[identity] = attrs
-    return ('{"attrs":' + attrs + ',"effect":' + _semantic_component_json(node.effect) + ',"inputs":' +
-            _canonical_json(node.inputs) + ',"op":' + _canonical_json(node.op) + ',"type":' +
-            _semantic_component_json(node.type) + '}')
+    return ('{"attrs":' + attrs + ',"effect":' + _semantic_component_json(node.effect)
+            + ',"inputs":' + _canonical_json(node.inputs) + ',"op":' + _canonical_json(node.op)
+            + ',"type":' + _semantic_component_json(node.type) + '}')
 
 
 def _plain(value: Any) -> Any:

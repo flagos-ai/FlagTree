@@ -16,10 +16,8 @@ class GenerationResult:
     metrics: GenerationMetrics
 
     def to_dict(self):
-        return {
-            "prompt_tokens": list(self.prompt_tokens), "token_ids": list(self.token_ids), "finish_reason":
-            self.finish_reason, **self.metrics.to_dict()
-        }
+        return {"prompt_tokens": list(self.prompt_tokens), "token_ids": list(self.token_ids),
+                "finish_reason": self.finish_reason, **self.metrics.to_dict()}
 
 
 class TextGenerationEngine:
@@ -34,12 +32,10 @@ class TextGenerationEngine:
         self.backend = backend
         self.eos_token_ids = frozenset(eos_token_ids)
         self.capacity = backend.capacity if context_size is None else context_size
-        if isinstance(self.capacity,
-                      bool) or not isinstance(self.capacity, int) or not 0 < self.capacity <= backend.capacity:
+        if isinstance(self.capacity, bool) or not isinstance(self.capacity, int) or not 0 < self.capacity <= backend.capacity:
             raise ValueError("Context size must fit the artifact cache capacity")
-        if any(
-                isinstance(t, bool) or not isinstance(t, int) or not 0 <= t < backend.vocab_size
-                for t in self.eos_token_ids):
+        if any(isinstance(t, bool) or not isinstance(t, int) or not 0 <= t < backend.vocab_size
+               for t in self.eos_token_ids):
             raise ValueError("EOS token is outside the artifact vocabulary")
         self._consumed = []
         self._generating = False
@@ -54,14 +50,14 @@ class TextGenerationEngine:
         self.backend.reset()
         self._consumed.clear()
 
-    def generate(self, prompt_tokens, *, max_new_tokens=128, ignore_eos=False, on_token=None, started_at=None,
-                 tokenization_ms=0.0):
+    def generate(self, prompt_tokens, *, max_new_tokens=128, ignore_eos=False,
+                 on_token=None, started_at=None, tokenization_ms=0.0):
         if self._generating:
             raise RuntimeError("Concurrent or reentrant generation is not supported")
         started = time.perf_counter() if started_at is None else started_at
         prompt = tuple(prompt_tokens)
-        if not prompt or any(
-                isinstance(t, bool) or not isinstance(t, int) or not 0 <= t < self.backend.vocab_size for t in prompt):
+        if not prompt or any(isinstance(t, bool) or not isinstance(t, int)
+                             or not 0 <= t < self.backend.vocab_size for t in prompt):
             raise ValueError("Prompt must contain valid integer token IDs")
         if isinstance(max_new_tokens, bool) or not isinstance(max_new_tokens, int) or max_new_tokens < 1:
             raise ValueError("max_new_tokens must be a positive integer")
@@ -95,7 +91,6 @@ class TextGenerationEngine:
             prefill_ms = (time.perf_counter() - prefill_started) * 1000
             generated, intervals = [], []
             reason = "length"
-            previous = started
             for index in range(max_new_tokens):
                 if index:
                     self.backend.append(generated[-1])
@@ -115,8 +110,8 @@ class TextGenerationEngine:
                 if not ignore_eos and token in self.eos_token_ids:
                     reason = "eos"
                     break
-            metrics = GenerationMetrics(len(prompt), common,
-                                        len(prompt) - common, len(generated), prefill_ms, ttft_ms, tuple(intervals),
+            metrics = GenerationMetrics(len(prompt), common, len(prompt) - common, len(generated),
+                                        prefill_ms, ttft_ms, tuple(intervals),
                                         (time.perf_counter() - started) * 1000, tokenization_ms)
             return GenerationResult(prompt, tuple(generated), reason, metrics)
         except BaseException:

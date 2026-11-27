@@ -18,7 +18,7 @@ def test_alias_analysis_distinguishes_must_alias_from_overlapping_views():
     assert analysis.may_alias("root", "low")
     assert not analysis.must_alias("root", "low")
     assert not analysis.may_alias("low", "high")
-    assert analysis.groups() == (("workspace:0", ("root", "inplace", "low", "high")), )
+    assert analysis.groups() == (("workspace:0", ("root", "inplace", "low", "high")),)
 
 
 def test_alias_analysis_rejects_a_view_outside_the_source_range():

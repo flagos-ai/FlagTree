@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% macro load(call) -%}
+{% macro load(call) -%}
 _fm_loaded = tl.load({{ call.source }} + ({{ call.source_offset }}), mask=_fm_mask, other=0.0)
 {% for line in call.fusion_pre_lines %}{{ line }}
 {% endfor %}_fm_values = tl.where(_fm_mask, ({{ call.fusion_pre_value }}).to(tl.float32), -float("inf"))

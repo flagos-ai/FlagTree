@@ -19,36 +19,27 @@ from python.test.flagmega.codegen.triton.test_kernel_programs import import_sour
 
 def compile_peer_programs():
     mesh = fm.Placement((4, 2, 2), "cyx", "cbb")
-    kind = fm.DistributedType(fm.tensor_type("float32", (4, 16)), (fm.SBP.split_contiguous(
-        (0, ), 1), fm.SBP.broadcast()), mesh)
-
+    kind = fm.DistributedType(fm.tensor_type("float32", (4, 16)),
+                             (fm.SBP.split_contiguous((0,), 1), fm.SBP.broadcast()), mesh)
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("x", kind, id="x")
-            old = fm.F.math.reduce_sum(x, axes=(0, ), keep_dims=True, name="old")
+            old = fm.F.math.reduce_sum(x, axes=(0,), keep_dims=True, name="old")
             published = fm.F.distributed.boxing(old, fm.logical_type(old.type), name="published")
             after = fm.F.math.add(published, published, name="after")
-            self.function("main", (x, ), (published, after))
+            self.function("main", (x,), (published, after))
 
     class Target(NvidiaSm90Target):
-
         def propose_tir(self, module):
             module = super().propose_tir(module)
-            return replace(
-                module, metadata={
-                    **module.metadata, "kernel_program_partition":
-                    tuple(
-                        dict(symbol="program_" +
-                             name, calls=(name, ), num_warps=4, depends_on=("program_" + parent, ) if parent else ())
-                        for name, parent in (("old", None), ("published", "old"), ("after", "published")))
-                })
-
+            return replace(module, metadata={**module.metadata, "kernel_program_partition": tuple(
+                dict(symbol="program_"+name, calls=(name,), num_warps=4,
+                     depends_on=("program_"+parent,) if parent else ())
+                for name, parent in (("old", None), ("published", "old"), ("after", "published")))})
     compiler = Compiler(CompileOptions(placement=mesh))
     compiler.target = Target()
-    return compiler.compile(
-        Graph(dialect="distributed", stage="frozen_constants", entry="main",
-              metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()).module
+    return compiler.compile(Graph(dialect="distributed", stage="frozen_constants", entry="main",
+        metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()).module
 
 
 def test_peer_program_has_a_typed_terminal_device_completion_and_residency_contract(tmp_path):
@@ -82,23 +73,23 @@ def test_peer_completion_cannot_claim_noncooperative_residency(tmp_path):
         verified_kernel_programs(package, kernels, module)
 
 
-@pytest.mark.parametrize("case,removed", [("completed", True), ("new_writer", False), ("unknown_range", False),
-                                          ("explicit", False)])
+@pytest.mark.parametrize("case,removed", [("completed", True), ("new_writer", False),
+                                         ("unknown_range", False), ("explicit", False)])
 def test_completion_elision_requires_global_coverage_of_every_range(case, removed):
     from triton.flagmega.codegen.triton.program_dependencies import elide_completed_device_barriers
 
-    programs = (dict(symbol="producer", depends_on=()), dict(symbol="peer", depends_on=("producer", )),
-                dict(symbol="new", depends_on=("peer", )), dict(symbol="reader", depends_on=("new", )))
+    programs = (dict(symbol="producer", depends_on=()), dict(symbol="peer", depends_on=("producer",)),
+                dict(symbol="new", depends_on=("peer",)), dict(symbol="reader", depends_on=("new",)))
     access = SimpleNamespace(physical_id="workspace", offset=0, nbytes=64)
-    accesses = dict(producer=(access, ), peer=(access, ), new=(access, ) if case == "new_writer" else (), reader=())
+    accesses = dict(producer=(access,), peer=(access,), new=(access,) if case == "new_writer" else (), reader=())
     completion = dict(producer=False, peer=True, new=False, reader=False)
-    event = dict(kind="barrier", scope="device", before="reader", hazards=("READ->WRITE", ),
+    event = dict(kind="barrier", scope="device", before="reader", hazards=("READ->WRITE",),
                  ranges=[dict(physical_id="workspace", offset=0, nbytes=64)])
     if case == "unknown_range":
         event["ranges"].append(dict(physical_id="external", offset=0, nbytes=64))
     elif case == "explicit":
         event["ranges"] = []
-    result, elided = elide_completed_device_barriers([event, dict(kind="function_call")], "reader", programs, accesses,
-                                                     completion)
+    result, elided = elide_completed_device_barriers([event, dict(kind="function_call")], "reader",
+                                                    programs, accesses, completion)
     assert bool(elided) is removed
     assert (result[0]["kind"] == "function_call") is removed

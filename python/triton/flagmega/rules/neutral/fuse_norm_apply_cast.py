@@ -14,10 +14,13 @@ def fuse_norm_apply_cast_rule():
 
     def rewrite(result, module):
         root, norm = result["root"], result["norm"]
+        if norm.attrs.get("compute_profile", "default") != "default":
+            return root
         if (not isinstance(root.type, TensorType) or root.type.dtype not in {DType.BFLOAT16, DType.FLOAT32}
                 or norm.attrs.get("output_dtype") is not None):
             return root
-        replacement = make_node("nn.norm_apply", root.id, tuple(module.node_map[value] for value in norm.inputs),
+        replacement = make_node("nn.norm_apply", root.id,
+                                tuple(module.node_map[value] for value in norm.inputs),
                                 {**norm.attrs, "output_dtype": root.type.dtype.value},
                                 {**root.metadata, "formed_by": "FuseNormApplyCast"})
         return RewriteResult(replacement)

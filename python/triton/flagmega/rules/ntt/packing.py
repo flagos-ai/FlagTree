@@ -21,7 +21,8 @@ from triton.flagmega.ir import (
     try_div_exactly,
 )
 from triton.flagmega.ir.ops.tensors._k_major import (
-    k_major_layout_name, )
+    k_major_layout_name,
+)
 from triton.flagmega.passes.functions import (
     absorb_bank_parameter_transforms,
     lift_parameter_constant_transforms,
@@ -64,14 +65,20 @@ class NttPackingPolicy:
     def identity(self) -> str:
         """Readable PyNTT rule registration, with no machine identity."""
 
-        return ("pyntt-auto-packing/v2("
-                f"vector_bytes={self.vector_bytes},"
-                f"k_pack={self.k_pack})")
+        return (
+            "pyntt-auto-packing/v2("
+            f"vector_bytes={self.vector_bytes},"
+            f"k_pack={self.k_pack})"
+        )
 
     def propose(self, module: IRModule, target) -> IRModule:
         capability = getattr(target, "capability", None)
-        prefer_logical_matmul = (capability is not None and capability.supports(("wmma", )))
-        points = self.candidate_points(module, prefer_logical_matmul=prefer_logical_matmul)
+        prefer_logical_matmul = (
+            capability is not None and capability.supports(("wmma",))
+        )
+        points = self.candidate_points(
+            module, prefer_logical_matmul=prefer_logical_matmul
+        )
         return target.add_default_selections(
             module,
             points,
@@ -80,10 +87,7 @@ class NttPackingPolicy:
         )
 
     def candidate_points(
-        self,
-        module: IRModule,
-        *,
-        prefer_logical_matmul: bool = False,
+        self, module: IRModule, *, prefer_logical_matmul: bool = False,
     ) -> tuple[SelectionPoint, ...]:
         """Enumerate only the candidates registered by portable PyNTT rules."""
 
@@ -106,7 +110,10 @@ class NttPackingPolicy:
                 nxt: list[str] = []
                 for value_id in frontier:
                     for consumer in users.get(value_id, ()):
-                        if ("norm" in consumer.op or consumer.op in {"math.add", "math.vectorized_binary"}):
+                        if (
+                            "norm" in consumer.op
+                            or consumer.op in {"math.add", "math.vectorized_binary"}
+                        ):
                             return True
                         nxt.append(consumer.id)
                 frontier = nxt
@@ -127,160 +134,170 @@ class NttPackingPolicy:
         existing = {point.id for point in module.selection_points}
         points: list[SelectionPoint] = []
         for node in module.nodes:
-            root_id = (str(node.metadata.get("vectorization_root")) if node.op == "math.vectorized_matmul"
-                       and node.metadata.get("vectorization_root") is not None else node.id)
+            root_id = (
+                str(node.metadata.get("vectorization_root"))
+                if node.op == "math.vectorized_matmul"
+                and node.metadata.get("vectorization_root") is not None
+                else node.id
+            )
             point_id = f"packing.{root_id}"
             if point_id in existing:
                 continue
-            if (node.op == "math.vectorized_matmul" and self._can_pack_vectorized_matmul(node, module)):
+            if (
+                node.op == "math.vectorized_matmul"
+                and self._can_pack_vectorized_matmul(node, module)
+            ):
                 parameters = self._vectorized_k_major_parameters(node, module)
                 assert parameters is not None
                 layout = str(parameters["layout"])
-                points.append(
-                    SelectionPoint(
-                        id=point_id,
-                        kind="packing",
-                        candidates=(
-                            Candidate(
-                                "packing.logical",
-                                {"layout": "logical"},
-                                {"requires_offline_pack": False},
-                            ),
-                            Candidate(
-                                f"packing.{layout}",
-                                parameters,
-                                {
-                                    "requires_offline_pack":
-                                    True,
-                                    "byte_count_preserving":
-                                    True,
-                                    "constant_recipe": (("unpack", "pack", "pack", "pack",
-                                                         "permute") if bool(node.attrs.get("transpose_b", False)) else
-                                                        ("unpack", "permute", "pack", "pack", "pack", "permute")),
-                                    "vector_type":
-                                    True,
-                                    "preserves_vectorized_result":
-                                    True,
-                                },
-                            ),
+                points.append(SelectionPoint(
+                    id=point_id,
+                    kind="packing",
+                    candidates=(
+                        Candidate(
+                            "packing.logical",
+                            {"layout": "logical"},
+                            {"requires_offline_pack": False},
                         ),
-                        default_candidate=matmul_default(node, f"packing.{layout}"),
-                        owner=node.id,
-                    ))
+                        Candidate(
+                            f"packing.{layout}",
+                            parameters,
+                            {
+                                "requires_offline_pack": True,
+                                "byte_count_preserving": True,
+                                "constant_recipe": (
+                                    (
+                                        "unpack", "pack", "pack", "pack", "permute"
+                                    )
+                                    if bool(node.attrs.get("transpose_b", False))
+                                    else (
+                                        "unpack", "permute", "pack", "pack", "pack", "permute"
+                                    )
+                                ),
+                                "vector_type": True,
+                                "preserves_vectorized_result": True,
+                            },
+                        ),
+                    ),
+                    default_candidate=matmul_default(node, f"packing.{layout}"),
+                    owner=node.id,
+                ))
                 continue
             if node.op == "nn.qkv_parallel_linear" and self._can_pack_qkv(node, module):
                 parameters = self._qkv_k_major_parameters(node, module)
                 assert parameters is not None
                 layout = str(parameters["layout"])
-                points.append(
-                    SelectionPoint(
-                        id=point_id,
-                        kind="packing",
-                        candidates=(
-                            Candidate(
-                                "packing.logical",
-                                {"layout": "logical"},
-                                {"requires_offline_pack": False},
-                            ),
-                            Candidate(
-                                f"packing.{layout}",
-                                parameters,
-                                {
-                                    "requires_offline_pack": True,
-                                    "byte_count_preserving": True,
-                                    "constant_recipe": ("permute", "pack", "pack", "pack", "permute"),
-                                    "vector_type": True,
-                                    "three_independent_weights": True,
-                                },
-                            ),
+                points.append(SelectionPoint(
+                    id=point_id,
+                    kind="packing",
+                    candidates=(
+                        Candidate(
+                            "packing.logical",
+                            {"layout": "logical"},
+                            {"requires_offline_pack": False},
                         ),
-                        default_candidate=f"packing.{layout}",
-                        owner=node.id,
-                    ))
+                        Candidate(
+                            f"packing.{layout}",
+                            parameters,
+                            {
+                                "requires_offline_pack": True,
+                                "byte_count_preserving": True,
+                                "constant_recipe": (
+                                    "permute", "pack", "pack", "pack", "permute"
+                                ),
+                                "vector_type": True,
+                                "three_independent_weights": True,
+                            },
+                        ),
+                    ),
+                    default_candidate=f"packing.{layout}",
+                    owner=node.id,
+                ))
                 continue
             if node.op == "nn.dense_matmul_glu" and self._can_pack_dense_glu(node, module):
                 dense = self._dense_k_major_parameters(DType.BFLOAT16)
                 assert dense is not None
                 layout = str(dense["layout"])
-                points.append(
-                    SelectionPoint(
-                        id=point_id,
-                        kind="packing",
-                        candidates=(
-                            Candidate(
-                                "packing.logical",
-                                {"layout": "logical"},
-                                {"requires_offline_pack": False},
-                            ),
-                            Candidate(
-                                f"packing.{layout}",
-                                dense,
-                                {
-                                    "requires_offline_pack": True,
-                                    "byte_count_preserving": True,
-                                    "constant_recipe": ("reshape", "permute", "reshape"),
-                                },
-                            ),
+                points.append(SelectionPoint(
+                    id=point_id,
+                    kind="packing",
+                    candidates=(
+                        Candidate(
+                            "packing.logical",
+                            {"layout": "logical"},
+                            {"requires_offline_pack": False},
                         ),
-                        default_candidate=f"packing.{layout}",
-                        owner=node.id,
-                    ))
+                        Candidate(
+                            f"packing.{layout}",
+                            dense,
+                            {
+                                "requires_offline_pack": True,
+                                "byte_count_preserving": True,
+                                "constant_recipe": ("reshape", "permute", "reshape"),
+                            },
+                        ),
+                    ),
+                    default_candidate=f"packing.{layout}",
+                    owner=node.id,
+                ))
                 continue
             if node.op == "math.matmul" and self._can_pack_dense_matmul(node, module):
                 dense = self._dense_k_major_parameters(DType.BFLOAT16)
                 assert dense is not None
                 layout = str(dense["layout"])
-                points.append(
-                    SelectionPoint(
-                        id=point_id,
-                        kind="packing",
-                        candidates=(
-                            Candidate(
-                                "packing.logical",
-                                {"layout": "logical"},
-                                {"requires_offline_pack": False},
-                            ),
-                            Candidate(
-                                f"packing.{layout}",
-                                dense,
-                                {
-                                    "requires_offline_pack": True,
-                                    "byte_count_preserving": True,
-                                    "constant_recipe": ("reshape", "permute", "reshape"),
-                                },
-                            ),
-                        ),
-                        default_candidate=matmul_default(node, f"packing.{layout}"),
-                        owner=node.id,
-                    ))
-                continue
-            if node.op not in {"math.block_scaled_matmul", "nn.matmul_glu"} or not self._can_pack(node, module):
-                continue
-            points.append(
-                SelectionPoint(
+                points.append(SelectionPoint(
                     id=point_id,
                     kind="packing",
                     candidates=(
-                        Candidate("packing.logical", {"layout": "logical"}, {"requires_offline_pack": False}),
                         Candidate(
-                            "packing.n_major_k_packed",
+                            "packing.logical",
+                            {"layout": "logical"},
+                            {"requires_offline_pack": False},
+                        ),
+                        Candidate(
+                            f"packing.{layout}",
+                            dense,
                             {
-                                "layout": "n_major_k_packed",
-                                "vector_bytes": self.vector_bytes,
-                                "k_pack": self.k_pack,
+                                "requires_offline_pack": True,
+                                "byte_count_preserving": True,
+                                "constant_recipe": ("reshape", "permute", "reshape"),
                             },
-                            {"requires_offline_pack": False, "byte_preserving_view": True},
                         ),
                     ),
-                    default_candidate="packing.n_major_k_packed",
+                    default_candidate=matmul_default(node, f"packing.{layout}"),
                     owner=node.id,
                 ))
+                continue
+            if node.op not in {"math.block_scaled_matmul", "nn.matmul_glu"} or not self._can_pack(node, module):
+                continue
+            points.append(SelectionPoint(
+                id=point_id,
+                kind="packing",
+                candidates=(
+                    Candidate("packing.logical", {"layout": "logical"}, {"requires_offline_pack": False}),
+                    Candidate(
+                        "packing.n_major_k_packed",
+                        {
+                            "layout": "n_major_k_packed",
+                            "vector_bytes": self.vector_bytes,
+                            "k_pack": self.k_pack,
+                        },
+                        {"requires_offline_pack": False, "byte_preserving_view": True},
+                    ),
+                ),
+                default_candidate="packing.n_major_k_packed",
+                owner=node.id,
+            ))
         return tuple(points)
 
     def apply(self, module: IRModule, target) -> IRModule:
         selected = module.selection_map
         points = {point.id: point for point in module.selection_points}
-        points_by_owner = {point.owner: point for point in module.selection_points if point.kind == "packing"}
+        points_by_owner = {
+            point.owner: point
+            for point in module.selection_points
+            if point.kind == "packing"
+        }
 
         def matches(node: Node, _module: IRModule) -> bool:
             point = points_by_owner.get(node.id)
@@ -294,7 +311,10 @@ class NttPackingPolicy:
                 (value for value in point.candidates if value.id == record.candidate_id),
                 None,
             )
-            return (candidate is not None and candidate.parameters.get("layout", "logical") != "logical")
+            return (
+                candidate is not None
+                and candidate.parameters.get("layout", "logical") != "logical"
+            )
 
         def rewrite(node: Node, current: IRModule) -> RewriteResult:
             point = points_by_owner[node.id]
@@ -308,8 +328,11 @@ class NttPackingPolicy:
             if node.op == "math.matmul":
                 return self._pack_dense_matmul(node, current, candidate)
             k_pack = int(candidate.parameters["k_pack"])
-            weight_ids = ((node.inputs[1], ) if node.op == "math.block_scaled_matmul" else
-                          (node.inputs[1], node.inputs[2]))
+            weight_ids = (
+                (node.inputs[1],)
+                if node.op == "math.block_scaled_matmul"
+                else (node.inputs[1], node.inputs[2])
+            )
             helpers: list[Node] = []
             replacements: dict[str, str] = {}
             k_vector = 0
@@ -326,43 +349,46 @@ class NttPackingPolicy:
                     layout=weight.type.layout,
                 )
                 packed_id = f"{input_id}.packed_for.{node.id}"
-                helpers.append(
-                    Node(
-                        id=packed_id,
-                        op="tensors.pack",
-                        inputs=(input_id, ),
-                        type=packed_type,
-                        attrs={"lanes": lanes, "axes": (1, 1)},
-                        metadata={
-                            "packed_from": input_id,
-                            "packed_for": node.id,
-                            "packed_layout": "n_major_k_packed",
-                        },
-                    ))
+                helpers.append(Node(
+                    id=packed_id,
+                    op="tensors.pack",
+                    inputs=(input_id,),
+                    type=packed_type,
+                    attrs={"lanes": lanes, "axes": (1, 1)},
+                    metadata={
+                        "packed_from": input_id,
+                        "packed_for": node.id,
+                        "packed_layout": "n_major_k_packed",
+                    },
+                ))
                 replacements[input_id] = packed_id
             inputs = tuple(replacements.get(input_id, input_id) for input_id in node.inputs)
-            packed_op = ("math.packed_block_scaled_matmul"
-                         if node.op == "math.block_scaled_matmul" else "nn.packed_matmul_glu")
+            packed_op = (
+                "math.packed_block_scaled_matmul"
+                if node.op == "math.block_scaled_matmul"
+                else "nn.packed_matmul_glu"
+            )
             packed_attrs = {
                 **dict(node.attrs),
                 "k_pack": k_pack,
                 "k_vector": k_vector,
                 "packed_layout": "n_major_k_packed",
             }
-            return RewriteResult(
-                replace(
-                    node,
-                    op=packed_op,
-                    inputs=inputs,
-                    attrs=packed_attrs,
-                    metadata={
-                        **dict(node.metadata),
-                        "packed_from": node.op,
-                        "packing_candidate": candidate.id,
-                    },
-                ), tuple(helpers))
+            return RewriteResult(replace(
+                node,
+                op=packed_op,
+                inputs=inputs,
+                attrs=packed_attrs,
+                metadata={
+                    **dict(node.metadata),
+                    "packed_from": node.op,
+                    "packing_candidate": candidate.id,
+                },
+            ), tuple(helpers))
 
-        packed = DataflowRewriter((RewriteRule("ntt-auto-packing", matches, rewrite), )).rewrite(module)
+        packed = DataflowRewriter(
+            (RewriteRule("ntt-auto-packing", matches, rewrite),)
+        ).rewrite(module)
         return absorb_bank_parameter_transforms(lift_parameter_constant_transforms(packed))
 
     def _pack_vectorized_matmul(
@@ -371,7 +397,7 @@ class NttPackingPolicy:
         module: IRModule,
         candidate: Candidate,
     ) -> RewriteResult:
-        """Apply reference ``PackMatMulRhsKMajor`` without scalarizing the graph."""
+        """Apply nncase ``PackMatMulRhsKMajor`` without scalarizing the graph."""
 
         n_vector = int(candidate.parameters["n_vector"])
         k_pack = int(candidate.parameters["k_pack"])
@@ -403,32 +429,36 @@ class NttPackingPolicy:
 
         transpose_b = bool(node.attrs.get("transpose_b", False))
         n_axis = 0 if transpose_b else 1
-        scalar_rhs = append("unpack_n", "tensors.unpack", (rhs, ), {"axes": (n_axis, )})
+        scalar_rhs = append(
+            "unpack_n", "tensors.unpack", (rhs,), {"axes": (n_axis,)}
+        )
         n_major = scalar_rhs
         if not transpose_b:
-            n_major = append("transpose_kn", "tensors.permute", (scalar_rhs, ), {"axes": (1, 0)})
+            n_major = append(
+                "transpose_kn", "tensors.permute", (scalar_rhs,), {"axes": (1, 0)}
+            )
         packed_k_vector = append(
             "k_vector",
             "tensors.pack",
-            (n_major, ),
-            {"lanes": (k_vector, ), "axes": (1, )},
+            (n_major,),
+            {"lanes": (k_vector,), "axes": (1,)},
         )
         packed_k = append(
             "k_pack",
             "tensors.pack",
-            (packed_k_vector, ),
-            {"lanes": (k_pack, ), "axes": (1, )},
+            (packed_k_vector,),
+            {"lanes": (k_pack,), "axes": (1,)},
         )
         packed_n = append(
             "n_vector",
             "tensors.pack",
-            (packed_k, ),
-            {"lanes": (n_vector, ), "axes": (0, )},
+            (packed_k,),
+            {"lanes": (n_vector,), "axes": (0,)},
         )
         packed_rhs = append(
             "physical",
             "tensors.permute",
-            (packed_n, ),
+            (packed_n,),
             {"axes": (1, 0)},
             metadata={
                 "packed_from": _parameter_transform_source(rhs, module),
@@ -451,7 +481,11 @@ class NttPackingPolicy:
         definition = get_definition("ntt.packed_matmul")
         output_type = node.type
         assert isinstance(output_type, TensorType)
-        output_dtype = (output_type.dtype.elem_type if isinstance(output_type.dtype, VectorType) else output_type.dtype)
+        output_dtype = (
+            output_type.dtype.elem_type
+            if isinstance(output_type.dtype, VectorType)
+            else output_type.dtype
+        )
         prepared = definition.prepare(
             (module.node_map[node.inputs[0]], packed_rhs, none, none),
             {
@@ -462,7 +496,9 @@ class NttPackingPolicy:
             },
         )
         if prepared.result_type != node.type:
-            raise AssertionError("K-major PackedMatMul must preserve VectorizedMatMul's result type.")
+            raise AssertionError(
+                "K-major PackedMatMul must preserve VectorizedMatMul's result type."
+            )
         replacement = replace(
             node,
             op="ntt.packed_matmul",
@@ -519,40 +555,39 @@ class NttPackingPolicy:
             transposed = append(
                 f"{prefix}.transpose_nk",
                 "tensors.permute",
-                (weight, ),
+                (weight,),
                 {"axes": (1, 0)},
             )
             packed_k_vector = append(
                 f"{prefix}.k_vector",
                 "tensors.pack",
-                (transposed, ),
-                {"lanes": (k_vector, ), "axes": (1, )},
+                (transposed,),
+                {"lanes": (k_vector,), "axes": (1,)},
             )
             packed_k = append(
                 f"{prefix}.k_pack",
                 "tensors.pack",
-                (packed_k_vector, ),
-                {"lanes": (k_pack, ), "axes": (1, )},
+                (packed_k_vector,),
+                {"lanes": (k_pack,), "axes": (1,)},
             )
             packed_n = append(
                 f"{prefix}.n_vector",
                 "tensors.pack",
-                (packed_k, ),
-                {"lanes": (n_vector, ), "axes": (0, )},
+                (packed_k,),
+                {"lanes": (n_vector,), "axes": (0,)},
             )
-            packed_weights.append(
-                append(
-                    f"{prefix}.k_major",
-                    "tensors.permute",
-                    (packed_n, ),
-                    {"axes": (1, 0)},
-                    metadata={
-                        "packed_from": packed_from,
-                        "packed_for": node.id,
-                        "packed_layout": "k_major",
-                        "vector_lanes": (n_vector, k_pack, k_vector),
-                    },
-                ))
+            packed_weights.append(append(
+                f"{prefix}.k_major",
+                "tensors.permute",
+                (packed_n,),
+                {"axes": (1, 0)},
+                metadata={
+                    "packed_from": packed_from,
+                    "packed_for": node.id,
+                    "packed_layout": "k_major",
+                    "vector_lanes": (n_vector, k_pack, k_vector),
+                },
+            ))
 
         packed_biases: list[Node] = []
         for role, input_id in zip(("q", "k", "v"), node.inputs[4:7]):
@@ -561,8 +596,8 @@ class NttPackingPolicy:
                 bias = append(
                     f"{node.id}.{role}_bias_pack.n_vector",
                     "tensors.pack",
-                    (bias, ),
-                    {"lanes": (n_vector, ), "axes": (0, )},
+                    (bias,),
+                    {"lanes": (n_vector,), "axes": (0,)},
                     metadata={
                         "packed_from": bias.id,
                         "packed_for": node.id,
@@ -610,7 +645,7 @@ class NttPackingPolicy:
         combine = append(
             f"{node.id}.packed_combine",
             "ntt.packed_qkv_parallel_linear_combine",
-            (packed_projection, ),
+            (packed_projection,),
             {"output_type": packed_projection.type},
             metadata={
                 "packed_from": node.op,
@@ -623,14 +658,14 @@ class NttPackingPolicy:
             item = append(
                 f"{node.id}.{role}.packed",
                 "builtin.get_item",
-                (combine, ),
+                (combine,),
                 {"index": index},
             )
             unpacked.append(append(
                 f"{node.id}.{role}",
                 "tensors.unpack",
-                (item, ),
-                {"axes": (1, )},
+                (item,),
+                {"axes": (1,)},
             ))
 
         tuple_definition = get_definition("builtin.tuple")
@@ -670,7 +705,7 @@ class NttPackingPolicy:
 
         def append(suffix: str, op: str, input_node: Node, attrs, *, metadata=None) -> Node:
             definition = get_definition(op)
-            prepared = definition.prepare((input_node, ), attrs)
+            prepared = definition.prepare((input_node,), attrs)
             helper = Node(
                 id=f"{node.id}.{weight.id}_pack.{suffix}",
                 op=op,
@@ -706,17 +741,17 @@ class NttPackingPolicy:
             "physical",
             "tensors.reshape",
             lane_major,
-            {"shape": (k // k_lane, n // n_lane, payload_groups, payload_width)},
+            {"shape": (
+                k // k_lane, n // n_lane, payload_groups, payload_width
+            )},
             metadata=metadata,
         )
         definition = get_definition("math.packed_dense_matmul")
         prepared = definition.prepare(
             (module.node_map[node.inputs[0]], physical),
-            {
-                "packed_layout": packed_layout, "logical_n": None,
-                **({"output_data_type": node.attrs["output_data_type"]} if "output_data_type" in node.attrs else {}),
-                **({"reduction_order": node.attrs["reduction_order"]} if "reduction_order" in node.attrs else {})
-            },
+            {"packed_layout": packed_layout, "logical_n": None,
+             **({"output_data_type": node.attrs["output_data_type"]} if "output_data_type" in node.attrs else {}),
+             **({"reduction_order": node.attrs["reduction_order"]} if "reduction_order" in node.attrs else {})},
         )
         replacement = replace(
             node,
@@ -780,14 +815,14 @@ class NttPackingPolicy:
                 input_id,
                 "split_lanes",
                 "tensors.reshape",
-                (weight, ),
+                (weight,),
                 {"shape": (n // n_lane, n_lane, k // k_lane, k_lane)},
             )
             lane_major = append(
                 input_id,
                 "lane_major",
                 "tensors.permute",
-                (split, ),
+                (split,),
                 {"axes": (2, 0, 1, 3)},
             )
             metadata = {
@@ -797,27 +832,28 @@ class NttPackingPolicy:
             }
             if "rdata_group" in weight.metadata:
                 metadata["rdata_group"] = weight.metadata["rdata_group"]
-            packed_weights.append(
-                append(
-                    input_id,
-                    "physical",
-                    "tensors.reshape",
-                    (lane_major, ),
-                    {"shape": (k // k_lane, n // n_lane, payload_groups, payload_width)},
-                    metadata=metadata,
-                ))
+            packed_weights.append(append(
+                input_id,
+                "physical",
+                "tensors.reshape",
+                (lane_major,),
+                {"shape": (
+                    k // k_lane, n // n_lane, payload_groups, payload_width
+                )},
+                metadata=metadata,
+            ))
 
-        inputs = (module.node_map[node.inputs[0]], packed_weights[0], packed_weights[1])
+        inputs = (
+            module.node_map[node.inputs[0]], packed_weights[0], packed_weights[1])
         definition = get_definition("nn.packed_dense_matmul_glu")
-        prepared = definition.prepare(
-            inputs, {
-                "activation": node.attrs["activation"],
-                "round_activation": node.attrs.get("round_activation", True),
-                "gate_clamp_max": node.attrs.get("gate_clamp_max"),
-                "up_clamp": node.attrs.get("up_clamp"),
-                "packed_layout": packed_layout,
-                "reduction_order": node.attrs.get("reduction_order", "relaxed"),
-            })
+        prepared = definition.prepare(inputs, {
+            "activation": node.attrs["activation"],
+            "round_activation": node.attrs.get("round_activation", True),
+            "gate_clamp_max": node.attrs.get("gate_clamp_max"),
+            "up_clamp": node.attrs.get("up_clamp"),
+            "packed_layout": packed_layout,
+            "reduction_order": node.attrs.get("reduction_order", "relaxed"),
+        })
         replacement = replace(
             node,
             op="nn.packed_dense_matmul_glu",
@@ -834,17 +870,30 @@ class NttPackingPolicy:
         return RewriteResult(replacement, tuple(helpers))
 
     def _can_pack_dense_matmul(self, node: Node, module: IRModule) -> bool:
-        if (bool(node.attrs.get("transpose_a", False)) or not bool(node.attrs.get("transpose_b", False))):
+        if (
+            bool(node.attrs.get("transpose_a", False))
+            or not bool(node.attrs.get("transpose_b", False))
+        ):
             return False
         value = module.node_map[node.inputs[1]]
         value_type = value.type
         dense = self._dense_k_major_parameters(DType.BFLOAT16)
-        return dense is not None and (value.op in {"builtin.weight", "builtin.var"} and
-                                      (value.op == "builtin.weight" or "function_parameter" in value.metadata)
-                                      and isinstance(value_type, TensorType) and value_type.rank == 2
-                                      and value_type.dtype == DType.BFLOAT16
-                                      and try_div_exactly(value_type.shape[0], int(dense["n_lane"])) is not None
-                                      and try_div_exactly(value_type.shape[1], int(dense["k_lane"])) is not None)
+        return dense is not None and (
+            value.op in {"builtin.weight", "builtin.var"}
+            and (
+                value.op == "builtin.weight"
+                or "function_parameter" in value.metadata
+            )
+            and isinstance(value_type, TensorType)
+            and value_type.rank == 2
+            and value_type.dtype == DType.BFLOAT16
+            and try_div_exactly(
+                value_type.shape[0], int(dense["n_lane"])
+            ) is not None
+            and try_div_exactly(
+                value_type.shape[1], int(dense["k_lane"])
+            ) is not None
+        )
 
     def _vectorized_k_major_parameters(
         self,
@@ -853,10 +902,16 @@ class NttPackingPolicy:
     ) -> dict[str, object] | None:
         lhs = module.node_map[node.inputs[0]].type
         rhs = module.node_map[node.inputs[1]].type
-        if (not isinstance(lhs, TensorType) or not isinstance(rhs, TensorType) or isinstance(lhs.dtype, VectorType)
-                or not isinstance(rhs.dtype, VectorType) or len(rhs.dtype.lanes) != 1
-                or not isinstance(rhs.dtype.elem_type, DType) or rhs.dtype.elem_type == DType.FLOAT8_E4M3FN
-                or self.vector_bytes % rhs.dtype.elem_type.itemsize):
+        if (
+            not isinstance(lhs, TensorType)
+            or not isinstance(rhs, TensorType)
+            or isinstance(lhs.dtype, VectorType)
+            or not isinstance(rhs.dtype, VectorType)
+            or len(rhs.dtype.lanes) != 1
+            or not isinstance(rhs.dtype.elem_type, DType)
+            or rhs.dtype.elem_type == DType.FLOAT8_E4M3FN
+            or self.vector_bytes % rhs.dtype.elem_type.itemsize
+        ):
             return None
         n_vector = rhs.dtype.lanes[0]
         k_vector = self.vector_bytes // rhs.dtype.elem_type.itemsize
@@ -874,30 +929,46 @@ class NttPackingPolicy:
         }
 
     def _can_pack_vectorized_matmul(self, node: Node, module: IRModule) -> bool:
-        if (node.op != "math.vectorized_matmul" or bool(node.attrs.get("transpose_a", False))
-                or tuple(node.attrs.get("lhs_axes", ())) or not node.attrs.get("output_axes")
-                or any(axis != 1 for axis in node.attrs["output_axes"])):
+        if (
+            node.op != "math.vectorized_matmul"
+            or bool(node.attrs.get("transpose_a", False))
+            or tuple(node.attrs.get("lhs_axes", ()))
+            or not node.attrs.get("output_axes")
+            or any(axis != 1 for axis in node.attrs["output_axes"])
+        ):
             return False
         n_axis = 0 if bool(node.attrs.get("transpose_b", False)) else 1
-        if tuple(node.attrs.get("rhs_axes", ())) != (n_axis, ):
+        if tuple(node.attrs.get("rhs_axes", ())) != (n_axis,):
             return False
         parameters = self._vectorized_k_major_parameters(node, module)
-        return (parameters is not None and _is_offline_parameter_transform(node.inputs[1], module)
-                and prod(node.attrs.get("output_lanes", ())) == int(parameters["n_vector"]))
+        return (
+            parameters is not None
+            and _is_offline_parameter_transform(node.inputs[1], module)
+            and prod(node.attrs.get("output_lanes", ())) == int(parameters["n_vector"])
+        )
 
     def _qkv_k_major_parameters(
         self,
         node: Node,
         module: IRModule,
     ) -> dict[str, object] | None:
+        if any(node.attrs.get(f"{role}_weight_encoding") is not None for role in ("q", "k", "v")):
+            return None
         input_type = module.node_map[node.inputs[0]].type
         if not isinstance(input_type, TensorType) or not isinstance(input_type.dtype, DType):
             return None
         output_dtype = DType(node.attrs["output_data_type"])
         weights = tuple(module.node_map[input_id].type for input_id in node.inputs[1:4])
-        if (self.vector_bytes % input_type.dtype.itemsize or self.vector_bytes % output_dtype.itemsize
-                or any(not isinstance(weight, TensorType) or not isinstance(weight.dtype, DType) or self.vector_bytes %
-                       weight.dtype.itemsize for weight in weights)):
+        if (
+            self.vector_bytes % input_type.dtype.itemsize
+            or self.vector_bytes % output_dtype.itemsize
+            or any(
+                not isinstance(weight, TensorType)
+                or not isinstance(weight.dtype, DType)
+                or self.vector_bytes % weight.dtype.itemsize
+                for weight in weights
+            )
+        ):
             return None
         weight_dtype = weights[0].dtype
         assert isinstance(weight_dtype, DType)
@@ -921,14 +992,19 @@ class NttPackingPolicy:
         k_width = int(parameters["k_pack"]) * int(parameters["k_vector"])
         for input_id in node.inputs[1:4]:
             weight = module.node_map[input_id]
-            if (not isinstance(weight.type, TensorType) or weight.type.rank != 2
-                    or try_div_exactly(weight.type.shape[0], k_width) is None
-                    or try_div_exactly(weight.type.shape[1], n_vector) is None):
+            if (
+                not isinstance(weight.type, TensorType)
+                or weight.type.rank != 2
+                or try_div_exactly(weight.type.shape[0], k_width) is None
+                or try_div_exactly(weight.type.shape[1], n_vector) is None
+            ):
                 return False
         for input_id in node.inputs[4:7]:
             bias = module.node_map[input_id]
-            if isinstance(bias.type, TensorType) and (bias.type.rank != 1
-                                                      or try_div_exactly(bias.type.shape[0], n_vector) is None):
+            if isinstance(bias.type, TensorType) and (
+                bias.type.rank != 1
+                or try_div_exactly(bias.type.shape[0], n_vector) is None
+            ):
                 return False
         return True
 
@@ -939,12 +1015,22 @@ class NttPackingPolicy:
         for input_id in node.inputs[1:3]:
             value = module.node_map[input_id]
             value_type = value.type
-            if (value.op not in {"builtin.weight", "builtin.var"}
-                    or (value.op == "builtin.var" and "function_parameter" not in value.metadata)
-                    or not isinstance(value_type, TensorType) or value_type.rank != 2
-                    or value_type.dtype != DType.BFLOAT16
-                    or try_div_exactly(value_type.shape[0], int(dense["n_lane"])) is None
-                    or try_div_exactly(value_type.shape[1], int(dense["k_lane"])) is None):
+            if (
+                value.op not in {"builtin.weight", "builtin.var"}
+                or (
+                    value.op == "builtin.var"
+                    and "function_parameter" not in value.metadata
+                )
+                or not isinstance(value_type, TensorType)
+                or value_type.rank != 2
+                or value_type.dtype != DType.BFLOAT16
+                or try_div_exactly(
+                    value_type.shape[0], int(dense["n_lane"])
+                ) is None
+                or try_div_exactly(
+                    value_type.shape[1], int(dense["k_lane"])
+                ) is None
+            ):
                 return False
         return True
 
@@ -1007,13 +1093,17 @@ def _parameter_transform_source(weight: Node, module: IRModule) -> str:
 
 def _is_offline_parameter_transform(node_id: str, module: IRModule) -> bool:
     origin = _parameter_transform_origin(module.node_map[node_id], module)
-    return origin.op == "builtin.weight" or (origin.op == "builtin.var" and "function_parameter" in origin.metadata)
+    return origin.op == "builtin.weight" or (
+        origin.op == "builtin.var" and "function_parameter" in origin.metadata
+    )
 
 
 def _parameter_transform_origin(weight: Node, module: IRModule) -> Node:
     current = weight
     seen: set[str] = set()
-    while (current.id not in seen and current.op in {
+    while (
+        current.id not in seen
+        and current.op in {
             "tensors.pack",
             "tensors.pad",
             "tensors.permute",
@@ -1021,7 +1111,10 @@ def _parameter_transform_origin(weight: Node, module: IRModule) -> Node:
             "tensors.slice",
             "tensors.slice_to_shape",
             "tensors.unpack",
-    } and len(current.inputs) == 1 and current.effect.is_pure):
+        }
+        and len(current.inputs) == 1
+        and current.effect.is_pure
+    ):
         seen.add(current.id)
         current = module.node_map[current.inputs[0]]
     return current

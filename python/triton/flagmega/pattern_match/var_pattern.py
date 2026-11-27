@@ -10,7 +10,6 @@ from triton.flagmega.pattern_match.pattern import Pattern
 
 
 class VarPattern(Pattern):
-
     def __init__(self, name: str | None = None, *, type_pattern: TypePattern | None = None) -> None:
         super().__init__(name, type_pattern=type_pattern)
 

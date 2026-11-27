@@ -16,7 +16,8 @@ from python.test.flagmega.codegen.triton.kernels.mhc.test_mhc_runtime import _ar
 from python.test.flagmega.ir.ops.nn.test_mhc_ordered_projection import module, scalar_reference
 
 
-@pytest.mark.parametrize("hc,hidden,splits,warps", [(1, 128, 1, 4), (2, 768, 2, 4), (3, 512, 2, 4), (4, 4096, 8, 8)])
+@pytest.mark.parametrize("hc,hidden,splits,warps", [(1, 128, 1, 4), (2, 768, 2, 4),
+                                                 (3, 512, 2, 4), (4, 4096, 8, 8)])
 def test_device_projection_matches_independent_scalar_fmaf(tmp_path, hc, hidden, splits, warps):
     _skip_without_sm90(torch)
     import triton.experimental.tle.language as tle
@@ -52,27 +53,25 @@ def kernel(X, W, Y, S, HC: tl.constexpr, H: tl.constexpr, SPLITS: tl.constexpr,
     actual_square = torch.empty_like(expected_square, device="cuda")
     n_warps = min(warps // 4, 2)
     dot = tle.gpu.BlockEncoding([1, 1, 1], [1, 1, 32], [n_warps, warps // (4 * n_warps), 4], [2, 1, 0])
-    compiled = implementation.kernel[(1, )](x, weight, actual_mix, actual_square, hc, hidden, splits, dot,
-                                            tle.gpu.SlicedEncoding(0, dot),
-                                            tle.gpu.BlockEncoding([1], [32], [warps], [0]), num_warps=warps)
+    compiled = implementation.kernel[(1,)](
+        x, weight, actual_mix, actual_square, hc, hidden, splits,
+        dot, tle.gpu.SlicedEncoding(0, dot), tle.gpu.BlockEncoding([1], [32], [warps], [0]), num_warps=warps)
     torch.testing.assert_close(actual_mix.cpu(), expected_mix, atol=0, rtol=0)
     torch.testing.assert_close(actual_square.cpu(), expected_square, atol=0, rtol=0)
     assert not torch.equal(expected_mix, streams.reshape(1, -1) @ weights.T)
     assert compiled.n_spills == 0
 
 
-@pytest.mark.parametrize("lanes", [(), (8, ), (2, 4)])
+@pytest.mark.parametrize("lanes", [(), (8,), (2, 4)])
 def test_ordered_contract_reaches_normal_kernel_and_packed_results(tmp_path, lanes):
     _skip_without_sm90(torch)
     graph = module(tokens=2, output_lanes=lanes, collapse_reduction="sequential_fma")
     # Resume through emitted Python, as a standalone compilation does.
     graph = fm.load_module(fm.emit_module(graph, tmp_path / "input.py"))
     generator = torch.Generator().manual_seed(194)
-    host = {
-        "streams": torch.randn((2, 3, 512), generator=generator), "projection": torch.randn(
-            (15, 1536), generator=generator) * .02, "base": torch.randn((15, ), generator=generator), "scale":
-        torch.ones(3)
-    }
+    host = {"streams": torch.randn((2, 3, 512), generator=generator),
+            "projection": torch.randn((15, 1536), generator=generator) * .02,
+            "base": torch.randn((15,), generator=generator), "scale": torch.ones(3)}
     expected = TorchEvaluator(DictWeightResolver({})).run(graph, host)
     artifact = _artifact(tmp_path, "artifact", graph)
     source = (artifact / "generated_kernels.py").read_text()
@@ -92,12 +91,9 @@ def test_ordered_contract_reaches_normal_kernel_and_packed_results(tmp_path, lan
 
 
 def test_ordered_projection_attributes_survive_packing_and_selection():
-    compiled = Compiler().compile(module(output_lanes=(8, ))).module
-    mhc = [
-        definition.dispatch
-        for definition in compiled.kernel_definitions
-        if definition.dispatch.semantic_op == "nn.mhc_pre"
-    ]
+    compiled = Compiler().compile(module(output_lanes=(8,))).module
+    mhc = [definition.dispatch for definition in compiled.kernel_definitions
+           if definition.dispatch.semantic_op == "nn.mhc_pre"]
     assert len(mhc) == 1
     assert mhc[0].microkernel.variant == "stream_fma"
     assert mhc[0].semantic_attrs["projection_reduction"] == "stream_fma_128"

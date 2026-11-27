@@ -17,7 +17,7 @@ def _binding(call: str, family: str, variant: str) -> dict[str, object]:
                 "call": call,
                 "family": family,
                 "variant": variant,
-            }, ),
+            },),
         },
     }
 
@@ -43,7 +43,7 @@ def test_package_closure_rejects_a_different_selected_implementation():
             "call": "call",
             "family": "elementwise",
             "variant": "add",
-        }, ),
+        },),
     }
     bindings = {"main": _binding("call", "elementwise", "mul")}
 
@@ -65,7 +65,7 @@ def test_package_closure_rejects_duplicate_call_ids():
 
 
 def _source_event(execution_kind: str, scope: str | None):
-    dependencies = () if scope is None else ({"scope": scope}, )
+    dependencies = () if scope is None else ({"scope": scope},)
     return _kernel_source_event(
         {
             "call": "call",
@@ -78,7 +78,7 @@ def _source_event(execution_kind: str, scope: str | None):
         {},
         {},
         [],
-        ("call", ),
+        ("call",),
         memory_dependencies=dependencies,
     )
 

@@ -1,6 +1,6 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Recursively realize tuple Boxing, using GenerateBoxingValue."""
+"""Recursively realize tuple Boxing, matching nncase GenerateBoxingValue."""
 
 from dataclasses import replace
 
@@ -38,33 +38,26 @@ def lower_tuple_boxing(module: IRModule) -> IRModule:
     def field(source: Node, index: int, base: str) -> Node:
         if source.op == "builtin.tuple":
             return node_map[source.inputs[index]]
-        return append(
-            Node(
-                fresh(base + ".input"),
-                "builtin.get_item",
-                (source.id, ),
-                source.type.fields[index],
-                attrs={"index": index},
-            ))
+        return append(Node(
+            fresh(base + ".input"), "builtin.get_item", (source.id,),
+            source.type.fields[index], attrs={"index": index},
+        ))
 
     def realize(source: Node, target, base: str, origin: Node) -> Node:
         if source.type == target:
             return source
         if isinstance(target, TupleType):
             outputs = tuple(
-                realize(field(source, index, f"{base}.field_{index}"), typ, f"{base}.field_{index}", origin)
-                for index, typ in enumerate(target.fields))
+                realize(field(source, index, f"{base}.field_{index}"),
+                        typ, f"{base}.field_{index}", origin)
+                for index, typ in enumerate(target.fields)
+            )
             return append(Node(fresh(base), "builtin.tuple", tuple(node.id for node in outputs), target))
-        return append(
-            Node(
-                fresh(base),
-                origin.op,
-                (source.id, ),
-                target,
-                origin.effect,
-                attrs={"new_type": target},
-                metadata={**dict(origin.metadata), "tuple_boxing_origin": origin.id},
-            ))
+        return append(Node(
+            fresh(base), origin.op, (source.id,), target, origin.effect,
+            attrs={"new_type": target},
+            metadata={**dict(origin.metadata), "tuple_boxing_origin": origin.id},
+        ))
 
     for node in module.nodes:
         if node.op not in {"distributed.boxing", "distributed.force_boxing"} or not isinstance(node.type, TupleType):
@@ -74,22 +67,20 @@ def lower_tuple_boxing(module: IRModule) -> IRModule:
         # Verified Boxing types already prove recursively matching structure
         # and logical tensor types. Retain the original result ID/return ABI.
         outputs = tuple(
-            realize(field(source, index, f"{node.id}.field_{index}"), typ, f"{node.id}.field_{index}", node)
-            for index, typ in enumerate(node.type.fields))
+            realize(field(source, index, f"{node.id}.field_{index}"),
+                    typ, f"{node.id}.field_{index}", node)
+            for index, typ in enumerate(node.type.fields)
+        )
         append(replace(node, op="builtin.tuple", inputs=tuple(value.id for value in outputs), attrs={}))
         rewritten.add(node.id)
     if not rewritten:
         return module
     # Historical distribution decisions remain in the editable IR. A stale
     # semantic TIR proposal for a replaced tuple cannot be reused for a leaf.
-    removed_points = {
-        point.id
-        for point in module.selection_points
-        if point.owner in rewritten and point.id.startswith("tir.")
-    }
+    removed_points = {point.id for point in module.selection_points
+                      if point.owner in rewritten and point.id.startswith("tir.")}
     return replace(
-        module,
-        nodes=tuple(nodes),
+        module, nodes=tuple(nodes),
         selection_points=tuple(point for point in module.selection_points if point.id not in removed_points),
         selections=tuple(record for record in module.selections if record.point_id not in removed_points),
     )

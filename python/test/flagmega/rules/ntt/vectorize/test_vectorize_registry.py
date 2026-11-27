@@ -14,8 +14,8 @@ def test_registry_preserves_target_registration_order_and_exposes_immutable_view
     propagation = propagation_rules()[0]
     registry.add(binary)
     registry.add_propagation(propagation)
-    assert registry.rules == (binary, )
-    assert registry.propagation_rules == (propagation, )
+    assert registry.rules == (binary,)
+    assert registry.propagation_rules == (propagation,)
 
 
 def test_registry_rejects_duplicate_seed_and_propagation_names():

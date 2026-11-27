@@ -9,12 +9,14 @@ from triton.flagmega.errors import CodegenError
 
 
 def cooperative_glu_context(raw, context, operands, result):
-    if (cooperative_glu_geometry(
-        {name: _tensor_type(value["abi"])
-         for name, value in operands.items()},
+    if (
+        cooperative_glu_geometry(
+            {name: _tensor_type(value["abi"]) for name, value in operands.items()},
             _tensor_type(result["abi"]),
             raw["semantic_attrs"],
-    ) is None):
+        )
+        is None
+    ):
         raise CodegenError("Cooperative FP8 GLU requires matching complete chip owner domains and SiLU.")
     projections = tuple(
         cooperative_block_context(
@@ -28,7 +30,9 @@ def cooperative_glu_context(raw, context, operands, result):
             result,
             partial_name=f"{name}_partials",
             owner="Cooperative FP8 GLU",
-        ) for name in ("gate", "up"))
+        )
+        for name in ("gate", "up")
+    )
     gate, up = projections
     return {
         **gate,

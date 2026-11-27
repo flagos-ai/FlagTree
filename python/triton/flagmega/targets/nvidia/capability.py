@@ -65,7 +65,7 @@ class Sm90Capability:
         # ``fp8`` describes scalar conversion/storage support used by portable
         # Triton algorithms; ``fp8_mma`` is the stronger matrix-instruction
         # capability. Architecture identity is serialized separately.
-        values = {"fp8", "ptx"}
+        values = {"fp8"}
         for enabled, name in (
             (self.supports_fp8_mma, "fp8_mma"),
             (self.supports_async_copy, "async_copy"),
@@ -149,23 +149,25 @@ class Sm89Capability:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "compute_capability", tuple(self.compute_capability))
-        if (len(self.compute_capability) != 2
-                or any(not isinstance(value, int) or isinstance(value, bool) for value in self.compute_capability)
-                or self.compute_capability[0] != 8):
+        if (
+            len(self.compute_capability) != 2
+            or any(not isinstance(value, int) or isinstance(value, bool) for value in self.compute_capability)
+            or self.compute_capability[0] != 8
+        ):
             raise IRSchemaError("Sm89Capability requires a compute capability in the 8.x family.")
-        for name in ("warp_size", "max_threads_per_block", "max_threads_per_sm", "max_registers_per_sm",
-                     "max_shared_memory_bytes"):
+        for name in ("warp_size", "max_threads_per_block", "max_threads_per_sm",
+                     "max_registers_per_sm", "max_shared_memory_bytes"):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                 raise IRSchemaError(f"Sm89Capability {name} must be positive.")
-        for name in ("supports_fp8_mma", "supports_async_copy", "supports_cooperative_grid", "supports_tma",
-                     "supports_warp_specialize", "supports_grid_sync", "supports_mma_v3"):
+        for name in ("supports_fp8_mma", "supports_async_copy", "supports_cooperative_grid",
+                     "supports_tma", "supports_warp_specialize", "supports_grid_sync", "supports_mma_v3"):
             if not isinstance(getattr(self, name), bool):
                 raise IRSchemaError(f"Sm89Capability {name} must be bool.")
 
     @property
     def features(self) -> frozenset[str]:
-        values = {"fp8", "ptx"}
+        values = {"fp8"}
         for enabled, name in (
             (self.supports_fp8_mma, "fp8_mma"),
             (self.supports_async_copy, "async_copy"),

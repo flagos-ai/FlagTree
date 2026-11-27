@@ -30,11 +30,9 @@ def formal_interface(compile_pipeline_module):
 def test_resource_instantiation_preserves_formal_ir_and_rebases_every_view(formal_interface):
     schedule, formal = formal_interface
     original = deepcopy(schedule)
-    actual = replace(
-        formal, name="caller_scratch", mem_span=replace(
-            formal.mem_span,
-            buffer=replace(formal.mem_span.buffer, id="caller_shared", start=4096),
-        ))
+    actual = replace(formal, name="caller_scratch", mem_span=replace(
+        formal.mem_span, buffer=replace(formal.mem_span.buffer, id="caller_shared", start=4096),
+    ))
     first, first_names = instantiate_resources(schedule, {formal.name: actual}, "first")
     second, second_names = instantiate_resources(schedule, {formal.name: actual}, "second")
     assert schedule == original
@@ -58,8 +56,8 @@ def test_missing_shared_binding_is_diagnosed(formal_interface):
 
 def test_binding_preserves_physical_alignment_separately_from_view_alignment(formal_interface):
     schedule, formal = formal_interface
-    actual = replace(
-        formal, mem_span=replace(formal.mem_span, buffer=replace(formal.mem_span.buffer, alignment=4096, start=4096)))
+    actual = replace(formal, mem_span=replace(formal.mem_span,
+        buffer=replace(formal.mem_span.buffer, alignment=4096, start=4096)))
     resources, _ = instantiate_resources(schedule, {formal.name: actual}, "aligned")
     workspace, = resources["stages"][0]["workspaces"]
     assert workspace["alignment_bytes"] == 1024
@@ -76,10 +74,8 @@ def test_rebinding_cannot_change_shared_payload_abi(formal_interface, change):
     elif change == "strides":
         actual = replace(formal, strides=(*formal.strides[:-1], 0))
     else:
-        actual = replace(
-            formal, mem_span=replace(
-                formal.mem_span,
-                buffer=replace(formal.mem_span.buffer, memory_space="workspace"),
-            ))
+        actual = replace(formal, mem_span=replace(
+            formal.mem_span, buffer=replace(formal.mem_span.buffer, memory_space="workspace"),
+        ))
     with pytest.raises(CodegenError, match="formal.*ABI|formal shape"):
         instantiate_resources(schedule, {formal.name: actual}, "broken")

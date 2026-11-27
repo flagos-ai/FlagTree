@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Operand memory-effect contracts shared by op definitions and TIR.
 
-The representation follows the reference separation of access mode, visibility
+The representation follows nncase's separation of access mode, visibility
 scope, reduction lifetime, owner domain and logical subresource.  These are IR
 facts rather than codegen hints: they survive Python dump/edit/resume and are
 copied into a materialized :class:`KernelDispatch`.
@@ -52,7 +52,11 @@ class MemoryAccessDomain:
         if self.kind is MemoryAccessDomainKind.ALL_BLOCKS:
             if self.block_index is not None:
                 raise IRSchemaError("All-block memory domain cannot name a block.")
-        elif (isinstance(self.block_index, bool) or not isinstance(self.block_index, int) or self.block_index < 0):
+        elif (
+            isinstance(self.block_index, bool)
+            or not isinstance(self.block_index, int)
+            or self.block_index < 0
+        ):
             raise IRSchemaError("Fixed-block memory domain requires a non-negative index.")
 
     @classmethod
@@ -89,8 +93,11 @@ class MemoryAccessPartition:
         if self.kind is MemoryAccessPartitionKind.WHOLE_RESOURCE:
             if self.argument_index is not None:
                 raise IRSchemaError("Whole-resource partition cannot name an argument.")
-        elif (isinstance(self.argument_index, bool) or not isinstance(self.argument_index, int)
-              or self.argument_index < 0):
+        elif (
+            isinstance(self.argument_index, bool)
+            or not isinstance(self.argument_index, int)
+            or self.argument_index < 0
+        ):
             raise IRSchemaError("Argument partition requires a non-negative operand index.")
 
     @classmethod
@@ -187,7 +194,8 @@ class MemoryEffect:
         """Return only accesses which reach the physical buffer.
 
         Reduction feedback is private to the backend reduction region; only
-        its final write is externally observable, using ``MemoryEffectUtility.GetPhysicalBufferAccessMode``.
+        its final write is externally observable, matching nncase's
+        ``MemoryEffectUtility.GetPhysicalBufferAccessMode``.
         """
 
         if self.field_effects:
@@ -203,38 +211,26 @@ class MemoryEffect:
         if self.field_effects:
             return self.for_fields(**{name: value.in_fixed_block(block_index) for name, value in self.field_effects})
         return MemoryEffect(
-            self.mode,
-            self.scope,
-            self.kind,
+            self.mode, self.scope, self.kind,
             MemoryAccessDomain.fixed_block(block_index),
-            self.access_partition,
-            self.owner_access,
+            self.access_partition, self.owner_access,
         )
 
     def partitioned_by_argument(self, argument_index: int) -> MemoryEffect:
         if self.field_effects:
-            return self.for_fields(
-                **{name: value.partitioned_by_argument(argument_index)
-                   for name, value in self.field_effects})
+            return self.for_fields(**{name: value.partitioned_by_argument(argument_index)
+                                     for name, value in self.field_effects})
         return MemoryEffect(
-            self.mode,
-            self.scope,
-            self.kind,
-            self.access_domain,
-            MemoryAccessPartition.by_argument(argument_index),
-            self.owner_access,
+            self.mode, self.scope, self.kind, self.access_domain,
+            MemoryAccessPartition.by_argument(argument_index), self.owner_access,
         )
 
     def across_partial_owners(self) -> MemoryEffect:
         if self.field_effects:
             return self.for_fields(**{name: value.across_partial_owners() for name, value in self.field_effects})
         return MemoryEffect(
-            self.mode,
-            self.scope,
-            self.kind,
-            self.access_domain,
-            self.access_partition,
-            MemoryOwnerAccess.PARTIAL_GROUP,
+            self.mode, self.scope, self.kind, self.access_domain,
+            self.access_partition, MemoryOwnerAccess.PARTIAL_GROUP,
         )
 
     def to_data(self) -> dict[str, object]:
@@ -280,8 +276,7 @@ def expand_memory_effect(value_type, effect: MemoryEffect) -> tuple[MemoryEffect
         if missing:
             raise IRSchemaError(f"Memory effect names unknown Ref fields: {sorted(missing)}.")
         return tuple(leaf for name, field in value_type.fields
-                     for leaf in expand_memory_effect(field,
-                                                      fields.get(name, MemoryEffect.NONE) if fields else effect))
+                     for leaf in expand_memory_effect(field, fields.get(name, MemoryEffect.NONE) if fields else effect))
     if effect.field_effects:
         raise IRSchemaError("Field memory effects require a Ref type.")
     if isinstance(value_type, TupleType):
@@ -289,7 +284,7 @@ def expand_memory_effect(value_type, effect: MemoryEffect) -> tuple[MemoryEffect
     if isinstance(value_type, NoneType):
         return ()
     if isinstance(value_type, (TensorType, DistributedType)):
-        return (effect, )
+        return (effect,)
     raise IRSchemaError(f"Cannot expand a memory effect for {type(value_type).__name__}.")
 
 
@@ -303,7 +298,9 @@ def _domain(value: MemoryAccessDomain | Mapping[str, object]) -> MemoryAccessDom
     return value if isinstance(value, MemoryAccessDomain) else MemoryAccessDomain.from_data(value)
 
 
-def _partition(value: MemoryAccessPartition | Mapping[str, object], ) -> MemoryAccessPartition:
+def _partition(
+    value: MemoryAccessPartition | Mapping[str, object],
+) -> MemoryAccessPartition:
     return value if isinstance(value, MemoryAccessPartition) else MemoryAccessPartition.from_data(value)
 
 
@@ -313,7 +310,9 @@ MemoryEffect.WRITE = MemoryEffect(MemoryAccessMode.WRITE)
 MemoryEffect.READ_WRITE = MemoryEffect(MemoryAccessMode.READ_WRITE)
 MemoryEffect.CHIP_READ = MemoryEffect(MemoryAccessMode.READ, MemoryAccessScope.CHIP)
 MemoryEffect.CHIP_WRITE = MemoryEffect(MemoryAccessMode.WRITE, MemoryAccessScope.CHIP)
-MemoryEffect.CHIP_READ_WRITE = MemoryEffect(MemoryAccessMode.READ_WRITE, MemoryAccessScope.CHIP)
+MemoryEffect.CHIP_READ_WRITE = MemoryEffect(
+    MemoryAccessMode.READ_WRITE, MemoryAccessScope.CHIP
+)
 MemoryEffect.REDUCTION_WRITE = MemoryEffect(
     MemoryAccessMode.WRITE,
     kind=MemoryEffectKind.REDUCTION_ACCUMULATOR,
@@ -344,29 +343,30 @@ def implementation_memory_effect(
 
     scopes = _implementation_source_scopes(facts, input_names, stage=stage, node_id=node_id)
     if not is_result and scopes and parameter_name not in input_names:
-        raise IRVerificationError("Implementation source_memory_scopes requires the current input name.", stage=stage,
-                                  node_id=node_id)
+        raise IRVerificationError("Implementation source_memory_scopes requires the current input name.",
+                                  stage=stage, node_id=node_id)
 
     if effect.physical_mode != MemoryAccessMode.NONE:
         declared = MemoryAccessScope(
-            facts.get("result_memory_scope", "inferred") if is_result else scopes.
-            get(parameter_name, facts.get("source_memory_scope", "inferred")))
+            facts.get("result_memory_scope", "inferred") if is_result
+            else scopes.get(parameter_name, facts.get("source_memory_scope", "inferred")))
         if declared is not MemoryAccessScope.INFERRED:
             effect = replace(effect, scope=declared)
     scope = facts.get("participant_scope", "all_programs")
     if scope not in {"all_programs", "single_program"}:
         raise IRVerificationError(
             f"Unknown implementation participant_scope {scope!r}.",
-            stage=stage,
-            node_id=node_id,
+            stage=stage, node_id=node_id,
         )
     if scope == "all_programs" or effect.physical_mode == MemoryAccessMode.NONE:
         return effect
-    if (effect.access_domain.kind is MemoryAccessDomainKind.FIXED_BLOCK and effect.access_domain.block_index != 0):
+    if (
+        effect.access_domain.kind is MemoryAccessDomainKind.FIXED_BLOCK
+        and effect.access_domain.block_index != 0
+    ):
         raise IRVerificationError(
             "Single-program implementation conflicts with the op access domain.",
-            stage=stage,
-            node_id=node_id,
+            stage=stage, node_id=node_id,
         )
     return effect.in_fixed_block(0)
 

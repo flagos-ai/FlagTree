@@ -43,24 +43,22 @@ def test_partition_scale_coordinates_and_rounded_local_add(tmp_path, ownership, 
     import torch.distributed as dist
 
     placement, b = fm.Placement((4, 8, 16), "cyx", "cbb"), fm.SBP.broadcast()
-    p = fm.SBP.split_contiguous((0, )) if ownership == "partition" else b
-    n = fm.SBP.split_contiguous((0, )) if ownership == "rows" else b
+    p = fm.SBP.split_contiguous((0,)) if ownership == "partition" else b
+    n = fm.SBP.split_contiguous((0,)) if ownership == "rows" else b
     tokens, hidden, reduction, parts = 2, 4096 if readonly_block else 512, 2048, 4
     scalar = lambda name: fm.vector_type(name, lanes) if lanes else name
     roots = (fm.tensor_type(scalar("bfloat16"), (tokens, reduction // prod(lanes))),
-             fm.tensor_type("float8_e4m3fn", (hidden, reduction)), fm.tensor_type("float32", (hidden // 128, 16)),
+             fm.tensor_type("float8_e4m3fn", (hidden, reduction)),
+             fm.tensor_type("float32", (hidden // 128, 16)),
              fm.tensor_type(scalar("bfloat16"), (parts, tokens, hidden // prod(lanes))))
     kinds = (fm.DistributedType(roots[0], (b, p), placement), fm.DistributedType(roots[1], (n, p), placement),
              fm.DistributedType(roots[2], (b, b), placement), fm.DistributedType(roots[3], (p, b, n), placement))
     if readonly_block:
         axes = (1, 2) if ownership == "partition" else (0, 1, 2)
-        kind = fm.DistributedType(
-            roots[3], (p, b, fm.SBP.split_contiguous(axes, hidden // (128 if ownership == "partition" else 512))),
-            placement)
+        kind = fm.DistributedType(roots[3], (p, b, fm.SBP.split_contiguous(axes, hidden // (128 if ownership == "partition" else 512))), placement)
         kinds = (*kinds[:3], kind)
 
     class Graph(fm.Module):
-
         def forward(self):
             inputs, operands = [], []
             for i, (name, root, kind) in enumerate(zip(("x", "weight", "scales", "routed"), roots, kinds)):
@@ -73,15 +71,14 @@ def test_partition_scale_coordinates_and_rounded_local_add(tmp_path, ownership, 
                 operands.append(value)
             x, w, scales, routed = operands
             projected = fm.F.nn.partitioned_block_scaled_linear(x, w, scales, partitions=parts,
-                                                                activation_quantization="dynamic_fp8_sm90",
-                                                                output_lanes=lanes, name="projection")
+                activation_quantization="dynamic_fp8_sm90", output_lanes=lanes, name="projection")
             material = fm.F.distributed.force_boxing(projected, roots[3], name="material_parts")
             owned = fm.F.distributed.force_boxing(projected, kinds[3]) if readonly_block else projected
             combined = fm.F.math.add(owned, routed, name="rounded_local_add")
             wide = fm.F.tensors.cast(combined, scalar("float32"))
             if lanes:
-                wide = fm.F.tensors.unpack(wide, axes=(-1, ) * len(lanes))
-            total = fm.F.math.reduce_sum(wide, axes=(0, ), keep_dims=False, output_lanes=lanes)
+                wide = fm.F.tensors.unpack(wide, axes=(-1,) * len(lanes))
+            total = fm.F.math.reduce_sum(wide, axes=(0,), keep_dims=False, output_lanes=lanes)
             published = fm.F.distributed.force_boxing(total, fm.logical_type(total.type))
             result = fm.F.tensors.cast(published, scalar("bfloat16"), name="result")
             self.function("main", inputs, (material, result))
@@ -89,35 +86,26 @@ def test_partition_scale_coordinates_and_rounded_local_add(tmp_path, ownership, 
     device = device_group
     runtime = reference_runtime = None
     try:
-        module = Compiler().compile(
-            Graph(dialect="distributed", stage="frozen_constants", entry="main",
-                  metadata={"auto_distribution": {"placement": placement.to_data()}}).build()).module
+        module = Compiler().compile(Graph(dialect="distributed", stage="frozen_constants", entry="main",
+            metadata={"auto_distribution": {"placement": placement.to_data()}}).build()).module
         x_cpu = torch.empty((tokens, reduction), dtype=torch.bfloat16)
         row, column = torch.arange(hidden)[:, None], torch.arange(reduction)[None, :]
         weight = (((row * 5 + column * 13) % 9 - 4).float() / 8).to(torch.float8_e4m3fn)
         scales = torch.exp2(-4 - torch.arange(hidden // 128)[:, None] - torch.arange(16)[None, :] // 4).float()
-        routed = ((torch.arange(parts * tokens * hidden).reshape(parts, tokens, hidden) % 11 - 5).float() /
-                  8).bfloat16()
-
+        routed = ((torch.arange(parts * tokens * hidden).reshape(parts, tokens, hidden) % 11 - 5).float() / 8).bfloat16()
         class Checkpoint:
-
             def load_tensor(self, key, *, device="cpu"):
                 return {"weight": weight, "scales": scales}[key].to(device)
-
         artifact = write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True,
                                   checkpoint=Checkpoint() if readonly_block else None)
         runtime = load(artifact, device=device)
-        values = {
-            "x": x_cpu.reshape(tokens, reduction // prod(lanes), *lanes).to(device), "weight": weight.to(device),
-            "scales": scales.to(device), "routed": routed.reshape(parts, tokens, hidden // prod(lanes),
-                                                                  *lanes).to(device)
-        }
-        guard_parts = torch.full((parts * tokens * hidden + 32, ), 123, dtype=torch.bfloat16, device=device)
-        guard_sum = torch.full((tokens * hidden + 32, ), 123, dtype=torch.bfloat16, device=device)
-        outputs = {
-            "material_parts": guard_parts[16:-16].reshape(parts, tokens, hidden // prod(lanes), *lanes), "result":
-            guard_sum[16:-16].reshape(tokens, hidden // prod(lanes), *lanes)
-        }
+        values = {"x": x_cpu.reshape(tokens, reduction // prod(lanes), *lanes).to(device),
+                  "weight": weight.to(device), "scales": scales.to(device),
+                  "routed": routed.reshape(parts, tokens, hidden // prod(lanes), *lanes).to(device)}
+        guard_parts = torch.full((parts * tokens * hidden + 32,), 123, dtype=torch.bfloat16, device=device)
+        guard_sum = torch.full((tokens * hidden + 32,), 123, dtype=torch.bfloat16, device=device)
+        outputs = {"material_parts": guard_parts[16:-16].reshape(parts, tokens, hidden // prod(lanes), *lanes),
+                   "result": guard_sum[16:-16].reshape(tokens, hidden // prod(lanes), *lanes)}
         arguments = tuple(outputs[spec["value"]] if spec["role"] == "result" else values[spec["value"]]
                           for spec in runtime.external_arguments)
         Runtime.prepare(runtime, *arguments)
@@ -126,9 +114,9 @@ def test_partition_scale_coordinates_and_rounded_local_add(tmp_path, ownership, 
         # Compare distributed ownership against the pre-existing GPU projection
         # schedule. Its FP8 WGMMA arithmetic is not bitwise identical to a CPU
         # FP32 dot for general nonuniform K inputs.
-        reference_graph = Reference(
-            tokens=tokens, n=hidden, k=reduction, explicit=True, input_lanes=lanes, output_lanes=lanes,
-            kinds=tuple(fm.DistributedType(root, (b, ) * root.rank, placement) for root in roots[:3])).build()
+        reference_graph = Reference(tokens=tokens, n=hidden, k=reduction, explicit=True,
+            input_lanes=lanes, output_lanes=lanes,
+            kinds=tuple(fm.DistributedType(root, (b,) * root.rank, placement) for root in roots[:3])).build()
         reference_graph = replace(reference_graph, dialect="distributed", stage="frozen_constants",
                                   metadata={"auto_distribution": {"placement": placement.to_data()}})
         reference_compiler = Compiler(CompileOptions(placement=placement))
@@ -145,13 +133,13 @@ def test_partition_scale_coordinates_and_rounded_local_add(tmp_path, ownership, 
         for mutation in range(3):
             for part in range(parts):
                 for token in range(tokens):
-                    amplitude = (0 if mutation == 1 else (1 + part / 8 + token / 2) * (-1 if mutation == 2 else 1))
-                    x_cpu[token,
-                          part * 512:(part + 1) * 512] = (amplitude * (1 - 2 * (torch.arange(512) % 3 == 0).float()))
+                    amplitude = (0 if mutation == 1 else
+                                 (1 + part / 8 + token / 2) * (-1 if mutation == 2 else 1))
+                    x_cpu[token, part * 512:(part + 1) * 512] = (
+                        amplitude * (1 - 2 * (torch.arange(512) % 3 == 0).float()))
             values["x"].copy_(x_cpu.reshape(values["x"].shape))
-            cpu_projected, = evaluator.run(
-                reference,
-                {"x": x_cpu.reshape(tokens, reduction // prod(lanes), *lanes), "weight": weight, "scales": scales})
+            cpu_projected, = evaluator.run(reference, {"x": x_cpu.reshape(tokens, reduction // prod(lanes), *lanes),
+                                                       "weight": weight, "scales": scales})
             Runtime.run_into(reference_runtime, *reference_arguments)
             torch.cuda.synchronize()
             projected = reference_output.cpu()
@@ -168,14 +156,10 @@ def test_partition_scale_coordinates_and_rounded_local_add(tmp_path, ownership, 
                 assert bool((guard[:16] == 123).all() & (guard[-16:] == 123).all())
         assert runtime.resource_report["spill_bytes"] == 0
         assert reference_runtime.resource_report["spill_bytes"] == 0
-        (tmp_path / "result.json").write_text(
-            json.dumps(
-                {
-                    "passed": True, "rank": dist.get_rank(), "ownership": ownership, "lanes": lanes, "readonly_block":
-                    readonly_block, "mutations": 3, "guards": True, "reference":
-                    "pre-existing expanded GPU FP8 MMA projections", "cpu_difference_counts": cpu_difference_counts,
-                    "resources": runtime.resource_report, "source_sha256": runtime.codegen["source_sha256"]
-                }, indent=2) + "\n")
+        (tmp_path / "result.json").write_text(json.dumps({"passed": True, "rank": dist.get_rank(),
+            "ownership": ownership, "lanes": lanes, "readonly_block": readonly_block, "mutations": 3, "guards": True,
+            "reference": "pre-existing expanded GPU FP8 MMA projections", "cpu_difference_counts": cpu_difference_counts,
+            "resources": runtime.resource_report, "source_sha256": runtime.codegen["source_sha256"]}, indent=2) + "\n")
     finally:
         if reference_runtime is not None:
             reference_runtime.close()

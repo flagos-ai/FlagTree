@@ -13,17 +13,15 @@ def _rule(name):
 
 
 def test_vectorize_unary_propagation_pushes_pack_to_operand(materialize_rewrite):
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
             value = self.input("value", fm.tensor_type("bfloat16", (2, 16)), id="value")
             scalar = fm.F.math.silu(value, name="scalar")
-            root = fm.F.tensors.pack(scalar, (8, ), axes=(1, ), name="root")
-            self.function("main", (value, ), (root, ))
+            root = fm.F.tensors.pack(scalar, (8,), axes=(1,), name="root")
+            self.function("main", (value,), (root,))
 
     module = Graph().build()
     result = _rule("VectorizeUnaryPropagation").apply(module.node_map["root"], module)
@@ -41,21 +39,17 @@ def test_vectorize_unary_propagation_pushes_pack_to_operand(materialize_rewrite)
 
 
 def test_unary_devectorize_propagation_moves_unpack_after_unary(materialize_rewrite):
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
             vector = self.input(
-                "vector",
-                fm.tensor_type(fm.vector_type("bfloat16", (8, )), (2, 2)),
-                id="vector",
+                "vector", fm.tensor_type(fm.vector_type("bfloat16", (8,)), (2, 2)), id="vector",
             )
-            unpacked = fm.F.tensors.unpack(vector, axes=(1, ), name="unpacked")
+            unpacked = fm.F.tensors.unpack(vector, axes=(1,), name="unpacked")
             root = fm.F.math.silu(unpacked, name="root")
-            self.function("main", (vector, ), (root, ))
+            self.function("main", (vector,), (root,))
 
     module = Graph().build()
     result = _rule("UnaryDevectorizePropagation").apply(module.node_map["root"], module)
@@ -73,16 +67,14 @@ def test_unary_devectorize_propagation_moves_unpack_after_unary(materialize_rewr
 
 
 def test_unary_rules_reject_wrong_boundary_direction():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
-            value = self.input("value", fm.tensor_type("bfloat16", (16, )), id="value")
+            value = self.input("value", fm.tensor_type("bfloat16", (16,)), id="value")
             root = fm.F.math.silu(value, name="root")
-            self.function("main", (value, ), (root, ))
+            self.function("main", (value,), (root,))
 
     module = Graph().build()
     assert _rule("VectorizeUnaryPropagation").apply(module.node_map["root"], module) is None

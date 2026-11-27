@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{#- gfx1100: the AMD per-row decode_t16 partial, with each tile reduced to one
+{#- gfx1100: the AMD per-row decode_t16 partial, with each tile reduced to one
     dependent memory round trip (the next tile's block ids load with this
     tile's K/V) and branch-free clamped tile loads. W7900's long-context
     partial is latency-bound on the block-id -> K/V chain. #}

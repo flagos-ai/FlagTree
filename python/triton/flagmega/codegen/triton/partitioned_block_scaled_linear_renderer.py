@@ -10,16 +10,13 @@ from triton.flagmega.errors import CodegenError
 def partitioned_block_scaled_linear_call(raw):
     from triton.flagmega.codegen.triton.kernel_call_renderers import _buffer, _pointer, _static_shape
 
-    bindings = {
-        name: _buffer(raw, section, name)
-        for section, name in (("inputs", "value"), ("inputs", "weight"), ("inputs", "weight_scale"), ("outputs",
-                                                                                                      "result"))
-    }
+    bindings = {name: _buffer(raw, section, name) for section, name in
+                (("inputs", "value"), ("inputs", "weight"), ("inputs", "weight_scale"), ("outputs", "result"))}
     for name, binding in bindings.items():
         require_chip_shared(binding, name, owner="PartitionedBlockScaledLinear")
     x, w, scale, out = (bindings[name] for name in ("value", "weight", "weight_scale", "result"))
-    if any(binding["abi"]["scalar_dtype"] != dtype
-           for binding, dtype in ((x, "bfloat16"), (w, "float8_e4m3fn"), (scale, "float32"), (out, "bfloat16"))):
+    if any(binding["abi"]["scalar_dtype"] != dtype for binding, dtype in
+           ((x, "bfloat16"), (w, "float8_e4m3fn"), (scale, "float32"), (out, "bfloat16"))):
         raise CodegenError("PartitionedBlockScaledLinear physical dtypes must match its BF16/FP8/FP32 contract.")
     shapes = {name: _static_shape(binding["abi"], "local_capacity_shape") for name, binding in bindings.items()}
     input_width, output_width = (int(binding["abi"].get("scalar_lane_count", 1)) for binding in (x, out))
@@ -29,8 +26,10 @@ def partitioned_block_scaled_linear_call(raw):
     total_k = _static_shape(w["abi"], "logical_shape")[1]
     span = total_k // attrs["partitions"]
     if (shapes["value"] != (tokens, reduction // input_width) or reduction != parts * span
-            or rows != row_groups * output_width or int(w["abi"].get("scalar_lane_count", 1)) != 1
-            or int(scale["abi"].get("scalar_lane_count", 1)) != 1 or attrs["weight_block_k"] != 128 or span % 128):
+            or rows != row_groups * output_width
+            or int(w["abi"].get("scalar_lane_count", 1)) != 1
+            or int(scale["abi"].get("scalar_lane_count", 1)) != 1
+            or attrs["weight_block_k"] != 128 or span % 128):
         raise CodegenError("PartitionedBlockScaledLinear physical owners must contain complete local P/T/N/K domains.")
     tile = int(raw["parameters"]["tile_n"])
     accumulator_layout = raw["parameters"].get("accumulator_layout", "vector")
@@ -74,56 +73,25 @@ def partitioned_block_scaled_linear_call(raw):
         # Task ownership and the matrix instruction shape are independent.
         # M<64 selects FP16 MMA after FP8 conversion, changing the native FP8
         # dot's arithmetic. Pad inactive rows while retaining smaller tasks.
-        "parts":
-        parts,
-        "tokens":
-        tokens,
-        "rows":
-        rows,
-        "part_k":
-        span,
-        "task_tile_n":
-        tile,
-        "tile_n":
-        max(tile * groups, 64),
-        "k_blocks_per_mma":
-        groups,
-        "dot_k":
-        128,
-        "k_group_row_order":
-        row_order,
-        "accumulator_layout":
-        accumulator_layout,
-        "activation_layout":
-        activation_layout,
-        "mma_columns":
-        mma_columns,
+        "parts": parts, "tokens": tokens, "rows": rows, "part_k": span,
+        "task_tile_n": tile, "tile_n": max(tile * groups, 64),
+        "k_blocks_per_mma": groups, "dot_k": 128,
+        "k_group_row_order": row_order,
+        "accumulator_layout": accumulator_layout,
+        "activation_layout": activation_layout,
+        "mma_columns": mma_columns,
         "row_tiles": (rows + tile - 1) // tile,
-        "tasks":
-        tasks,
+        "tasks": tasks,
         **({'task_launch_recipe': recipe.to_data()} if recipe is not None else {}),
-        "activation_quantization":
-        attrs["activation_quantization"],
-        "source":
-        _pointer(x),
-        "weight":
-        _pointer(w),
-        "scale":
-        _pointer(scale),
-        "result":
-        _pointer(out),
-        "source_offset":
-        emit_local_scalar_offset(x["abi"], ("_fm_token", f"({local_k} // {input_width})"),
-                                 lane_coordinate=f"({local_k} % {input_width})" if input_width != 1 else None),
-        "weight_offset":
-        emit_local_scalar_offset(w["abi"], ("_fm_n[:, None]", weight_k)),
-        "scale_offset":
-        emit_local_scalar_offset(
-            scale["abi"],
+        "activation_quantization": attrs["activation_quantization"],
+        "source": _pointer(x), "weight": _pointer(w), "scale": _pointer(scale), "result": _pointer(out),
+        "source_offset": emit_local_scalar_offset(x["abi"], ("_fm_token", f"({local_k} // {input_width})"),
+            lane_coordinate=f"({local_k} % {input_width})" if input_width != 1 else None),
+        "weight_offset": emit_local_scalar_offset(w["abi"], ("_fm_n[:, None]", weight_k)),
+        "scale_offset": emit_local_scalar_offset(scale["abi"],
             (f"(({global_n}) // {attrs['weight_block_n']})", f"(({global_p}) * {span // 128} + _fm_block)")),
-        "result_offset":
-        emit_local_scalar_offset(out["abi"], ("_fm_part", "_fm_token", f"(_fm_n // {output_width})"),
-                                 lane_coordinate=f"(_fm_n % {output_width})" if output_width != 1 else None),
+        "result_offset": emit_local_scalar_offset(out["abi"], ("_fm_part", "_fm_token", f"(_fm_n // {output_width})"),
+            lane_coordinate=f"(_fm_n % {output_width})" if output_width != 1 else None),
     }
 
 

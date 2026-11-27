@@ -20,7 +20,7 @@ class _UnitProvider:
             "tir.unit.identity",
             {"family": "unit", "variant": "identity"},
             {"portable_triton": True},
-        ), ), "tir.unit.identity")
+        ),), "tir.unit.identity")
 
 
 def test_registry_rejects_duplicate_semantic_op_ownership():
@@ -39,6 +39,6 @@ def test_proposal_rejects_missing_default_and_duplicate_candidate_ids():
     )
 
     with pytest.raises(CodegenError, match="default candidate.*is not in"):
-        TritonCandidateProposal((candidate, ), "tir.unit.missing")
+        TritonCandidateProposal((candidate,), "tir.unit.missing")
     with pytest.raises(CodegenError, match="duplicate ids"):
         TritonCandidateProposal((candidate, candidate), candidate.id)

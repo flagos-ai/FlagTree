@@ -25,7 +25,7 @@ class KernelDispatch(TIRStmt):
     ``arguments`` and ``outputs`` name PrimFunction ABI parameters.  Selection
     data lives here exactly once; graph ``tir.call`` nodes carry only a callee.
     Semantic selection and target microkernel selection are deliberately
-    separate so canonicalization passes can run between them like reference.
+    separate so canonicalization passes can run between them like nncase.
     """
 
     semantic_op: str
@@ -77,7 +77,9 @@ class KernelDispatch(TIRStmt):
 
         if candidate is not None:
             if microkernel is not None:
-                raise IRSchemaError("KernelDispatch cannot specify both legacy candidate and microkernel.")
+                raise IRSchemaError(
+                    "KernelDispatch cannot specify both legacy candidate and microkernel."
+                )
             legacy_parameters = dict(parameters or {})
             legacy_facts = dict(facts or {})
             requirements = legacy_facts.pop("requires", ())
@@ -92,7 +94,9 @@ class KernelDispatch(TIRStmt):
             semantic_candidate = semantic_candidate or str(candidate)
         elif parameters is not None or facts is not None:
             if microkernel is None:
-                raise IRSchemaError("Legacy KernelDispatch parameters/facts require candidate.")
+                raise IRSchemaError(
+                    "Legacy KernelDispatch parameters/facts require candidate."
+                )
             # ``dataclasses.replace(dispatch, parameters=...)`` was part of the
             # editable-checkpoint API before semantic and physical selection
             # were split.  Preserve that source compatibility while ensuring
@@ -150,48 +154,87 @@ class KernelDispatch(TIRStmt):
                 "inplace_alias_candidates",
                 tuple(self.inplace_alias_candidates),
             )
-        object.__setattr__(self, "shared_workspace_buffers", tuple(self.shared_workspace_buffers))
+        object.__setattr__(
+            self, "shared_workspace_buffers", tuple(self.shared_workspace_buffers)
+        )
         object.__setattr__(self, "reads", tuple(self.reads))
         object.__setattr__(self, "writes", tuple(self.writes))
+        object.__setattr__(self, "memory_effects", tuple(
+            (str(name), effect if isinstance(effect, MemoryEffect) else MemoryEffect.from_data(effect))
+            for name, effect in self.memory_effects
+        ))
         object.__setattr__(
-            self, "memory_effects",
-            tuple((str(name), effect if isinstance(effect, MemoryEffect) else MemoryEffect.from_data(effect))
-                  for name, effect in self.memory_effects))
-        object.__setattr__(self, "semantic_parameters", _freeze_mapping(self.semantic_parameters))
+            self, "semantic_parameters", _freeze_mapping(self.semantic_parameters)
+        )
         object.__setattr__(self, "semantic_facts", _freeze_mapping(self.semantic_facts))
         object.__setattr__(self, "semantic_attrs", _freeze_mapping(self.semantic_attrs))
         if not self.semantic_op or not self.semantic_candidate:
-            raise IRSchemaError("KernelDispatch requires semantic_op and semantic_candidate.")
+            raise IRSchemaError(
+                "KernelDispatch requires semantic_op and semantic_candidate."
+            )
         if not self.outputs or any(not value for value in (*self.arguments, *self.outputs)):
             raise IRSchemaError("KernelDispatch requires named arguments and at least one output.")
         if len({value.name for value in self.workspaces}) != len(self.workspaces):
             raise IRSchemaError("KernelDispatch workspace names must be unique.")
         if self.inplace_alias_candidates is not None:
-            if any(not isinstance(value, InplaceAliasCandidate) for value in self.inplace_alias_candidates):
-                raise IRSchemaError("KernelDispatch inplace aliases must be typed InplaceAliasCandidates.")
-            pairs = tuple((value.output, value.input) for value in self.inplace_alias_candidates)
+            if any(
+                not isinstance(value, InplaceAliasCandidate)
+                for value in self.inplace_alias_candidates
+            ):
+                raise IRSchemaError(
+                    "KernelDispatch inplace aliases must be typed InplaceAliasCandidates."
+                )
+            pairs = tuple(
+                (value.output, value.input)
+                for value in self.inplace_alias_candidates
+            )
             if len(set(pairs)) != len(pairs):
-                raise IRSchemaError("KernelDispatch inplace alias candidates must be unique.")
-            unknown_outputs = sorted({value.output for value in self.inplace_alias_candidates} - set(self.outputs))
-            unknown_inputs = sorted({value.input for value in self.inplace_alias_candidates} - set(self.arguments))
+                raise IRSchemaError(
+                    "KernelDispatch inplace alias candidates must be unique."
+                )
+            unknown_outputs = sorted(
+                {value.output for value in self.inplace_alias_candidates}
+                - set(self.outputs)
+            )
+            unknown_inputs = sorted(
+                {value.input for value in self.inplace_alias_candidates}
+                - set(self.arguments)
+            )
             if unknown_outputs or unknown_inputs:
-                raise IRSchemaError("KernelDispatch inplace alias candidates reference values outside "
-                                    f"its ABI: outputs={unknown_outputs}, inputs={unknown_inputs}.")
-        if any(not isinstance(value, Buffer) for value in self.shared_workspace_buffers):
-            raise IRSchemaError("KernelDispatch shared workspace buffers must be typed TIR Buffers.")
+                raise IRSchemaError(
+                    "KernelDispatch inplace alias candidates reference values outside "
+                    f"its ABI: outputs={unknown_outputs}, inputs={unknown_inputs}."
+                )
+        if any(
+            not isinstance(value, Buffer) for value in self.shared_workspace_buffers
+        ):
+            raise IRSchemaError(
+                "KernelDispatch shared workspace buffers must be typed TIR Buffers."
+            )
         shared_names = tuple(value.name for value in self.shared_workspace_buffers)
         if len(set(shared_names)) != len(shared_names):
-            raise IRSchemaError("KernelDispatch shared workspace buffer names must be unique.")
+            raise IRSchemaError(
+                "KernelDispatch shared workspace buffer names must be unique."
+            )
         if self.microkernel is None and self.shared_workspace_buffers:
-            raise IRSchemaError("KernelDispatch cannot materialize shared workspaces without a microkernel.")
+            raise IRSchemaError(
+                "KernelDispatch cannot materialize shared workspaces without a microkernel."
+            )
         if self.microkernel is not None and self.shared_workspace_buffers:
             descriptors = self.microkernel.shared_workspaces
             if len(descriptors) != len(self.shared_workspace_buffers) or any(
-                    descriptor.name != buffer.name or descriptor.type != buffer.type or buffer.mem_span.buffer.
-                    memory_space != "shared" or buffer.mem_span.buffer.alignment < descriptor.alignment_bytes
-                    for descriptor, buffer in zip(descriptors, self.shared_workspace_buffers)):
-                raise IRSchemaError("KernelDispatch shared workspace buffers differ from the selected "
-                                    "microkernel descriptors.")
+                descriptor.name != buffer.name
+                or descriptor.type != buffer.type
+                or buffer.mem_span.buffer.memory_space != "shared"
+                or buffer.mem_span.buffer.alignment < descriptor.alignment_bytes
+                for descriptor, buffer in zip(
+                    descriptors, self.shared_workspace_buffers
+                )
+            ):
+                raise IRSchemaError(
+                    "KernelDispatch shared workspace buffers differ from the selected "
+                    "microkernel descriptors."
+                )
         available = set(self.arguments) | set(self.outputs)
         if not set(self.reads).issubset(available) or not set(self.writes).issubset(available):
             raise IRSchemaError("KernelDispatch effects must reference ABI argument/output names.")
@@ -199,13 +242,23 @@ class KernelDispatch(TIRStmt):
             raise IRSchemaError("KernelDispatch requires a non-empty effect kind.")
         effect_names = tuple(name for name, _ in self.memory_effects)
         if len(set(effect_names)) != len(effect_names) or not set(effect_names).issubset(available):
-            raise IRSchemaError("KernelDispatch memory effects require unique ABI argument/output names.")
+            raise IRSchemaError(
+                "KernelDispatch memory effects require unique ABI argument/output names."
+            )
         if self.memory_effects:
             effect_map = dict(self.memory_effects)
-            effect_reads = {name for name, value in effect_map.items() if value.physical_mode & MemoryAccessMode.READ}
-            effect_writes = {name for name, value in effect_map.items() if value.physical_mode & MemoryAccessMode.WRITE}
+            effect_reads = {
+                name for name, value in effect_map.items()
+                if value.physical_mode & MemoryAccessMode.READ
+            }
+            effect_writes = {
+                name for name, value in effect_map.items()
+                if value.physical_mode & MemoryAccessMode.WRITE
+            }
             if effect_reads != set(self.reads) or effect_writes != set(self.writes):
-                raise IRSchemaError("KernelDispatch reads/writes disagree with its typed memory effects.")
+                raise IRSchemaError(
+                    "KernelDispatch reads/writes disagree with its typed memory effects."
+                )
 
     @property
     def memory_effect_map(self) -> Mapping[str, MemoryEffect]:
@@ -218,9 +271,10 @@ class KernelDispatch(TIRStmt):
         if self.memory_effects:
             return MappingProxyType(dict(self.memory_effects))
         return MappingProxyType({
-            name:
-            MemoryEffect((MemoryAccessMode.READ if name in self.reads else MemoryAccessMode.NONE)
-                         | (MemoryAccessMode.WRITE if name in self.writes else MemoryAccessMode.NONE))
+            name: MemoryEffect(
+                (MemoryAccessMode.READ if name in self.reads else MemoryAccessMode.NONE)
+                | (MemoryAccessMode.WRITE if name in self.writes else MemoryAccessMode.NONE)
+            )
             for name in dict.fromkeys((*self.arguments, *self.outputs))
             if name in self.reads or name in self.writes
         })
@@ -238,7 +292,11 @@ class KernelDispatch(TIRStmt):
     def candidate(self) -> str:
         """Compatibility view used by existing codegen consumers."""
 
-        return (self.semantic_candidate if self.microkernel is None else self.microkernel.implementation)
+        return (
+            self.semantic_candidate
+            if self.microkernel is None
+            else self.microkernel.implementation
+        )
 
     @property
     def parameters(self) -> Mapping[str, object]:
@@ -263,8 +321,10 @@ class KernelDispatch(TIRStmt):
                 if key in physical and physical[key] != value
             }
             if conflicts:
-                raise IRSchemaError("KernelDispatch microkernel parameters conflict with its "
-                                    f"typed identity: {conflicts}.")
+                raise IRSchemaError(
+                    "KernelDispatch microkernel parameters conflict with its "
+                    f"typed identity: {conflicts}."
+                )
             physical = {**identities, **physical}
         return _merge_disjoint(
             physical,
@@ -310,11 +370,16 @@ def kernel_dispatch_of(function) -> KernelDispatch | None:
     # masquerade as the one-kernel form consumed by graph-call codegen.
     from triton.flagmega.ir.tir.pipeline_stage import PipelineStage
     from triton.flagmega.ir.tir.producer_consumer_region import (
-        ProducerConsumerRegion, )
+        ProducerConsumerRegion,
+    )
 
     if not isinstance(statement, ProducerConsumerRegion):
         return None
-    stages = tuple(field for field in statement.consume_body.fields if isinstance(field, PipelineStage))
+    stages = tuple(
+        field
+        for field in statement.consume_body.fields
+        if isinstance(field, PipelineStage)
+    )
     if len(stages) != 1:
         return None
     operation = stages[0].operation
@@ -352,7 +417,11 @@ def _merge_disjoint(
     *,
     owner: str,
 ) -> Mapping[str, object]:
-    conflicts = {key: (lhs[key], value) for key, value in rhs.items() if key in lhs and lhs[key] != value}
+    conflicts = {
+        key: (lhs[key], value)
+        for key, value in rhs.items()
+        if key in lhs and lhs[key] != value
+    }
     if conflicts:
         raise IRSchemaError(f"{owner} contain conflicting values: {conflicts}.")
     return _freeze_mapping({**dict(lhs), **dict(rhs)})
@@ -368,7 +437,11 @@ def _physical_override(
     if override is None:
         return dict(current)
     result = dict(override)
-    conflicts = {key: (result[key], value) for key, value in semantic.items() if key in result and result[key] != value}
+    conflicts = {
+        key: (result[key], value)
+        for key, value in semantic.items()
+        if key in result and result[key] != value
+    }
     if conflicts:
         raise IRSchemaError(f"{owner} cannot override semantic values: {conflicts}.")
     for key in semantic:

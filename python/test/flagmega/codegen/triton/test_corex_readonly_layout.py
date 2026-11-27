@@ -13,21 +13,22 @@ from triton.flagmega.passes.tir.bufferize.planner import BufferizationOptions
 from triton.flagmega.passes.tir.bufferize.policy import NttBufferizationPolicy
 
 
-def _module(shape=(4, 6, 16), owners=2, *, typed=False, split_axes=None, placement=None, cyclic=False, external=False):
+def _module(shape=(4, 6, 16), owners=2, *, typed=False, split_axes=None,
+            placement=None, cyclic=False, external=False):
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
     dtype = fm.VectorType(fm.DType.BFLOAT16, (8, 2, 8)) if typed else "bfloat16"
     tensor = fm.tensor_type(dtype, shape)
-    weight = (builder.var("w", tensor, id="w")
-              if external else builder.weight("w", tensor, source="checkpoint", key="w", id="w"))
-    placement = placement or fm.Placement((owners, ), "x", "b")
+    weight = (builder.var("w", tensor, id="w") if external else
+              builder.weight("w", tensor, source="checkpoint", key="w", id="w"))
+    placement = placement or fm.Placement((owners,), "x", "b")
     axes = tuple(range(len(placement.hierarchy))) if split_axes is None else split_axes
     split = fm.SBP.split_block_cyclic(axes, 1) if cyclic else fm.SBP.split_contiguous(axes)
-    distributed = fm.DistributedType(tensor,
-                                     tuple(split if axis == 1 else fm.SBP.broadcast() for axis in range(len(shape))),
-                                     placement)
-    output = builder.call("distributed.sharded_view", (weight, ), distributed, attrs={"new_type": distributed},
-                          id="output")
-    builder.function("main", (weight, ) if external else (), (output, ))
+    distributed = fm.DistributedType(tensor, tuple(
+        split if axis == 1 else fm.SBP.broadcast()
+        for axis in range(len(shape))), placement)
+    output = builder.call("distributed.sharded_view", (weight,), distributed,
+                          attrs={"new_type": distributed}, id="output")
+    builder.function("main", (weight,) if external else (), (output,))
     module = freeze_constant_islands(builder.build(entry="main"))
     module = NttBufferizationPolicy(BufferizationOptions.generic(alignment=256)).bufferize(module)
     return replace(module, stage="bufferized_tir")
@@ -35,10 +36,8 @@ def _module(shape=(4, 6, 16), owners=2, *, typed=False, split_axes=None, placeme
 
 def _record(module):
     buffer = next(b for b in fm.verify_buffer_plan(module).buffers if b.storage == "rdata")
-    return {
-        "buffer": buffer.id, "offset": buffer.offset, "nbytes": buffer.nbytes, "shape": [4, 2, 48, 2], "axes":
-        [1, 0, 2, 3]
-    }
+    return {"buffer": buffer.id, "offset": buffer.offset, "nbytes": buffer.nbytes,
+            "shape": [4, 2, 48, 2], "axes": [1, 0, 2, 3]}
 
 
 def _selection_case(*, typed=False, owners=16, **geometry):
@@ -48,14 +47,13 @@ def _selection_case(*, typed=False, owners=16, **geometry):
     module = _module(shape, owners, typed=typed, **geometry)
     buffer = next(b for b in fm.verify_buffer_plan(module).buffers
                   if b.storage == ("input" if geometry.get("external") else "rdata"))
-    binding = {
-        "formal": "rhs", "actual": buffer.id, "runtime_argument": "RDATA", "abi": describe_local_buffer_abi(buffer)
-    }
-    call = {
-        "family": "dense_matmul", "variant": "packed_k_major_gemv_norm_stats", "local_n_capacity": n,
-        "local_k_capacity": k, "inputs": [{"formal": "rhs", "buffers": [binding]}], "corex_flat_sme_down":
-        {"source": "X", "weight": "canonical", "weight_k_group_stride": n * owners * 16}
-    }
+    binding = {"formal": "rhs", "actual": buffer.id, "runtime_argument": "RDATA",
+               "abi": describe_local_buffer_abi(buffer)}
+    call = {"family": "dense_matmul", "variant": "packed_k_major_gemv_norm_stats",
+            "local_n_capacity": n, "local_k_capacity": k,
+            "inputs": [{"formal": "rhs", "buffers": [binding]}],
+            "corex_flat_sme_down": {"source": "X", "weight": "canonical",
+                                    "weight_k_group_stride": n * owners * 16}}
     return module, call
 
 
@@ -65,19 +63,18 @@ def _glu_selection_case(*, typed=False, owners=16, external_up=False):
     shape = (k // 16, n * owners // 8) + (() if typed else (2, 64))
     dtype = fm.VectorType(fm.DType.BFLOAT16, (8, 2, 8)) if typed else "bfloat16"
     tensor = fm.tensor_type(dtype, shape)
-    placement = fm.Placement((owners, ), "x", "b")
-    distributed = fm.DistributedType(
-        tensor,
-        tuple(fm.SBP.split_contiguous((0, )) if axis == 1 else fm.SBP.broadcast() for axis in range(len(shape))),
-        placement)
+    placement = fm.Placement((owners,), "x", "b")
+    distributed = fm.DistributedType(tensor, tuple(
+        fm.SBP.split_contiguous((0,)) if axis == 1 else fm.SBP.broadcast()
+        for axis in range(len(shape))), placement)
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
     gate = builder.weight("gate", tensor, source="checkpoint", key="gate", id="gate")
-    up = (builder.var("up", tensor, id="up")
-          if external_up else builder.weight("up", tensor, source="checkpoint", key="up", id="up"))
-    views = tuple(
-        builder.call("distributed.sharded_view", (w, ), distributed, attrs={"new_type": distributed}, id=name)
-        for w, name in ((gate, "gate_view"), (up, "up_view")))
-    builder.function("main", (up, ) if external_up else (), views)
+    up = (builder.var("up", tensor, id="up") if external_up else
+          builder.weight("up", tensor, source="checkpoint", key="up", id="up"))
+    views = tuple(builder.call("distributed.sharded_view", (w,), distributed,
+                               attrs={"new_type": distributed}, id=name)
+                  for w, name in ((gate, "gate_view"), (up, "up_view")))
+    builder.function("main", (up,) if external_up else (), views)
     module = freeze_constant_islands(builder.build(entry="main"))
     module = NttBufferizationPolicy(BufferizationOptions.generic(alignment=256)).bufferize(module)
     module = replace(module, stage="bufferized_tir")
@@ -87,15 +84,14 @@ def _glu_selection_case(*, typed=False, owners=16, external_up=False):
         buffers += [next(b for b in fm.verify_buffer_plan(module).buffers if b.storage == "input")]
     else:
         assert len(buffers) == 2
-    bindings = [
-        dict(formal=role, actual=buffer.id, runtime_argument="RDATA", abi=describe_local_buffer_abi(buffer))
-        for role, buffer in zip(("gate_weight", "up_weight"), buffers)
-    ]
-    call = dict(
-        family="dense_matmul_glu", variant="packed_k_major_gemv", local_n_capacity=n, local_k_capacity=k,
-        inputs=[dict(formal=item["formal"], buffers=[item]) for item in bindings],
-        corex_flat_sme_glu=dict(source="X", gate_weight="canonical_gate", up_weight="canonical_up", result="Y",
-                                weight_k_group_stride=n * owners * 16))
+    bindings = [dict(formal=role, actual=buffer.id, runtime_argument="RDATA",
+                     abi=describe_local_buffer_abi(buffer))
+                for role, buffer in zip(("gate_weight", "up_weight"), buffers)]
+    call = dict(family="dense_matmul_glu", variant="packed_k_major_gemv",
+                local_n_capacity=n, local_k_capacity=k,
+                inputs=[dict(formal=item["formal"], buffers=[item]) for item in bindings],
+                corex_flat_sme_glu=dict(source="X", gate_weight="canonical_gate",
+                    up_weight="canonical_up", result="Y", weight_k_group_stride=n * owners * 16))
     return module, call
 
 
@@ -191,7 +187,8 @@ def test_unproven_geometry_never_changes_the_weight_pool(change):
     elif change == "stride":
         call["corex_flat_sme_down"]["weight_k_group_stride"] += 128
     elif change == "k_split":
-        abi["local_capacity_shape"] = (abi["local_capacity_shape"][0] // 2, *abi["local_capacity_shape"][1:])
+        abi["local_capacity_shape"] = (abi["local_capacity_shape"][0] // 2,
+                                       *abi["local_capacity_shape"][1:])
     else:
         del call["corex_flat_sme_down"]
     import copy
@@ -204,7 +201,8 @@ def test_all_canonical_consumers_are_proved_before_rewriting_addresses():
     from triton.flagmega.codegen.triton.corex_readonly_layout import select_readonly_layouts
     from triton.flagmega.errors import CodegenError
     module, call = _selection_case()
-    reader = {"family": "elementwise", "inputs": [{"formal": "source", "buffers": call["inputs"][0]["buffers"]}]}
+    reader = {"family": "elementwise", "inputs": [
+        {"formal": "source", "buffers": call["inputs"][0]["buffers"]}]}
     with pytest.raises(CodegenError, match="consumer without its device-address contract"):
         select_readonly_layouts(module, [call, reader])
     assert call["corex_flat_sme_down"]["weight"] == "canonical"
@@ -219,7 +217,7 @@ def test_noncanonical_owner_maps_and_open_weight_roots_are_not_selected(geometry
     if geometry == "cyclic":
         options["cyclic"] = True
     elif geometry == "subset":
-        options["split_axes"] = (1, )
+        options["split_axes"] = (1,)
     elif geometry == "permuted":
         options["split_axes"] = (1, 0)
     else:
@@ -241,8 +239,9 @@ def test_byte_permutation_validates_all_records_before_mutating(device):
     pool = (torch.arange(record["offset"] + record["nbytes"] + 17, device=device) % 251).to(torch.uint8)
     before = pool.clone()
     contract = {"schema": READONLY_DEVICE_LAYOUT_SCHEMA, "buffers": [record]}
-    for damaged in ({**record, "nbytes": record["nbytes"] - 2}, {**record, "shape":
-                                                                 [2, 4, 48, 2]}, {**record, "axes": [0, 1, 2, 3]}):
+    for damaged in ({**record, "nbytes": record["nbytes"] - 2},
+                    {**record, "shape": [2, 4, 48, 2]},
+                    {**record, "axes": [0, 1, 2, 3]}):
         with pytest.raises(ArtifactError, match="canonical buffer byte range"):
             apply_readonly_layout(pool, {**contract, "buffers": [record, damaged]}, module)
         assert torch.equal(pool, before)
@@ -275,12 +274,12 @@ def test_runtime_applies_layout_once_after_loading_canonical_source(tmp_path):
     record = _record(module)
     expected = canonical.clone()
     expected.narrow(0, record["offset"], record["nbytes"]).copy_(
-        canonical.narrow(0, record["offset"],
-                         record["nbytes"]).view(*record["shape"]).permute(*record["axes"]).contiguous().reshape(-1))
+        canonical.narrow(0, record["offset"], record["nbytes"])
+        .view(*record["shape"]).permute(*record["axes"]).contiguous().reshape(-1))
     runtime = SimpleNamespace(
-        artifact=assets.parent, ir_module=module, manifest={"rdata": index}, codegen={
-            "triton_readonly_device_layout": {"schema": "flagmega.readonly-device-layout/v1", "buffers": [record]}
-        })
+        artifact=assets.parent, ir_module=module, manifest={"rdata": index},
+        codegen={"triton_readonly_device_layout": {
+            "schema": "flagmega.readonly-device-layout/v1", "buffers": [record]}})
     # Reloading constructs a fresh canonical pool; no cached pool is permuted twice.
     for _ in range(2):
         actual = GeneratedTirCallGraphModule._load_rdata(runtime, torch, "cpu", index["segment_nbytes"])

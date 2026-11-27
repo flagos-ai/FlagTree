@@ -27,8 +27,8 @@ def test_chunk_device_numerics_and_abi(tmp_path, packing, initial_state, l2norm)
     if packing == 'demand':
         attrs['consumer_lanes'] = (2, 4)
     if packing == 'head_split':
-        attrs.update(placement=fm.Placement((2, ), 'x', 'b'), head_policy=fm.SBP.split_contiguous((0, )))
-    module = _module(heads=2, dim=128, arithmetic='chunk_bf16', query_scale=128**-.5, l2norm=l2norm, **attrs)
+        attrs.update(placement=fm.Placement((2,), 'x', 'b'), head_policy=fm.SBP.split_contiguous((0,)))
+    module = _module(heads=2, dim=128, arithmetic='chunk_bf16', query_scale=128 ** -.5, l2norm=l2norm, **attrs)
     host = _values(torch, heads=2, dim=128)
     if initial_state in ('zero', 'subnormal_update'):
         host['state'].zero_()
@@ -40,30 +40,27 @@ def test_chunk_device_numerics_and_abi(tmp_path, packing, initial_state, l2norm)
             host[name].zero_()
         host['q'][..., 0] = 1
         host['k'][..., 0] = 1
-        host['k'][..., 1] = 2.**-62
-        host['v'].fill_(2.**-65)
+        host['k'][..., 1] = 2. ** -62
+        host['v'].fill_(2. ** -65)
         host['beta'].zero_()
         host['gate_bias'].zero_()
         host['decay_rate'].fill_(1)
     # CPU transcendental functions need not match PTX approximations bitwise;
     # BF16 conversion and the state export contract must still be observable.
-    reference_module = _module(heads=2, dim=128, arithmetic='chunk_bf16', query_scale=128**-.5, l2norm=l2norm)
+    reference_module = _module(heads=2, dim=128, arithmetic='chunk_bf16', query_scale=128 ** -.5, l2norm=l2norm)
     expected = TorchEvaluator(DictWeightResolver({})).run(reference_module, host)
-    path = write_artifact(Compiler().compile(module).module, tmp_path / 'chunk', target='nvidia-sm90',
-                          emit_executable=True)
+    path = write_artifact(Compiler().compile(module).module, tmp_path / 'chunk',
+                          target='nvidia-sm90', emit_executable=True)
     source = (path / 'generated_kernels.py').read_text()
     assert '# flagmega-kernel: pack/' not in source
     assert 'tanh.approx.f32' in source
     runtime = load(path, device='cuda:0')
     try:
         shape = (1, 2, 128) if packing == 'scalar' else (1, 2, 16, 2, 4)
-        buffers = (torch.empty(shape, dtype=torch.bfloat16,
-                               device='cuda'), torch.empty_like(host['state'], device='cuda'))
-        outputs = {
-            spec['value']: tensor
-            for spec, tensor in zip((s for s in runtime.external_arguments
-                                     if s['role'] == 'result'), buffers, strict=True)
-        }
+        buffers = (torch.empty(shape, dtype=torch.bfloat16, device='cuda'),
+                   torch.empty_like(host['state'], device='cuda'))
+        outputs = {spec['value']: tensor for spec, tensor in zip(
+            (s for s in runtime.external_arguments if s['role'] == 'result'), buffers, strict=True)}
         values = {name: tensor.cuda().clone() for name, tensor in host.items()}
         args = tuple(outputs[spec['value']] if spec['role'] == 'result' else values[spec['value']]
                      for spec in runtime.external_arguments)

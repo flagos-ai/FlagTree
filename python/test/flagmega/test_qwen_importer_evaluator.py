@@ -30,7 +30,9 @@ from triton.flagmega.runtime import (
 from triton.flagmega.codegen.triton import describe_tir_package
 from triton.flagmega.codegen.triton.distribution import requires_distributed_grid
 
+
 torch = pytest.importorskip("torch")
+
 
 _PREFIX = "model.language_model.layers.0."
 _EMBEDDING_KEY = "model.language_model.embed_tokens.weight"
@@ -63,7 +65,7 @@ def _config() -> dict[str, object]:
 
 def _tensor_specs() -> dict[str, tuple[tuple[int, ...], DType]]:
     relative = {
-        "input_layernorm.weight": ((8, ), DType.BFLOAT16),
+        "input_layernorm.weight": ((8,), DType.BFLOAT16),
         "linear_attn.in_proj_qkv.weight": ((16, 8), DType.FLOAT8_E4M3FN),
         "linear_attn.in_proj_qkv.weight_scale_inv": ((4, 2), DType.FLOAT32),
         "linear_attn.in_proj_z.weight": ((8, 8), DType.FLOAT8_E4M3FN),
@@ -71,12 +73,12 @@ def _tensor_specs() -> dict[str, tuple[tuple[int, ...], DType]]:
         "linear_attn.in_proj_b.weight": ((2, 8), DType.BFLOAT16),
         "linear_attn.in_proj_a.weight": ((2, 8), DType.BFLOAT16),
         "linear_attn.conv1d.weight": ((16, 1, 3), DType.BFLOAT16),
-        "linear_attn.A_log": ((2, ), DType.FLOAT32),
-        "linear_attn.dt_bias": ((2, ), DType.FLOAT32),
-        "linear_attn.norm.weight": ((4, ), DType.BFLOAT16),
+        "linear_attn.A_log": ((2,), DType.FLOAT32),
+        "linear_attn.dt_bias": ((2,), DType.FLOAT32),
+        "linear_attn.norm.weight": ((4,), DType.BFLOAT16),
         "linear_attn.out_proj.weight": ((8, 8), DType.FLOAT8_E4M3FN),
         "linear_attn.out_proj.weight_scale_inv": ((2, 2), DType.FLOAT32),
-        "post_attention_layernorm.weight": ((8, ), DType.BFLOAT16),
+        "post_attention_layernorm.weight": ((8,), DType.BFLOAT16),
         "mlp.gate_proj.weight": ((16, 8), DType.FLOAT8_E4M3FN),
         "mlp.gate_proj.weight_scale_inv": ((4, 2), DType.FLOAT32),
         "mlp.up_proj.weight": ((16, 8), DType.FLOAT8_E4M3FN),
@@ -86,8 +88,7 @@ def _tensor_specs() -> dict[str, tuple[tuple[int, ...], DType]]:
     }
     return {
         _EMBEDDING_KEY: ((32, 8), DType.BFLOAT16),
-        **{_PREFIX + name: spec
-           for name, spec in relative.items()},
+        **{_PREFIX + name: spec for name, spec in relative.items()},
     }
 
 
@@ -154,10 +155,8 @@ def test_qwen_importer_accepts_huggingface_text_config_nesting():
     }
     nested_checkpoint = MemoryCheckpoint(
         nested_config,
-        {key: checkpoint.tensor_info(key)
-         for key in checkpoint.keys},
-        {key: checkpoint.load_tensor(key)
-         for key in checkpoint.keys},
+        {key: checkpoint.tensor_info(key) for key in checkpoint.keys},
+        {key: checkpoint.load_tensor(key) for key in checkpoint.keys},
     )
 
     importer = Qwen35Layer0Importer(nested_checkpoint)
@@ -171,12 +170,11 @@ def test_qwen_importer_distinguishes_language_layer_from_mtp_layer_namespace():
     checkpoint = _memory_checkpoint()
     infos = {key: checkpoint.tensor_info(key) for key in checkpoint.keys}
     decoy = "mtp.layers.0.input_layernorm.weight"
-    infos[decoy] = TensorInfo(decoy, DType.BFLOAT16, (8, ), "mtp.safetensors")
+    infos[decoy] = TensorInfo(decoy, DType.BFLOAT16, (8,), "mtp.safetensors")
     with_mtp = MemoryCheckpoint(
         checkpoint.config,
         infos,
-        {key: checkpoint.load_tensor(key)
-         for key in checkpoint.keys},
+        {key: checkpoint.load_tensor(key) for key in checkpoint.keys},
     )
 
     importer = Qwen35Layer0Importer(with_mtp)
@@ -217,9 +215,10 @@ def test_gdn_decomposition_preserves_two_state_effect_boundaries_and_values():
     imported_state = create_gdn_state(importer.config)
     decomposed_state = imported_state.clone()
 
-    imported_output, _ = evaluator.run(imported, {"input_ids": input_ids, "gated_delta_net_state": imported_state})
-    decomposed_output, _ = evaluator.run(decomposed,
-                                         {"input_ids": input_ids, "gated_delta_net_state": decomposed_state})
+    imported_output, _ = evaluator.run(
+        imported, {"input_ids": input_ids, "gated_delta_net_state": imported_state})
+    decomposed_output, _ = evaluator.run(
+        decomposed, {"input_ids": input_ids, "gated_delta_net_state": decomposed_state})
 
     assert len([node for node in decomposed.nodes if node.op == "nn.gdn_convolution"]) == 1
     assert len([node for node in decomposed.nodes if node.op == "nn.gdn_recurrent_core"]) == 1
@@ -240,7 +239,8 @@ def test_qwen_layer_compiles_to_single_entry_bufferized_tir_without_agent():
     assert result.module.metadata["launch_contract"]["ordinary_launch_allowed"] is False
     assert result.module.metadata["launch_contract"]["cooperative_grid"] is False
     distribution_records = [
-        record for record in result.module.selections if record.point_id.startswith("distribution.")
+        record for record in result.module.selections
+        if record.point_id.startswith("distribution.")
     ]
     assert distribution_records
     # Provider ids are descriptive and need not end in ``.replicated``.
@@ -250,7 +250,10 @@ def test_qwen_layer_compiles_to_single_entry_bufferized_tir_without_agent():
     assert result.module.metadata["auto_distribution"]["solver"] == "ortools-cp-sat"
     package = result.module.metadata["codegen_package_plan"]
     assert package["kind"] == "tir_call_graph"
-    assert any(call["family"] == "block_fp8" and call["variant"] == "mma" for call in package["calls"])
+    assert any(
+        call["family"] == "block_fp8" and call["variant"] == "mma"
+        for call in package["calls"]
+    )
     descriptor = describe_tir_package(result.module)
     assert descriptor["grid"] == [1, 1, 1]
     assert descriptor["num_warps"] == result.module.metadata["launch_contract"]["num_warps"]
@@ -261,7 +264,9 @@ def test_qwen_layer_compiles_to_single_entry_bufferized_tir_without_agent():
         object(),
     )
     assert isinstance(runtime, GeneratedTirGatedDeltaNetModule)
-    external = [argument["buffer"] for argument in runtime.external_arguments]
+    external = [
+        argument["buffer"] for argument in runtime.external_arguments
+    ]
     assert external[:3] == [
         "input_ids",
         "gdn_state.convolution",
@@ -270,16 +275,26 @@ def test_qwen_layer_compiles_to_single_entry_bufferized_tir_without_agent():
     output_id = result.module.function_map[result.module.entry].outputs[0]
     assert external[-1] == dict(plan.entry_outputs)[output_id][0]
     assert runtime.external_arguments[-1]["role"] == "result"
-    assert all(record.candidate_id == "packing.logical"
-               for point_id, record in result.module.selection_map.items()
-               if point_id.startswith("packing."))
-    assert all(node.op in {"builtin.var", "builtin.get_item", "tir.buffer", "tir.buffer_view", "tir.call"}
-               for node in result.module.nodes)
-    sharded_views = [node for node in result.module.nodes if node.op == "tir.buffer_view"]
+    assert all(
+        record.candidate_id == "packing.logical"
+        for point_id, record in result.module.selection_map.items()
+        if point_id.startswith("packing.")
+    )
+    assert all(
+        node.op in {
+            "builtin.var", "builtin.get_item", "tir.buffer", "tir.buffer_view", "tir.call"
+        }
+        for node in result.module.nodes
+    )
+    sharded_views = [
+        node for node in result.module.nodes if node.op == "tir.buffer_view"
+    ]
     assert sharded_views
     # This small graph is fully replicated, so only logical/vector ABI views
     # remain; no artificial sharded-storage view is introduced.
-    assert {node.attrs["alias_kind"] for node in sharded_views} == {"vector_reinterpret"}
+    assert {
+        node.attrs["alias_kind"] for node in sharded_views
+    } == {"vector_reinterpret"}
     # The explicit NormApply retains its verified-zero bias as a semantic TIR
     # operand.  Unlike the old re-fused RMSNorm path, it must therefore remain
     # in rdata beside the 21 checkpoint-derived buffers.
@@ -321,8 +336,11 @@ def test_tir_renderer_rejects_an_unmaterialized_agent_override():
     overridden = replace(
         module,
         selections=tuple(
-            replace(record, candidate_id="tir.block_fp8.simt", origin="agent", policy="agent") if record.point_id ==
-            "tir.mlp_down" else record for record in module.selections),
+            replace(record, candidate_id="tir.block_fp8.simt", origin="agent", policy="agent")
+            if record.point_id == "tir.mlp_down"
+            else record
+            for record in module.selections
+        ),
     )
 
     with pytest.raises(CodegenError, match="does not match materialized KernelDispatch"):
@@ -347,18 +365,20 @@ def test_synthetic_qwen_executable_matches_reference_on_h800(tmp_path):
     assert manifest["codegen"]["kind"] == "tir_call_graph/v1"
     assert manifest["codegen"]["renderer_spec"] == "bufferized-tir"
     assert "source_provenance" not in manifest["codegen"]
-    assert {value["kernel"]
-            for value in manifest["codegen"]["kernel_template_specs"]} == {
-                "block_fp8",
-                "distributed_boxing",
-                "elementwise",
-                "embedding",
-                "gdn_convolution",
-                "gdn_recurrent",
-                "matmul_glu",
-                "norm_apply",
-                "norm_stats",
-            }
+    assert {
+        value["kernel"]
+        for value in manifest["codegen"]["kernel_template_specs"]
+    } == {
+        "block_fp8",
+        "distributed_boxing",
+        "elementwise",
+        "embedding",
+        "gdn_convolution",
+        "gdn_recurrent",
+        "matmul_glu",
+        "norm_apply",
+        "norm_stats",
+    }
     runtime = load_runtime(artifact, device="cuda:0")
     runtime_state = runtime.create_state()
     input_ids_cpu = torch.tensor([27], dtype=torch.int32)
@@ -376,9 +396,10 @@ def test_synthetic_qwen_executable_matches_reference_on_h800(tmp_path):
 
     assert runtime.prepare_count == 1
     torch.testing.assert_close(output_cuda.cpu().float(), reference_output.float(), atol=0.05, rtol=0.05)
-    torch.testing.assert_close(runtime_state.convolution.cpu().float(), reference_state.convolution.float(), atol=0.02,
-                               rtol=0.02)
-    torch.testing.assert_close(runtime_state.recurrent.cpu(), reference_state.recurrent, atol=0.02, rtol=0.02)
+    torch.testing.assert_close(
+        runtime_state.convolution.cpu().float(), reference_state.convolution.float(), atol=0.02, rtol=0.02)
+    torch.testing.assert_close(
+        runtime_state.recurrent.cpu(), reference_state.recurrent, atol=0.02, rtol=0.02)
 
     reference_output_step2, _ = TorchEvaluator(CheckpointWeightResolver(checkpoint)).run(
         imported,
@@ -389,9 +410,10 @@ def test_synthetic_qwen_executable_matches_reference_on_h800(tmp_path):
 
     assert runtime.prepare_count == 1
     torch.testing.assert_close(output_cuda.cpu().float(), reference_output_step2.float(), atol=0.05, rtol=0.05)
-    torch.testing.assert_close(runtime_state.convolution.cpu().float(), reference_state.convolution.float(), atol=0.02,
-                               rtol=0.02)
-    torch.testing.assert_close(runtime_state.recurrent.cpu(), reference_state.recurrent, atol=0.02, rtol=0.02)
+    torch.testing.assert_close(
+        runtime_state.convolution.cpu().float(), reference_state.convolution.float(), atol=0.02, rtol=0.02)
+    torch.testing.assert_close(
+        runtime_state.recurrent.cpu(), reference_state.recurrent, atol=0.02, rtol=0.02)
 
 
 def test_rms_norm_matches_explicit_formula():
@@ -428,8 +450,8 @@ def test_directory_checkpoint_reads_safetensors_metadata_and_values(tmp_path):
     checkpoint = DirectoryCheckpoint(tmp_path)
     info = checkpoint.tensor_info(key)
 
-    assert checkpoint.keys == (key, )
+    assert checkpoint.keys == (key,)
     assert info.dtype == DType.BFLOAT16
-    assert info.shape == (8, )
+    assert info.shape == (8,)
     assert info.source == "model.safetensors"
     torch.testing.assert_close(checkpoint.load_tensor(key), tensor)

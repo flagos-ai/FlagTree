@@ -14,6 +14,7 @@ from triton.flagmega.ir.ops.ntt.matmul_norm_stats import MatMulNormStats
 from triton.flagmega.ir.tir.serialization import tir_from_data, tir_to_data
 from triton.flagmega.rules.ntt.vectorize.matmul import VectorizeMatMul
 
+
 ORDER = "split_k4_k32_mma_k16_pairtree"
 
 
@@ -61,12 +62,12 @@ def test_split_order_rejects_independent_k_shards_and_partial_inputs(packed, inv
     args = list(operands(packed=packed))
     placement = fm.Placement((2, 2), "yx", "bb")
     b = fm.SBP.broadcast()
-    split = fm.SBP.split_contiguous((0, ), 1)
+    split = fm.SBP.split_contiguous((0,), 1)
     for i in range(2):
         policies = (b, b)
         if invalid == "k_split":
             policies = (split, b) if i == 1 and packed else (b, split)
-        partial = fm.SBP.partial((0, )) if invalid == ("lhs_partial" if i == 0 else "rhs_partial") else None
+        partial = fm.SBP.partial((0,)) if invalid == ("lhs_partial" if i == 0 else "rhs_partial") else None
         args[i] = replace(args[i], type=fm.DistributedType(args[i].type, policies, placement, partial=partial))
     attrs = {"reduction_order": ORDER, **({} if packed else {"transpose_b": True})}
     with pytest.raises(IRSchemaError, match="ordered|partial|K shards"):
@@ -78,7 +79,7 @@ def test_split_order_rejects_independent_k_shards_and_partial_inputs(packed, inv
 def test_complete_k_keeps_legal_output_sharding(packed, axis):
     args = list(operands(packed=packed))
     placement = fm.Placement((2, 2), "yx", "bb")
-    b, split = fm.SBP.broadcast(), fm.SBP.split_contiguous((1, ), 1)
+    b, split = fm.SBP.broadcast(), fm.SBP.split_contiguous((1,), 1)
     lhs_policy = (split, b) if axis == "M" else (b, b)
     rhs_policy = ((b, split) if packed else (split, b)) if axis == "N" else (b, b)
     args[0] = replace(args[0], type=fm.DistributedType(args[0].type, lhs_policy, placement))
@@ -94,7 +95,7 @@ def test_new_order_vectorization_validates_logical_k_not_packed_group_count():
     prepared = MatMul.prepare((lhs, rhs), {"transpose_b": True, "reduction_order": ORDER})
     result = fm.Node("result", MatMul.op_name, (lhs.id, rhs.id), prepared.result_type, prepared.effect, prepared.attrs)
     module = fm.IRModule(dialect="hl", stage="imported", nodes=(lhs, rhs, result),
-                         functions=(fm.Function("main", (lhs.id, rhs.id), (result.id, )), ), entry="main")
+                         functions=(fm.Function("main", (lhs.id, rhs.id), (result.id,)),), entry="main")
     rule = VectorizeMatMul()
     candidates = rule.candidates(result, module)
     assert {c.parameters["kind"] for c in candidates} == {"n", "mn", "mkn"}
@@ -105,40 +106,33 @@ def test_new_order_vectorization_validates_logical_k_not_packed_group_count():
 
 
 def test_semantic_module_and_selected_dispatch_roundtrip_keep_distinct_order(tmp_path):
-
     class Module(fm.Module):
-
         def forward(self):
             lhs = self.input("lhs", fm.tensor_type("bfloat16", (1, 128)))
             rhs = self.input("rhs", fm.tensor_type(fm.vector_type("bfloat16", (8, 2, 8)), (8, 2)))
             none = fm.F.builtin.none()
             out = fm.F.ntt.packed_matmul(lhs, rhs, none, none, reduction_order=ORDER, output_data_type="bfloat16")
-            self.function("main", (lhs, rhs), (out, ))
-
+            self.function("main", (lhs, rhs), (out,))
     module = Module(dialect="ntt", stage="packed", entry="main").build()
     restored = fm.load_module(fm.emit_module(module, tmp_path / "split.py"))
     assert restored.semantic_hash == module.semantic_hash
     semantic = next(n for n in restored.nodes if n.op == "ntt.packed_matmul")
     assert semantic.attrs["reduction_order"] == ORDER
-    old = replace(
-        module, nodes=tuple(
-            replace(n, attrs={**n.attrs, "reduction_order": "mma_k16"}) if n.id == semantic.id else n
-            for n in module.nodes))
+    old = replace(module, nodes=tuple(replace(n, attrs={**n.attrs, "reduction_order": "mma_k16"})
+                                     if n.id == semantic.id else n for n in module.nodes))
     assert old.semantic_hash != module.semantic_hash
-    dispatch = fm.KernelDispatch("ntt.packed_matmul", semantic_candidate="test.split", arguments=("lhs", "rhs"),
-                                 outputs=("result", ), semantic_attrs=semantic.attrs)
+    dispatch = fm.KernelDispatch("ntt.packed_matmul", semantic_candidate="test.split",
+                                 arguments=("lhs", "rhs"), outputs=("result",),
+                                 semantic_attrs=semantic.attrs)
     assert tir_from_data(tir_to_data(dispatch)).semantic_attrs["reduction_order"] == ORDER
 
 
 def test_matmul_norm_stats_keeps_pairtree_projection_boundary():
     lhs, rhs, _, _ = operands(packed=True)
-    addend = node("addend", fm.tensor_type(fm.vector_type("bfloat16", (8, )), (32, 8)))
+    addend = node("addend", fm.tensor_type(fm.vector_type("bfloat16", (8,)), (32, 8)))
     prepared = MatMulNormStats.prepare((lhs, rhs, addend), {
-        "rhs_layout": "k_major",
-        "axis": 1,
-        "use_mean": False,
-        "output_data_type": "bfloat16",
-        "reduction_order": ORDER,
+        "rhs_layout": "k_major", "axis": 1, "use_mean": False,
+        "output_data_type": "bfloat16", "reduction_order": ORDER,
     })
     assert prepared.attrs["reduction_order"] == ORDER
     assert prepared.result_type.fields[0] == addend.type
@@ -154,8 +148,7 @@ def test_old_ir_defaults_are_unchanged(order):
 @pytest.mark.parametrize("op,attrs", [
     ("nn.qkv_parallel_linear", {"num_heads": 8, "num_kv_heads": 8, "output_data_type": "bfloat16"}),
     ("ntt.packed_qkv_parallel_linear", {"num_heads": 8, "num_kv_heads": 8, "output_data_type": "bfloat16"}),
-    ("nn.dense_matmul_glu", {}),
-    ("nn.packed_dense_matmul_glu", {}),
+    ("nn.dense_matmul_glu", {}), ("nn.packed_dense_matmul_glu", {}),
 ])
 def test_unimplemented_semantic_families_do_not_inherit_new_order(op, attrs):
     with pytest.raises(IRSchemaError, match="reduction_order"):
@@ -174,15 +167,12 @@ def test_exact_evaluation_does_not_enter_torch_gemm():
 
 
 def _logical_weight_module():
-
     class Module(fm.Module):
-
         def forward(self):
             lhs = self.input("lhs", fm.tensor_type("bfloat16", (1, 128)), id="lhs")
             rhs = self.weight("rhs", fm.tensor_type("bfloat16", (64, 128)), source="memory", key="rhs", id="rhs")
             result = fm.F.math.matmul(lhs, rhs, transpose_b=True, reduction_order=ORDER, name="result")
-            self.function("main", (lhs, ), (result, ))
-
+            self.function("main", (lhs,), (result,))
     return Module(dialect="high_level", stage="imported", entry="main").build()
 
 
@@ -215,14 +205,13 @@ def test_actual_distribution_provider_keeps_complete_k(packed):
     args = operands(packed=packed)
     definition = PackedMatMul if packed else MatMul
     prepared = definition.prepare(args, {"reduction_order": ORDER, **({} if packed else {"transpose_b": True})})
-    compute = fm.Node("result", definition.op_name, tuple(n.id for n in args), prepared.result_type, prepared.effect,
-                      prepared.attrs)
+    compute = fm.Node("result", definition.op_name, tuple(n.id for n in args), prepared.result_type,
+                      prepared.effect, prepared.attrs)
     nodes = tuple({n.id: n for n in (*args, compute)}.values())
     module = fm.IRModule(dialect="ntt", stage="packed", nodes=nodes,
-                         functions=(fm.Function("main", ("lhs", "rhs"), ("result", )), ), entry="main")
+                         functions=(fm.Function("main", ("lhs", "rhs"), ("result",)),), entry="main")
     context = DistributedCandidateContext(module, compute, fm.Placement((2, 2), "yx", "bb"),
-                                          tuple((arg.type, ) for arg in args),
-                                          PyNttDistributedSplitCandidateProvider(4))
+        tuple((arg.type,) for arg in args), PyNttDistributedSplitCandidateProvider(4))
     candidates = (PackedMatMulCandidateProvider() if packed else MatMulCandidateProvider()).get_candidates(context)
     assert candidates
     assert all(c.input_types[0].axis_policies[1] == fm.SBP.broadcast() and c.return_type.partial is None
@@ -232,22 +221,19 @@ def test_actual_distribution_provider_keeps_complete_k(packed):
 @pytest.mark.parametrize("export_projection", [False, True])
 def test_existing_norm_stats_fusion_preserves_order_and_shared_result_boundary(export_projection):
     from triton.flagmega.passes.norm_stats import lower_add_norm_stats
-
     class Module(fm.Module):
-
         def forward(self):
             lhs = self.input("lhs", fm.tensor_type("bfloat16", (1, 128)))
             rhs = self.input("rhs", fm.tensor_type(fm.vector_type("bfloat16", (8, 2, 8)), (8, 2)))
-            residual = self.input("residual", fm.tensor_type(fm.vector_type("bfloat16", (8, )), (1, 2)))
+            residual = self.input("residual", fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, 2)))
             none = fm.F.builtin.none()
             projection = fm.F.ntt.packed_matmul(lhs, rhs, none, none, output_data_type="bfloat16",
-                                                reduction_order=ORDER, name="projection")
+                                               reduction_order=ORDER, name="projection")
             combined = fm.F.ntt.add_norm_stats(projection, residual, axis=1, use_mean=False, name="combined")
             outputs = list(fm.F.tensors.get_items(combined, 0, 1))
             if export_projection:
                 outputs.append(projection)
             self.function("main", (lhs, rhs, residual), outputs)
-
     before = Module(dialect="ntt", stage="norm_bindings_finalized", entry="main").build()
     after = lower_add_norm_stats(before)
     fused = [n for n in after.nodes if n.op == "ntt.matmul_norm_stats"]
@@ -266,10 +252,8 @@ def test_scalar_packed_intermediate_rejects_incomplete_weights(invalid):
     placement = fm.Placement((2, 2), "yx", "bb")
     b = fm.SBP.broadcast()
     lhs = node("lhs", fm.DistributedType(fm.tensor_type("bfloat16", (1, 128)), (b, b), placement))
-    policies = (fm.SBP.split_contiguous((0, ), 1), b, b, b) if invalid == "Ksplit" else (b, ) * 4
-    rhs = node(
-        "rhs",
-        fm.DistributedType(fm.tensor_type("bfloat16", (8, 2, 2, 64)), policies, placement, partial=fm.SBP.partial(
-            (0, )) if invalid == "partial" else None))
+    policies = (fm.SBP.split_contiguous((0,), 1), b, b, b) if invalid == "Ksplit" else (b,) * 4
+    rhs = node("rhs", fm.DistributedType(fm.tensor_type("bfloat16", (8, 2, 2, 64)), policies, placement,
+                                         partial=fm.SBP.partial((0,)) if invalid == "partial" else None))
     with pytest.raises(IRSchemaError, match="partial|K-sharded"):
         definition.prepare((lhs, rhs), {"reduction_order": ORDER})

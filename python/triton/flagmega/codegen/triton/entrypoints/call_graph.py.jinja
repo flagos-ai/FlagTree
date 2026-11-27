@@ -1,5 +1,12 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{# The entrypoint owns only call/event scheduling and shared pipeline resource
+{% set no_shared = render_calls | selectattr('no_shared_staging','defined') | selectattr('no_shared_staging') | list %}
+{% set bounded_prefetch = render_calls | selectattr('bounded_prefetch','defined') | selectattr('bounded_prefetch') | list %}
+{% set padding_prefetch = render_calls | selectattr('padding_prefetch','defined') | selectattr('padding_prefetch') | list %}
+{% set payload_observe = render_calls | selectattr("payload_observe", "defined") | selectattr("payload_observe") | list %}
+{% set single_epoch = render_calls | selectattr("single_epoch", "defined") | selectattr("single_epoch") | list %}
+{% set cp_aligned = render_calls | selectattr("cp_aligned_carrier", "defined") | selectattr("cp_aligned_carrier") | list %}
+{% set cp_phase = render_calls | selectattr("cp_phase_alignment", "defined") | selectattr("cp_phase_alignment") | list %}
+{% set named_transport = render_calls | selectattr("transport_kind", "defined") | selectattr("transport_kind", "in", ("vector_named","cp_named","global_named","global_idle")) | list %}
+{# The entrypoint owns only call/event scheduling and shared pipeline resource
    construction.  Selected TIR templates own every algorithm wrapper. #}
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% import "entrypoints/_amd_prefetch.py.jinja" as amd_prefetch %}
@@ -18,7 +25,7 @@
 {% else %}    tl.debug_barrier()
 {% endif %}{%- endmacro %}
 
-{% macro pipeline_role_events(events) -%}
+{% macro pipeline_role_events(events, producer_bank=none) -%}
 {% if not events %}
     pass
 {% else %}
@@ -51,8 +58,8 @@
     tle.gpu.trace_event(272, {{ event.trace_site }}, {{ event.trace_layer }})
 {% endif %}
 {% if event.participation_active | default("True") != "True" %}    if {{ event.participation_active }}:
-        {{ event.symbol }}({{ event.arguments }})
-{% else %}    {{ event.symbol }}({{ event.arguments }})
+        {{ event.symbol }}{% if producer_bank is not none %}_{{ producer_bank }}{% endif %}({{ event.arguments }}{% if bounded_prefetch %}, _prefetch_progress{% endif %})
+{% else %}    {{ event.symbol }}{% if producer_bank is not none %}_{{ producer_bank }}{% endif %}({{ event.arguments }}{% if bounded_prefetch %}, _prefetch_progress{% endif %})
 {% endif %}
 {% if event.trace_site is defined %}
     tle.gpu.trace_event(273, {{ event.trace_site }}, {{ event.trace_layer }})
@@ -65,7 +72,7 @@
 {% endif %}
     # control.for @{{ event.body_function }} over [{{ event.start }}, {{ event.stop }}) step {{ event.step }}
     for {{ event.loop_var }} in tl.range({{ event.start }}, {{ event.stop }}, {{ event.step }}):
-{{ pipeline_role_events(event.events) | indent(4, true) }}
+{{ pipeline_role_events(event.events, producer_bank) | indent(4, true) }}
 {% if event.epilogue_events | default(()) %}
 {{ pipeline_role_events(event.epilogue_events | default(())) }}
 {% endif %}
@@ -91,15 +98,15 @@
 {% endif %}
     if {{ event.participation_active }}:
         tle.gpu.trace_event(272, {{ event.trace_site }}, {{ event.trace_layer }})
-        {{ event.symbol }}({{ event.arguments }})
+        {{ event.symbol }}{% if producer_bank is not none %}_{{ producer_bank }}{% endif %}({{ event.arguments }}{% if bounded_prefetch %}, _prefetch_progress{% endif %})
         tle.gpu.trace_event(273, {{ event.trace_site }}, {{ event.trace_layer }})
 {% else %}
 {% if event.trace_site is defined %}
     tle.gpu.trace_event(272, {{ event.trace_site }}, {{ event.trace_layer }})
 {% endif %}
 {% if event.participation_active | default("True") != "True" %}    if {{ event.participation_active }}:
-        {{ event.symbol }}({{ event.arguments }})
-{% else %}    {{ event.symbol }}({{ event.arguments }})
+        {{ event.symbol }}{% if producer_bank is not none %}_{{ producer_bank }}{% endif %}({{ event.arguments }}{% if bounded_prefetch %}, _prefetch_progress{% endif %})
+{% else %}    {{ event.symbol }}{% if producer_bank is not none %}_{{ producer_bank }}{% endif %}({{ event.arguments }}{% if bounded_prefetch %}, _prefetch_progress{% endif %})
 {% endif %}
 {% if event.trace_site is defined %}
     tle.gpu.trace_event(273, {{ event.trace_site }}, {{ event.trace_layer }})
@@ -120,14 +127,16 @@ def {{ definition.symbol }}__consumer(
 
 
 {% if definition.schedule.producer_events %}
+{% for bank in (('gate','up') if definition.schedule.producer_warps == 2 else (none,)) %}
 @triton.jit(noinline={{ definition.function != (entry_inline_function | default(none)) }})
-def {{ definition.symbol }}__producer(
+def {{ definition.symbol }}__producer{% if bank is not none %}_{{ bank }}{% endif %}(
     {{ (definition.schedule.producer_endpoints + (definition.typed_signature_arguments | default(definition.signature_arguments))) | join(",\n    ") }}
 ):
 {{ entry.mesh_coordinates() }}
-{{ pipeline_role_events(definition.schedule.producer_events) }}
+{{ pipeline_role_events(definition.schedule.producer_events, bank) }}
 
 
+{% endfor %}
 {% endif %}
 {% if definition.schedule.auxiliary_events %}
 @triton.jit(noinline={{ definition.function != (entry_inline_function | default(none)) }})
@@ -143,7 +152,7 @@ def {{ definition.symbol }}__auxiliary_consumer(
 {% if pipeline_schedule | default(none) %}
 @triton.jit
 def {{ symbol }}__consumer(
-    {{ (pipeline_schedule.consumer_endpoints + (typed_signature_arguments | default(signature_arguments))) | join(",\n    ") }}
+    {{ (pipeline_schedule.consumer_endpoints + (typed_signature_arguments | default(signature_arguments)) + (['_prefetch_progress'] if bounded_prefetch else [])) | join(",\n    ") }}
 ):
 {{ runtime_device_context() }}
 {{ entry.mesh_coordinates() }}
@@ -156,21 +165,33 @@ def {{ symbol }}__consumer(
 {% endif %}
 
 
+{% for bank in (('gate','up') if pipeline_schedule.producer_warps == 2 else (none,)) %}
 @triton.jit
-def {{ symbol }}__producer(
-    {{ (pipeline_schedule.producer_endpoints + (typed_signature_arguments | default(signature_arguments))) | join(",\n    ") }}
+def {{ symbol }}__producer{% if bank is not none %}_{{ bank }}{% endif %}(
+    {{ (pipeline_schedule.producer_endpoints + (typed_signature_arguments | default(signature_arguments)) + (['_prefetch_progress'] if bounded_prefetch else [])) | join(",\n    ") }}
 ):
 {{ runtime_device_context() }}
 {{ entry.mesh_coordinates() }}
 {% if triton_trace is defined and triton_trace.schema == 'flagmega.triton-census/v1' %}
     tle.gpu.census_mapping(1, 0)
 {% endif %}
-{{ pipeline_role_events(pipeline_schedule.producer_events) }}
+{{ pipeline_role_events(pipeline_schedule.producer_events, bank) }}
 {% if triton_trace is defined and triton_trace.schema == 'flagmega.triton-census/v1' %}
     tle.gpu.census_mapping(1, 1)
 {% endif %}
 
 
+{% endfor %}
+{% if padding_prefetch %}
+{% for nw in (2,1) %}
+@triton.jit
+def {{ symbol }}__producer_prefetch{{ nw }}(
+    {{ (pipeline_schedule.producer_endpoints + (typed_signature_arguments | default(signature_arguments)) + (['_prefetch_progress'] if bounded_prefetch else [])) | join(', ') }}
+):
+{{ entry.mesh_coordinates() }}
+{{ pipeline_role_events(pipeline_schedule.producer_events, 'prefetch' ~ nw) }}
+{% endfor %}
+{% endif %}
 {% if pipeline_schedule.auxiliary_events %}
 @triton.jit
 def {{ symbol }}__auxiliary_consumer(
@@ -191,6 +212,9 @@ def {{ symbol }}(
     {{ signature }}
 ):
 {{ runtime_device_context() }}
+{% if payload_observe %}
+    tle.gpu.trace_configure(capacity={{ 4096 if render_calls[0].rows_per_transaction == 8 else 2048 }}, typed_ctas=(0, {{ render_calls[0].grid[0] // 3 }}, {{ 2 * render_calls[0].grid[0] // 3 }}, {{ render_calls[0].grid[0] - 1 }}))
+{% endif %}
 {% if triton_trace is defined and triton_trace.schema == 'flagmega.triton-census/v1' %}
     tle.gpu.census_configure(occurrences={{ triton_trace.native_contract.occurrences }}, ctas={{ triton_trace.native_contract.ctas }})
 {% elif triton_trace is defined and triton_trace.schema == 'flagmega.triton-trace/v1' %}
@@ -199,8 +223,14 @@ def {{ symbol }}(
 {% for argument in scoped_entry_arguments | default(()) %}
     {{ argument.name }} = _flagmega_block_scope_base({{ argument.name }}.to(tl.pointer_type(tl.uint8)), {{ argument.stride }}).to(tl.pointer_type({{ argument.dtype }}))
 {% endfor %}
+{% if no_shared %}
+{% for stage in pipeline_schedule.stages %}{% for channel in stage.channels %}
+    {{ channel.reader_name }} = tl.full((),0,tl.int32)
+    {{ channel.writer_name }} = tl.full((),0,tl.int32)
+{% endfor %}{% endfor %}
+{% else %}
     _flagmega_shared_arena = tle.gpu.alloc(
-        [{{ pipeline_schedule.shared_arena_nbytes }}],
+        [{{ pipeline_schedule.shared_arena_nbytes + (96 if cp_phase else 0) }}],
         dtype=tl.uint8,
         layout=None,
         scope=tle.gpu.smem,
@@ -209,6 +239,28 @@ def {{ symbol }}(
     )
 {% for stage in pipeline_schedule.stages %}
 {% for workspace in stage.workspaces %}
+{% if cp_aligned %}
+    {{ workspace.variable }}__raw = tle.gpu.alloc(
+        [{{ workspace.shape | join(", ") }}], dtype={{ workspace.dtype }},
+        layout=None, scope=tle.gpu.smem, alias=_flagmega_shared_arena,
+        alias_offset_bytes={{ workspace.offset_bytes }}, nv_mma_shared_layout=True,
+    )
+{% endif %}
+{% if cp_phase and workspace.shape[-2] != 32 %}
+    # Match the global 2720 B row's 128 B phase; relative consumer geometry is unchanged.
+{% for phase in range(4) %}
+    {{ 'else:' if loop.last else ('if' if loop.first else 'elif') ~ ' (tl.program_id(0) * ' ~ cp_phase[0].rows_per_transaction ~ ') % 4 == ' ~ phase ~ ':' }}
+        {{ workspace.variable }} = tle.gpu.alloc(
+            [{{ workspace.shape | join(", ") }}],
+            dtype={{ workspace.dtype }},
+            layout=None,
+            scope=tle.gpu.smem,
+            alias=_flagmega_shared_arena,
+            alias_offset_bytes={{ workspace.offset_bytes + phase * 32 }},
+            nv_mma_shared_layout={{ "True" if workspace.matrix_compatible else "False" }},
+        )
+{% endfor %}
+{% else %}
     {{ workspace.variable }} = tle.gpu.alloc(
         [{{ workspace.shape | join(", ") }}],
         dtype={{ workspace.dtype }},
@@ -218,8 +270,29 @@ def {{ symbol }}(
         alias_offset_bytes={{ workspace.offset_bytes }},
         nv_mma_shared_layout={{ "True" if workspace.matrix_compatible else "False" }},
     )
+{% endif %}
 {% endfor %}
+{% if single_epoch %}
+    _paired_pipe_{{ stage.id | replace("-", "_") }} = tle.pipe(
+        capacity={{ stage.channels[0].capacity }}, scope="cta", name="{{ stage.id }}/gate_up",
+{% for channel in stage.channels %}{% for field in channel.fields %}
+        {{ field.name }}={{ field.workspace.variable }},
+{% endfor %}{% endfor %}
+    )
 {% for channel in stage.channels %}
+    {{ channel.reader_name }} = tle.gpu.types.paired_bank_endpoint(_paired_pipe_{{ stage.id | replace("-", "_") }}, "{{ channel.name }}")
+    {{ channel.writer_name }} = (tle.gpu.types.paired_bank_endpoint(_paired_pipe_{{ stage.id | replace("-", "_") }}, "{{ channel.name }}", writer=True), {{ channel.fields[0].workspace.variable }}__raw)
+{% endfor %}
+{% else %}
+{% for channel in stage.channels %}
+{% if named_transport %}
+{% if loop.first %}
+    _transport_ready = tle.gpu.alloc_barrier(arrive_count=160)
+    _transport_free = tle.gpu.alloc_barrier(arrive_count=160)
+{% endif %}
+    {{ channel.reader_name }} = ({{ channel.fields[0].workspace.variable }}, _transport_ready, _transport_free)
+    {{ channel.writer_name }} = {{ channel.reader_name }}
+{% else %}
     {{ channel.pipe_name }} = tle.pipe(
         capacity={{ channel.capacity }},
         scope="cta",
@@ -229,9 +302,16 @@ def {{ symbol }}(
 {% endfor %}
     )
     {{ channel.reader_name }} = {{ channel.pipe_name }}.reader()
+{% if cp_aligned %}
+    {{ channel.writer_name }} = ({{ channel.pipe_name }}.writer(), {{ channel.fields[0].workspace.variable }}__raw)
+{% else %}
     {{ channel.writer_name }} = {{ channel.pipe_name }}.writer()
+{% endif %}
+{% endif %}
 {% endfor %}
+{% endif %}
 {% endfor %}
+{% endif %}
 {% for handoff in pipeline_schedule.handoffs %}
 {# A wrap-around handoff's wait and commit are one index apart: the trip's
    producer waits on index i while its consumer commits index i+1 for the
@@ -250,12 +330,38 @@ def {{ symbol }}(
     {{ handoff.reader_name }} = {{ handoff.pipe_name }}.reader()
     {{ handoff.writer_name }} = {{ handoff.pipe_name }}.writer()
 {% endfor %}
+{% if bounded_prefetch %}
+    _prefetch_progress = tle.gpu.alloc(({{ 32 if no_shared or render_calls | selectattr("cross_layers","defined") | list else 8 }},),tl.int32,layout=None,nv_mma_shared_layout=False,alignment_bytes=4)
+    tl.store(tle.gpu.local_ptr(_prefetch_progress,(tl.full((),0,tl.int32),)),0)
+{% endif %}
+{% if no_shared and not render_calls | selectattr('continuous_stream','defined') | selectattr('continuous_stream') | list %}
+    tl.store(tle.gpu.local_ptr(_prefetch_progress,(tl.full((),10,tl.int32),)),0)
+{% else %}
+{% if bounded_prefetch %}
+    tl.store(tle.gpu.local_ptr(_prefetch_progress,(tl.full((),1,tl.int32),)),-1)
+    tl.store(tle.gpu.local_ptr(_prefetch_progress,(tl.full((),2,tl.int32),)),0)
+    tl.store(tle.gpu.local_ptr(_prefetch_progress,(tl.full((),3,tl.int32),)),-1)
+    tl.store(tle.gpu.local_ptr(_prefetch_progress,(tl.full((),5,tl.int32),)),-1)
+    tl.store(tle.gpu.local_ptr(_prefetch_progress,(tl.full((),6,tl.int32),)),0)
+{% endif %}
+{% if no_shared or render_calls | selectattr('cross_layers','defined') | list %}
+    tl.store(tle.gpu.local_ptr(_prefetch_progress,(tl.full((),8,tl.int32),)).to(tl.pointer_type(tl.uint64,3)),workspace.to(tl.uint64))
+    tl.store(tle.gpu.local_ptr(_prefetch_progress,(tl.full((),10,tl.int32),)),0)
+{% if render_calls[0].cross_lookahead_rows | default(0) %}
+    tl.store(tle.gpu.local_ptr(_prefetch_progress,(tl.full((),11,tl.int32),)),0)
+{% endif %}
+{% endif %}
+{% if no_shared %}
+    tl.store(tle.gpu.local_ptr(_prefetch_progress,(tl.full((),12,tl.int32),)),0)
+    tl.store(tle.gpu.local_ptr(_prefetch_progress,(tl.full((),13,tl.int32),)),0)
+{% endif %}
+{% endif %}
     tle.gpu.warp_specialize(
         [
             (
                 {{ symbol }}__consumer,
                 (
-                    {{ (pipeline_schedule.consumer_endpoints + signature_arguments) | join(",\n                    ") }},
+                    {{ (pipeline_schedule.consumer_endpoints + signature_arguments + (['_prefetch_progress'] if bounded_prefetch else [])) | join(",\n                    ") }},
                 ),
             ),
 {% if pipeline_schedule.auxiliary_events %}
@@ -266,15 +372,22 @@ def {{ symbol }}(
                 ),
             ),
 {% endif %}
+{% for bank in (('gate','up') if pipeline_schedule.producer_warps == 2 else (none,)) %}
             (
-                {{ symbol }}__producer,
+                {{ symbol }}__producer{% if bank is not none %}_{{ bank }}{% endif %},
                 (
-                    {{ (pipeline_schedule.producer_endpoints + signature_arguments) | join(",\n                    ") }},
+                    {{ (pipeline_schedule.producer_endpoints + signature_arguments + (['_prefetch_progress'] if bounded_prefetch else [])) | join(",\n                    ") }},
                 ),
             ),
+{% endfor %}
+{% if padding_prefetch %}
+{% for nw in (2,1) %}
+            ({{ symbol }}__producer_prefetch{{ nw }}, ({{ (pipeline_schedule.producer_endpoints + signature_arguments + (['_prefetch_progress'] if bounded_prefetch else [])) | join(', ') }},)),
+{% endfor %}
+{% endif %}
         ],
-        [{% if pipeline_schedule.auxiliary_events %}{{ pipeline_schedule.auxiliary_consumer_warps }}, {% endif %}{{ pipeline_schedule.producer_warps }}],
-        [{% if pipeline_schedule.auxiliary_events %}{{ pipeline_schedule.auxiliary_consumer_registers }}, {% endif %}{{ pipeline_schedule.producer_registers }}],
+        [{% if pipeline_schedule.auxiliary_events %}{{ pipeline_schedule.auxiliary_consumer_warps }}, {% endif %}{% if pipeline_schedule.producer_warps == 2 %}1, 1{% else %}{{ pipeline_schedule.producer_warps }}{% endif %}{% if padding_prefetch %}, 2, 1{% endif %}],
+        [{% if pipeline_schedule.auxiliary_events %}{{ pipeline_schedule.auxiliary_consumer_registers }}, {% endif %}{% if pipeline_schedule.producer_warps == 2 %}{{ pipeline_schedule.producer_registers }}, {{ pipeline_schedule.producer_registers }}{% else %}{{ pipeline_schedule.producer_registers }}{% endif %}{% if padding_prefetch %}, {{ render_calls[0].cross_prefetch_registers | default(24) }}, {{ render_calls[0].cross_prefetch_registers | default(24) }}{% endif %}],
     )
 {% else %}
 {% if unspecialized_pointer_arguments | default(()) %}

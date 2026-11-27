@@ -47,7 +47,7 @@ def test_split_plan_ignores_non_block_and_inconsistent_extent_axes():
 
 
 def test_split_plan_requires_the_attention_workload():
-    placements = (fm.Placement((8, 16), "yx", "bb"), )
+    placements = (fm.Placement((8, 16), "yx", "bb"),)
 
     with pytest.raises(TypeError, match="PagedAttentionWork"):
         paged_attention_split_plan(placements, None)
@@ -57,9 +57,9 @@ def test_split_plan_requires_the_attention_workload():
     "placements",
     (
         (),
-        (fm.Placement((1, 1), "yx", "bb"), ),
+        (fm.Placement((1, 1), "yx", "bb"),),
         (
-            fm.Placement((8, ), "x", "b"),
+            fm.Placement((8,), "x", "b"),
             fm.Placement((8, 16), "yx", "bb"),
         ),
     ),
@@ -88,7 +88,7 @@ def test_split_plan_maximizes_context_shards_when_one_kv_stream_is_shared():
     # whatever the plan does.  The work then says: cut the context as finely as
     # the mesh allows, because that is the only term left to reduce.  This is a
     # deliberate change from the old smallest-extent rule and is pinned here.
-    placements = (fm.Placement((8, 16), "yx", "bb"), )
+    placements = (fm.Placement((8, 16), "yx", "bb"),)
     latent = PagedAttentionWork(128, 1, 8192, 256)
 
     assert paged_attention_split_plan(placements, latent) == (1, 16)
@@ -97,7 +97,7 @@ def test_split_plan_maximizes_context_shards_when_one_kv_stream_is_shared():
 def test_split_plan_prefers_the_axis_that_matches_the_kv_stream_count():
     # Three block axes: only leaving 8 participants beside the split matches
     # the 8 KV streams, and that is the 16-wide axis (4 * 8 * 16 = 512).
-    placements = (fm.Placement((4, 8, 16), "zyx", "bbb"), )
+    placements = (fm.Placement((4, 8, 16), "zyx", "bbb"),)
     work = PagedAttentionWork(16, 8, 8192, 256)
 
     assert paged_attention_split_plan(placements, work) == (2, 16)
@@ -108,7 +108,7 @@ def test_kv_stream_ownership_outranks_the_cache_page_bound():
     # never overrides ownership.  A two-page cache would leave 14 of 16 context
     # shards idle, and the 16-way split is still right, because duplicating a
     # KV stream costs the *active* participants on every tile they read.
-    placements = (fm.Placement((8, 16), "yx", "bb"), )
+    placements = (fm.Placement((8, 16), "yx", "bb"),)
     two_page_cache = PagedAttentionWork(16, 8, 512, 256)
 
     assert paged_attention_split_plan(placements, two_page_cache) == (1, 16)
@@ -117,7 +117,7 @@ def test_kv_stream_ownership_outranks_the_cache_page_bound():
 def test_equal_extent_axes_resolve_to_the_lowest_axis():
     # A symmetric mesh gives both axes the same ownership quality and the same
     # usable shard count, so the plan stays deterministic on the lowest axis.
-    placements = (fm.Placement((4, 4), "yx", "bb"), )
+    placements = (fm.Placement((4, 4), "yx", "bb"),)
     work = PagedAttentionWork(16, 4, 8192, 256)
 
     assert paged_attention_split_plan(placements, work) == (0, 4)

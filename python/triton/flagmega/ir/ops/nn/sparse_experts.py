@@ -110,16 +110,13 @@ class SparseExperts(OpDefinition):
                 "activation_quantization": attrs.get("activation_quantization", "dynamic_fp8"),
                 "reduction_order": attrs.get("reduction_order", "relaxed"),
             })
-        down_node = Node(f"{name}.down", SparseExpertsDown.op_name, tuple(value.id for value in down.inputs),
-                         down.result_type, down.effect, down.attrs, metadata or {})
+        down_node = Node(f"{name}.down", SparseExpertsDown.op_name, tuple(value.id for value in down.inputs), down.result_type,
+                         down.effect, down.attrs, metadata or {})
         combine_inputs = (down_node, operands["router_expert_weights"])
-        combine = SparseExpertsCombine.prepare(
-            combine_inputs, {
-                "output_dtype":
-                tensor_of(cls.q.type_of(inputs)).dtype if attrs["output_dtype"] is None else attrs["output_dtype"],
-                "round_weighted_output":
-                attrs["round_weighted_output"],
-            })
+        combine = SparseExpertsCombine.prepare(combine_inputs, {
+            "output_dtype": tensor_of(cls.q.type_of(inputs)).dtype if attrs["output_dtype"] is None else attrs["output_dtype"],
+            "round_weighted_output": attrs["round_weighted_output"],
+        })
         combine_node = Node(name, SparseExpertsCombine.op_name, tuple(n.id for n in combine_inputs),
                             combine.result_type, combine.effect, combine.attrs, metadata or {})
         return dispatch_node, gate_node, down_node, combine_node
@@ -133,13 +130,12 @@ class SparseExperts(OpDefinition):
         values = {parameter.name: parameter.read(arguments) for parameter in cls.input_parameters}
         operands = tuple(Node(name, "builtin.var", (), context.types[name]) for name in node.inputs)
         dispatch, gate, down, combine = cls.stage_calls(operands, node.attrs, name=node.id)
-        values["dispatched"] = values["q"].unsqueeze(1).expand(-1, values["router_expert_ids"].shape[1],
-                                                               *values["q"].shape[1:])
-        values["activations"] = evaluate_gate_up(values, dispatch.type, gate.type, gate.attrs, context)
+        values["dispatched"] = values["q"].unsqueeze(1).expand(-1, values["router_expert_ids"].shape[1], *values["q"].shape[1:])
+        values["activations"] = evaluate_gate_up(values, dispatch.type, gate.type, gate.attrs,
+                                                 context)
         projected = evaluate_down(values, gate.type, down.type, down.attrs, context)
         from triton.flagmega.ir.ops.nn.sparse_experts_combine import evaluate_combine
-        return evaluate_combine(projected, values["router_expert_weights"], down.type, combine.type, combine.attrs,
-                                context)
+        return evaluate_combine(projected, values["router_expert_weights"], down.type, combine.type, combine.attrs, context)
 
     @classmethod
     def cost(cls, node):
@@ -153,8 +149,7 @@ class SparseExperts(OpDefinition):
         factors = tuple(
             definition.cost_factors(tuple(nodes[name]
                                           for name in call.inputs), call.attrs, call.type)
-            for definition, call in zip((SparseExpertsDispatch, SparseExpertsGateUp, SparseExpertsDown,
-                                         SparseExpertsCombine), calls))
+            for definition, call in zip((SparseExpertsDispatch, SparseExpertsGateUp, SparseExpertsDown, SparseExpertsCombine), calls))
         if any(value is None for value in factors):
             return None
         return OpCostFactors(

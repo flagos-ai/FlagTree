@@ -5,6 +5,7 @@
 from typing import Mapping, Sequence
 
 from triton.flagmega.errors import IRSchemaError
+from triton.flagmega.ir.ops._compute_profile import normalize_compute_profile, require_host_reference, verify_complete_f32
 from triton.flagmega.ir.distributed_inference import all_broadcast, placement_of, tensor_of
 from triton.flagmega.ir.distributed_type import SBPBroadCast
 from triton.flagmega.ir.model import DistributedType, IRType, Node
@@ -31,15 +32,20 @@ class RMSNorm(OpDefinition):
     weight = input_parameter(is_tensor() & has_rank(1))
     epsilon = attribute_parameter()
     weight_bias = attribute_parameter(default=1.0)
+    compute_profile = attribute_parameter(default="default")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
-        if not {"epsilon"}.issubset(attributes) or not set(attributes).issubset({"epsilon", "weight_bias"}):
+        if not {"epsilon"}.issubset(attributes) or not set(attributes).issubset({"epsilon", "weight_bias", "compute_profile"}):
             raise IRSchemaError("RMSNorm requires epsilon and optional weight_bias.")
         epsilon = float(attributes["epsilon"])
         if epsilon <= 0:
             raise IRSchemaError("RMSNorm epsilon must be positive.")
-        return {"epsilon": epsilon, "weight_bias": float(attributes.get("weight_bias", 1.0))}
+        profile = normalize_compute_profile(attributes, "RMSNorm", supported="ggml_f32_v1")
+        weight_bias = float(attributes.get("weight_bias", 1.0))
+        if profile and weight_bias != 0.0:
+            raise IRSchemaError("RMSNorm ggml_f32_v1 requires weight_bias=0.")
+        return {"epsilon": epsilon, "weight_bias": weight_bias, **profile}
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -47,6 +53,9 @@ class RMSNorm(OpDefinition):
         weight_type = cls.weight.type_of(inputs)
         value = tensor_of(value_type)
         weight = tensor_of(weight_type)
+        if attrs.get("compute_profile", "default") != "default":
+            verify_complete_f32(value_type, "RMSNorm")
+            verify_complete_f32(weight_type, "RMSNorm")
         if value.shape[-1] != weight.shape[0]:
             raise IRSchemaError("RMSNorm weight must match the value's last dimension.")
         placement = placement_of(value_type, weight_type)
@@ -57,15 +66,18 @@ class RMSNorm(OpDefinition):
         if value_type.partial is not None or weight_type.partial is not None:
             raise IRSchemaError("RMSNorm requires materialized distributed operands.")
         if not isinstance(value_type.axis_policies[-1], SBPBroadCast):
-            raise IRSchemaError("RMSNorm reduction axis cannot be split; use an explicit "
-                                "NormStats/NormApply decomposition.")
+            raise IRSchemaError(
+                "RMSNorm reduction axis cannot be split; use an explicit "
+                "NormStats/NormApply decomposition.")
         if not all_broadcast(weight_type):
-            raise IRSchemaError("RMSNorm weight must be broadcast when the reduction axis "
-                                "is materialized locally.")
+            raise IRSchemaError(
+                "RMSNorm weight must be broadcast when the reduction axis "
+                "is materialized locally.")
         return value_type
 
     @classmethod
     def evaluate(cls, node, arguments, context):
+        require_host_reference(node)
         return rms_norm(
             cls.value.read(arguments),
             cls.weight.read(arguments),

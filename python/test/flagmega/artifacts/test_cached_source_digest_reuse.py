@@ -50,7 +50,7 @@ def test_changed_cache_source_is_rejected_before_copy_proof_publication(tmp_path
         stream.seek(-1, 2)
         value = stream.read(1)[0]
         stream.seek(-1, 2)
-        stream.write(bytes((value ^ 1, )))
+        stream.write(bytes((value ^ 1,)))
     os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
     assert source.stat().st_ctime_ns != before.st_ctime_ns
     with pytest.raises(ArtifactError, match="source.*hash"):
@@ -99,7 +99,7 @@ def test_source_mutation_during_cached_copy_is_rejected(tmp_path, monkeypatch):
                 stream.seek(-1, 2)
                 value = stream.read(1)[0]
                 stream.seek(-1, 2)
-                stream.write(bytes((value ^ 1, )))
+                stream.write(bytes((value ^ 1,)))
 
     monkeypatch.setattr(rdata, "_clone_file", clone_then_change)
     with pytest.raises(ArtifactError, match="source snapshot changed while copying"):

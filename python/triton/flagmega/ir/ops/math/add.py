@@ -24,7 +24,7 @@ class Add(SameTypePointwiseOp):
     rhs = input_parameter(is_tensor())
     # Pointwise add reads each lhs element before writing the corresponding
     # result element, so an implementation may overwrite a dead lhs buffer.
-    inplace_input_parameters = (lhs, )
+    inplace_input_parameters = (lhs,)
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:

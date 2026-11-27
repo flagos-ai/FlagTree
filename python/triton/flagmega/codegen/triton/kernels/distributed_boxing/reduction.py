@@ -23,8 +23,10 @@ def partial_reduction_context(reduce_op: str, dtype: str) -> dict[str, str]:
     else:
         raise CodegenError(f"Partial Boxing has no reviewed reduction dtype {dtype!r}.")
     neutral = {"sum": "0", "prod": "1", "min": upper, "max": lower}[reduce_op]
-    reduction = ("tl.reduce(boxing_partial_values, axis=0, combine_fn=_flagmega_boxing_multiply)"
-                 if reduce_op == "prod" else f"tl.{reduce_op}(boxing_partial_values, axis=0)")
+    reduction = (
+        "tl.reduce(boxing_partial_values, axis=0, combine_fn=_flagmega_boxing_multiply)"
+        if reduce_op == "prod" else f"tl.{reduce_op}(boxing_partial_values, axis=0)"
+    )
     combine = {
         "sum": "boxing_accumulator + boxing_reduced",
         "prod": "boxing_accumulator * boxing_reduced",

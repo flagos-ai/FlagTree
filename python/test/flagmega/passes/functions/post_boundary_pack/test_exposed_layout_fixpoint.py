@@ -8,7 +8,7 @@ import pytest
 
 
 @pytest.mark.parametrize("generated", [False, True])
-@pytest.mark.parametrize("lanes,producer_lanes", [((4, ), (4, )), ((2, 4), (8, ))])
+@pytest.mark.parametrize("lanes,producer_lanes", [((4,), (4,)), ((2, 4), (8,))])
 def test_newly_exposed_callee_pack_reaches_caller_producer(generated, lanes, producer_lanes):
 
     class Graph(fm.Module):
@@ -17,7 +17,7 @@ def test_newly_exposed_callee_pack_reaches_caller_producer(generated, lanes, pro
             scalar = fm.tensor_type("float32", (1, 32))
             param = self.input("param", scalar, id="param")
             result = fm.F.tensors.pack(
-                fm.F.math.sigmoid(param), lanes, axes=(1, ) * len(lanes),
+                fm.F.math.sigmoid(param), lanes, axes=(1,) * len(lanes),
                 metadata={"vectorization_internal": True, "vectorization_root": "consumer"} if generated else {})
             self.function("layer", (param, ), (result, ), attrs={"reusable": True})
             ids = self.input("ids", fm.tensor_type("int32", (1, )), id="ids")

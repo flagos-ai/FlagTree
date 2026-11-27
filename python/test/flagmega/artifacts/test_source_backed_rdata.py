@@ -23,42 +23,37 @@ def _fixture(tmp_path, *, axis=0, cyclic=False, reshape=False):
     root.mkdir()
     (root / "config.json").write_text("{}")
     shapes = ((2, 6), (4, 6)) if axis == 0 else ((6, 2), (6, 4))
-    values = {
-        f"w{i}": np.arange(np.prod(shape), dtype=np.float32).reshape(shape) + i * 100
-        for i, shape in enumerate(shapes)
-    }
+    values = {f"w{i}": np.arange(np.prod(shape), dtype=np.float32).reshape(shape) + i * 100
+              for i, shape in enumerate(shapes)}
     save_file(values, root / "model.safetensors")
     checkpoint = DirectoryCheckpoint(root)
     placement = fm.Placement((2, 2), "cx", "cb")
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir",
                            metadata={"launch_contract": {"grid_mesh": placement.to_data()}})
-    weights = [
-        builder.weight(key, fm.tensor_type("float32", value.shape), source="checkpoint", key=key, id=key)
-        for key, value in values.items()
-    ]
+    weights = [builder.weight(key, fm.tensor_type("float32", value.shape),
+                              source="checkpoint", key=key, id=key) for key, value in values.items()]
     shape = (6, 6)
-    joined = builder.call("tensors.concat", weights, fm.tensor_type("float32", shape), attrs={"axis": axis},
-                          id="joined")
+    joined = builder.call("tensors.concat", weights, fm.tensor_type("float32", shape),
+                          attrs={"axis": axis}, id="joined")
     if reshape:
         shape = (2, 18)
-        joined = builder.call("tensors.reshape", (joined, ), fm.tensor_type("float32", shape), attrs={"shape": shape},
-                              id="view")
-    policies = (fm.SBP.split_contiguous((0, )), fm.SBP.split_block_cyclic(
-        (1, ), block_size=2) if cyclic else fm.SBP.split_contiguous((1, )))
+        joined = builder.call("tensors.reshape", (joined,), fm.tensor_type("float32", shape),
+                              attrs={"shape": shape}, id="view")
+    policies = (fm.SBP.split_contiguous((0,)),
+                fm.SBP.split_block_cyclic((1,), block_size=2) if cyclic else fm.SBP.split_contiguous((1,)))
     distributed = fm.DistributedType(fm.tensor_type("float32", shape), policies, placement)
-    output = builder.call("distributed.sharded_view", (joined, ), distributed, attrs={"new_type": distributed},
-                          id="output")
-    builder.function("main", (), (output, ))
+    output = builder.call("distributed.sharded_view", (joined,), distributed,
+                          attrs={"new_type": distributed}, id="output")
+    builder.function("main", (), (output,))
     module = freeze_constant_islands(builder.build(entry="main"))
     module = NttBufferizationPolicy(replace(BufferizationOptions.generic(alignment=4),
-                                            rdata_chip_sharding=True)).bufferize(module)
-    return replace(module, stage="bufferized_tir"), checkpoint, np.concatenate(tuple(values.values()),
-                                                                               axis=axis).reshape(shape)
+                                           rdata_chip_sharding=True)).bufferize(module)
+    return replace(module, stage="bufferized_tir"), checkpoint, np.concatenate(tuple(values.values()), axis=axis).reshape(shape)
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])
-@pytest.mark.parametrize("axis,cyclic,reshape", [(0, False, False), (1, False, False), (0, True, False),
-                                                 (0, False, True)])
+@pytest.mark.parametrize("axis,cyclic,reshape", [(0, False, False), (1, False, False),
+                                               (0, True, False), (0, False, True)])
 def test_source_snapshots_load_exact_dense_chip_layout(tmp_path, axis, cyclic, reshape, device):
     if device == "cuda" and not torch.cuda.is_available():
         pytest.skip("CUDA source transfer requires a GPU")
@@ -86,10 +81,8 @@ def test_source_snapshots_load_exact_dense_chip_layout(tmp_path, axis, cyclic, r
 def test_source_recipe_never_materializes_a_global_concat(tmp_path, monkeypatch):
     import triton.flagmega.artifacts.rdata as rdata
     module, checkpoint, _ = _fixture(tmp_path)
-
     def forbidden(*args, **kwargs):
         pytest.fail("source layout physically materialized its byte-preserving concat")
-
     monkeypatch.setattr(rdata, "materialize_numpy_recipe", forbidden)
     index = pack_rdata(module, checkpoint, tmp_path / "assets")
     assert index["digest_kind"] == "sha256-source-layout/v1"
@@ -131,10 +124,9 @@ def test_source_geometry_is_verified_against_recipe_and_plan(tmp_path, tamper):
         program["operands"][0]["offset"] = index["sources"][0]["nbytes"]
     else:
         recipe = module.constant_recipes[0]
-        nodes = tuple(
-            replace(node, op="tensors.permute", attrs={"axes": (1, 0)}) if node.op == "tensors.concat" else node
-            for node in recipe.nodes)
-        module = replace(module, constant_recipes=(replace(recipe, nodes=nodes), ))
+        nodes = tuple(replace(node, op="tensors.permute", attrs={"axes": (1, 0)})
+                      if node.op == "tensors.concat" else node for node in recipe.nodes)
+        module = replace(module, constant_recipes=(replace(recipe, nodes=nodes),))
     index["sha256"] = content_digest(index)
     (assets / "rdata.index.json").write_text(json.dumps(index))
     with pytest.raises(ArtifactError):
@@ -218,21 +210,18 @@ def test_permuted_vector_packing_transfers_without_cpu_reordering(tmp_path, devi
     value = np.arange(64, dtype=np.float32).reshape(8, 8)
     save_file({"weight": value}, root / "model.safetensors")
     checkpoint = DirectoryCheckpoint(root)
-
     class Graph(fm.Module):
-
         def forward(self):
             weight = self.weight("weight", fm.tensor_type("float32", (8, 8)), source="checkpoint", key="weight")
             packed = fm.F.tensors.pack(weight, lanes=lanes, axes=axes)
             permuted = fm.F.tensors.permute(packed, (1, 0))
-            output = fm.F.tensors.pack(permuted, lanes=(2, ), axes=(0, ))
-            self.function("main", (), (output, ))
-
+            output = fm.F.tensors.pack(permuted, lanes=(2,), axes=(0,))
+            self.function("main", (), (output,))
     module = freeze_constant_islands(Graph(dialect="tir", stage="selected_tir", entry="main").build())
     module = NttBufferizationPolicy(BufferizationOptions.generic(alignment=4)).bufferize(module)
     module = replace(module, stage="bufferized_tir", dialect="tir")
     expected = pack_physical(torch.from_numpy(value), 2, lanes, axes).permute(1, 0, 2, 3).contiguous()
-    expected = pack_physical(expected, 2, (2, ), (0, ), lanes)
+    expected = pack_physical(expected, 2, (2,), (0,), lanes)
     assets = tmp_path / "assets"
     index = pack_rdata(module, checkpoint, assets)
     assert len(index["programs"][0]["transforms"]) == 3
@@ -242,7 +231,6 @@ def test_permuted_vector_packing_transfers_without_cpu_reordering(tmp_path, devi
 
 
 class _FakeDriverFunction:
-
     def __init__(self, calls, name, status=0, pointer=None):
         self.calls, self.name, self.status, self.pointer = calls, name, status, pointer
         self.argtypes = None
@@ -266,9 +254,10 @@ class _FakeDriver:
 
 
 _DRIVERS = {
-    "hip": ("6.4", "libamdhip64.so", ("hipHostRegister", "hipHostGetDevicePointer", "hipHostUnregister"), 0x03),
-    "cuda":
-    (None, "libcuda.so.1", ("cuMemHostRegister_v2", "cuMemHostGetDevicePointer_v2", "cuMemHostUnregister"), 0x0B),
+    "hip": ("6.4", "libamdhip64.so",
+            ("hipHostRegister", "hipHostGetDevicePointer", "hipHostUnregister"), 0x03),
+    "cuda": (None, "libcuda.so.1",
+             ("cuMemHostRegister_v2", "cuMemHostGetDevicePointer_v2", "cuMemHostUnregister"), 0x0B),
 }
 
 
@@ -295,7 +284,7 @@ def test_source_pages_register_through_the_build_driver(tmp_path, monkeypatch, b
     assert (address, nbytes, flags) == (mapping.address, 64, _DRIVERS[build][3])
     assert (pointer_address, pointer_flags) == (mapping.address, 0)
     mapping.close()
-    assert driver.calls[-1] == ("unregister", (mapping.address, ))
+    assert driver.calls[-1] == ("unregister", (mapping.address,))
     assert mapping.array._mmap.closed
 
 
@@ -303,8 +292,8 @@ def test_source_pages_register_through_the_build_driver(tmp_path, monkeypatch, b
 def test_source_page_registration_failure_releases_the_mapping(tmp_path, monkeypatch, build):
     registered_file, path, driver, _, _ = _registered_file(tmp_path, monkeypatch, build, register=1)
     arrays = []
-    monkeypatch.setattr(
-        np, "memmap", lambda *args, _memmap=np.memmap, **kwargs: arrays.append(_memmap(*args, **kwargs)) or arrays[-1])
+    monkeypatch.setattr(np, "memmap", lambda *args, _memmap=np.memmap, **kwargs:
+                        arrays.append(_memmap(*args, **kwargs)) or arrays[-1])
     with pytest.raises(ArtifactError, match="cannot register"):
         registered_file(path)
     assert [name for name, _ in driver.calls] == ["register"]
@@ -315,8 +304,8 @@ def test_source_page_registration_failure_releases_the_mapping(tmp_path, monkeyp
 def test_source_page_mapping_failure_unregisters(tmp_path, monkeypatch, build):
     registered_file, path, driver, _, _ = _registered_file(tmp_path, monkeypatch, build, get_pointer=1)
     arrays = []
-    monkeypatch.setattr(
-        np, "memmap", lambda *args, _memmap=np.memmap, **kwargs: arrays.append(_memmap(*args, **kwargs)) or arrays[-1])
+    monkeypatch.setattr(np, "memmap", lambda *args, _memmap=np.memmap, **kwargs:
+                        arrays.append(_memmap(*args, **kwargs)) or arrays[-1])
     with pytest.raises(ArtifactError, match="cannot map"):
         registered_file(path)
     assert [name for name, _ in driver.calls] == ["register", "get_pointer", "unregister"]

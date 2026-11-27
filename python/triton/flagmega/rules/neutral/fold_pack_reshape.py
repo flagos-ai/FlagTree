@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Move Pack through a reshape using the reference complete shape map."""
+"""Move Pack through a reshape using nncase's complete shape map."""
 
 from triton.flagmega.ir import IRModule, Node, get_definition, try_div_exactly
 from triton.flagmega.ir.distributed_inference import tensor_of
@@ -36,13 +36,17 @@ def _plan(pack: Node, reshape: Node, source: Node):
         return None
     forward, backward = _complete_shape_map(matrix)
     lanes = tuple(int(value) for value in pack.attrs["lanes"])
-    raw_axes = (tuple(int(value) for value in pack.attrs["axes"]) if "axes" in pack.attrs else
-                (int(pack.attrs["axis"]), ) * len(lanes))
+    raw_axes = (
+        tuple(int(value) for value in pack.attrs["axes"])
+        if "axes" in pack.attrs
+        else (int(pack.attrs["axis"]),) * len(lanes)
+    )
     axes = normalize_axes(raw_axes, len(output_shape))
     mapped_axes: dict[int, int] = {}
     rewritten_shape = list(output_shape)
 
-    # This is the same two-sided complete-map algorithm as the reference # FoldPackReshape.  A lane may move through a split/merge only when it is
+    # This is the same two-sided complete-map algorithm as nncase's
+    # FoldPackReshape.  A lane may move through a split/merge only when it is
     # on the final effective row-major axis of that mapping.
     # Pack divides an axis by the product of all its lanes. Plan that group
     # once: independently processing repeated axes overwrites the new extent
@@ -56,8 +60,9 @@ def _plan(pack: Node, reshape: Node, source: Node):
             if axis not in output_axes:
                 continue
             position = output_axes.index(axis)
-            if position != len(output_axes) - 1 and any(output_shape[value] != 1
-                                                        for value in output_axes[position + 1:]):
+            if position != len(output_axes) - 1 and any(
+                output_shape[value] != 1 for value in output_axes[position + 1:]
+            ):
                 return None
             mapped_axes[axis] = input_axis
             break
@@ -94,7 +99,9 @@ def _rewrite(result: MatchResult, _module: IRModule) -> RewriteResult:
     input_axes, input_lanes, rewritten_shape = plan
 
     pack_definition = get_definition("tensors.pack")
-    prepared_pack = pack_definition.prepare((source, ), {"lanes": input_lanes, "axes": input_axes})
+    prepared_pack = pack_definition.prepare(
+        (source,), {"lanes": input_lanes, "axes": input_axes}
+    )
     packed = Node(
         f"{pack.id}.fold_pack_reshape.pack",
         "tensors.pack",
@@ -105,19 +112,21 @@ def _rewrite(result: MatchResult, _module: IRModule) -> RewriteResult:
         {"rewritten_by": "FoldPackReshape"},
     )
     reshape_definition = get_definition("tensors.reshape")
-    prepared_reshape = reshape_definition.prepare((packed, ), {"shape": rewritten_shape})
+    prepared_reshape = reshape_definition.prepare(
+        (packed,), {"shape": rewritten_shape}
+    )
     if prepared_reshape.result_type != pack.type:
         return RewriteResult(pack)
     replacement = Node(
         pack.id,
         "tensors.reshape",
-        (packed.id, ),
+        (packed.id,),
         prepared_reshape.result_type,
         prepared_reshape.effect,
         prepared_reshape.attrs,
         {**dict(pack.metadata), "rewritten_by": "FoldPackReshape"},
     )
-    return RewriteResult(replacement, (packed, ))
+    return RewriteResult(replacement, (packed,))
 
 
 def fold_pack_reshape_rule() -> RewriteRule:

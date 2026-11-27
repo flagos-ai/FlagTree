@@ -1,12 +1,14 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Neutral rule groups used by the two AutoPacking phases."""
+"""Neutral rule groups used by the two nncase-shaped AutoPacking phases."""
 
 from triton.flagmega.rules import RewriteRule
 from triton.flagmega.rules.neutral.fold_bitcast_bitcast import (
-    fold_bitcast_bitcast_rule, )
+    fold_bitcast_bitcast_rule,
+)
 from triton.flagmega.rules.neutral.fold_get_item_tuple import (
-    fold_get_item_tuple_rule, )
+    fold_get_item_tuple_rule,
+)
 from triton.flagmega.rules.neutral.fold_pack_bitcast import fold_pack_bitcast_rule
 from triton.flagmega.rules.neutral.fold_pack_reshape import fold_pack_reshape_rule
 from triton.flagmega.rules.neutral.fold_pack_transpose import fold_pack_transpose_rule
@@ -15,7 +17,7 @@ from triton.flagmega.rules.neutral.fold_pointwise_padded_slice import fold_point
 
 
 def auto_packing_neutral_rules() -> tuple[RewriteRule, ...]:
-    """Rules following target packing in the reference AutoPacking dataflow pass.
+    """Rules following target packing in nncase's AutoPacking dataflow pass.
 
     ``FoldConstCall`` is intentionally represented by FlagMega's later,
     explicit ``FreezeConstantIslands`` boundary.  Folding it here would erase

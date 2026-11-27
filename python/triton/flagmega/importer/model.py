@@ -9,8 +9,6 @@ from pathlib import Path
 from triton.flagmega.importer.checkpoint import Checkpoint, checkpoint_from_path
 from triton.flagmega.errors import ImporterError
 from triton.flagmega.importer.glm5_moe import Glm5MoeImporter, Glm5MoeModelImporter
-from triton.flagmega.importer.llama3 import Llama3LayerImporter, Llama3ModelImporter
-from triton.flagmega.importer.numerics.llama3 import apply_llama3_vllm_profile
 from triton.flagmega.importer.numerics import VLLM_AE10_INDUCTOR_LEVEL3, VLLM_INDUCTOR_LEVEL3
 from triton.flagmega.importer.numerics.qwen3 import apply_qwen3_vllm_profile
 from triton.flagmega.importer.numerics.qwen3_5_moe import apply_qwen35_moe_vllm_profile
@@ -25,30 +23,25 @@ importer_registry = ModelImporterRegistry()
 
 
 def _register_builtin_importers() -> None:
-    importer_registry.register(
-        ModelImporterSpec(
-            "qwen3",
-            frozenset({"Qwen3ForCausalLM"}),
-            frozenset({"qwen3"}),
-            lambda source, layer, revision, **options: Qwen3LayerImporter(source, layer=layer, revision=revision, **
-                                                                          options).import_module(),
-            lambda source, revision, **options: Qwen3ModelImporter(source, revision=revision, **options).import_module(
-            ),
-            execution_modes=frozenset({"decode-1", "prefill"}),
-            numerical_profiles={VLLM_INDUCTOR_LEVEL3: apply_qwen3_vllm_profile},
-        ))
-    importer_registry.register(
-        ModelImporterSpec(
-            "llama3",
-            frozenset({"LlamaForCausalLM"}),
-            frozenset({"llama"}),
-            lambda source, layer, revision, **options: Llama3LayerImporter(source, layer=layer, revision=revision, **
-                                                                           options).import_module(),
-            lambda source, revision, **options: Llama3ModelImporter(source, revision=revision, **options).import_module(
-            ),
-            execution_modes=frozenset({"decode-1", "prefill"}),
-            numerical_profiles={VLLM_INDUCTOR_LEVEL3: apply_llama3_vllm_profile},
-        ))
+    from triton.flagmega.importer.dflash import DFlashImporter
+    importer_registry.register(ModelImporterSpec(
+        "dflash", frozenset({"DFlashForCausalLM"}), frozenset({"dflash"}),
+        lambda source, layer, revision: DFlashImporter(source).import_module(),
+        lambda source, revision: DFlashImporter(source).import_module(),
+    ))
+    importer_registry.register(ModelImporterSpec(
+        "qwen3",
+        frozenset({"Qwen3ForCausalLM"}),
+        frozenset({"qwen3"}),
+        lambda source, layer, revision, **options: Qwen3LayerImporter(
+            source, layer=layer, revision=revision, **options
+        ).import_module(),
+        lambda source, revision, **options: Qwen3ModelImporter(
+            source, revision=revision, **options
+        ).import_module(),
+        execution_modes=frozenset({"decode-1", "prefill"}),
+        numerical_profiles={VLLM_INDUCTOR_LEVEL3: apply_qwen3_vllm_profile},
+    ))
     importer_registry.register(
         ModelImporterSpec(
             "qwen3.5",
@@ -57,17 +50,16 @@ def _register_builtin_importers() -> None:
             _import_qwen35_layer,
             lambda source, revision: Qwen35DenseImporter(source, revision=revision).import_module(),
         ))
-    importer_registry.register(
-        ModelImporterSpec(
-            "glm5_moe",
-            frozenset({"Glm5NextForConditionalGeneration"}),
-            frozenset({"glm5_next_text"}),
-            lambda source, layer, revision, **options: Glm5MoeImporter(source, layer=layer, revision=revision, **options
-                                                                       ).import_module(),
-            lambda source, revision, **options: Glm5MoeModelImporter(source, revision=revision, **options).
-            import_module(),
-            execution_modes=frozenset({"decode-1"}),
-        ))
+    importer_registry.register(ModelImporterSpec(
+        "glm5_moe",
+        frozenset({"Glm5NextForConditionalGeneration"}),
+        frozenset({"glm5_next_text"}),
+        lambda source, layer, revision, **options: Glm5MoeImporter(source, layer=layer, revision=revision,
+                                                                   **options).import_module(),
+        lambda source, revision, **options: Glm5MoeModelImporter(source, revision=revision,
+                                                                  **options).import_module(),
+        execution_modes=frozenset({"decode-1"}),
+    ))
     importer_registry.register(
         ModelImporterSpec(
             "qwen3.5_moe",
@@ -97,7 +89,7 @@ def import_model_layer(
     *,
     layer: int = 0,
     revision: str | None = None,
-    numerical_profile: str = "default",
+    numerical_profile: str = "nncase",
     mode: str = "decode-1",
     num_tokens: int = 1,
 ) -> IRModule:
@@ -113,7 +105,7 @@ def import_model(
     checkpoint: Checkpoint | str,
     *,
     revision: str | None = None,
-    numerical_profile: str = "default",
+    numerical_profile: str = "nncase",
     mode: str = "decode-1",
     num_tokens: int = 1,
 ) -> IRModule:
@@ -142,8 +134,8 @@ def apply_numerical_profile(module: IRModule, profile: str) -> IRModule:
     """
     if module.stage != "imported":
         raise ImporterError("Numerical profiles require imported IR; later checkpoints already encode their contract.")
-    existing = module.metadata.get("numerical_contract", "default")
-    if existing != "default" and existing != profile:
+    existing = module.metadata.get("numerical_contract", "nncase")
+    if existing != "nncase" and existing != profile:
         raise ImporterError(f"Cannot change numerical contract {existing!r} to {profile!r}; re-import the model.")
     spec = importer_registry.resolve(module.metadata, full_model=False)
     transform = spec.numerical_transform(profile)

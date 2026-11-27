@@ -12,7 +12,7 @@ def single_spec(**updates):
         "shape": (0, 4),
         "strides": (4, 1),
         "block_shape": (1, 4),
-        "source_shape_axes": ((0, ), ()),
+        "source_shape_axes": ((0,), ()),
         "padding": "zero",
     }
     value.update(updates)
@@ -34,7 +34,7 @@ def table_spec(**updates):
             "shape": (2, 4),
             "strides": (4, 1),
             "source_shape_axes": ((), ()),
-        }, ),
+        },),
     }
     value.update(updates)
     return value

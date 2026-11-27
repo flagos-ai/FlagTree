@@ -37,11 +37,11 @@ def test_device_strong_decay_keeps_zero_key_update_finite(tmp_path):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("requires SM90")
     values, initial, expected = strong_decay(torch)
-    state_type = fm.RefType("state", (("untouched", fm.tensor_type("float32", (1, ))),
-                                      ("matrix", fm.tensor_type("float32", initial.shape))))
-    output, state, resources = execute_block_update(tmp_path, torch, values, state_type,
-                                                    {"untouched": torch.tensor([23.]), "matrix": initial},
-                                                    attrs={"scale": 1.})
+    state_type = fm.RefType("state", (("untouched", fm.tensor_type("float32", (1,))),
+                                     ("matrix", fm.tensor_type("float32", initial.shape))))
+    output, state, resources = execute_block_update(
+        tmp_path, torch, values, state_type, {"untouched": torch.tensor([23.]), "matrix": initial},
+        attrs={"scale": 1.})
     torch.testing.assert_close(output, expected, rtol=0, atol=0)
     assert bool(torch.isfinite(state["matrix"]).all())
     assert torch.count_nonzero(state["matrix"]) == 0
@@ -59,11 +59,12 @@ def test_two_full_blocks_in_reusable_function_keep_strict_resources(tmp_path):
     beta = torch.full((128, 8), 0.5)
     alpha = torch.ones_like(beta)
     initial = torch.ones((8, 128, 128))
-    state_type = fm.RefType("state", (("untouched", fm.tensor_type("float32", (1, ))),
-                                      ("matrix", fm.tensor_type("float32", initial.shape))))
-    output, state, resources = execute_block_update(tmp_path, torch, (query, key, value, beta, alpha), state_type,
-                                                    {"untouched": torch.tensor([23.]), "matrix": initial},
-                                                    head_axes=(0, 1), attrs={"scale": 1.}, compose=True, reusable=True)
+    state_type = fm.RefType("state", (("untouched", fm.tensor_type("float32", (1,))),
+                                     ("matrix", fm.tensor_type("float32", initial.shape))))
+    output, state, resources = execute_block_update(
+        tmp_path, torch, (query, key, value, beta, alpha), state_type,
+        {"untouched": torch.tensor([23.]), "matrix": initial}, head_axes=(0, 1),
+        attrs={"scale": 1.}, compose=True, reusable=True)
     torch.testing.assert_close(output, value, rtol=0, atol=0)
     torch.testing.assert_close(state["matrix"], initial, rtol=0, atol=0)
     assert state["untouched"].item() == 23.
@@ -80,13 +81,13 @@ def test_broadcast_packed_state_in_reusable_function_keeps_strict_resources(tmp_
     beta = torch.full((128, 32), 0.5)
     alpha = torch.ones_like(beta)
     initial = torch.ones((1, 32, 128, 32, 4))
-    field = fm.tensor_type(fm.VectorType(fm.DType.FLOAT32, (4, )), initial.shape[:-1])
-    state_type = fm.RefType("state", (("untouched", fm.tensor_type("float32", (1, ))), ("matrix", field)))
+    field = fm.tensor_type(fm.VectorType(fm.DType.FLOAT32, (4,)), initial.shape[:-1])
+    state_type = fm.RefType("state", (("untouched", fm.tensor_type("float32", (1,))), ("matrix", field)))
     output, state, resources = execute_block_update(
         tmp_path, torch, (query, key, value, beta, alpha), state_type,
         {"untouched": torch.tensor([23.]), "matrix": initial}, placement_shape=(8, 16),
-        attrs={"scale": 1., "state_layout": ("layer", "head", "value", "key"), "state_vector_axes":
-               ("key", )}, compose=True, reusable=True)
+        attrs={"scale": 1., "state_layout": ("layer", "head", "value", "key"), "state_vector_axes": ("key",)},
+        compose=True, reusable=True)
     torch.testing.assert_close(output, value, rtol=0, atol=0)
     torch.testing.assert_close(state["matrix"], initial, rtol=0, atol=0)
     assert state["untouched"].item() == 23.

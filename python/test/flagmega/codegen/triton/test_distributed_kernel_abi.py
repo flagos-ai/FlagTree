@@ -16,21 +16,28 @@ from triton.flagmega.codegen.triton.physical_access import (
     emit_owner_base,
 )
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
-    _same_suffix_local_mapping, )
+    _same_suffix_local_mapping,
+)
 
 
 def _descriptor(storage_kind=fm.DistributedBufferStorageKind.CANONICAL_GLOBAL):
-    partial = (None if storage_kind.exposes_logical_coordinates else fm.SBP.partial((1, )))
+    partial = (
+        None
+        if storage_kind.exposes_logical_coordinates
+        else fm.SBP.partial((1,))
+    )
     distributed = fm.DistributedType(
         fm.tensor_type("bfloat16", (8, 16)),
-        (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((0, ), 4)),
+        (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((0,), 4)),
         fm.Placement((2, 4), "yx", "bb"),
         partial=partial,
     )
     local_elements = 8 * 8
     global_elements = 8 * 16
     per_owner = storage_kind is fm.DistributedBufferStorageKind.COMPACT_PER_OWNER
-    component_elements = (global_elements if storage_kind.exposes_logical_coordinates else local_elements)
+    component_elements = (
+        global_elements if storage_kind.exposes_logical_coordinates else local_elements
+    )
     backing_elements = local_elements * 8 if per_owner else component_elements
     physical = fm.PhysicalBuffer("workspace:value", "workspace", backing_elements * 2, 256)
     return fm.BufferDescriptor(
@@ -47,8 +54,9 @@ def _descriptor(storage_kind=fm.DistributedBufferStorageKind.CANONICAL_GLOBAL):
 
 
 def test_ordinary_distributed_kernel_is_local_shard_execution():
-    assert kernel_execution_kind("math.packed_dense_matmul", {"requires":
-                                                              ("mma_v3", )}) is KernelExecutionKind.LOCAL_SHARD
+    assert kernel_execution_kind(
+        "math.packed_dense_matmul", {"requires": ("mma_v3",)}
+    ) is KernelExecutionKind.LOCAL_SHARD
 
 
 @pytest.mark.parametrize(
@@ -61,7 +69,7 @@ def test_ordinary_distributed_kernel_is_local_shard_execution():
         ),
         fm.DistributedType(
             fm.tensor_type("bfloat16", (8, 16)),
-            (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 8)),
+            (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 8)),
             fm.Placement((2, 4), "yx", "bb"),
         ),
         fm.DistributedType(
@@ -73,24 +81,26 @@ def test_ordinary_distributed_kernel_is_local_shard_execution():
             fm.tensor_type("bfloat16", (8, 16)),
             (fm.SBP.broadcast(), fm.SBP.broadcast()),
             fm.Placement((2, 4), "yx", "bb"),
-            partial=fm.SBP.partial((1, )),
+            partial=fm.SBP.partial((1,)),
         ),
     ),
 )
 def test_ordinary_execution_kind_does_not_branch_on_distributed_type(distributed):
-    assert kernel_execution_kind("math.add",
-                                 {"distributed_type": distributed.to_data()}) is KernelExecutionKind.LOCAL_SHARD
+    assert kernel_execution_kind(
+        "math.add", {"distributed_type": distributed.to_data()}
+    ) is KernelExecutionKind.LOCAL_SHARD
 
 
 def test_grid_synchronization_does_not_turn_local_kernel_into_collective():
-    assert kernel_execution_kind("nn.rms_norm",
-                                 {"requires":
-                                  ("cooperative_grid", "grid_sync")}) is KernelExecutionKind.SYNCHRONIZED_LOCAL
+    assert kernel_execution_kind(
+        "nn.rms_norm", {"requires": ("cooperative_grid", "grid_sync")}
+    ) is KernelExecutionKind.SYNCHRONIZED_LOCAL
 
 
 def test_boxing_fact_marks_only_explicit_layout_transition_collective():
-    assert kernel_execution_kind("distributed.boxing",
-                                 {"collective_semantics": "gather-reduce-scatter"}) is KernelExecutionKind.COLLECTIVE
+    assert kernel_execution_kind(
+        "distributed.boxing", {"collective_semantics": "gather-reduce-scatter"}
+    ) is KernelExecutionKind.COLLECTIVE
 
 
 def test_canonical_global_buffer_maps_local_indices_through_sbp_descriptor():
@@ -101,14 +111,7 @@ def test_canonical_global_buffer_maps_local_indices_through_sbp_descriptor():
     assert abi.active_shape == (8, 8)
     assert abi.component_offset_elements == 0
     assert tuple(abi.storage_axis_coordinate(1, index) for index in range(8)) == (
-        4,
-        5,
-        6,
-        7,
-        12,
-        13,
-        14,
-        15,
+        4, 5, 6, 7, 12, 13, 14, 15,
     )
     assert abi.partial_group_owner_indices == ()
 
@@ -163,7 +166,9 @@ def test_plain_tensor_abi_exposes_the_complete_logical_coordinate_space():
 
 
 def test_render_abi_uses_owner_stride_only_for_compact_per_owner_storage():
-    abi = describe_local_buffer_abi(_descriptor(fm.DistributedBufferStorageKind.COMPACT_PER_OWNER))
+    abi = describe_local_buffer_abi(
+        _descriptor(fm.DistributedBufferStorageKind.COMPACT_PER_OWNER)
+    )
 
     assert abi["coordinate_space"] == "local"
     assert abi["component_stride_elements"] == 64
@@ -182,20 +187,15 @@ def test_replicated_local_buffer_uses_global_coordinates_without_owner_stride():
     assert abi["component_stride_elements"] == 0
     assert owner.component_offset_elements == 0
     assert tuple(owner.storage_axis_coordinate(1, index) for index in range(8)) == (
-        4,
-        5,
-        6,
-        7,
-        12,
-        13,
-        14,
-        15,
+        4, 5, 6, 7, 12, 13, 14, 15,
     )
 
 
 def test_physical_access_maps_local_coordinates_only_for_canonical_storage():
     canonical = describe_local_buffer_abi(_descriptor())
-    compact = describe_local_buffer_abi(_descriptor(fm.DistributedBufferStorageKind.COMPACT_PER_OWNER))
+    compact = describe_local_buffer_abi(
+        _descriptor(fm.DistributedBufferStorageKind.COMPACT_PER_OWNER)
+    )
 
     canonical_offset = emit_local_scalar_offset(canonical, ("row", "column"))
     compact_offset = emit_local_scalar_offset(compact, ("row", "column"))
@@ -213,7 +213,7 @@ def test_refined_compact_view_addresses_relative_to_parent_shard_origin():
     placement = fm.Placement((8, 16), "yx", "bb")
     split_y = fm.DistributedType(
         tensor,
-        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 256)),
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 256)),
         placement,
     )
     split_yx = fm.DistributedType(
@@ -221,7 +221,9 @@ def test_refined_compact_view_addresses_relative_to_parent_shard_origin():
         (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, 1), 16)),
         placement,
     )
-    physical = fm.PhysicalBuffer("block_local:parent", "block_local_data", 256 * 2, 256)
+    physical = fm.PhysicalBuffer(
+        "block_local:parent", "block_local_data", 256 * 2, 256
+    )
     descriptor = fm.BufferDescriptor(
         "refined",
         fm.DType.BFLOAT16,
@@ -253,15 +255,17 @@ def test_refined_compact_view_addresses_relative_to_parent_shard_origin():
 
 def test_vector_buffer_abi_exposes_scalar_pointer_strides():
     distributed = fm.DistributedType(
-        fm.tensor_type(fm.VectorType(fm.DType.FLOAT32, (4, )), (8, 16)),
-        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 8)),
-        fm.Placement((2, ), "x", "b"),
+        fm.tensor_type(fm.VectorType(fm.DType.FLOAT32, (4,)), (8, 16)),
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 8)),
+        fm.Placement((2,), "x", "b"),
     )
     component_bytes = 8 * 8 * 4 * fm.DType.FLOAT32.itemsize
-    physical = fm.PhysicalBuffer("workspace:vector", "workspace", component_bytes * 2, 256)
+    physical = fm.PhysicalBuffer(
+        "workspace:vector", "workspace", component_bytes * 2, 256
+    )
     buffer = fm.BufferDescriptor(
         "vector",
-        fm.VectorType(fm.DType.FLOAT32, (4, )),
+        fm.VectorType(fm.DType.FLOAT32, (4,)),
         (8, 16),
         (16, 1),
         "workspace",
@@ -273,12 +277,13 @@ def test_vector_buffer_abi_exposes_scalar_pointer_strides():
 
     abi = describe_local_buffer_abi(buffer)
 
-    assert abi["scalar_lane_shape"] == (4, )
+    assert abi["scalar_lane_shape"] == (4,)
     assert abi["scalar_storage_strides"] == (64, 4)
     assert abi["component_stride_elements"] == 64
     assert abi["component_stride_scalar_elements"] == 256
-    assert emit_local_scalar_offset(abi, ("outer", "inner"),
-                                    lane_coordinate="lane") == "(outer) * 64 + (inner) * 4 + (lane)"
+    assert emit_local_scalar_offset(
+        abi, ("outer", "inner"), lane_coordinate="lane"
+    ) == "(outer) * 64 + (inner) * 4 + (lane)"
 
 
 def test_broadcast_suffix_operand_uses_the_same_owner_local_mapping():
@@ -290,12 +295,16 @@ def test_broadcast_suffix_operand_uses_the_same_owner_local_mapping():
         ),
     }
     scale = {
-        "local_capacity_shape": (8, ),
-        "logical_coordinate_expressions": ("local_coord_0 + shard_coord_0 * 8", ),
+        "local_capacity_shape": (8,),
+        "logical_coordinate_expressions": (
+            "local_coord_0 + shard_coord_0 * 8",
+        ),
     }
     wrong_owner = {
-        "local_capacity_shape": (8, ),
-        "logical_coordinate_expressions": ("local_coord_0 + shard_coord_1 * 8", ),
+        "local_capacity_shape": (8,),
+        "logical_coordinate_expressions": (
+            "local_coord_0 + shard_coord_1 * 8",
+        ),
     }
 
     assert _same_suffix_local_mapping(scale, result)

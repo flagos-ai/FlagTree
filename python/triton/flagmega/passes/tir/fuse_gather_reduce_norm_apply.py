@@ -14,7 +14,7 @@ from triton.flagmega.rules.ntt.fuse_gather_reduce_norm_apply import (
 
 
 def fuse_gather_reduce_norm_apply(module: IRModule) -> IRModule:
-    return DataflowPass("fuse_gather_reduce_norm_apply", (fuse_gather_reduce_norm_apply_rule(), ),
+    return DataflowPass("fuse_gather_reduce_norm_apply", (fuse_gather_reduce_norm_apply_rule(),),
                         rewrite_constants=False, remove_unused=False).run(module)
 
 

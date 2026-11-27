@@ -27,8 +27,8 @@ def test_sequential_contiguous_and_block_cyclic_stages_reserve_largest_component
         fm.tensor_type("bfloat16", (1000, 32)),
         (
             fm.SBP.split(
-                fm.SplitStage.contiguous((0, )),
-                fm.SplitStage.block_cyclic((1, ), 64),
+                fm.SplitStage.contiguous((0,)),
+                fm.SplitStage.block_cyclic((1,), 64),
             ),
             fm.SBP.broadcast(),
         ),
@@ -53,11 +53,11 @@ def test_partial_replica_keeps_dense_component_shape_but_requires_owner_storage(
     assert not fm.is_fully_sharded_across_placement(value)
 
 
-def test_contiguous_split_uses_explicit_reference_local_capacity():
+def test_contiguous_split_uses_explicit_nncase_local_capacity():
     value = fm.DistributedType(
-        fm.tensor_type("bfloat16", (12, )),
-        (fm.SBP.split_contiguous((0, ), granularity=5), ),
-        fm.Placement((3, ), "x", "b"),
+        fm.tensor_type("bfloat16", (12,)),
+        (fm.SBP.split_contiguous((0,), granularity=5),),
+        fm.Placement((3,), "x", "b"),
     )
 
-    assert _fixed_shape(value) == (5, )
+    assert _fixed_shape(value) == (5,)

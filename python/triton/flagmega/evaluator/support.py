@@ -11,6 +11,7 @@ from triton.flagmega.errors import EvaluationError
 from triton.flagmega.ir import IRModule, Node
 from triton.flagmega.ir.ops.core import OpDefinition, get_definition
 
+
 _VISITOR_HANDLED_OPS = frozenset({"builtin.call", "control.for"})
 
 
@@ -36,7 +37,9 @@ class EvaluationSupport:
     def require_complete(self, *, stage: str | None = None) -> None:
         if self.is_complete:
             return
-        details = ", ".join(f"{gap.node_id}:{gap.op} ({gap.owner})" for gap in self.gaps)
+        details = ", ".join(
+            f"{gap.node_id}:{gap.op} ({gap.owner})" for gap in self.gaps
+        )
         raise EvaluationError(
             f"Reference evaluator has no handler for executable nodes: {details}.",
             stage=stage,
@@ -71,8 +74,14 @@ def executable_nodes(module: IRModule) -> tuple[tuple[Node, str], ...]:
     """Return nodes reachable by a reference run with their owning region."""
 
     live = _live_function_nodes(module)
-    owned: list[tuple[Node, str]] = [(node, "function") for node in module.nodes if node.id in live]
-    owned.extend((node, f"constant recipe {recipe.id}") for recipe in module.constant_recipes for node in recipe.nodes)
+    owned: list[tuple[Node, str]] = [
+        (node, "function") for node in module.nodes if node.id in live
+    ]
+    owned.extend(
+        (node, f"constant recipe {recipe.id}")
+        for recipe in module.constant_recipes
+        for node in recipe.nodes
+    )
     from triton.flagmega.ir.fusion import iter_fusions
 
     def visit_bodies(node: Node, owner: str) -> None:

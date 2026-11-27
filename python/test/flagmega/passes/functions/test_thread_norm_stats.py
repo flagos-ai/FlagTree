@@ -13,21 +13,17 @@ from triton.flagmega.passes.functions import thread_norm_stats_across_function_b
 @pytest.mark.parametrize("attrs", [
     {"reduction_order": "tree"},
     {"reduction_order": "tile_fma", "reduction_group_size": 2, "reduction_block_size": 4},
-    {
-        "reduction_order": "tile_fma", "reduction_group_size": 2, "reduction_block_size": 4,
-        "reduction_block_traversal": "reverse", "reduction_tree_group_size": 2
-    },
-    {
-        "reduction_order": "group_fma", "reduction_group_size": 2, "reduction_group_seed_index": 1,
-        "reduction_tree_group_size": 2
-    },
+    {"reduction_order": "tile_fma", "reduction_group_size": 2, "reduction_block_size": 4,
+     "reduction_block_traversal": "reverse", "reduction_tree_group_size": 2},
+    {"reduction_order": "group_fma", "reduction_group_size": 2,
+     "reduction_group_seed_index": 1, "reduction_tree_group_size": 2},
 ])
 def test_threading_preserves_complete_tree_contract_on_seed_and_output(attrs):
     original = _RepeatedLayer().build()
-    original = replace(
-        original, nodes=tuple(
-            replace(node, attrs={**node.attrs, **attrs}) if node.op == "nn.norm_stats" else node
-            for node in original.nodes))
+    original = replace(original, nodes=tuple(
+        replace(node, attrs={**node.attrs, **attrs})
+        if node.op == "nn.norm_stats" else node for node in original.nodes
+    ))
     rewritten = thread_norm_stats_across_function_boundaries(original)
     for node in rewritten.nodes:
         if node.op == "nn.norm_stats":
@@ -36,20 +32,20 @@ def test_threading_preserves_complete_tree_contract_on_seed_and_output(attrs):
 
 
 class _RepeatedLayer(fm.Module):
-
     def __init__(self):
         super().__init__(dialect="nn", stage="packed", entry="main")
 
     def forward(self):
         value_type = fm.tensor_type("float32", (2, 8))
-        parameter_type = fm.tensor_type("float32", (8, ))
-        token_type = fm.tensor_type("int32", (1, ))
+        parameter_type = fm.tensor_type("float32", (8,))
+        token_type = fm.tensor_type("int32", (1,))
 
         layer_input = self.input("layer_input", value_type, id="layer_input")
         layer_token = self.input("layer_token", token_type, id="layer_token")
         layer_scale = self.input("layer_scale", parameter_type, id="layer_scale")
         layer_bias = self.input("layer_bias", parameter_type, id="layer_bias")
-        layer_stats = fm.F.nn.norm_stats(layer_input, axis=1, use_mean=False, name="layer_stats")
+        layer_stats = fm.F.nn.norm_stats(
+            layer_input, axis=1, use_mean=False, name="layer_stats")
         layer_output = fm.F.nn.norm_apply(
             layer_input,
             layer_stats,
@@ -66,13 +62,18 @@ class _RepeatedLayer(fm.Module):
         scale = self.input("scale", parameter_type, id="scale")
         bias = self.input("bias", parameter_type, id="bias")
         result_type = fm.TupleType((value_type, token_type))
-        call0 = fm.F.builtin.call(value, token, scale, bias, result_type=result_type, callee="layer", name="call0")
+        call0 = fm.F.builtin.call(
+            value, token, scale, bias,
+            result_type=result_type, callee="layer", name="call0")
         value0 = fm.F.tensors.get_item(call0, 0, name="value0")
         token0 = fm.F.tensors.get_item(call0, 1, name="token0")
-        call1 = fm.F.builtin.call(value0, token0, scale, bias, result_type=result_type, callee="layer", name="call1")
+        call1 = fm.F.builtin.call(
+            value0, token0, scale, bias,
+            result_type=result_type, callee="layer", name="call1")
         value1 = fm.F.tensors.get_item(call1, 0, name="value1")
         token1 = fm.F.tensors.get_item(call1, 1, name="token1")
-        final_stats = fm.F.nn.norm_stats(value1, axis=1, use_mean=False, name="final_stats")
+        final_stats = fm.F.nn.norm_stats(
+            value1, axis=1, use_mean=False, name="final_stats")
         final_output = fm.F.nn.norm_apply(
             value1,
             final_stats,
@@ -102,7 +103,8 @@ def test_threads_seed_recurrent_and_final_statistics_without_changing_entry_abi(
     assert len(layer.parameters) == 5
     assert len(layer.outputs) == 3
     assert rewritten.node_map["layer_stats"].op == "nn.bind_norm_stats"
-    assert rewritten.node_map["layer_stats"].inputs == ("layer_input", "layer_input.norm_stats")
+    assert rewritten.node_map["layer_stats"].inputs == (
+        "layer_input", "layer_input.norm_stats")
 
     call0 = rewritten.node_map["call0"]
     call1 = rewritten.node_map["call1"]
@@ -110,10 +112,10 @@ def test_threads_seed_recurrent_and_final_statistics_without_changing_entry_abi(
     assert rewritten.node_map[call0.inputs[-1]].op == "nn.norm_stats"
     threaded = rewritten.node_map[call1.inputs[-1]]
     assert threaded.op == "builtin.get_item"
-    assert threaded.inputs == ("call0", )
+    assert threaded.inputs == ("call0",)
     assert threaded.attrs["index"] == 2
     assert rewritten.node_map["final_stats"].op == "builtin.get_item"
-    assert rewritten.node_map["final_stats"].inputs == ("call1", )
+    assert rewritten.node_map["final_stats"].inputs == ("call1",)
     assert rewritten.node_map["final_stats"].attrs["index"] == 2
 
     feeds = {
@@ -130,25 +132,23 @@ def test_threads_seed_recurrent_and_final_statistics_without_changing_entry_abi(
 
 
 def test_does_not_thread_when_state_output_is_ambiguous():
-
     class Ambiguous(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="nn", stage="packed", entry="main")
 
         def forward(self):
             value_type = fm.tensor_type("float32", (2, 8))
-            parameter_type = fm.tensor_type("float32", (8, ))
+            parameter_type = fm.tensor_type("float32", (8,))
             layer_input = self.input("layer_input", value_type)
             scale = self.input("scale", parameter_type)
             bias = self.input("bias", parameter_type)
             stats = fm.F.nn.norm_stats(layer_input, axis=1, use_mean=False)
-            output = fm.F.nn.norm_apply(layer_input, stats, scale, bias, axis=1, epsilon=1e-6, use_mean=False)
+            output = fm.F.nn.norm_apply(
+                layer_input, stats, scale, bias,
+                axis=1, epsilon=1e-6, use_mean=False)
             value = self.input("value", value_type)
             call = fm.F.builtin.call(
-                value,
-                scale,
-                bias,
+                value, scale, bias,
                 result_type=fm.TupleType((value_type, value_type)),
                 callee="layer",
             )

@@ -16,8 +16,7 @@ LAYER_ARGUMENT = '_flagmega_trace_layer_id'
 
 
 def digest(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'),
-                                     allow_nan=False).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
 
 
 class _ExecutionDomains:
@@ -36,16 +35,14 @@ class _ExecutionDomains:
         from triton.flagmega.codegen.triton.physical_access import emit_scalar_immediate
         from triton.flagmega.ir.tir.execution import execution_calls_of
 
-        context = {
-            'root': self.module.entry, 'function': function, 'chip_node_coordinates': coordinates, 'invocations': []
-        }
+        context = {'root': self.module.entry, 'function': function,
+                   'chip_node_coordinates': coordinates, 'invocations': []}
         if function == self.module.entry:
             specification = self.config['layer_bindings'][function]
             if set(specification) != {'constant'}:
                 raise CodegenError('Nonuniform owner root context is not statically bound.')
-            context['invocations'] = [{
-                'root_invocation': True, 'layer': specification['constant'], 'formal_bindings': []
-            }]
+            context['invocations'] = [{'root_invocation': True, 'layer': specification['constant'],
+                                       'formal_bindings': []}]
             return context
         specification = self.config['layer_bindings'][function]
         if 'formal' not in specification:
@@ -66,8 +63,7 @@ class _ExecutionDomains:
                 if parent != self.module.entry:
                     raise CodegenError('Nonuniform owner context requires direct static root invocations.')
                 edges = {edge.formal: edge for edge in call.arguments}
-                if len(edges) != len(call.arguments) or any(
-                        row.get('call') == call.call_id for row in context['invocations']):
+                if len(edges) != len(call.arguments) or any(row.get('call') == call.call_id for row in context['invocations']):
                     raise CodegenError('Nonuniform owner has duplicate typed invocation bindings or identities.')
                 values = []
                 for argument in arguments:
@@ -80,8 +76,8 @@ class _ExecutionDomains:
                         raise CodegenError('Nonuniform owner scalar formal is missing from its source ABI.')
                     edge = edges[argument['buffer']]
                     value = _constant(self.module, edge.actual)
-                    if not ((dtype == 'int32' and type(value) is int and -(1 << 31) <= value <
-                             (1 << 31)) or (dtype == 'bool' and type(value) is bool)):
+                    if not ((dtype == 'int32' and type(value) is int and -(1 << 31) <= value < (1 << 31))
+                            or (dtype == 'bool' and type(value) is bool)):
                         raise CodegenError('Nonuniform owner context is not an exact typed static scalar.')
                     values.append({'formal': edge.formal, 'actual': edge.actual, 'value': value, 'dtype': dtype})
                 layer = next((v['value'] for v in values if v['formal'] == specification['formal']), None)
@@ -99,23 +95,20 @@ class _ExecutionDomains:
                     projected_roles.append(invocation_role)
                     actuals = event['argument_expressions']
                     prefix = len(actuals) - len(signature)
-                    if (event.get('participation_active', 'True') not in ('True', True) or event['callee'] != function
-                            or prefix < 0):
+                    if (event.get('participation_active', 'True') not in ('True', True)
+                            or event['callee'] != function or prefix < 0):
                         raise CodegenError('Nonuniform function invocation context is not supported.')
                     for argument in arguments:
                         if argument.get('runtime_value_kind') != 'scalar':
                             continue
                         bound = next(v for v in values if v['formal'] == argument['buffer'])
-                        expression = emit_scalar_immediate({'storage': 'scalar', 'scalar_dtype': bound['dtype']},
-                                                           str(bound['value']))
+                        expression = emit_scalar_immediate({'storage': 'scalar', 'scalar_dtype': bound['dtype']}, str(bound['value']))
                         if actuals[prefix + signature.index(argument['name'])] != expression:
                             raise CodegenError('Nonuniform owner context changed during source ABI projection.')
                 if role not in projected_roles:
                     raise CodegenError('Nonuniform owner has no actual source invocation for its role.')
-                context['invocations'].append({
-                    'call': call.call_id, 'callee': function, 'layer': layer, 'formal_bindings': values, 'source_roles':
-                    projected_roles
-                })
+                context['invocations'].append({'call': call.call_id, 'callee': function,
+                    'layer': layer, 'formal_bindings': values, 'source_roles': projected_roles})
         if not context['invocations']:
             raise CodegenError('Nonuniform owner has no actual typed root invocation.')
         context['invocations'].sort(key=lambda row: row['call'])
@@ -129,10 +122,8 @@ class _ExecutionDomains:
 
         if event['kind'] not in {'tir.kernel_call', 'kernel_call'} or 'trace_execution_domain' in event:
             raise CodegenError('Nonuniform caller lacks a checked leaf execution-domain proof.')
-        raw = [
-            c for c in self.bindings.get(function, {}).get('call_abi', {}).get('kernel_calls', ())
-            if c['call'] == event['call']
-        ]
+        raw = [c for c in self.bindings.get(function, {}).get('call_abi', {}).get('kernel_calls', ())
+               if c['call'] == event['call']]
         prepared = [c for c in self.calls.get(function, ()) if c['call'] == event['call']]
         if len(raw) != 1 or len(prepared) != 1:
             raise CodegenError('Nonuniform caller has no exact raw/prepared identity.')
@@ -140,12 +131,11 @@ class _ExecutionDomains:
         helper = renderers._canonical_norm_stats_execution_active(raw, prepared)
         if helper is None:
             raise CodegenError('Nonuniform caller is not an eligible complete canonical NormStats owner.')
-        fresh = next(c for c in renderers.prepare_kernel_calls(self.bindings[function]['call_abi']['kernel_calls'],
-                                                               function_name=function) if c['call'] == event['call'])
-        checked = {
-            'ordinal', 'call', 'symbol', 'family', 'variant', 'execution_kind', 'arguments', 'signature',
-            *renderers._norm_stats_call(raw)
-        }
+        fresh = next(c for c in renderers.prepare_kernel_calls(
+            self.bindings[function]['call_abi']['kernel_calls'], function_name=function)
+            if c['call'] == event['call'])
+        checked = {'ordinal', 'call', 'symbol', 'family', 'variant', 'execution_kind', 'arguments', 'signature',
+                   *renderers._norm_stats_call(raw)}
         if any(digest(prepared.get(key)) != digest(fresh[key]) for key in checked):
             raise CodegenError('Nonuniform owner raw/prepared source or arithmetic identity differs.')
         if (helper != fresh['writer_active'] or prepared['writer_active'] != fresh['writer_active']
@@ -159,20 +149,19 @@ class _ExecutionDomains:
         actuals = {name: name for name in signature}
         definitions = [d for d in descriptor['device_functions'] if d['function'] == function]
         if definitions and definitions[0].get('function_pool_abi') is not None:
-            from triton.flagmega.codegen.triton.function_pool_abi import (bank_row_strides, function_pool_aliases,
-                                                                          plan_function_pool_abis, OFFSET_TABLE)
+            from triton.flagmega.codegen.triton.function_pool_abi import (
+                bank_row_strides, function_pool_aliases, plan_function_pool_abis, OFFSET_TABLE)
             from triton.flagmega.ir import verify_buffer_plan
             pool_abis, tables = plan_function_pool_abis(self.bindings,
-                                                        bank_row_strides(self.module, verify_buffer_plan(self.module)),
-                                                        entry=self.module.entry)
+                bank_row_strides(self.module, verify_buffer_plan(self.module)), entry=self.module.entry)
             pool = pool_abis.get(function)
             if digest(pool) != digest(definitions[0]['function_pool_abi']):
                 raise CodegenError('Nonuniform owner source aliases differ from the actual typed pool ABI.')
             actuals.update(function_pool_aliases(pool))
             if tables:
                 actuals[OFFSET_TABLE] = OFFSET_TABLE
-        projected = _kernel_source_event(prepared, actuals, {name: (name, 0)
-                                                             for name in signature}, [], (), memory_dependencies=())
+        projected = _kernel_source_event(prepared, actuals,
+            {name: (name, 0) for name in signature}, [], (), memory_dependencies=())
         try:
             expected = ast.dump(ast.parse(projected['arguments'], mode='eval'), include_attributes=False)
             actual = ast.dump(ast.parse(event['arguments'], mode='eval'), include_attributes=False)
@@ -191,8 +180,8 @@ class _ExecutionDomains:
         if any(level != 'b' and extent != 1 for extent, level in zip(hierarchy, levels)):
             raise CodegenError('Nonuniform owner chip/node context is not statically bound.')
         expected_mesh = _mesh_context(placement)
-        for name in ('grid_mesh', 'mesh_hierarchy', 'mesh_axis_names', 'mesh_levels', 'mesh_axis_sources',
-                     'mesh_coordinate_strides'):
+        for name in ('grid_mesh', 'mesh_hierarchy', 'mesh_axis_names', 'mesh_levels',
+                     'mesh_axis_sources', 'mesh_coordinate_strides'):
             if digest(descriptor.get(name)) != digest(expected_mesh[name]):
                 raise CodegenError('Nonuniform owner placement differs from the actual grid/shard mapping.')
         count = prod(extent for extent, level in zip(hierarchy, levels) if level == 'b')
@@ -205,51 +194,45 @@ class _ExecutionDomains:
         axis_bindings = []
         for axis, (extent, level) in enumerate(zip(hierarchy, levels)):
             stride = prod(v for v, l in zip(hierarchy[axis + 1:], levels[axis + 1:]) if l == 'b')
-            axis_bindings.append({
-                'axis': axis, 'extent': extent, 'level': level, 'source': 'CTA' if level == 'b' else 'static', 'stride':
-                stride if level == 'b' else 0, 'static_coordinate': None if level == 'b' else 0
-            })
+            axis_bindings.append({'axis': axis, 'extent': extent, 'level': level,
+                                  'source': 'CTA' if level == 'b' else 'static',
+                                  'stride': stride if level == 'b' else 0,
+                                  'static_coordinate': None if level == 'b' else 0})
         exclusive = {}
         for name, abi in zip(('input', 'result'), abis):
             value = abi['distributed_type'].get('exclusive')
-            pairs = [] if value is None else sorted(
-                zip(value['axes'],
-                    value.get('owner_coordinates') or [0] * len(value['axes'])))
-            exclusive[name] = {'axes': [axis for axis, _ in pairs], 'owner_coordinates': [owner for _, owner in pairs]}
+            pairs = [] if value is None else sorted(zip(value['axes'],
+                value.get('owner_coordinates') or [0] * len(value['axes'])))
+            exclusive[name] = {'axes': [axis for axis, _ in pairs],
+                               'owner_coordinates': [owner for _, owner in pairs]}
         ctas = []
         for cta in range(count):
             coordinates = [(cta // axis['stride']) % axis['extent'] if axis['level'] == 'b' else 0
                            for axis in axis_bindings]
             writer = all(coordinates[i] == 0 for i, level in enumerate(levels) if level == 'b')
-            owned = all(coordinates[axis] == owner
-                        for value in exclusive.values()
+            owned = all(coordinates[axis] == owner for value in exclusive.values()
                         for axis, owner in zip(value['axes'], value['owner_coordinates']))
             if writer and owned:
                 ctas.append(cta)
         if not ctas:
             raise CodegenError('Nonuniform owner intersection has an empty execution domain.')
-        context = self._invocation_context(
-            function, role, descriptor,
-            [{'axis': i, 'level': level, 'value': 0} for i, level in enumerate(levels) if level != 'b'])
-        return {
-            'function': function, 'call': event['call'], 'role': role, 'ctas': ctas, 'placement': placement,
-            'grid_mapping': {'grid': list(grid), 'axis_bindings': axis_bindings}, 'exclusive': exclusive,
-            'invocation_context': context, 'proof': {
-                'helper_source_sha256': hashlib.sha256(Path(renderers.__file__).read_bytes()).hexdigest(),
-                'base_semantic_hash': self.module.semantic_hash, 'raw_call_sha256': digest(raw), 'prepared_call_sha256':
-                digest(prepared), 'projected_event_sha256': digest(event), 'helper_predicate': helper,
-                'prepared_predicate': prepared['participation_active'], 'projected_predicate':
-                event['participation_active']
-            }
-        }
+        context = self._invocation_context(function, role, descriptor,
+                    [{'axis': i, 'level': level, 'value': 0} for i, level in enumerate(levels) if level != 'b'])
+        return {'function': function, 'call': event['call'], 'role': role,
+                'ctas': ctas, 'placement': placement,
+                'grid_mapping': {'grid': list(grid), 'axis_bindings': axis_bindings},
+                'exclusive': exclusive, 'invocation_context': context,
+                'proof': {'helper_source_sha256': hashlib.sha256(Path(renderers.__file__).read_bytes()).hexdigest(),
+                    'base_semantic_hash': self.module.semantic_hash, 'raw_call_sha256': digest(raw),
+                    'prepared_call_sha256': digest(prepared), 'projected_event_sha256': digest(event),
+                    'helper_predicate': helper, 'prepared_predicate': prepared['participation_active'],
+                    'projected_predicate': event['participation_active']}}
 
     def add(self, proof, event, site_id):
         key = {name: proof[name] for name in ('function', 'role', 'call')}
         key['kind'] = 'device_call_envelope'
-        entry = {
-            **proof, 'site_key': key, 'site_key_sha256': digest(key), 'site_id': site_id, 'record_mode':
-            'admission_only' if site_id is None else 'caller_pair'
-        }
+        entry = {**proof, 'site_key': key, 'site_key_sha256': digest(key), 'site_id': site_id,
+                 'record_mode': 'admission_only' if site_id is None else 'caller_pair'}
         identity = (proof['function'], proof['call'], proof['role'])
         if identity in self.entries:
             raise CodegenError('Duplicate nonuniform execution-domain identity.')
@@ -258,10 +241,8 @@ class _ExecutionDomains:
 
     def attach(self, dictionary):
         if self.entries:
-            dictionary['execution_domains'] = {
-                'schema': 'flagmega.trace-execution-domains/v1', 'entries':
-                [self.entries[key] for key in sorted(self.entries)]
-            }
+            dictionary['execution_domains'] = {'schema': 'flagmega.trace-execution-domains/v1',
+                'entries': [self.entries[key] for key in sorted(self.entries)]}
 
 
 def validate_option(config, *, target, codegen_backend='triton', emit_executable=True):
@@ -273,7 +254,7 @@ def validate_option(config, *, target, codegen_backend='triton', emit_executable
         _validate_census_option(config)
         return
     if not isinstance(config, Mapping) or set(config) != {
-            'schema', 'base_semantic_hash', 'layer_bindings', 'detailed_calls', 'typed_ctas', 'capacity', 'coarse_calls'
+        'schema', 'base_semantic_hash', 'layer_bindings', 'detailed_calls', 'typed_ctas', 'capacity', 'coarse_calls'
     } or config.get('schema') != SCHEMA:
         raise CodegenError('Invalid typed diagnostic trace configuration schema.')
     if not isinstance(config['base_semantic_hash'], str) or len(config['base_semantic_hash']) != 64:
@@ -283,8 +264,8 @@ def validate_option(config, *, target, codegen_backend='triton', emit_executable
     if type(config['capacity']) is not int or config['capacity'] <= 0:
         raise CodegenError('Trace capacity must be a positive integer.')
     ctas = config['typed_ctas']
-    if (not isinstance(ctas, (list, tuple)) or not ctas
-            or any(type(value) is not int or not 0 <= value <= 0x7fffffff for value in ctas)
+    if (not isinstance(ctas, (list, tuple)) or not ctas or
+            any(type(value) is not int or not 0 <= value <= 0x7fffffff for value in ctas)
             or list(ctas) != sorted(set(ctas))):
         raise CodegenError('Trace CTA allowlist must contain unique sorted nonnegative i32 IDs.')
     if not isinstance(config['layer_bindings'], Mapping) or not isinstance(config['detailed_calls'], (tuple, list)):
@@ -292,7 +273,6 @@ def validate_option(config, *, target, codegen_backend='triton', emit_executable
 
 
 class TracePlan:
-
     def __new__(cls, module, bindings, encoded_calls, config):
         # Keep the existing trace contract independent of fixed-slot census.
         if cls is TracePlan and isinstance(config, Mapping) and config.get('schema') == CENSUS_SCHEMA:
@@ -319,16 +299,13 @@ class TracePlan:
                     raise CodegenError('Trace constant must be an exact int32 value.')
                 self.layers[function] = {'expression': f'tl.full((), {value}, tl.int32)', 'constant': value}
             elif set(specification) == {'formal'}:
-                matching = [
-                    argument for argument in bindings[function]['arguments']
-                    if argument['buffer'] == specification['formal']
-                ]
+                matching = [argument for argument in bindings[function]['arguments']
+                            if argument['buffer'] == specification['formal']]
                 if (len(matching) != 1 or matching[0].get('runtime_value_kind') != 'scalar'
                         or matching[0].get('scalar_dtype') != 'int32'):
                     raise CodegenError('Trace layer formal must be an existing scalar int32 ABI argument.')
-                self.layers[function] = {
-                    'expression': matching[0]['name'], 'formal': matching[0]['name'], 'buffer': specification['formal']
-                }
+                self.layers[function] = {'expression': matching[0]['name'], 'formal': matching[0]['name'],
+                                         'buffer': specification['formal']}
             else:
                 raise CodegenError('Trace binding must select exactly one formal or constant.')
         selected = set()
@@ -356,22 +333,18 @@ class TracePlan:
             call['arguments'] = arguments
             call['signature'] = ', '.join(arguments)
             call['trace_layer_actual'] = self.layers[function]['expression']
-            fields = ('paired', ) if call['paired_weight_fields'] else ('gate', 'up')
+            fields = ('paired',) if call['paired_weight_fields'] else ('gate', 'up')
             call['trace_sites'] = {
-                f'{action}_{field}':
-                self.site(function, 'producer' if action == 'acquire' else 'consumer', identity, 'pipe_boundary',
-                          action=action, field=field, family=call['family'], variant=call['variant'],
-                          layer_provenance=self.layers[function])
-                for action in ('acquire', 'wait', 'release')
-                for field in fields
+                f'{action}_{field}': self.site(function, 'producer' if action == 'acquire' else 'consumer',
+                    identity, 'pipe_boundary', action=action, field=field,
+                    family=call['family'], variant=call['variant'],
+                    layer_provenance=self.layers[function])
+                for action in ('acquire', 'wait', 'release') for field in fields
             }
 
     def site(self, function, role, call, kind, **facts):
-        key = {
-            'function': function, 'role': role, 'call': call, 'kind': kind,
-            **{name: facts[name]
-               for name in ('action', 'field') if name in facts}
-        }
+        key = {'function': function, 'role': role, 'call': call, 'kind': kind,
+               **{name: facts[name] for name in ('action', 'field') if name in facts}}
         full_hash = digest(key)
         identity = int(full_hash[:8], 16) & 0x7fffffff
         previous = self.sites.get(identity)
@@ -399,8 +372,7 @@ class TracePlan:
             for event in events:
                 kind = event['kind']
                 if kind == 'loop':
-                    raise CodegenError(
-                        'Trace v1 requires explicit invocation bindings; structured-loop support is not proven.')
+                    raise CodegenError('Trace v1 requires explicit invocation bindings; structured-loop support is not proven.')
                 if kind not in {'function_call', 'pipeline_kernel_call', 'tir.kernel_call', 'kernel_call'}:
                     continue
                 owner = None
@@ -427,9 +399,8 @@ class TracePlan:
                         layer = specification['expression']
                     provenance = {'callee': callee, **specification, 'actual': layer}
                 event['trace_site'] = self.site(function, role, event['call'], 'device_call_envelope',
-                                                callee=event.get('callee'), family=event.get('family'),
-                                                variant=event.get('variant'), layer_provenance=provenance,
-                                                completion='return; excludes following drains/barriers')
+                    callee=event.get('callee'), family=event.get('family'), variant=event.get('variant'),
+                    layer_provenance=provenance, completion='return; excludes following drains/barriers')
                 event['trace_layer'] = layer
                 if owner is not None:
                     self._execution_domains.add(owner, event, event['trace_site'])
@@ -439,18 +410,16 @@ class TracePlan:
         for function, definition in definitions.items():
             for role in ('consumer', 'producer', 'auxiliary'):
                 walk(definition['schedule'].get(role + '_events', ()), function, role)
-        sites = {
-            'schema': 'flagmega.trace-sites/v1', 'base_semantic_hash': self.config['base_semantic_hash'],
-            'config_sha256': digest(self.config), 'sites': sorted(self.sites.values(), key=lambda row: row['site_id'])
-        }
+        sites = {'schema': 'flagmega.trace-sites/v1', 'base_semantic_hash': self.config['base_semantic_hash'],
+                 'config_sha256': digest(self.config), 'sites': sorted(self.sites.values(), key=lambda row: row['site_id'])}
         self._execution_domains.attach(sites)
-        descriptor['triton_trace'] = {
-            'schema': SCHEMA, 'config': self.config, 'config_sha256': digest(self.config), 'dictionary': sites,
-            'dictionary_sha256': digest(sites), 'accepted_timing_eligible': False, 'native_contract': {
-                'event_kinds': [272, 273], 'record_bytes': 64, 'typed_ctas': list(self.config['typed_ctas']),
-                'capacity': self.config['capacity'], 'runtime_stream_filtering': False
-            }
-        }
+        descriptor['triton_trace'] = {'schema': SCHEMA, 'config': self.config, 'config_sha256': digest(self.config),
+                                    'dictionary': sites, 'dictionary_sha256': digest(sites),
+                                    'accepted_timing_eligible': False,
+                                    'native_contract': {'event_kinds': [272, 273], 'record_bytes': 64,
+                                                        'typed_ctas': list(self.config['typed_ctas']),
+                                                        'capacity': self.config['capacity'],
+                                                        'runtime_stream_filtering': False}}
         return descriptor
 
 
@@ -459,12 +428,12 @@ CENSUS_LAYER_ARGUMENT = '_flagmega_census_layer_id'
 
 
 def _validate_census_option(config):
-    if set(config) != {
-            'schema', 'base_semantic_hash', 'layer_bindings', 'service_calls', 'expected_occurrences', 'ctas'
-    }:
+    if set(config) != {'schema', 'base_semantic_hash', 'layer_bindings', 'service_calls',
+                       'expected_occurrences', 'ctas'}:
         raise CodegenError('Invalid census configuration schema.')
     identity = config['base_semantic_hash']
-    if (not isinstance(identity, str) or len(identity) != 64 or any(c not in '0123456789abcdef' for c in identity)):
+    if (not isinstance(identity, str) or len(identity) != 64
+            or any(c not in '0123456789abcdef' for c in identity)):
         raise CodegenError('Census configuration requires the complete base semantic hash.')
     for key, label in (('ctas', 'CTA'), ('expected_occurrences', 'occurrence')):
         if type(config[key]) is not int or not 0 < config[key] <= 65536:
@@ -483,7 +452,8 @@ def _validate_census_option(config):
         elif set(specification) == {'formal', 'values'}:
             values = specification['values']
             if (not isinstance(specification['formal'], str) or not specification['formal']
-                    or not isinstance(values, (list, tuple)) or not values or any(type(v) is not int for v in values)
+                    or not isinstance(values, (list, tuple)) or not values
+                    or any(type(v) is not int for v in values)
                     or list(values) != list(range(len(values)))):
                 raise CodegenError('Census formal values must be a complete zero-based unique i32 domain.')
         else:
@@ -526,18 +496,15 @@ class CensusPlan:
             if 'constant' in specification:
                 if function != self.entry:
                     raise CodegenError('Census constants are admitted only for the single root invocation.')
-                self.layers[function] = {
-                    'expression': f"tl.full((), {specification['constant']}, tl.int32)", 'values': [None]
-                }
+                self.layers[function] = {'expression': f"tl.full((), {specification['constant']}, tl.int32)",
+                                         'values': [None]}
             else:
                 matching = [a for a in bindings[function]['arguments'] if a['buffer'] == specification['formal']]
                 if (len(matching) != 1 or matching[0].get('runtime_value_kind') != 'scalar'
                         or matching[0].get('scalar_dtype') != 'int32' or function == self.entry):
                     raise CodegenError('Census layer formal must be an existing non-root scalar int32 ABI argument.')
-                self.layers[function] = {
-                    'expression': matching[0]['name'], 'formal': matching[0]['name'], 'buffer': specification['formal'],
-                    'values': list(specification['values'])
-                }
+                self.layers[function] = {'expression': matching[0]['name'], 'formal': matching[0]['name'],
+                                         'buffer': specification['formal'], 'values': list(specification['values'])}
         self.invocations = self._prove_invocations(module)
         for selection in config['service_calls']:
             function, identity = selection['function'], selection['call']
@@ -626,19 +593,15 @@ class CensusPlan:
                         signature = definition['signature_arguments']
                         actuals = event['argument_expressions']
                         prefix = len(actuals) - len(signature)
-                        if (formal not in signature or prefix < 0 or actuals[prefix + signature.index(formal)]
-                                != f"tl.full((), {expected['value']}, tl.int32)"):
+                        if (formal not in signature or prefix < 0
+                                or actuals[prefix + signature.index(formal)] != f"tl.full((), {expected['value']}, tl.int32)"):
                             raise CodegenError('Census layer actual changed during normal ABI projection.')
                         observed.append(event['call'])
                     if event['kind'] != 'barrier' or event['scope'] != 'grid':
                         continue
                     base = len(rows)
-                    identity = {
-                        'function': function, 'role': role, 'schedule_index': index, **{
-                            k: deepcopy(event.get(k))
-                            for k in ('scope', 'axis_group_axes', 'after', 'before', 'ranges')
-                        }
-                    }
+                    identity = {'function': function, 'role': role, 'schedule_index': index,
+                                **{k: deepcopy(event.get(k)) for k in ('scope', 'axis_group_axes', 'after', 'before', 'ranges')}}
                     for layer in self.layers[function]['values']:
                         row = {'kind': 'barrier', **identity, 'layer': layer, 'points': [0, 1, 2]}
                         rows.append({'occurrence': len(rows), 'identity_sha256': digest(row), **row})
@@ -649,8 +612,7 @@ class CensusPlan:
             context = {'layer_parameter': CENSUS_LAYER_ARGUMENT}
             for role in ('consumer', 'producer'):
                 events = schedules[function][role + '_events']
-                matching = [(i, e)
-                            for i, e in enumerate(events)
+                matching = [(i, e) for i, e in enumerate(events)
                             if e.get('call') == identity and e['kind'] == 'pipeline_kernel_call']
                 if len(matching) != 1:
                     raise CodegenError('Census service must have one normal invocation in each role.')
@@ -662,28 +624,22 @@ class CensusPlan:
                         or event['pipeline_commits_per_invocation'] != 6):
                     raise CodegenError('Census service needs its own immediate complete normal drain and fixed epochs.')
                 endpoint_key = 'reader_name' if role == 'consumer' else 'writer_name'
-                channels = [
-                    channel for stage in schedules[function]['stages'] for channel in stage['channels']
-                    if channel[endpoint_key] == event['census_endpoint']
-                ]
+                channels = [channel for stage in schedules[function]['stages'] for channel in stage['channels']
+                            if channel[endpoint_key] == event['census_endpoint']]
                 if (len(channels) != 1 or channels[0]['capacity'] != 2
                         or [field['name'] for field in channels[0]['fields']] != ['gate', 'up']):
                     raise CodegenError('Census service requires the actual two-slot paired gate/up resource.')
                 base = len(rows)
                 context[role + '_base'] = base
                 for layer in self.layers[function]['values']:
-                    row = {
-                        'kind': 'service', 'function': function, 'role': role, 'call': identity, 'schedule_index':
-                        index, 'layer': layer, 'points': [0, 1, 2, 3], 'epochs':
-                        event['pipeline_commits_per_invocation'], 'slots': channels[0]['capacity'],
-                        'drain_schedule_index': index + 1, 'drain_endpoints': events[index + 1]['endpoints']
-                    }
+                    row = {'kind': 'service', 'function': function, 'role': role, 'call': identity,
+                           'schedule_index': index, 'layer': layer, 'points': [0, 1, 2, 3],
+                           'epochs': event['pipeline_commits_per_invocation'], 'slots': channels[0]['capacity'],
+                           'drain_schedule_index': index + 1, 'drain_endpoints': events[index + 1]['endpoints']}
                     rows.append({'occurrence': len(rows), 'identity_sha256': digest(row), **row})
                 events[index + 1]['census_occurrence'] = self._expression(function, base)
             call['census'] = context
-            rendered = [
-                c for c in descriptor['render_calls'] if c['call'] == identity and c['symbol'] == call['symbol']
-            ]
+            rendered = [c for c in descriptor['render_calls'] if c['call'] == identity and c['symbol'] == call['symbol']]
             if len(rendered) != 1:
                 raise CodegenError('Census service has no unique normal rendered helper.')
             rendered[0]['census'] = context
@@ -694,26 +650,22 @@ class CensusPlan:
         mapping = 2 * ctas * 2 * 4
         logical = 64 + timestamps + mapping
         per_cta = ((logical + ctas - 1) // ctas + 63) // 64 * 64
-        dictionary = {
-            'schema': 'flagmega.census-sites/v1', 'base_semantic_hash': self.config['base_semantic_hash'],
-            'config_sha256': digest(self.config), 'occurrences': rows
-        }
+        dictionary = {'schema': 'flagmega.census-sites/v1', 'base_semantic_hash': self.config['base_semantic_hash'],
+                      'config_sha256': digest(self.config), 'occurrences': rows}
         self._execution_domains.attach(dictionary)
         descriptor['triton_trace'] = {
-            'schema': CENSUS_SCHEMA, 'config': self.config, 'config_sha256': digest(self.config), 'dictionary':
-            dictionary, 'dictionary_sha256': digest(dictionary), 'accepted_timing_eligible': False, 'native_contract': {
-                'occurrences': count, 'ctas': ctas, 'points': 4, 'header_bytes': 64, 'timestamps_offset': 64,
-                'timestamp_bytes': timestamps, 'mapping_offset': 64 + timestamps, 'mapping_bytes': mapping,
-                'logical_bytes': logical, 'scratch_bytes_per_cta': per_cta, 'allocated_bytes': per_cta * ctas,
-                'scratch_alignment_bytes': 64, 'expected_timestamp_writes': ctas * sum(len(r['points']) for r in rows),
-                'timestamp_sentinel': '18446744073709551615', 'mapping_sentinel': 4294967295, 'leader_only': True,
-                'automatic_runtime_records': False, 'clock': 'globaltimer', 'coverage':
-                'scheduled grid barriers and selected service; excludes internal native barriers', 'header_fields':
-                {'enable_u32': 0, 'version_u32': 4, 'occurrences_u32': 8, 'ctas_u32':
-                 12}, 'profile_addressing': 'global allocation base; do not add CTA scratch stride', 'barrier_points':
-                ['after_role_prebar_before_arrival', 'after_successful_acquire',
-                 'after_role_postbar'], 'service_point3': 'return from original full drain', 'consumer_point2':
-                'final release; before final arithmetic and output store'
-            }
-        }
+            'schema': CENSUS_SCHEMA, 'config': self.config, 'config_sha256': digest(self.config),
+            'dictionary': dictionary, 'dictionary_sha256': digest(dictionary), 'accepted_timing_eligible': False,
+            'native_contract': {'occurrences': count, 'ctas': ctas, 'points': 4, 'header_bytes': 64,
+                'timestamps_offset': 64, 'timestamp_bytes': timestamps, 'mapping_offset': 64 + timestamps,
+                'mapping_bytes': mapping, 'logical_bytes': logical, 'scratch_bytes_per_cta': per_cta,
+                'allocated_bytes': per_cta * ctas, 'scratch_alignment_bytes': 64, 'expected_timestamp_writes': ctas * sum(len(r['points']) for r in rows),
+                'timestamp_sentinel': '18446744073709551615', 'mapping_sentinel': 4294967295,
+                'leader_only': True, 'automatic_runtime_records': False, 'clock': 'globaltimer',
+                'coverage': 'scheduled grid barriers and selected service; excludes internal native barriers',
+                'header_fields': {'enable_u32': 0, 'version_u32': 4, 'occurrences_u32': 8, 'ctas_u32': 12},
+                'profile_addressing': 'global allocation base; do not add CTA scratch stride',
+                'barrier_points': ['after_role_prebar_before_arrival', 'after_successful_acquire', 'after_role_postbar'],
+                'service_point3': 'return from original full drain',
+                'consumer_point2': 'final release; before final arithmetic and output store'}}
         return descriptor

@@ -6,10 +6,11 @@ from functools import lru_cache
 
 
 def _fma(a, b, c):
+    import ctypes
     import numpy as np
 
-    a, b, c = np.broadcast_arrays(np.asarray(a, dtype=np.float32), np.asarray(b, dtype=np.float32),
-                                  np.asarray(c, dtype=np.float32))
+    a, b, c = np.broadcast_arrays(np.asarray(a, dtype=np.float32),
+                                  np.asarray(b, dtype=np.float32), np.asarray(c, dtype=np.float32))
     tiny = np.finfo(np.float32).tiny
     a, b, c = (np.where(np.abs(x) < tiny, np.copysign(np.float32(0), x), x) for x in (a, b, c))
     wide = a.astype(np.float64) * b.astype(np.float64) + c.astype(np.float64)

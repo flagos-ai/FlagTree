@@ -48,25 +48,30 @@ class ParameterBank(OpDefinition):
         # A field whose program fuses several stored tensors names one key per
         # stored source, so a checkpoint entry is one key or a tuple of keys.
         def valid(field, key):
-            keys = key if isinstance(key, tuple) else (key, )
+            keys = key if isinstance(key, tuple) else (key,)
             if field.transform != "checkpoint":
                 return isinstance(key, (str, int, float, bool, tuple))
-            return len(keys) == len(field.stored_types) and all(isinstance(value, str) and value for value in keys)
+            return len(keys) == len(field.stored_types) and all(
+                isinstance(value, str) and value for value in keys)
 
         if any(
-                len(row) != len(schema.fields) or any(not isinstance(key, (str, int, float, bool, tuple))
-                                                      for key in row) or any(
-                                                          not valid(field, key)
-                                                          for field, key in zip(schema.fields, row, strict=True))
-                for row in rows):
+            len(row) != len(schema.fields)
+            or any(not isinstance(key, (str, int, float, bool, tuple)) for key in row)
+            or any(not valid(field, key) for field, key in zip(schema.fields, row, strict=True))
+            for row in rows
+        ):
             raise IRSchemaError("ParameterBank rows must match the schema field count.")
         result_type = attrs.get("result_type")
         if result_type is not None:
             if not isinstance(result_type, IRType):
-                raise IRSchemaError("F.builtin.parameter_bank's positional result type must be an IR type.")
+                raise IRSchemaError(
+                    "F.builtin.parameter_bank's positional result type must be an IR type."
+                )
             if logical_type(result_type) != logical_type(schema.type):
-                raise IRSchemaError("F.builtin.parameter_bank's result type must carry the schema's "
-                                    "logical shape.")
+                raise IRSchemaError(
+                    "F.builtin.parameter_bank's result type must carry the schema's "
+                    "logical shape."
+                )
         return {**attrs, "rows": rows, "result_type": result_type}
 
     @classmethod
@@ -109,7 +114,7 @@ class ParameterBank(OpDefinition):
         }
         if node.metadata:
             keywords["metadata"] = node.metadata
-        return PythonCall("F.builtin.parameter_bank", (node.type, ), keywords)
+        return PythonCall("F.builtin.parameter_bank", (node.type,), keywords)
 
     @classmethod
     def evaluate(cls, node, arguments, context):
@@ -117,7 +122,6 @@ class ParameterBank(OpDefinition):
 
 
 class ParameterBankValue:
-
     def __init__(self, node, context):
         self.node = node
         self.context = context
@@ -133,23 +137,20 @@ class ParameterBankValue:
             if field.transform == "literal":
                 from triton.flagmega.ir.ops.builtin.scalar_const import ScalarConst
 
-                values.append(
-                    ScalarConst.evaluate(
-                        Node(f"{self.node.id}.row{index}.{field.name}", "builtin.scalar_const", (), field.type,
-                             attrs={"value": key}), (), self.context))
+                values.append(ScalarConst.evaluate(
+                    Node(f"{self.node.id}.row{index}.{field.name}", "builtin.scalar_const", (), field.type,
+                         attrs={"value": key}), (), self.context))
                 continue
             if field.transform not in {"identity", "checkpoint"}:
                 raise IRSchemaError(f"Unsupported ParameterBank field transform {field.transform!r}.")
-            keys = key if isinstance(key, tuple) else (key, )
+            keys = key if isinstance(key, tuple) else (key,)
             stored = tuple(
-                self.context.weight_value(
-                    Node(
-                        f"{self.node.id}.row{index}.{field.name}.{ordinal}",
-                        "builtin.weight",
-                        (),
-                        stored_type,
-                        attrs={"name": name, "source": attrs["source"], "key": name},
-                    )) for ordinal, (name, stored_type) in enumerate(zip(keys, field.stored_types, strict=True)))
+                self.context.weight_value(Node(
+                    f"{self.node.id}.row{index}.{field.name}.{ordinal}", "builtin.weight", (),
+                    stored_type, attrs={"name": name, "source": attrs["source"], "key": name},
+                ))
+                for ordinal, (name, stored_type) in enumerate(zip(keys, field.stored_types, strict=True))
+            )
             values.append(stored[0] if field.program is None else self._apply(field, stored, index))
         return tuple(values)
 
@@ -170,12 +171,15 @@ class ParameterBankValue:
         values = dict(zip(field.program.sources, stored, strict=True))
         sources = tuple(
             Node(name, "builtin.weight", (), stored_type, attrs={"name": name})
-            for name, stored_type in zip(field.program.sources, field.stored_types, strict=True))
+            for name, stored_type in zip(
+                field.program.sources, field.stored_types, strict=True
+            )
+        )
         with self.context.type_scope((*sources, *field.program.nodes)):
             for node in field.program.nodes:
                 arguments = tuple(values[value] for value in node.inputs)
-                renamed = Node(f"{self.node.id}.row{index}.{field.name}.{node.id}", node.op, node.inputs, node.type,
-                               attrs=dict(node.attrs), effect=node.effect)
+                renamed = Node(f"{self.node.id}.row{index}.{field.name}.{node.id}", node.op, node.inputs,
+                               node.type, attrs=dict(node.attrs), effect=node.effect)
                 values[node.id] = get_definition(node.op).evaluate(renamed, arguments, self.context)
         return values[field.program.output]
 

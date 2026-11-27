@@ -10,7 +10,7 @@ from math import prod
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.distributed_type import SBPSplit, scale_split_units
-from triton.flagmega.ir.model import DistributedType, IRType, Node, tensor_type
+from triton.flagmega.ir.model import DistributedType, IRType, Node, TensorType, tensor_type
 from triton.flagmega.ir.dim_expr import try_div_exactly
 from triton.flagmega.ir.ops.core import (
     CostKind,
@@ -38,7 +38,7 @@ from triton.flagmega.ir.types import VectorType, data_type, data_type_from_data
 class VectorizedCast(OpDefinition):
     """Convert vector elements and repack lane groups on logical axes.
 
-    This is the Python counterpart of reference ``IR.NTT.VectorizedCast``.  The
+    This is the Python counterpart of nncase ``IR.NTT.VectorizedCast``.  The
     input and output vector types may have different lane sizes so long as
     unpacking the input and repacking the output preserves the same scalar
     logical shape.
@@ -58,9 +58,10 @@ class VectorizedCast(OpDefinition):
             raise IRSchemaError("F.ntt.vectorized_cast new_type must be a VectorType.")
         axes_value = attrs["vectorize_axes"]
         if isinstance(axes_value, int) and not isinstance(axes_value, bool):
-            axes = (axes_value, )
+            axes = (axes_value,)
         elif isinstance(axes_value, (tuple, list)) and all(
-                isinstance(value, int) and not isinstance(value, bool) for value in axes_value):
+            isinstance(value, int) and not isinstance(value, bool) for value in axes_value
+        ):
             axes = tuple(axes_value)
         else:
             raise IRSchemaError("F.ntt.vectorized_cast vectorize_axes must be an integer sequence.")
@@ -84,8 +85,8 @@ class VectorizedCast(OpDefinition):
             raise IRSchemaError("F.ntt.vectorized_cast requires a VectorType input tensor.")
         output_dtype = data_type_from_data(attrs["new_type"])
         assert isinstance(output_dtype, VectorType)
-        input_axes, output_axes = cast_vector_axes(input_type.dtype.lanes, output_dtype.lanes, attrs["vectorize_axes"],
-                                                   input_type.rank)
+        input_axes, output_axes = cast_vector_axes(input_type.dtype.lanes, output_dtype.lanes,
+                                                 attrs["vectorize_axes"], input_type.rank)
         shape = list(input_type.shape)
         input_products = axis_lane_products(input_type.dtype.lanes, input_axes)
         output_products = axis_lane_products(output_dtype.lanes, output_axes)
@@ -94,8 +95,10 @@ class VectorizedCast(OpDefinition):
             scalar_extent = shape[axis] * input_lane
             packed_extent = try_div_exactly(scalar_extent, output_lane)
             if packed_extent is None:
-                raise IRSchemaError(f"F.ntt.vectorized_cast unpacked axis {axis} extent {scalar_extent} "
-                                    f"is not provably divisible by output lane {output_lane}.")
+                raise IRSchemaError(
+                    f"F.ntt.vectorized_cast unpacked axis {axis} extent {scalar_extent} "
+                    f"is not provably divisible by output lane {output_lane}."
+                )
             shape[axis] = packed_extent
         output = tensor_type(output_dtype, shape, layout=input_type.layout)
         if not isinstance(source_type, DistributedType):
@@ -108,8 +111,10 @@ class VectorizedCast(OpDefinition):
                 continue
             scaled = scale_split_units(policy, input_lane, output_lane)
             if scaled is None:
-                raise IRSchemaError(f"F.ntt.vectorized_cast cannot scale axis {axis} split policy "
-                                    f"from lane {input_lane} to lane {output_lane}.")
+                raise IRSchemaError(
+                    f"F.ntt.vectorized_cast cannot scale axis {axis} split policy "
+                    f"from lane {input_lane} to lane {output_lane}."
+                )
             policies[axis] = scaled
         return DistributedType(
             output,
@@ -127,7 +132,7 @@ class VectorizedCast(OpDefinition):
         output_type = tensor_of(node.type)
         assert isinstance(output_type.dtype, VectorType)
         input_axes, output_axes = cast_vector_axes(input_type.dtype.lanes, output_type.dtype.lanes,
-                                                   node.attrs["vectorize_axes"], input_type.rank)
+                                                 node.attrs["vectorize_axes"], input_type.rank)
         scalar = unpack_physical(value, input_type.rank, input_type.dtype.lanes, input_axes)
         converted = scalar.to(dtype=context.torch_dtype(output_type.dtype.elem_type))
         return pack_physical(converted, output_type.rank, output_type.dtype.lanes, output_axes)
@@ -149,20 +154,20 @@ class VectorizedCast(OpDefinition):
             bytes_written=tensor_nbytes(node.type),
             kind=CostKind.ANALYTIC,
             model="flagmega.ntt-vectorized-cast/v1",
-            notes=("vectorized-cast", ),
+            notes=("vectorized-cast",),
         )
 
 
 def cast_vector_axes(input_lanes, output_lanes, axes, rank):
     axes = normalize_axes(tuple(int(axis) for axis in axes), rank)
     if axes and len(set(axes)) == 1:
-        return (axes[0], ) * len(input_lanes), (axes[0], ) * len(output_lanes)
+        return (axes[0],) * len(input_lanes), (axes[0],) * len(output_lanes)
     if len(input_lanes) != len(output_lanes):
         short, long = sorted((tuple(input_lanes), tuple(output_lanes)), key=len)
         prefix = len(short) - 1
         if short[:-1] == long[:prefix] and short[-1] == prod(long[prefix:]):
             if len(axes) == len(short):
-                short_axes, long_axes = axes, (*axes[:prefix], *((axes[-1], ) * (len(long) - prefix)))
+                short_axes, long_axes = axes, (*axes[:prefix], *((axes[-1],) * (len(long) - prefix)))
             elif len(axes) == len(long) and len(set(axes[prefix:])) == 1:
                 short_axes, long_axes = (*axes[:prefix], axes[-1]), axes
             else:

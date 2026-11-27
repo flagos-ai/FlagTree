@@ -28,9 +28,7 @@ class FunctionStage:
 
 _DERIVED_LAYOUT_ATTRS = {"function_boundary_layout", "post_auto_distributed_boundary_layout"}
 _FUNCTION_ATTRS = {"calling_convention", "noinline", "reusable"} | _DERIVED_LAYOUT_ATTRS
-_CONSTANT_ROOTS = {
-    "builtin.weight", "builtin.const_asset", "builtin.scalar_const", "builtin.splat_const", "builtin.none"
-}
+_CONSTANT_ROOTS = {"builtin.weight", "builtin.const_asset", "builtin.scalar_const", "builtin.splat_const", "builtin.none"}
 _STRUCTURAL = {"builtin.tuple", "builtin.get_item"}
 
 
@@ -66,8 +64,7 @@ def outline_function_stages(module: IRModule, name: str, stages: Sequence[Functi
         raise IRVerificationError(f"Function stage outlining: {message}", stage=module.stage)
 
     verify_module(module)
-    if module.execution_functions or module.metadata.get("buffer_plan") is not None or module.metadata.get(
-            "codegen_package_plan") is not None:
+    if module.execution_functions or module.metadata.get("buffer_plan") is not None or module.metadata.get("codegen_package_plan") is not None:
         fail("requires a pre-allocation graph checkpoint, not a physical plan.")
     function = module.function_map.get(name)
     if function is None or name == module.entry or function.attrs.get("region_kind"):
@@ -80,14 +77,13 @@ def outline_function_stages(module: IRModule, name: str, stages: Sequence[Functi
         fail("effect stage must be an index into the stage sequence.")
     if effect_stages is not None and (
             effect_stage != 0 or not isinstance(effect_stages, tuple) or not effect_stages
-            or any(type(index) is not int or not 0 <= index < len(stages)
-                   for index in effect_stages) or tuple(sorted(set(effect_stages))) != effect_stages):
+            or any(type(index) is not int or not 0 <= index < len(stages) for index in effect_stages)
+            or tuple(sorted(set(effect_stages))) != effect_stages):
         fail("effect stages must be unique ascending stage indices, without effect_stage.")
-    effect_owners = set(effect_stages if effect_stages is not None else (effect_stage, ))
-    if not stages or any(not isinstance(s, FunctionStage) or not isinstance(s.name, str) or not s.name.isidentifier()
-                         or keyword.iskeyword(s.name) or not s.nodes or any(not isinstance(value, str)
-                                                                            for value in s.nodes)
-                         for s in stages):
+    effect_owners = set(effect_stages if effect_stages is not None else (effect_stage,))
+    if not stages or any(not isinstance(s, FunctionStage) or not isinstance(s.name, str)
+                         or not s.name.isidentifier() or keyword.iskeyword(s.name) or not s.nodes
+                         or any(not isinstance(value, str) for value in s.nodes) for s in stages):
         fail("stages need non-empty bodies and identifier names.")
     if len({s.name for s in stages}) != len(stages):
         fail("stage names must be unique.")
@@ -96,8 +92,7 @@ def outline_function_stages(module: IRModule, name: str, stages: Sequence[Functi
     parameters = set(function.parameters)
     foreign = {n.id for f in module.functions if f.name != name for n in function_nodes(module, f)}
     shared = {n.id for n in body if n.id in foreign and n.id not in parameters}
-    if any(nodes[value].op not in _CONSTANT_ROOTS or not nodes[value].effect.is_pure or nodes[value].inputs
-           for value in shared):
+    if any(nodes[value].op not in _CONSTANT_ROOTS or not nodes[value].effect.is_pure or nodes[value].inputs for value in shared):
         fail("a shared nonconstant body value cannot be moved into a stage.")
     owned = {n.id for n in body} - parameters - shared
     flat = tuple(value for stage in stages for value in stage.nodes)
@@ -112,7 +107,8 @@ def outline_function_stages(module: IRModule, name: str, stages: Sequence[Functi
     # A single stateful stage can also return an opaque tuple containing a
     # view to a pure consumer stage. The number of effect stages does not
     # determine whether that reference crosses the result ABI.
-    views = tuple(n for n in body if n.id in owned and isinstance(logical_type(n.type), RefType)
+    views = tuple(n for n in body if n.id in owned
+                  and isinstance(logical_type(n.type), RefType)
                   and get_definition(n.op).reference_view_input_parameters)
     view_ids = {n.id for n in views}
     for view in views:
@@ -132,8 +128,8 @@ def outline_function_stages(module: IRModule, name: str, stages: Sequence[Functi
     body_order = {n.id: index for index, n in enumerate(body)}
 
     def stateful(node):
-        return not node.effect.is_pure or node.op not in _STRUCTURAL and (_mutable_reference(node.type) or any(
-            _mutable_reference(nodes[v].type) for v in node.inputs))
+        return not node.effect.is_pure or node.op not in _STRUCTURAL and (
+            _mutable_reference(node.type) or any(_mutable_reference(nodes[v].type) for v in node.inputs))
 
     state_order = [owner[n.id] for n in body if n.id in owner and stateful(n)]
     if state_order != sorted(state_order):
@@ -173,12 +169,7 @@ def outline_function_stages(module: IRModule, name: str, stages: Sequence[Functi
             fail(f"generated function {stage_name!r} already exists.")
         used_functions.add(stage_name)
         members = set(stage.nodes)
-        incoming = {
-            v
-            for identity in stage.nodes
-            for v in nodes[identity].inputs
-            if v not in members and v not in shared
-        }
+        incoming = {v for identity in stage.nodes for v in nodes[identity].inputs if v not in members and v not in shared}
         incoming = tuple(sorted(incoming, key=body_order.__getitem__))
         outgoing = set(function.outputs) & members
         outgoing.update(v for node in body if owner.get(node.id, -1) > index for v in node.inputs if v in members)
@@ -188,9 +179,8 @@ def outline_function_stages(module: IRModule, name: str, stages: Sequence[Functi
         formals = []
         for ordinal, value in enumerate(incoming):
             identity = reserve(f"{stage_name}.arg{ordinal}")
-            new_parameters.append(
-                Node(identity, "builtin.var", (), nodes[value].type, attrs={"name": identity},
-                     metadata={"outlined_from_value": value}))
+            new_parameters.append(Node(identity, "builtin.var", (), nodes[value].type,
+                                       attrs={"name": identity}, metadata={"outlined_from_value": value}))
             formals.append(identity)
         redirects[index] = dict(zip(incoming, formals, strict=True))
         stage_inputs.append(incoming)
@@ -215,9 +205,8 @@ def outline_function_stages(module: IRModule, name: str, stages: Sequence[Functi
             actuals.update((value, value) for value in shared)
             for ordinal, view in enumerate(views):
                 identity = reserve(f"{node.id}.reference_view{ordinal}")
-                result.append(
-                    replace(view, id=identity, inputs=tuple(actuals[v] for v in view.inputs),
-                            metadata={**view.metadata, "outlined_from_value": view.id}))
+                result.append(replace(view, id=identity, inputs=tuple(actuals[v] for v in view.inputs),
+                                      metadata={**view.metadata, "outlined_from_value": view.id}))
                 actuals[view.id] = identity
             for index, fragment in enumerate(fragments):
                 output_ids = stage_outputs[index]
@@ -227,43 +216,32 @@ def outline_function_stages(module: IRModule, name: str, stages: Sequence[Functi
                 identity = node.id if final_single else reserve(f"{node.id}.stage{index}")
                 types = tuple(nodes[value].type for value in output_ids)
                 result_type = types[0] if len(types) == 1 else TupleType(types)
-                result.append(
-                    Node(identity, node.op, tuple(actuals[v] for v in stage_inputs[index]), result_type,
-                         effect=node.effect if index in effect_owners else PURE, attrs={"callee": fragment.name},
-                         metadata={**node.metadata, "outlined_from_call": node.id, "outlined_stage": index}))
+                result.append(Node(identity, node.op, tuple(actuals[v] for v in stage_inputs[index]), result_type,
+                                   effect=node.effect if index in effect_owners else PURE,
+                                   attrs={"callee": fragment.name},
+                                   metadata={**node.metadata, "outlined_from_call": node.id, "outlined_stage": index}))
                 if len(output_ids) == 1:
                     actuals[output_ids[0]] = identity
                 else:
                     for field, value in enumerate(output_ids):
                         projection = reserve(f"{identity}.result{field}")
-                        result.append(
-                            Node(projection, "builtin.get_item", (identity, ), nodes[value].type,
-                                 attrs={"index": field}, metadata={"outlined_from_value": value}))
+                        result.append(Node(projection, "builtin.get_item", (identity,), nodes[value].type,
+                                           attrs={"index": field}, metadata={"outlined_from_value": value}))
                         actuals[value] = projection
             if len(function.outputs) != 1:
-                result.append(
-                    Node(node.id, "builtin.tuple", tuple(actuals[v] for v in function.outputs), node.type,
-                         metadata={**node.metadata, "outlined_from_function": name}))
-    functions = tuple(fragment for f in module.functions
-                      for fragment in (tuple(fragments) if f.name == name else (f, )))
-    record = {
-        "function":
-        name, "stages":
-        tuple({"function": f.name, "nodes": tuple(s.nodes), "inputs": incoming, "outputs": outgoing}
-              for f, s, incoming, outgoing in zip(fragments, stages, stage_inputs, stage_outputs, strict=True)),
-        "calls":
-        tuple(n.id for n in calls),
-        **({"effect_stage": effect_stage} if effect_stages is None else {"effect_stages": effect_stages}),
-        **({"hoisted_reference_views": tuple(n.id for n in views)} if views else {}), "invalidated_boundary_layouts":
-        {key: function.attrs[key]
-         for key in _DERIVED_LAYOUT_ATTRS
-         if key in function.attrs}
-    }
-    updated = replace(
-        module, nodes=tuple(result), functions=functions, metadata={
-            **module.metadata, "outlined_function_stages": (*module.metadata.get("outlined_function_stages",
-                                                                                 ()), record)
-        })
+                result.append(Node(node.id, "builtin.tuple", tuple(actuals[v] for v in function.outputs), node.type,
+                                   metadata={**node.metadata, "outlined_from_function": name}))
+    functions = tuple(fragment for f in module.functions for fragment in (tuple(fragments) if f.name == name else (f,)))
+    record = {"function": name, "stages": tuple({"function": f.name, "nodes": tuple(s.nodes),
+                "inputs": incoming, "outputs": outgoing} for f, s, incoming, outgoing in
+                zip(fragments, stages, stage_inputs, stage_outputs, strict=True)),
+              "calls": tuple(n.id for n in calls),
+              **({"effect_stage": effect_stage} if effect_stages is None else {"effect_stages": effect_stages}),
+              **({"hoisted_reference_views": tuple(n.id for n in views)} if views else {}),
+              "invalidated_boundary_layouts": {key: function.attrs[key] for key in _DERIVED_LAYOUT_ATTRS if key in function.attrs}}
+    updated = replace(module, nodes=tuple(result), functions=functions,
+                      metadata={**module.metadata, "outlined_function_stages":
+                                (*module.metadata.get("outlined_function_stages", ()), record)})
     # Only obsolete formal vars are removed. Constant recipes and unrelated
     # compilation roots retain their complete original identities.
     live = {n.id for f in updated.functions for n in function_nodes(updated, f)}

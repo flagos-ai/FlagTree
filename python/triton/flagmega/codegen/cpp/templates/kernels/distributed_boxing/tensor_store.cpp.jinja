@@ -1,0 +1,5 @@
+// flagmega-kernel: distributed_boxing/tensor_store platform=generic
+{% set distributed_boxing_variant = "tensor_store" %}
+{% if render_calls is defined %}
+{% include "kernels/distributed_boxing/_function.cpp.jinja" %}
+{% endif %}

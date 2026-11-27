@@ -25,7 +25,9 @@ AMD_TARGETS = ("amd-gfx1100", "amd-gfx1201")
 
 def test_prefill_shapes_and_no_argmax_fusion():
     decode = import_qwen3_model(full_checkpoint(num_hidden_layers=2))
-    prefill = import_qwen3_model(full_checkpoint(num_hidden_layers=2), execution_phase="prefill", num_tokens=8)
+    prefill = import_qwen3_model(
+        full_checkpoint(num_hidden_layers=2), execution_phase="prefill", num_tokens=8
+    )
 
     assert decode.node_map["input_ids"].type.shape[0].fixed_value == 1
     assert prefill.node_map["input_ids"].type.shape[0].fixed_value == 8
@@ -43,7 +45,9 @@ def test_prefill_shapes_and_no_argmax_fusion():
 
 def test_decode_requires_single_token():
     with pytest.raises(ImporterError):
-        import_qwen3_model(full_checkpoint(num_hidden_layers=1), execution_phase="decode-1", num_tokens=4)
+        import_qwen3_model(
+            full_checkpoint(num_hidden_layers=1), execution_phase="decode-1", num_tokens=4
+        )
 
 
 @pytest.mark.parametrize("target_name", AMD_TARGETS)
@@ -56,25 +60,25 @@ def test_m_gt_1_matmul_auto_selects_wmma(target_name):
 
     def tir_default(rows):
         builder = fm.IRBuilder(dialect="high_level", stage="imported")
-        value = builder.var("value", fm.tensor_type("bfloat16", (rows, 2048)), id="value")
+        value = builder.var(
+            "value", fm.tensor_type("bfloat16", (rows, 2048)), id="value"
+        )
         weight = builder.weight(
-            "weight",
-            fm.tensor_type("bfloat16", (2048, 2048)),
-            source="memory",
-            key="weight",
-            id="weight",
+            "weight", fm.tensor_type("bfloat16", (2048, 2048)),
+            source="memory", key="weight", id="weight",
         )
         projection = builder.call(
-            "math.matmul",
-            (value, weight),
-            fm.tensor_type("bfloat16", (rows, 2048)),
-            id="projection",
+            "math.matmul", (value, weight),
+            fm.tensor_type("bfloat16", (rows, 2048)), id="projection",
             attrs={"transpose_a": False, "transpose_b": True},
         )
-        builder.function("main", (value, ), (projection, ))
-        module = Compiler(CompileOptions(target=target_name)).compile(builder.build(entry="main"),
-                                                                      stop_after="propose-tir").module
-        point = next(p for p in module.selection_points if p.id.startswith("tir.projection"))
+        builder.function("main", (value,), (projection,))
+        module = Compiler(CompileOptions(target=target_name)).compile(
+            builder.build(entry="main"), stop_after="propose-tir"
+        ).module
+        point = next(
+            p for p in module.selection_points if p.id.startswith("tir.projection")
+        )
         return point.default_candidate
 
     assert tir_default(128) == "tir.dense_matmul.mma"

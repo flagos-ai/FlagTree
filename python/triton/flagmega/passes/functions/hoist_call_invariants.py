@@ -17,8 +17,10 @@ from .graph import callee_first_functions, function_nodes
 
 
 def _immutable(value_type) -> bool:
-    return (isinstance(value_type, TensorType) and not isinstance(value_type.dtype, PointerType)) or (isinstance(
-        value_type, TupleType) and all(_immutable(field) for field in value_type.fields))
+    return (isinstance(value_type, TensorType) and not isinstance(value_type.dtype, PointerType)) or (
+        isinstance(value_type, TupleType)
+        and all(_immutable(field) for field in value_type.fields)
+    )
 
 
 def hoist_call_invariant_expressions(module: IRModule) -> IRModule:
@@ -33,9 +35,7 @@ def _hoist_function(module: IRModule, name: str) -> IRModule:
     bodies = {f.name: function_nodes(module, f) for f in module.functions}
     foreign_ids = {node.id for owner, body in bodies.items() if owner != name for node in body}
     calls_by_caller = {
-        owner: tuple(n
-                     for n in body
-                     if n.op == "builtin.call" and n.attrs["callee"] == name)
+        owner: tuple(n for n in body if n.op == "builtin.call" and n.attrs["callee"] == name)
         for owner, body in bodies.items()
     }
     calls_by_caller = {owner: calls for owner, calls in calls_by_caller.items() if calls}
@@ -43,12 +43,9 @@ def _hoist_function(module: IRModule, name: str) -> IRModule:
         return module
     nodes = module.node_map
     invariant = {
-        parameter
-        for index, parameter in enumerate(function.parameters)
-        if _immutable(nodes[parameter].type) and all(
-            len({call.inputs[index]
-                 for call in calls}) == 1
-            for calls in calls_by_caller.values())
+        parameter for index, parameter in enumerate(function.parameters)
+        if _immutable(nodes[parameter].type)
+        and all(len({call.inputs[index] for call in calls}) == 1 for calls in calls_by_caller.values())
     }
     if not invariant:
         return module
@@ -60,7 +57,7 @@ def _hoist_function(module: IRModule, name: str) -> IRModule:
         if node.id in function.parameters:
             continue
         if (not node.effect.is_pure or not _immutable(node.type)
-                or node.op in {"builtin.var", "builtin.call", "tir.call"}
+                or node.op in {"builtin.var", "builtin.call", "tir.call", "math.q8_1_prepare"}
                 or any(value not in dependencies for value in node.inputs)):
             continue
         sources = frozenset().union(*(dependencies[value] for value in node.inputs))
@@ -80,16 +77,11 @@ def _hoist_function(module: IRModule, name: str) -> IRModule:
             boundary.update(node.inputs)
     roots = tuple(node for node in movable if node.id in boundary)
     parameters = {
-        root.id:
-        Node(
-            f"{root.id}.invariant_parameter",
-            "builtin.var",
-            (),
-            root.type,
+        root.id: Node(
+            f"{root.id}.invariant_parameter", "builtin.var", (), root.type,
             attrs={"name": f"invariant_{root.id}"},
             metadata={"function_parameter": name, "hoisted_call_invariant": root.id},
-        )
-        for root in roots
+        ) for root in roots
     }
     redirects = {root: parameter.id for root, parameter in parameters.items()}
     remaining_parameters = tuple(value for value in function.parameters if value in boundary)
@@ -116,22 +108,19 @@ def _hoist_function(module: IRModule, name: str) -> IRModule:
             key = (owner, original.id, inputs)
             if key not in cache:
                 clone = replace(
-                    original,
-                    id=f"{node.id}.{original.id}.hoisted",
-                    inputs=inputs,
+                    original, id=f"{node.id}.{original.id}.hoisted", inputs=inputs,
                     metadata={**original.metadata, "hoisted_from_function": name},
                 )
                 result.append(clone)
                 cache[key] = clone.id
             actuals[original.id] = cache[key]
-        result.append(
-            replace(
-                node, inputs=(
-                    *(actuals[value] for value in remaining_parameters),
-                    *(actuals[root.id] for root in roots),
-                )))
-    updated = replace(module, nodes=tuple(result),
-                      functions=tuple(refined if f.name == name else f for f in module.functions))
+        result.append(replace(node, inputs=(
+            *(actuals[value] for value in remaining_parameters),
+            *(actuals[root.id] for root in roots),
+        )))
+    updated = replace(module, nodes=tuple(result), functions=tuple(
+        refined if f.name == name else f for f in module.functions
+    ))
     live = {node.id for f in updated.functions for node in function_nodes(updated, f)}
     return replace(updated, nodes=tuple(node for node in updated.nodes if node.id in live))
 

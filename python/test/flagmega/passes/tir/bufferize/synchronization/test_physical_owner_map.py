@@ -15,7 +15,7 @@ from triton.flagmega.passes.tir.bufferize.synchronization import _hazard_require
 def _access(*, cyclic=False):
     placement = fm.Placement((2, 4), "yx", "bb")
     policy = fm.SBP.split_block_cyclic((0, 1), 1) if cyclic else fm.SBP.split_contiguous((0, 1))
-    distributed = fm.DistributedType(fm.tensor_type("float32", (128, )), (policy, ), placement)
+    distributed = fm.DistributedType(fm.tensor_type("float32", (128,)), (policy,), placement)
     options = BufferizationOptions((
         MemorySpace("workspace", "device", 64, 4096, AllocationStrategy.SAT,
                     allocation_scope=MemoryAllocationScope.FUNCTION, sharing_scope=MemorySharingScope.CHIP),
@@ -26,9 +26,9 @@ def _access(*, cyclic=False):
     ))
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
     source = builder.var("source", distributed, id="source")
-    produced = builder.call("tir.kernel", (source, ), distributed, id="produced")
-    output = builder.call("tir.kernel", (produced, ), distributed, id="output")
-    builder.function("main", (source, ), (output, ))
+    produced = builder.call("tir.kernel", (source,), distributed, id="produced")
+    output = builder.call("tir.kernel", (produced,), distributed, id="output")
+    builder.function("main", (source,), (output,))
     module = builder.build(entry="main")
     plan = fm.make_buffer_plan(module, options=options)
     bindings = dict(plan.function_map["main"].values)
@@ -76,18 +76,16 @@ def test_canonical_and_compact_cyclic_storage_have_different_physical_owners(mod
 @pytest.mark.parametrize("same_owner", [False, True])
 def test_canonical_exclusive_read_uses_consumers_execution_owners(same_owner):
     placement = fm.Placement((2, 4), "yx", "bb")
-    ordinary = fm.DistributedType(fm.tensor_type("float32", (128, )), (fm.SBP.broadcast(), ), placement)
+    ordinary = fm.DistributedType(fm.tensor_type("float32", (128,)), (fm.SBP.broadcast(),), placement)
     exclusive = replace(ordinary, exclusive=fm.SBP.exclusive((0, 1)))
     generic = BufferizationOptions.generic()
-    options = replace(
-        generic, memory_spaces=tuple(
-            replace(s, sharing_scope=MemorySharingScope.CHIP) if s.name == "workspace" else s
-            for s in generic.memory_spaces))
+    options = replace(generic, memory_spaces=tuple(replace(s, sharing_scope=MemorySharingScope.CHIP)
+                                                  if s.name == "workspace" else s for s in generic.memory_spaces))
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
     source = builder.var("source", exclusive, id="source")
-    producer = builder.call("tir.kernel", (source, ), exclusive, id="producer")
-    consumer = builder.call("tir.kernel", (producer, ), exclusive if same_owner else ordinary, id="consumer")
-    builder.function("main", (source, ), (consumer, ))
+    producer = builder.call("tir.kernel", (source,), exclusive, id="producer")
+    consumer = builder.call("tir.kernel", (producer,), exclusive if same_owner else ordinary, id="consumer")
+    builder.function("main", (source,), (consumer,))
     module = builder.build(entry="main")
     plan = fm.make_buffer_plan(module, options=options)
     bindings = dict(plan.function_map["main"].values)

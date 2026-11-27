@@ -9,8 +9,7 @@ from triton.flagmega.codegen.triton.tir_package import _mesh_context
 
 @pytest.mark.parametrize("hierarchy", [(2, 4), (2, 2, 2)])
 def test_argmax_phases_keep_grid_scratch_in_entry(
-    hierarchy,
-    assert_entry_owned_phase_schedule,
+    hierarchy, assert_entry_owned_phase_schedule,
 ):
     mesh = _mesh_context({
         "hierarchy": hierarchy,
@@ -21,8 +20,7 @@ def test_argmax_phases_keep_grid_scratch_in_entry(
         "kernels/greedy_sample/_function.py.jinja",
         {
             **mesh,
-            "distributed_entry":
-            True,
+            "distributed_entry": True,
             "render_calls": ({
                 "symbol": "sample",
                 "signature": "logits, maximum, index, result",
@@ -49,7 +47,7 @@ def test_argmax_phases_keep_grid_scratch_in_entry(
                 "partial_owner_count": mesh["mesh_size"],
                 "partial_owner_index": "shard_index",
                 "result": "result",
-            }, ),
+            },),
         },
     )
     assert_entry_owned_phase_schedule(source, "sample")

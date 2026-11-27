@@ -12,6 +12,7 @@ from triton.flagmega.importer import MemoryCheckpoint, TensorInfo
 from triton.flagmega.ir import DType
 from triton.flagmega.runtime import load
 
+
 BASE = "tir.dense_matmul.packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats_lhs8192"
 
 
@@ -26,18 +27,17 @@ def test_async_lhs_is_bitwise_equal_to_sync_across_changed_inputs(tmp_path, k):
     weight[:16] = 0
     weight[:16, 0] = 1
     weight[:16, 1] = 1 / 256
-    weights = {
-        "weight": weight, "scale": torch.ones((2048, ), dtype=torch.bfloat16), "bias": torch.zeros((2048, ),
-                                                                                                   dtype=torch.bfloat16)
-    }
-    checkpoint = MemoryCheckpoint(
-        {}, {name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
-             for name, value in weights.items()}, weights)
+    weights = {"weight": weight, "scale": torch.ones((2048,), dtype=torch.bfloat16),
+               "bias": torch.zeros((2048,), dtype=torch.bfloat16)}
+    checkpoint = MemoryCheckpoint({}, {
+        name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
+        for name, value in weights.items()
+    }, weights)
     runtimes = []
     for suffix in ("", "_async"):
         module = _packed_norm_stats_pipeline_module(BASE + suffix, reduction_extent=k)
-        artifact = write_artifact(module, tmp_path / (suffix or "sync"), target="nvidia-sm90", checkpoint=checkpoint,
-                                  emit_executable=True)
+        artifact = write_artifact(module, tmp_path / (suffix or "sync"), target="nvidia-sm90",
+                                  checkpoint=checkpoint, emit_executable=True)
         runtimes.append(load(artifact, device="cuda:0"))
     outputs = [runtime.create_outputs() for runtime in runtimes]
     value = torch.empty((1, k), dtype=torch.bfloat16, device="cuda")
@@ -56,8 +56,7 @@ def test_async_lhs_is_bitwise_equal_to_sync_across_changed_inputs(tmp_path, k):
         torch.testing.assert_close(outputs[1], outputs[0], rtol=0, atol=0)
         assert torch.count_nonzero(outputs[1][:, :16]) == 0
         expected_value = value @ weight.cuda().T + residual
-        expected = (expected_value.float() *
-                    torch.rsqrt(expected_value.float().square().mean(-1, keepdim=True) + 1e-6)).bfloat16()
+        expected = (expected_value.float() * torch.rsqrt(expected_value.float().square().mean(-1, keepdim=True) + 1e-6)).bfloat16()
         torch.testing.assert_close(outputs[1], expected, rtol=.04, atol=.04)
     assert all(runtime.resource_report["spill_bytes"] == 0 for runtime in runtimes)
     ptx = runtimes[1]._prepared.compiled_kernel.asm["ptx"]

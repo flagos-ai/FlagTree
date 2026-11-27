@@ -65,12 +65,16 @@ class AddNormStats(OpDefinition):
         input_type = cls.input.type_of(inputs)
         output_type = cls.addend.type_of(inputs)
         if tensor_of(input_type) != tensor_of(output_type):
-            raise IRSchemaError("AddNormStats input and addend must have the same logical tensor type.")
+            raise IRSchemaError(
+                "AddNormStats input and addend must have the same logical tensor type."
+            )
         if not can_materialize_sum_partial(input_type, output_type):
-            raise IRSchemaError(f"AddNormStats cannot materialize {input_type!r} into {output_type!r}.")
+            raise IRSchemaError(
+                f"AddNormStats cannot materialize {input_type!r} into {output_type!r}."
+            )
         axis = normalize_axis(int(attrs["axis"]), tensor_of(output_type).rank)
         stats_type = NormStats.infer_type(
-            (_typed_node("<materialized_value>", output_type), ),
+            (_typed_node("<materialized_value>", output_type),),
             {"axis": axis, "use_mean": bool(attrs["use_mean"])},
         )
         return TupleType((output_type, stats_type))
@@ -95,7 +99,7 @@ class AddNormStats(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         if not isinstance(node.type, TupleType) or len(node.type.fields) != 2:
-            return OpCost(notes=("invalid-add-norm-stats-type", ))
+            return OpCost(notes=("invalid-add-norm-stats-type",))
         value = tensor_of(node.type.fields[0])
         stats = tensor_of(node.type.fields[1])
         elements = tensor_elements(value)
@@ -110,7 +114,7 @@ class AddNormStats(OpDefinition):
             synchronizations=None,
             kind=CostKind.ANALYTIC,
             model="flagmega.add-norm-stats/v1",
-            notes=("materialize-add-additive-normalization-statistics", ),
+            notes=("materialize-add-additive-normalization-statistics",),
         )
 
     @classmethod
@@ -135,24 +139,40 @@ class AddNormStats(OpDefinition):
         input_type = cls.input.type_of(inputs)
         addend_type = cls.addend.type_of(inputs)
         value_type, stats_type = return_type.fields
-        tensors = tuple(_local_cost_tensor(value) for value in (
-            input_type,
-            addend_type,
-            value_type,
-            stats_type,
-        ))
-        if any(not dimension.is_fixed for tensor in tensors for dimension in tensor.shape):
+        tensors = tuple(
+            _local_cost_tensor(value)
+            for value in (
+                input_type,
+                addend_type,
+                value_type,
+                stats_type,
+            )
+        )
+        if any(
+            not dimension.is_fixed
+            for tensor in tensors
+            for dimension in tensor.shape
+        ):
             return None
         _, addend_tensor, value_tensor, stats_tensor = tensors
-        value_elements = prod(dimension.fixed_value for dimension in value_tensor.shape)
-        fan_in = (prod(input_type.placement.hierarchy[axis] for axis in input_type.partial.axes)
-                  if isinstance(input_type, DistributedType) and input_type.partial is not None else 1)
+        value_elements = prod(
+            dimension.fixed_value for dimension in value_tensor.shape
+        )
+        fan_in = (
+            prod(input_type.placement.hierarchy[axis] for axis in input_type.partial.axes)
+            if isinstance(input_type, DistributedType) and input_type.partial is not None else 1
+        )
         value_bytes = _fixed_tensor_nbytes(value_tensor)
         return OpCostFactors(
             cpu_cycles=value_elements * (4 if attrs["use_mean"] else 3),
             elementwise_operations=value_elements * getattr(value_tensor.dtype, "lane_count", 1) * (fan_in - 1),
-            block_local_memory_load_bytes=(value_bytes * fan_in + value_bytes + _fixed_tensor_nbytes(addend_tensor)),
-            block_local_memory_store_bytes=sum(_fixed_tensor_nbytes(tensor) for tensor in (value_tensor, stats_tensor)),
+            block_local_memory_load_bytes=(
+                value_bytes * fan_in + value_bytes + _fixed_tensor_nbytes(addend_tensor)
+            ),
+            block_local_memory_store_bytes=sum(
+                _fixed_tensor_nbytes(tensor)
+                for tensor in (value_tensor, stats_tensor)
+            ),
             grid_synchronizations=int(input_type != value_type),
         )
 
@@ -160,7 +180,8 @@ class AddNormStats(OpDefinition):
 def can_materialize_sum_partial(input_type: IRType, output_type: IRType) -> bool:
     """Whether a Sum-partial value can become ``output_type`` in one combine.
 
-    This is the Python port of the reference ``PackedMatMulNormStatsCombineEvaluator.CanMaterialize``.  It compares
+    This is the Python port of nncase's
+    ``PackedMatMulNormStatsCombineEvaluator.CanMaterialize``.  It compares
     placement hierarchy policies, not target names or mesh sizes.
     """
 
@@ -168,9 +189,13 @@ def can_materialize_sum_partial(input_type: IRType, output_type: IRType) -> bool
         return _is_materialized(output_type)
     if not isinstance(input_type, DistributedType) or not isinstance(output_type, DistributedType):
         return False
-    if (input_type.tensor != output_type.tensor or input_type.placement != output_type.placement
-            or input_type.partial is None or input_type.partial.reduce_op is not ReduceOp.SUM
-            or output_type.partial is not None):
+    if (
+        input_type.tensor != output_type.tensor
+        or input_type.placement != output_type.placement
+        or input_type.partial is None
+        or input_type.partial.reduce_op is not ReduceOp.SUM
+        or output_type.partial is not None
+    ):
         return False
     input_hierarchy = _hierarchy_policies(input_type)
     output_hierarchy = _hierarchy_policies(output_type)
@@ -193,9 +218,10 @@ def can_materialize_sum_partial(input_type: IRType, output_type: IRType) -> bool
 
 
 def _is_materialized(value_type: IRType) -> bool:
-    return not isinstance(value_type, DistributedType) or (value_type.partial is None
-                                                           and all(not isinstance(policy, SBPPartial)
-                                                                   for policy in value_type.axis_policies))
+    return not isinstance(value_type, DistributedType) or (
+        value_type.partial is None
+        and all(not isinstance(policy, SBPPartial) for policy in value_type.axis_policies)
+    )
 
 
 def _hierarchy_policies(value_type: DistributedType) -> tuple[int | None, ...] | None:

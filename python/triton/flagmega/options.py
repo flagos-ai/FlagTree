@@ -21,11 +21,15 @@ def parse_placement(value: str) -> Placement:
         dimensions, levels = rest.split("/", 1)
         hierarchy = tuple(int(item) for item in dimensions.lower().split("x"))
     except (ValueError, TypeError) as error:
-        raise ValueError("placement must use the form name=AxB[/...] / levels, "
-                         "for example cyx=4x8x16/cbb") from error
+        raise ValueError(
+            "placement must use the form name=AxB[/...] / levels, "
+            "for example cyx=4x8x16/cbb"
+        ) from error
     if not name or not hierarchy or not levels:
-        raise ValueError("placement must use the form name=AxB[/...] / levels, "
-                         "for example cyx=4x8x16/cbb")
+        raise ValueError(
+            "placement must use the form name=AxB[/...] / levels, "
+            "for example cyx=4x8x16/cbb"
+        )
     try:
         return Placement(hierarchy, name, levels)
     except Exception as error:
@@ -47,11 +51,27 @@ class CompileOptions:
     # Executable CLI paths bind their actual backend before TIR proposals.
     codegen_backend: str | None = None
 
+    # Source planning is opt-in and does not imply executable runtime support.
+    heterogeneous_protocol: str | None = None
+
+    # Shape-bucket specialization selected from a module's imported
+    # ``shape_bucket`` declaration. None keeps the declaration's own selection
+    # (or its largest bucket); the applied bindings are recorded in the
+    # artifact's ``shape_bucket_binding`` metadata.
+    shape_bucket_segment: int | None = None
+
     def __post_init__(self) -> None:
-        if self.codegen_backend not in (None, "triton"):
-            raise ValueError("codegen_backend must be 'triton'.")
+        if self.heterogeneous_protocol is not None and (not isinstance(self.heterogeneous_protocol, str) or not self.heterogeneous_protocol.strip()):
+            raise ValueError("heterogeneous_protocol must be a non-empty protocol name.")
+        if self.codegen_backend not in (None, "cpp", "triton"):
+            raise ValueError("codegen_backend must be 'cpp' or 'triton'.")
         if self.bufferize_opt_level not in (None, "fast", "optimized"):
             raise ValueError("bufferize_opt_level must be 'fast' or 'optimized'.")
+        if (self.shape_bucket_segment is not None
+                and (isinstance(self.shape_bucket_segment, bool)
+                     or not isinstance(self.shape_bucket_segment, int)
+                     or self.shape_bucket_segment < 0)):
+            raise ValueError("shape_bucket_segment must be a non-negative integer.")
 
     @property
     def effective_dump_flags(self) -> DumpFlags:

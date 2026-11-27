@@ -9,10 +9,11 @@ import torch
 from triton.flagmega import ir as fm
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 
+
 CASES = [
-    ((8, ), "bfloat16", "float32", "float32", "value_fma_first", 1, 4, 4096),
+    ((8,), "bfloat16", "float32", "float32", "value_fma_first", 1, 4, 4096),
     ((2, 4), "float32", "bfloat16", "bfloat16", "residual_then_value", 2, 3, 56),
-    ((1, ), "bfloat16", "bfloat16", "float32", "value_fma_first", 1, 1, 24),
+    ((1,), "bfloat16", "bfloat16", "float32", "value_fma_first", 1, 1, 24),
     ((2, 4), "bfloat16", "float32", "float32", "value_fma_first", 2, 3, 40),
 ]
 
@@ -21,18 +22,19 @@ def graph(lanes, value_dtype, residual_dtype, output_dtype, mode, tokens, hc, hi
     mesh = fm.Placement((8, 16), "yx", "bb")
 
     class Graph(fm.Module):
-
         def forward(self):
             kinds = [
                 fm.tensor_type(
-                    fm.vector_type(value_dtype, lanes) if lanes else value_dtype, (tokens, hidden // prod(lanes))),
+                    fm.vector_type(value_dtype, lanes) if lanes else value_dtype, (tokens, hidden // prod(lanes))
+                ),
                 fm.tensor_type(residual_dtype, (tokens, hc, hidden)),
                 fm.tensor_type("float32", (tokens, hc)),
                 fm.tensor_type("float32", (tokens, hc, hc)),
             ]
             values = tuple(
                 self.input(name, kind, id=name)
-                for name, kind in zip(("value", "residual", "post", "comb"), kinds, strict=True))
+                for name, kind in zip(("value", "residual", "post", "comb"), kinds, strict=True)
+            )
             result = fm.F.nn.mhc_post(
                 *values,
                 output_dtype=output_dtype,
@@ -40,7 +42,7 @@ def graph(lanes, value_dtype, residual_dtype, output_dtype, mode, tokens, hc, hi
                 accumulation_mode=mode,
                 name="output",
             )
-            self.function("main", values, (result, ))
+            self.function("main", values, (result,))
 
     return Graph(
         dialect="distributed",
@@ -69,9 +71,9 @@ def test_mhc_post_packet_evaluation_and_roundtrip(tmp_path, case):
     assert fm.load_module(fm.emit_module(packed, tmp_path / "packed.py")).semantic_hash == packed.semantic_hash
     values = operands(value_dtype, residual_dtype, tokens, hc, hidden)
     evaluator = TorchEvaluator(DictWeightResolver({}))
-    (expected, ) = evaluator.run(original, values)
+    (expected,) = evaluator.run(original, values)
     values["value"] = values["value"].reshape(tokens, hidden // prod(lanes), *lanes)
-    (actual, ) = evaluator.run(packed, values)
+    (actual,) = evaluator.run(packed, values)
     assert torch.equal(actual.view(torch.uint8), expected.view(torch.uint8))
 
 
@@ -81,8 +83,9 @@ def test_packed_value_reaches_generated_kernel_without_an_adapter(tmp_path, case
     from triton.flagmega.compiler import Compiler
 
     compiled = Compiler().compile(graph(*case)).module
-    assert not any(node.op in {"tensors.pack", "tensors.unpack", "tensors.cast", "ntt.vectorized_cast"}
-                   for node in compiled.nodes)
+    assert not any(
+        node.op in {"tensors.pack", "tensors.unpack", "tensors.cast", "ntt.vectorized_cast"} for node in compiled.nodes
+    )
     fm.verify_buffer_plan(compiled)
     write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
 
@@ -102,11 +105,13 @@ def test_device_mhc_post_reads_packed_value_without_materializing_it(tmp_path, c
     try:
         for label, source in (("scalar", graph((), *case[1:])), ("packet", graph(*case))):
             compiled = Compiler().compile(source).module
-            runtime = load(write_artifact(compiled, tmp_path / label, target="nvidia-sm90", emit_executable=True),
-                           device="cuda:0")
+            runtime = load(
+                write_artifact(compiled, tmp_path / label, target="nvidia-sm90", emit_executable=True), device="cuda:0"
+            )
             runtimes.append(runtime)
-            storage = torch.full((tokens * hc * hidden + 128, ), -123.0, dtype=getattr(torch, output_dtype),
-                                 device="cuda")
+            storage = torch.full(
+                (tokens * hc * hidden + 128,), -123.0, dtype=getattr(torch, output_dtype), device="cuda"
+            )
             outputs.append(storage[64:-64].reshape(tokens, hc, hidden))
             guards.extend((storage[:64], storage[-64:]))
         values = operands(value_dtype, residual_dtype, tokens, hc, hidden)
@@ -116,8 +121,10 @@ def test_device_mhc_post_reads_packed_value_without_materializing_it(tmp_path, c
                 current = dict(inputs)
                 if index:
                     current["value"] = current["value"].reshape(tokens, hidden // prod(lanes), *lanes)
-                arguments = tuple(outputs[index] if spec["role"] == "result" else current[spec["value"]]
-                                  for spec in runtime.external_arguments)
+                arguments = tuple(
+                    outputs[index] if spec["role"] == "result" else current[spec["value"]]
+                    for spec in runtime.external_arguments
+                )
                 Runtime.prepare(runtime, *arguments)
                 Runtime.run_into(runtime, *arguments)
                 torch.cuda.synchronize()

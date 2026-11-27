@@ -19,25 +19,19 @@ from triton.flagmega.errors import CodegenError
 ])
 def test_hardware_box_matches_typed_shared_encoding(shape, capacity, matrix, swizzle, box):
     request = {
-        "kind": "single",
-        "parameter": "map",
-        "block_shape": shape,
-        "dtype": "bfloat16",
-        "shape": (1000, ) * len(shape),
-        "offset_bytes": 4096,
-        "source_shape_axes": ((), ) * len(shape),
+        "kind": "single", "parameter": "map", "block_shape": shape,
+        "dtype": "bfloat16", "shape": (1000,) * len(shape),
+        "offset_bytes": 4096, "source_shape_axes": ((),) * len(shape),
     }
     workspace = {"shape": (capacity, *shape), "matrix_compatible": matrix}
-    encoded = device_descriptor_request(request, (workspace, ))
+    encoded = device_descriptor_request(request, (workspace,))
     assert encoded == {**request, "storage": "device", "swizzle_mode": swizzle, "box_shape": box}
 
 
 def test_owner_table_storage_does_not_change_its_coordinate_contract():
-    request = {
-        "kind": "table", "parameter": "map", "dtype": "bfloat16", "block_shape": (8, 64), "entries":
-        ("owner_zero", "owner_one")
-    }
-    encoded = device_descriptor_request(request, ({"shape": (2, 8, 64), "matrix_compatible": True}, ))
+    request = {"kind": "table", "parameter": "map", "dtype": "bfloat16",
+               "block_shape": (8, 64), "entries": ("owner_zero", "owner_one")}
+    encoded = device_descriptor_request(request, ({"shape": (2, 8, 64), "matrix_compatible": True},))
     assert encoded == {**request, "swizzle_mode": 3}
     assert encoded["entries"] is request["entries"]
     assert "swizzle_mode" not in request
@@ -45,7 +39,8 @@ def test_owner_table_storage_does_not_change_its_coordinate_contract():
 
 @pytest.mark.parametrize("workspaces", [
     (),
-    ({"shape": (2, 8, 64), "matrix_compatible": True}, {"shape": (2, 8, 64), "matrix_compatible": False}),
+    ({"shape": (2, 8, 64), "matrix_compatible": True},
+     {"shape": (2, 8, 64), "matrix_compatible": False}),
 ])
 def test_descriptor_requires_a_unique_matching_shared_encoding(workspaces):
     request = {"kind": "single", "parameter": "map", "block_shape": (8, 64), "dtype": "bfloat16"}

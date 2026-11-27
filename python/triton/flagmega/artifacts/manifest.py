@@ -14,6 +14,7 @@ from typing import Mapping
 from triton.flagmega.errors import ArtifactError
 from triton.flagmega.ir import IRModule
 
+
 ARTIFACT_SCHEMA = "flagmega.artifact/v2"
 _HASH_CHUNK_BYTES = 8 * 1024 * 1024
 
@@ -102,8 +103,10 @@ def record_section(
     actual_nbytes = source.stat().st_size
     if known_nbytes is not None:
         if actual_nbytes != known_nbytes:
-            raise ArtifactError(f"Artifact section {name!r} has {actual_nbytes} bytes, "
-                                f"but its producer reported {known_nbytes}.")
+            raise ArtifactError(
+                f"Artifact section {name!r} has {actual_nbytes} bytes, "
+                f"but its producer reported {known_nbytes}."
+            )
         digest = known_sha256
     else:
         digest = hash_file(source)
@@ -125,10 +128,10 @@ def parse_sections(data: object) -> tuple[ArtifactSection, ...]:
 
 
 def verify_sections(
-        root: str | Path,
-        sections: tuple[ArtifactSection, ...],
-        *,
-        defer_hashes: frozenset[str] = frozenset(),
+    root: str | Path,
+    sections: tuple[ArtifactSection, ...],
+    *,
+    defer_hashes: frozenset[str] = frozenset(),
 ) -> None:
     """Verify manifest sections, optionally delegating named hashes downstream.
 
@@ -177,7 +180,8 @@ def require_sections(
         except KeyError as error:
             raise ArtifactError(f"Artifact is missing required section {name!r}.") from error
         if section.kind != kind:
-            raise ArtifactError(f"Artifact section {name!r} has kind {section.kind!r}, expected {kind!r}.")
+            raise ArtifactError(
+                f"Artifact section {name!r} has kind {section.kind!r}, expected {kind!r}.")
 
 
 def resolve_artifact_path(root: str | Path, relative: str) -> Path:
@@ -198,14 +202,19 @@ def module_abi(module: IRModule) -> dict[str, object]:
     functions = []
     for function in module.functions:
         functions.append({
-            "name":
-            function.name,
-            "parameters": [{
-                "node": node_id,
-                "name": str(nodes[node_id].attrs.get("name", node_id)),
-                "type": nodes[node_id].type.to_data(),
-            } for node_id in function.parameters],
-            "outputs": [{"node": node_id, "type": nodes[node_id].type.to_data()} for node_id in function.outputs],
+            "name": function.name,
+            "parameters": [
+                {
+                    "node": node_id,
+                    "name": str(nodes[node_id].attrs.get("name", node_id)),
+                    "type": nodes[node_id].type.to_data(),
+                }
+                for node_id in function.parameters
+            ],
+            "outputs": [
+                {"node": node_id, "type": nodes[node_id].type.to_data()}
+                for node_id in function.outputs
+            ],
         })
     return {"entry": module.entry, "functions": functions}
 

@@ -27,21 +27,16 @@ def pipeline_target(*, block_k=None, stages=None):
                 count = stages or implementation.parameters["num_stages"]
                 implementation = replace(
                     implementation, parameters={**implementation.parameters, "block_k": k, "num_stages": count},
-                    shared_workspaces=tuple(
-                        replace(
-                            workspace, type=fm.tensor_type(workspace.type.dtype, (count, 1,
-                                                                                  implementation.parameters["block_n"],
-                                                                                  k)))
+                    shared_workspaces=tuple(replace(workspace, type=fm.tensor_type(
+                        workspace.type.dtype, (count, 1, implementation.parameters["block_n"], k)))
                         for workspace in implementation.shared_workspaces),
                     transfer_pipeline=replace(implementation.transfer_pipeline, capacity=count))
             implementations.append(implementation)
         model = replace(model, implementations=tuple(implementations))
     preferences = dict(model.preferences)
     for family in ("sparse_experts_gate_up", "sparse_experts_down"):
-        preferences[family] = tuple(i.id
-                                    for i in model.implementations
-                                    if i.family == family and i.variant == "simt_tma_pipeline") + preferences.get(
-                                        family, (f"tir.{family}.simt", ))
+        preferences[family] = tuple(i.id for i in model.implementations
+                                    if i.family == family and i.variant == "simt_tma_pipeline") + preferences.get(family, (f"tir.{family}.simt",))
     target.triton_implementation_model = replace(model, preferences=preferences)
     return target
 
@@ -68,34 +63,32 @@ def distributed_stage(definition, dtype, partition):
     mesh = fm.Placement((2, 4), "yx", "bb")
     b = fm.SBP.broadcast()
     is_down = definition is SparseExpertsDown
-    route = fm.SBP.split_block_cyclic((1, ), 1) if partition == "route" else b
-    feature = (fm.SBP.split_contiguous((0, 1), 16) if partition == "output" else fm.SBP.split_contiguous(
-        (0, ), 48 if is_down else 24))
-    reduction = fm.SBP.split_contiguous((1, ), 16) if partition == "split_k" else b
+    route = fm.SBP.split_block_cyclic((1,), 1) if partition == "route" else b
+    feature = (fm.SBP.split_contiguous((0, 1), 16) if partition == "output"
+               else fm.SBP.split_contiguous((0,), 48 if is_down else 24))
+    reduction = fm.SBP.split_contiguous((1,), 16) if partition == "split_k" else b
     types = operand_types(dtype=dtype, tokens=2, hidden=72, intermediate=40, routes=3, experts=5)
-    policies = {
-        "dispatched": (b, route, b), "activations": (b, route, reduction), "router_expert_ids": (b, route),
-        "gate_weight": (b, feature, b), "up_weight": (b, feature, b), "down_weight": (b, feature, reduction)
-    }
+    policies = {"dispatched": (b, route, b), "activations": (b, route, reduction),
+                "router_expert_ids": (b, route), "gate_weight": (b, feature, b),
+                "up_weight": (b, feature, b), "down_weight": (b, feature, reduction)}
 
     class Graph(fm.Module):
-
         def forward(self):
-            inputs = tuple(
-                self.input(parameter.name,
-                           fm.DistributedType(types[parameter.name], policies.get(parameter.name, (
-                               b, b)), mesh), id=parameter.name) for parameter in definition.input_parameters)
+            inputs = tuple(self.input(parameter.name,
+                                      fm.DistributedType(types[parameter.name], policies.get(parameter.name, (b, b)), mesh),
+                                      id=parameter.name) for parameter in definition.input_parameters)
             value = definition.construct(*inputs, name="expert_stage")
             result = fm.F.distributed.boxing(value, value.type.tensor)
-            self.function("main", inputs, (result, ))
-
+            self.function("main", inputs, (result,))
     return Graph(dialect="nn", stage="frozen_constants", entry="main",
                  metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()
 
 
-@pytest.mark.parametrize("definition,partition",
-                         ((SparseExpertsGateUp, "route"), (SparseExpertsGateUp, "output"), (SparseExpertsDown, "route"),
-                          (SparseExpertsDown, "output"), (SparseExpertsDown, "split_k")))
+@pytest.mark.parametrize("definition,partition", ((SparseExpertsGateUp, "route"),
+                                                  (SparseExpertsGateUp, "output"),
+                                                  (SparseExpertsDown, "route"),
+                                                  (SparseExpertsDown, "output"),
+                                                  (SparseExpertsDown, "split_k")))
 @pytest.mark.parametrize("dtype", ("bfloat16", "float32"))
 def test_pipeline_ragged_owners_and_explicit_partial(definition, partition, dtype, monkeypatch, tmp_path):
     torch = pytest.importorskip("torch")
@@ -103,8 +96,7 @@ def test_pipeline_ragged_owners_and_explicit_partial(definition, partition, dtyp
     compiler = Compiler()
     compiler.target = pipeline_target()
     monkeypatch.setattr(helpers, "Compiler", lambda: compiler)
-    actual, expected, runtime = helpers.execute_and_reference(distributed_stage(definition, dtype, partition), tmp_path,
-                                                              torch)
+    actual, expected, runtime = helpers.execute_and_reference(distributed_stage(definition, dtype, partition), tmp_path, torch)
     torch.testing.assert_close(actual, expected, rtol=0.016 if dtype == "bfloat16" else 1e-5, atol=1e-5)
     assert "simt_tma_pipeline" in (tmp_path / "artifact/generated_kernels.py").read_text()
     assert runtime.resource_report["spill_bytes"] == 0
@@ -133,16 +125,14 @@ def test_pipeline_reads_router_ids_written_in_the_same_invocation(definition, vi
 
     mesh = fm.Placement((2, 4), "yx", "bb")
     b = fm.SBP.broadcast()
-    route = fm.SBP.split_block_cyclic((1, ), 1)
-    feature = fm.SBP.split_contiguous((0, ), 24)
+    route = fm.SBP.split_block_cyclic((1,), 1)
+    feature = fm.SBP.split_contiguous((0,), 24)
     types = operand_types(tokens=2, hidden=48, intermediate=40, routes=3, experts=5)
-    policies = {
-        "dispatched": (b, route, b), "activations": (b, route, b), "gate_weight": (b, feature, b), "up_weight":
-        (b, feature, b), "down_weight": (b, feature, b)
-    }
+    policies = {"dispatched": (b, route, b), "activations": (b, route, b),
+                "gate_weight": (b, feature, b), "up_weight": (b, feature, b),
+                "down_weight": (b, feature, b)}
 
     class Graph(fm.Module):
-
         def forward(self):
             logits = self.input("logits", fm.DistributedType(fm.tensor_type("float32", (2, 5)), (b, b), mesh),
                                 id="logits")
@@ -156,14 +146,12 @@ def test_pipeline_reads_router_ids_written_in_the_same_invocation(definition, vi
                 if parameter.name == "router_expert_ids":
                     operands.append(ids)
                 else:
-                    value = self.input(
-                        parameter.name,
-                        fm.DistributedType(types[parameter.name], policies.get(parameter.name, (b, b)), mesh),
-                        id=parameter.name)
+                    value = self.input(parameter.name, fm.DistributedType(
+                        types[parameter.name], policies.get(parameter.name, (b, b)), mesh), id=parameter.name)
                     inputs.append(value)
                     operands.append(value)
             result = definition.construct(*operands, name="expert_stage")
-            self.function("main", (logits, *inputs), (fm.F.distributed.boxing(result, result.type.tensor), ))
+            self.function("main", (logits, *inputs), (fm.F.distributed.boxing(result, result.type.tensor),))
 
     graph = Graph(dialect="nn", stage="frozen_constants", entry="main",
                   metadata={"auto_distribution": {"placement": mesh.to_data()}}).build()
@@ -173,7 +161,6 @@ def test_pipeline_reads_router_ids_written_in_the_same_invocation(definition, vi
     from triton.flagmega.ir.tir.visitor import TIRVisitor
 
     class CheckProducerReads(TIRVisitor):
-
         def __init__(self):
             self.found = 0
 
@@ -197,8 +184,8 @@ def test_pipeline_reads_router_ids_written_in_the_same_invocation(definition, vi
     for name in parameters:
         tensor = fm.logical_type(graph.node_map[name].type)
         shape = tuple(extent.fixed_value for extent in tensor.shape)
-        values[name] = ((torch.ones(shape) if name.endswith("_scale") else torch.randn(shape, generator=generator) /
-                         8).to(getattr(torch, tensor.dtype.value)))
+        values[name] = ((torch.ones(shape) if name.endswith("_scale")
+                         else torch.randn(shape, generator=generator) / 8).to(getattr(torch, tensor.dtype.value)))
     arguments = tuple(values[name].cuda() for name in parameters)
     evaluator = TorchEvaluator(DictWeightResolver({}))
     output = runtime.create_outputs()

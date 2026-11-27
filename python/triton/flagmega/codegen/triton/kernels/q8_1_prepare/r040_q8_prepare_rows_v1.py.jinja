@@ -1,0 +1,9 @@
+{# Copyright 2026 FlagOS Contributors; SPDX-License-Identifier: MIT #}
+from triton.flagmega.codegen.triton.iq4_q8_prepare_rows import q8_prepare_rows as _r040_q8_prepare_rows
+{% for call in render_calls %}
+{% if call.family == "q8_1_prepare" and call.variant == "r040_q8_prepare_rows_v1" %}
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+    _r040_q8_prepare_rows({{ call.pointers | join(', ') }}{% for name, value in call.constexprs.items() %}, {{ name }}={{ value }}{% endfor %})
+{% endif %}
+{% endfor %}

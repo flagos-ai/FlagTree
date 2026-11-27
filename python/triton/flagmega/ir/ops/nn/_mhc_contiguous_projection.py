@@ -16,7 +16,7 @@ def contiguous_tf32_projection(streams, projection, splits, torch):
     width = flat.shape[-1] // splits
     source, weight = _tf32_rn(flat, torch), _tf32_rn(projection, torch)
     products = torch.zeros((tokens, projection.shape[0]), dtype=torch.float32, device=flat.device)
-    squares = torch.zeros((tokens, ), dtype=torch.float32, device=flat.device)
+    squares = torch.zeros((tokens,), dtype=torch.float32, device=flat.device)
     for split in range(splits):
         lo, hi = split * width, (split + 1) * width
         products = products + source[:, lo:hi] @ weight[:, lo:hi].t()

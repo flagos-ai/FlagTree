@@ -22,7 +22,8 @@ def bank_row_index(module, function, row, bank_id):
             raise IRVerificationError("Bank row index is outside its stored domain.", node_id=row.id)
         return value
 
-    loops = [node for node in module.nodes if node.op == "control.for" and node.attrs.get("callee") == function.name]
+    loops = [node for node in module.nodes if node.op == "control.for"
+             and node.attrs.get("callee") == function.name]
     if not loops or not function.parameters or row.inputs[1] != function.parameters[0]:
         raise IRVerificationError(
             "Dynamic bank row requires the counted-loop induction argument and a pooled callee boundary.",
@@ -47,8 +48,8 @@ def bank_row_index(module, function, row, bank_id):
             elif user.op == "tir.call" and user.attrs.get("callee") in module.function_map:
                 calls += 1
             else:
-                raise IRVerificationError("Dynamic bank row reaches a leaf without a pooled callee index binding.",
-                                          node_id=user.id)
+                raise IRVerificationError(
+                    "Dynamic bank row reaches a leaf without a pooled callee index binding.", node_id=user.id)
     if not calls:
         raise IRVerificationError("Dynamic bank row has no pooled callee index binding.", node_id=row.id)
     return None

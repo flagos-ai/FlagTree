@@ -24,16 +24,16 @@ def _legacy_semantic_hash(module: fm.IRModule) -> str:
 def _module_with_selection():
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
     value = builder.var("value", fm.tensor_type("bfloat16", (1, 16)), id="value")
-    builder.function("main", (value, ), (value, ))
+    builder.function("main", (value,), (value,))
     module = builder.build(entry="main")
     point = fm.SelectionPoint(
         "point",
         "unit",
-        (fm.Candidate("candidate", {"tile": 16}, {"legal": True}), ),
+        (fm.Candidate("candidate", {"tile": 16}, {"legal": True}),),
         "candidate",
         owner="value",
     )
-    return replace(module, selection_points=(point, )), point
+    return replace(module, selection_points=(point,)), point
 
 
 def test_fragment_encoder_preserves_legacy_semantic_hash_bytes():
@@ -44,9 +44,9 @@ def test_fragment_encoder_preserves_legacy_semantic_hash_bytes():
 
 def test_shared_tensor_types_are_encoded_once_in_a_large_node_sequence(monkeypatch):
     model = import_module("triton.flagmega.ir.model")
-    value_type = fm.tensor_type("float32", (16, ))
+    value_type = fm.tensor_type("float32", (16,))
     nodes = tuple(fm.Node(f"x{i}", "builtin.var", (), value_type, attrs={"name": f"x{i}"}) for i in range(50))
-    module = fm.IRModule("high_level", "imported", nodes, (fm.Function("main", (), (nodes[-1].id, )), ), "main")
+    module = fm.IRModule("high_level", "imported", nodes, (fm.Function("main", (), (nodes[-1].id,)),), "main")
     expected = _legacy_semantic_hash(module)
     calls = []
     original = fm.TensorType.to_data
@@ -82,8 +82,8 @@ def test_stage_only_changes_reuse_unchanged_sequence_encoding(monkeypatch):
 
 def test_equal_python_literals_with_different_json_bytes_keep_distinct_hashes():
     module, _ = _module_with_selection()
-    first = replace(module, nodes=(replace(module.nodes[0], metadata={"flag": True}), ))
-    second = replace(first, nodes=(replace(first.nodes[0], metadata={"flag": 1}), ))
+    first = replace(module, nodes=(replace(module.nodes[0], metadata={"flag": True}),))
+    second = replace(first, nodes=(replace(first.nodes[0], metadata={"flag": 1}),))
     assert first.nodes == second.nodes  # Python equality cannot key this cache.
     assert first.semantic_hash == _legacy_semantic_hash(first)
     assert second.semantic_hash == _legacy_semantic_hash(second)
@@ -120,7 +120,7 @@ def test_module_replacement_reuses_recursively_frozen_metadata():
         metadata={"nested": {"tiles": [8, 16]}},
     )
     value = builder.var("value", fm.tensor_type("bfloat16", (1, 16)), id="value")
-    builder.function("main", (value, ), (value, ))
+    builder.function("main", (value,), (value,))
     module = builder.build(entry="main")
 
     replaced = replace(module, stage="canonical")
@@ -138,7 +138,7 @@ def test_shared_frozen_metadata_keeps_exact_hash_and_encoded_fragment():
         metadata={"nested": {"tiles": [8, 16]}},
     )
     value = builder.var("value", fm.tensor_type("bfloat16", (1, 16)), id="value")
-    builder.function("main", (value, ), (value, ))
+    builder.function("main", (value,), (value,))
     module = builder.build(entry="main")
     replaced = replace(module, stage="canonical")
 

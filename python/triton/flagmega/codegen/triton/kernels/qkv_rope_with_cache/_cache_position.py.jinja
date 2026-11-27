@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% macro position(call, prefix, token, mask, indent) %}
+{% macro position(call, prefix, token, mask, indent) %}
 {{ indent }}{{ prefix }}_cache_token_position = qkv_cache_position + ({{ token }})
 {{ indent }}{{ prefix }}_cache_logical_block = {{ prefix }}_cache_token_position // {{ call.block_size }}
 {{ indent }}{{ prefix }}_cache_block_offset = {{ prefix }}_cache_token_position % {{ call.block_size }}

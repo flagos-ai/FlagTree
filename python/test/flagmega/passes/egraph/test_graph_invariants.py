@@ -13,7 +13,7 @@ def test_hash_consing_uses_canonical_ir_attribute_encoding():
     boxed = fm.Node(
         "boxed",
         "distributed.boxing",
-        ("source", ),
+        ("source",),
         tensor,
         attrs={"new_type": tensor},
     )
@@ -25,7 +25,7 @@ def test_hash_consing_uses_canonical_ir_attribute_encoding():
 
 def test_same_spelled_variables_remain_distinct_identity_leaves():
     graph = EGraph()
-    tensor = fm.tensor_type("float32", (4, ))
+    tensor = fm.tensor_type("float32", (4,))
     lhs = fm.Node("lhs", "builtin.var", (), tensor, attrs={"name": "value"})
     rhs = fm.Node("rhs", "builtin.var", (), tensor, attrs={"name": "value"})
 
@@ -41,14 +41,14 @@ def test_nullary_constants_with_different_result_types_are_not_congruent():
         "narrow",
         "builtin.splat_const",
         (),
-        fm.tensor_type("bfloat16", (8, )),
+        fm.tensor_type("bfloat16", (8,)),
         attrs={"value": 0.0},
     )
     wide = fm.Node(
         "wide",
         "builtin.splat_const",
         (),
-        fm.tensor_type("bfloat16", (32, )),
+        fm.tensor_type("bfloat16", (32,)),
         attrs={"value": 0.0},
     )
 

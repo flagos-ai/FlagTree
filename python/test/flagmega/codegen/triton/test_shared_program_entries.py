@@ -31,7 +31,7 @@ def test_shared_entry_rejects_forged_manifest_and_source_binding(tmp_path, chang
     if change == "record":
         from python.test.flagmega.codegen.triton.pipelines.conftest import _compile_pipeline_module
         module = _compile_pipeline_module(reusable=True, worker_depth=4, program_dag=True,
-                                          implementation="tir.dense_matmul.tensor_descriptor_gemv")
+                                         implementation="tir.dense_matmul.tensor_descriptor_gemv")
     else:
         module = compile_repeated_stages()
     package = render_triton_package(module, tmp_path)
@@ -67,18 +67,18 @@ def test_pointer_projection_is_a_byte_addressed_no_copy_view():
 
     root = torch.arange(32, dtype=torch.int32)
     binding = dict(kind="pointer", source=0, dtype="int32", byte_offset=12, scope_stride_bytes=64)
-    (view, ) = project_arguments((binding, ), (root, ))
+    (view,) = project_arguments((binding,), (root,))
     assert view.data_ptr() == root.data_ptr() + 12
     view[0] = -33
     assert root[3] == -33
-    assert project_arguments((dict(kind="immediate", dtype="int64", value=2**45), ), ()) == (2**45, )
+    assert project_arguments((dict(kind="immediate", dtype="int64", value=2**45),), ()) == (2**45,)
 
 
 @pytest.mark.parametrize("value,dtype", [(True, "bool"), (-0., "float64")])
 def test_identity_scalar_projection_preserves_boolean_and_signed_zero(value, dtype):
     from triton.flagmega.runtime.program_arguments import project_arguments
 
-    (actual, ) = project_arguments((dict(kind="scalar_argument", source=0, dtype=dtype, add=0), ), (value, ))
+    (actual,) = project_arguments((dict(kind="scalar_argument", source=0, dtype=dtype, add=0),), (value,))
     assert type(actual) is type(value)
     if dtype == "float64":
         assert math.copysign(1., actual) == -1.
@@ -94,13 +94,9 @@ def test_shared_descriptor_entry_preserves_each_call_resource(tmp_path):
     specs = package["host_tensor_descriptor_specs"]
     assert len(specs) == 2
     indices = [package["signature_arguments"].index(spec["name"]) for spec in specs]
-    resources = [[
-        binding["source"]
-        for binding in launch["argument_bindings"]
-        if binding["kind"] == "argument" and binding["source"] in indices
-    ]
-                 for launch in package["kernels"]
-                 if launch["entry_function"] == "worker"]
+    resources = [[binding["source"] for binding in launch["argument_bindings"]
+                  if binding["kind"] == "argument" and binding["source"] in indices]
+                 for launch in package["kernels"] if launch["entry_function"] == "worker"]
     assert resources == [[indices[0]], [indices[1]]]
 
 
@@ -131,20 +127,16 @@ def test_device_shared_pool_records_select_distinct_weights_and_rebind_inputs(tm
     from python.test.flagmega.codegen.triton.pipelines.conftest import _compile_pipeline_module
     from python.test.flagmega.codegen.triton.pipelines.test_pipeline_runtime import _checkpoint
 
-    weights = tuple(
-        (torch.eye(128).roll(index + 1, 0) * (((torch.arange(128) + index) % 3 + 1).float()[:, None] / 4)).bfloat16()
-        for index in range(8))
-    checkpoint = {
-        f"{prefix}_weight_{index}": weights[group * 4 + index]
-        for group, prefix in enumerate(("first", "second"))
-        for index in range(4)
-    }
+    weights = tuple((torch.eye(128).roll(index + 1, 0) *
+                     (((torch.arange(128) + index) % 3 + 1).float()[:, None] / 4)).bfloat16()
+                    for index in range(8))
+    checkpoint = {f"{prefix}_weight_{index}": weights[group * 4 + index]
+                  for group, prefix in enumerate(("first", "second")) for index in range(4)}
     module = _compile_pipeline_module(reusable=True, worker_depth=4, program_dag=True,
-                                      implementation="tir.dense_matmul.tensor_descriptor_gemv")
-    runtime = load(
-        write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", checkpoint=_checkpoint(checkpoint),
-                       emit_executable=True), device="cuda:0")
-    guard = torch.full((160, ), -123., dtype=torch.bfloat16, device="cuda")
+                                     implementation="tir.dense_matmul.tensor_descriptor_gemv")
+    runtime = load(write_artifact(module, tmp_path / "artifact", target="nvidia-sm90",
+                   checkpoint=_checkpoint(checkpoint), emit_executable=True), device="cuda:0")
+    guard = torch.full((160,), -123., dtype=torch.bfloat16, device="cuda")
     output = guard[16:-16].reshape(1, 128)
     value = torch.zeros_like(output)
     stream = torch.cuda.Stream()

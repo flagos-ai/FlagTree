@@ -25,8 +25,7 @@ def test_injected_catalog_preserves_nvmma_alignment():
 @pytest.mark.parametrize("k,variant", [(512, "wgmma_local"), (80, "mma")])
 def test_normal_codegen_declares_storage_and_descriptor_abi(tmp_path, k, variant):
     compiled = Compiler().compile(graph(k=k)).module
-    dispatch, = (function.dispatch
-                 for function in compiled.kernel_definitions
+    dispatch, = (function.dispatch for function in compiled.kernel_definitions
                  if function.dispatch.semantic_op == "nn.kda_input_projection")
     assert dispatch.microkernel.variant == variant
     assert compiled.metadata["launch_contract"]["cooperative_grid"]
@@ -57,31 +56,25 @@ def test_real_artifact_six_results_and_guards(tmp_path, k, heads, width, rank_f,
 
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("requires SM90")
-    lanes = ((2, 4), (4, ), (), (), (8, ), (2, 4)) if packed else ((), ) * 6
-    module = Compiler().compile(
-        graph(k=k, heads=heads, width=width, rank_f=rank_f, rank_g=rank_g, lanes=lanes,
-              input_lanes=(2, 4) if packed else (), placement=fm.Placement(
-                  (8, 16), "yx", "bb") if resident else None)).module
+    lanes = ((2, 4), (4,), (), (), (8,), (2, 4)) if packed else ((),) * 6
+    module = Compiler().compile(graph(k=k, heads=heads, width=width, rank_f=rank_f, rank_g=rank_g,
+                                      lanes=lanes, input_lanes=(2, 4) if packed else (),
+                                      placement=fm.Placement((8, 16), "yx", "bb") if resident else None)).module
     artifact = write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)
     if resident:
         assert "distributed_boxing/tensor_load" not in (artifact / "generated_kernels.py").read_text()
     runtime = load(artifact, device="cuda:0")
     generator = torch.Generator().manual_seed(7931)
-    inputs = {
-        node.id:
-        torch.randint(-8, 8,
-                      tuple(d.fixed_value
-                            for d in node.type.shape) + tuple(getattr(node.type.dtype, "lanes", ())),
-                      generator=generator).float().div_(128).bfloat16().cuda()
-        for node in module.nodes
-        if node.op == "builtin.var"
-    }
+    inputs = {node.id: torch.randint(-8, 8, tuple(d.fixed_value for d in node.type.shape) +
+                                    tuple(getattr(node.type.dtype, "lanes", ())), generator=generator).float()
+                                    .div_(128).bfloat16().cuda()
+              for node in module.nodes if node.op == "builtin.var"}
     specs = tuple(spec for spec in runtime.external_arguments if spec["role"] == "result")
     storage, outputs = [], {}
     for spec in specs:
         kind = fm.logical_type(module.node_map[spec["value"]].type)
         shape = tuple(d.fixed_value for d in kind.shape) + tuple(getattr(kind.dtype, "lanes", ()))
-        allocation = torch.full((prod(shape) + 32, ), 123., dtype=torch.bfloat16, device="cuda")
+        allocation = torch.full((prod(shape) + 32,), 123., dtype=torch.bfloat16, device="cuda")
         storage.append(allocation)
         outputs[spec["value"]] = allocation[16:-16].reshape(shape)
     try:
@@ -93,10 +86,10 @@ def test_real_artifact_six_results_and_guards(tmp_path, k, heads, width, rank_f,
             GeneratedTirCallGraphModule.run_into(runtime, *arguments)
             torch.cuda.synchronize()
             for spec, name, allocation in zip(specs, ("q", "k", "v", "b", "f", "g"), storage, strict=True):
-                expected = (
-                    inputs["x"].cpu().reshape(1, k).float() @ inputs[name].cpu().reshape(-1, k).float().T).bfloat16()
-                torch.testing.assert_close(outputs[spec["value"]].reshape(expected.shape).cpu(), expected, rtol=0,
-                                           atol=0)
+                expected = (inputs["x"].cpu().reshape(1, k).float()
+                            @ inputs[name].cpu().reshape(-1, k).float().T).bfloat16()
+                torch.testing.assert_close(outputs[spec["value"]].reshape(expected.shape).cpu(), expected,
+                                           rtol=0, atol=0)
                 assert bool(torch.all(allocation[:16] == 123.)) and bool(torch.all(allocation[-16:] == 123.))
             assert runtime.resource_report["spill_bytes"] == 0
             assert runtime.resource_report["num_warps"] <= 8
@@ -112,26 +105,23 @@ def test_reusable_projection_rebinds_six_weights_and_intermediate_activation(tmp
     placement = fm.Placement((8, 16), "yx", "bb")
     builder = fm.IRBuilder(dialect="distributed", stage="frozen_constants",
                            metadata={"auto_distribution": {"placement": placement.to_data()}})
-    types = (fm.tensor_type(fm.vector_type("bfloat16", (8, )), (1, 64)), *(fm.tensor_type("bfloat16",
-                                                                                          (4, 16, 512)), ) * 3,
-             fm.tensor_type("bfloat16", (4, 512)), fm.tensor_type("bfloat16",
-                                                                  (512, 512)), fm.tensor_type("bfloat16", (64, 512)))
-    distributed = tuple(fm.DistributedType(kind, (fm.SBP.broadcast(), ) * kind.rank, placement) for kind in types)
+    types = (fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, 64)),
+             *(fm.tensor_type("bfloat16", (4, 16, 512)),) * 3,
+             fm.tensor_type("bfloat16", (4, 512)), fm.tensor_type("bfloat16", (512, 512)),
+             fm.tensor_type("bfloat16", (64, 512)))
+    distributed = tuple(fm.DistributedType(kind, (fm.SBP.broadcast(),) * kind.rank, placement) for kind in types)
     formal = tuple(builder.var(f"arg{i}", kind, id=f"arg{i}") for i, kind in enumerate(distributed))
     with construction_scope(builder):
-        projection = fm.F.nn.kda_input_projection(*formal, output_lanes=((), (), (), (), (8, ), ()), name="projection")
-    builder.function("project", formal, (projection, ), attrs={"reusable": True})
+        projection = fm.F.nn.kda_input_projection(*formal, output_lanes=((), (), (), (), (8,), ()), name="projection")
+    builder.function("project", formal, (projection,), attrs={"reusable": True})
     x = builder.var("x", distributed[0], id="x")
-    banks = tuple(
-        tuple(
-            builder.var(f"{label}{name}", kind, id=f"{label}{name}")
-            for name, kind in zip(("q", "k", "v", "b", "f", "g"), distributed[1:], strict=True))
-        for label in ("a", "b"))
+    banks = tuple(tuple(builder.var(f"{label}{name}", kind, id=f"{label}{name}")
+                        for name, kind in zip(("q", "k", "v", "b", "f", "g"), distributed[1:], strict=True))
+                  for label in ("a", "b"))
     with construction_scope(builder):
         first = fm.F.builtin.call(x, *banks[0], callee="project", result_type=projection.type, name="first")
         intermediate = fm.F.tensors.get_item(first, 4)
-        second = fm.F.builtin.call(intermediate, *banks[1], callee="project", result_type=projection.type,
-                                   name="second")
+        second = fm.F.builtin.call(intermediate, *banks[1], callee="project", result_type=projection.type, name="second")
         outputs = (*fm.F.tensors.get_items(first, *range(6)), *fm.F.tensors.get_items(second, *range(6)))
     builder.function("main", (x, *banks[0], *banks[1]), outputs)
     compiled = Compiler().compile(fm.verify_module(builder.build(entry="main"))).module
@@ -145,7 +135,7 @@ def test_reusable_projection_rebinds_six_weights_and_intermediate_activation(tmp
         kind = fm.logical_type(compiled.node_map[spec["value"]].type)
         shape = tuple(d.fixed_value for d in kind.shape) + tuple(getattr(kind.dtype, "lanes", ()))
         if spec["role"] == "result":
-            storage = torch.full((prod(shape) + 32, ), 123., dtype=torch.bfloat16, device="cuda")
+            storage = torch.full((prod(shape) + 32,), 123., dtype=torch.bfloat16, device="cuda")
             values[spec["value"]] = storage[16:-16].reshape(shape)
             allocations.append(storage)
             ordered_outputs.append(values[spec["value"]])

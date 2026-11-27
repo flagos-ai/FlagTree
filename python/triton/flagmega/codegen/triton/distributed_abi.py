@@ -41,10 +41,14 @@ class DistributedBufferABI:
         try:
             value = self._descriptor.axes[axis].map_local_to_global(local_coordinate)
         except IndexError as error:
-            raise CodegenError(f"Buffer {self.buffer_id!r} has no logical axis {axis}.") from error
+            raise CodegenError(
+                f"Buffer {self.buffer_id!r} has no logical axis {axis}."
+            ) from error
         if not value.is_fixed:
-            raise CodegenError(f"Buffer {self.buffer_id!r} local coordinate did not simplify "
-                               "after binding a fixed owner.")
+            raise CodegenError(
+                f"Buffer {self.buffer_id!r} local coordinate did not simplify "
+                "after binding a fixed owner."
+            )
         return value.fixed_value
 
     def storage_axis_coordinate(self, axis: int, local_coordinate: int) -> int:
@@ -56,8 +60,10 @@ class DistributedBufferABI:
             logical = self.logical_axis_coordinate(axis, local_coordinate)
             origin = self._storage_descriptor.axes[axis].map_local_to_global(0)
             if not origin.is_fixed:
-                raise CodegenError(f"Buffer {self.buffer_id!r} parent shard origin did not "
-                                   "simplify after binding a fixed owner.")
+                raise CodegenError(
+                    f"Buffer {self.buffer_id!r} parent shard origin did not "
+                    "simplify after binding a fixed owner."
+                )
             return logical - origin.fixed_value
         return int(local_coordinate)
 
@@ -77,7 +83,9 @@ def distributed_buffer_abi(
 
     distributed_type = buffer.distributed_type
     if distributed_type is None:
-        raise CodegenError(f"Buffer {buffer.id!r} has no DistributedType local-shard ABI.")
+        raise CodegenError(
+            f"Buffer {buffer.id!r} has no DistributedType local-shard ABI."
+        )
     hierarchy = distributed_type.placement.hierarchy
     coordinates = unravel_placement_index(owner_index, hierarchy)
     descriptor = local_shard_descriptor(distributed_type, coordinates)
@@ -88,15 +96,21 @@ def distributed_buffer_abi(
         result = []
         for value in values:
             if not value.is_fixed:
-                raise CodegenError(f"Buffer {buffer.id!r} has dynamic {name} {value}; bind "
-                                   "runtime dimensions before requesting a static ABI.")
+                raise CodegenError(
+                    f"Buffer {buffer.id!r} has dynamic {name} {value}; bind "
+                    "runtime dimensions before requesting a static ABI."
+                )
             result.append(value.fixed_value)
         return tuple(result)
 
     logical_shape = fixed_shape(distributed_type.tensor.shape, "logical shape")
-    capacity_shape = fixed_shape(descriptor.local_capacity_shape, "local capacity")
+    capacity_shape = fixed_shape(
+        descriptor.local_capacity_shape, "local capacity"
+    )
     active_shape = fixed_shape(descriptor.active_shape, "active shape")
-    storage_capacity_shape = fixed_shape(storage_descriptor.local_capacity_shape, "storage local capacity")
+    storage_capacity_shape = fixed_shape(
+        storage_descriptor.local_capacity_shape, "storage local capacity"
+    )
     component_elements = prod(storage_capacity_shape, start=1)
     physical_owner_index = owner_index
     if buffer.distributed_storage_kind is DistributedBufferStorageKind.COMPACT_PER_CHIP:
@@ -105,12 +119,19 @@ def distributed_buffer_abi(
             tuple(coordinates[axis] for axis in block_axes),
             tuple(hierarchy[axis] for axis in block_axes),
         ) if block_axes else 0
-    component_offset = (physical_owner_index * component_elements if buffer.distributed_storage_kind in {
-        DistributedBufferStorageKind.COMPACT_PER_OWNER,
-        DistributedBufferStorageKind.COMPACT_PER_CHIP,
-    } else 0)
+    component_offset = (
+        physical_owner_index * component_elements
+        if buffer.distributed_storage_kind in {
+            DistributedBufferStorageKind.COMPACT_PER_OWNER,
+            DistributedBufferStorageKind.COMPACT_PER_CHIP,
+        }
+        else 0
+    )
     group_coordinates = descriptor.partial_group_coordinates or ()
-    group_indices = tuple(_linear_owner_index(coordinate, hierarchy) for coordinate in group_coordinates)
+    group_indices = tuple(
+        _linear_owner_index(coordinate, hierarchy)
+        for coordinate in group_coordinates
+    )
     return DistributedBufferABI(
         buffer.id,
         buffer.distributed_storage_kind,

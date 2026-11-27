@@ -25,15 +25,18 @@ def _compatible_statistics_domain(partial, statistics):
         return True
     # New cross-placement support is confined to block meshes on one chip.
     # Existing same-placement device hierarchies keep their original contract.
-    if (not isinstance(statistics, DistributedType) or set(domain.placement.hierarchy_levels) != {'b'}
-            or set(statistics.placement.hierarchy_levels) != {'b'} or domain.tensor != statistics.tensor):
+    if (not isinstance(statistics, DistributedType)
+            or set(domain.placement.hierarchy_levels) != {'b'}
+            or set(statistics.placement.hierarchy_levels) != {'b'}
+            or domain.tensor != statistics.tensor):
         return False
     chip_domain = chip_data_type(domain)
     return chip_domain is not None and chip_domain == chip_data_type(statistics)
 
 
 @op_definition('ntt.partial_rms_packed_dense_matmul_glu', namespace='ntt',
-               functional_name='partial_rms_packed_dense_matmul_glu', display_name='NTT.PartialRmsPackedDenseMatMulGlu')
+               functional_name='partial_rms_packed_dense_matmul_glu',
+               display_name='NTT.PartialRmsPackedDenseMatMulGlu')
 class PartialRmsPackedDenseMatMulGlu(OpDefinition):
     """Consume actual Sum-partial owners; the sixth input is not broadcast data.
 
@@ -76,18 +79,16 @@ class PartialRmsPackedDenseMatMulGlu(OpDefinition):
         raw = cls.raw.type_of(inputs)
         stats, _, _ = composition_nodes(inputs[:5], attrs)
         if (not isinstance(raw, DistributedType) or not isinstance(partial, DistributedType)
-                or partial.tensor.dtype is not DType.FLOAT32 or partial.partial is None
-                or partial.partial.reduce_op is not ReduceOp.SUM or not partial.partial.axes
-                or partial.exclusive is not None or not all_broadcast(replace(partial, partial=None))
+                or partial.tensor.dtype is not DType.FLOAT32
+                or partial.partial is None or partial.partial.reduce_op is not ReduceOp.SUM
+                or not partial.partial.axes or partial.exclusive is not None
+                or not all_broadcast(replace(partial, partial=None))
                 or not _compatible_statistics_domain(partial, stats.type)):
-            raise IRSchemaError(
-                'PartialRmsPackedDenseMatMulGlu requires scalar FP32 Sum-partial broadcast statistics with a compatible chip domain and RMS shape.'
-            )
+            raise IRSchemaError('PartialRmsPackedDenseMatMulGlu requires scalar FP32 Sum-partial broadcast statistics with a compatible chip domain and RMS shape.')
         owners = prod(partial.placement.hierarchy[axis] for axis in partial.partial.axes)
         k = tensor_of(raw).shape[-1].fixed_value
         if owners * attrs['norm_tree_group_size'] != k:
-            raise IRSchemaError(
-                'PartialRmsPackedDenseMatMulGlu owner count must cover exactly one local statistic per raw tree group.')
+            raise IRSchemaError('PartialRmsPackedDenseMatMulGlu owner count must cover exactly one local statistic per raw tree group.')
         return output
 
     @classmethod
@@ -103,9 +104,8 @@ class PartialRmsPackedDenseMatMulGlu(OpDefinition):
 
     @classmethod
     def cost(cls, node):
-        return OpCost(
-            flops=None, bytes_read=None, bytes_written=tensor_nbytes(tensor_of(node.type)),
-            notes=('sum-partial-rms+bf16-materialization+packed-glu', 'normalization-replicated-per-output-owner'))
+        return OpCost(flops=None, bytes_read=None, bytes_written=tensor_nbytes(tensor_of(node.type)),
+                      notes=('sum-partial-rms+bf16-materialization+packed-glu', 'normalization-replicated-per-output-owner'))
 
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):
@@ -117,10 +117,9 @@ class PartialRmsPackedDenseMatMulGlu(OpDefinition):
         m, k = (d.fixed_value for d in tensors[0].shape)
         n = output.shape[1].fixed_value
         owners = prod(inputs[5].type.placement.hierarchy[axis] for axis in inputs[5].type.partial.axes)
-        return OpCostFactors(
-            simt_fma_operations=2 * m * n * k, elementwise_operations=5 * m * k + m * (owners - 1) + 5 * m * n,
-            block_local_memory_load_bytes=sum(
-                prod(d.fixed_value for d in t.shape) * t.dtype.itemsize for t in tensors[:5]) + m * owners * 4,
+        return OpCostFactors(simt_fma_operations=2 * m * n * k,
+            elementwise_operations=5 * m * k + m * (owners - 1) + 5 * m * n,
+            block_local_memory_load_bytes=sum(prod(d.fixed_value for d in t.shape) * t.dtype.itemsize for t in tensors[:5]) + m * owners * 4,
             block_local_memory_store_bytes=m * n * output.dtype.itemsize)
 
 

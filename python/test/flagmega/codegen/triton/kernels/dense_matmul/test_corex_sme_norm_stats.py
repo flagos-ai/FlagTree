@@ -22,17 +22,19 @@ def test_sme_down_matches_original_results_and_statistics(tmp_path, n, k, projec
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or not getattr(torch, "corex", False):
         pytest.skip("requires an Iluvatar COREX GPU")
-    call = dict(
-        family="dense_matmul", variant="packed_k_major_gemv_norm_stats", symbol="run", signature="X, W, R, Y, S",
-        local_m_capacity=1, local_n_capacity=n, local_k_capacity=k, tile_n=64, block_k=128, source="X", weight="W",
-        result="Y", stats="S", residual="R", source_offset="dense_local_k_offsets",
-        result_offset="dense_local_n_offsets", residual_offset="dense_local_n_offsets", stats_offset="0",
-        source_active="True", result_active="True", result_writer_active="True", stats_writer_active="True",
-        global_n="dense_local_n_offsets", global_k="dense_local_k_offsets", projection_type=projection,
-        output_type=output, addend_cast_types=["tl.bfloat16"
-                                               ], weight_offset=f"(dense_global_k[None, :] // 16) * {n * 16} + "
-        "(dense_global_n[:, None] // 8) * 128 + "
-        "(dense_global_n[:, None] % 8) * 16 + dense_global_k[None, :] % 16")
+    call = dict(family="dense_matmul", variant="packed_k_major_gemv_norm_stats",
+                symbol="run", signature="X, W, R, Y, S", local_m_capacity=1,
+                local_n_capacity=n, local_k_capacity=k, tile_n=64, block_k=128,
+                source="X", weight="W", result="Y", stats="S", residual="R",
+                source_offset="dense_local_k_offsets", result_offset="dense_local_n_offsets",
+                residual_offset="dense_local_n_offsets", stats_offset="0",
+                source_active="True", result_active="True",
+                result_writer_active="True", stats_writer_active="True",
+                global_n="dense_local_n_offsets", global_k="dense_local_k_offsets",
+                projection_type=projection, output_type=output, addend_cast_types=["tl.bfloat16"],
+                weight_offset=f"(dense_global_k[None, :] // 16) * {n * 16} + "
+                              "(dense_global_n[:, None] // 8) * 128 + "
+                              "(dense_global_n[:, None] % 8) * 16 + dense_global_k[None, :] % 16")
     generator = torch.Generator().manual_seed(n + k)
     x = torch.randn(k, generator=generator).bfloat16().cuda()
     dense = (torch.randn((n, k), generator=generator) / 32).bfloat16()
@@ -54,9 +56,10 @@ def test_sme_down_matches_original_results_and_statistics(tmp_path, n, k, projec
         if corex:
             call["corex_flat_sme_down"] = dict(source="X", weight="W", weight_k_group_stride=n * 16)
         source = TritonTemplateRegistry().render_kernel(
-            KernelTemplateSpec("dense_matmul", "packed_k_major_gemv_norm_stats", "corex" if corex else None,
-                               "bi_v150" if corex else None),
-            dict(render_calls=[call], num_warps=warps, distributed_entry=False, mesh_hierarchy=(1, 1)),
+            KernelTemplateSpec("dense_matmul", "packed_k_major_gemv_norm_stats",
+                               "corex" if corex else None, "bi_v150" if corex else None),
+            dict(render_calls=[call], num_warps=warps,
+                 distributed_entry=False, mesh_hierarchy=(1, 1)),
         ).source
         path = tmp_path / f"down_{warps}.py"
         path.write_text("import triton\nimport triton.language as tl\n"
@@ -66,9 +69,9 @@ def test_sme_down_matches_original_results_and_statistics(tmp_path, n, k, projec
         spec.loader.exec_module(module)
         y = torch.empty(n, device="cuda", dtype=dtype)
         stats = torch.empty(1, device="cuda")
-        module.run[(1, )](x, weight, residual, y, stats, num_warps=warps, enable_fp_fusion=False)
+        module.run[(1,)](x, weight, residual, y, stats, num_warps=warps, enable_fp_fusion=False)
         with torch.cuda.graph(graph := torch.cuda.CUDAGraph()):
-            module.run[(1, )](x, weight, residual, y, stats, num_warps=warps, enable_fp_fusion=False)
+            module.run[(1,)](x, weight, residual, y, stats, num_warps=warps, enable_fp_fusion=False)
         for _ in range(10):
             graph.replay()
         torch.cuda.synchronize()
@@ -85,35 +88,18 @@ def test_sme_down_all_ctas_preserve_outputs_statistics_and_guards(tmp_path, n, k
     owners, guard = 16, 17
     owner = "tl.program_id(0)"
     call = dict(
-        family="dense_matmul",
-        variant="packed_k_major_gemv_norm_stats",
-        symbol="run",
-        signature="X, W, R, Y, S",
-        local_m_capacity=1,
-        local_n_capacity=n,
-        local_k_capacity=k,
-        tile_n=64,
-        block_k=128,
-        source="X",
-        weight="W",
-        result="Y",
-        stats="S",
-        residual="R",
-        source_offset="dense_local_k_offsets",
+        family="dense_matmul", variant="packed_k_major_gemv_norm_stats", symbol="run",
+        signature="X, W, R, Y, S", local_m_capacity=1, local_n_capacity=n,
+        local_k_capacity=k, tile_n=64, block_k=128, source="X", weight="W",
+        result="Y", stats="S", residual="R", source_offset="dense_local_k_offsets",
         result_offset=f"{guard}+{owner}*{n}+dense_local_n_offsets",
-        residual_offset=f"{owner}*{n}+dense_local_n_offsets",
-        stats_offset=f"{guard}+{owner}",
-        source_active="True",
-        result_active="True",
-        result_writer_active="True",
-        stats_writer_active="True",
-        global_n="dense_local_n_offsets",
-        global_k="dense_local_k_offsets",
-        projection_type="tl.float32",
-        output_type="tl.float32",
-        addend_cast_types=[],
+        residual_offset=f"{owner}*{n}+dense_local_n_offsets", stats_offset=f"{guard}+{owner}",
+        source_active="True", result_active="True", result_writer_active="True",
+        stats_writer_active="True", global_n="dense_local_n_offsets",
+        global_k="dense_local_k_offsets", projection_type="tl.float32",
+        output_type="tl.float32", addend_cast_types=[],
         weight_offset=f"{owner}*{n*k}+(dense_global_k[None,:]//16)*{n*16}"
-        "+dense_global_n[:,None]*16+dense_global_k[None,:]%16",
+                      "+dense_global_n[:,None]*16+dense_global_k[None,:]%16",
     )
     generator = torch.Generator().manual_seed(owners + n + k)
     x = torch.randn(k, generator=generator).bfloat16().cuda()
@@ -123,11 +109,13 @@ def test_sme_down_all_ctas_preserve_outputs_statistics_and_guards(tmp_path, n, k
     results = []
     for corex, warps in ((False, 32), (True, 16)):
         if corex:
-            call["corex_flat_sme_down"] = dict(source="X", weight=f"(W+{owner}*{n*k})", weight_k_group_stride=n * 16)
+            call["corex_flat_sme_down"] = dict(
+                source="X", weight=f"(W+{owner}*{n*k})", weight_k_group_stride=n * 16)
         source = TritonTemplateRegistry().render_kernel(
-            KernelTemplateSpec("dense_matmul", "packed_k_major_gemv_norm_stats", "corex" if corex else None,
-                               "bi_v150" if corex else None),
-            dict(render_calls=[call], num_warps=warps, distributed_entry=False, mesh_hierarchy=(1, 1)),
+            KernelTemplateSpec("dense_matmul", "packed_k_major_gemv_norm_stats",
+                               "corex" if corex else None, "bi_v150" if corex else None),
+            dict(render_calls=[call], num_warps=warps,
+                 distributed_entry=False, mesh_hierarchy=(1, 1)),
         ).source
         path = tmp_path / f"down_grid_{warps}.py"
         path.write_text("import triton\nimport triton.language as tl\n"
@@ -135,11 +123,13 @@ def test_sme_down_all_ctas_preserve_outputs_statistics_and_guards(tmp_path, n, k
         spec = importlib.util.spec_from_file_location(f"down_grid_{warps}", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        y = torch.full((guard + owners * n + guard, ), -7., device="cuda")
-        stats = torch.full((guard + owners + guard, ), -7., device="cuda")
-        module.run[(owners, )](x, weight, residual, y, stats, num_warps=warps, enable_fp_fusion=False)
+        y = torch.full((guard + owners * n + guard,), -7., device="cuda")
+        stats = torch.full((guard + owners + guard,), -7., device="cuda")
+        module.run[(owners,)](x, weight, residual, y, stats,
+                             num_warps=warps, enable_fp_fusion=False)
         with torch.cuda.graph(graph := torch.cuda.CUDAGraph()):
-            module.run[(owners, )](x, weight, residual, y, stats, num_warps=warps, enable_fp_fusion=False)
+            module.run[(owners,)](x, weight, residual, y, stats,
+                                 num_warps=warps, enable_fp_fusion=False)
         for _ in range(10):
             graph.replay()
         torch.cuda.synchronize()

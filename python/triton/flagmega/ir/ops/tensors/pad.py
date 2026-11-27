@@ -27,7 +27,8 @@ class Pad(OpDefinition):
         attrs = super().normalize_attrs(attributes)
         pads = attrs["pad_end"]
         if not isinstance(pads, (tuple, list)) or any(
-                isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in pads):
+            isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in pads
+        ):
             raise IRSchemaError("F.tensors.pad pad_end must be a sequence of non-negative integers.")
         value = attrs["pad_value"]
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -68,14 +69,16 @@ class Pad(OpDefinition):
         value = cls.value.read(arguments)
         value_type = tensor_of(context.types[cls.value.read(node.inputs)])
         output = context.full(node.type, node.attrs["pad_value"])
-        slices = tuple(slice(0, int(value.shape[axis])) for axis in range(value_type.rank))
+        slices = tuple(
+            slice(0, int(value.shape[axis])) for axis in range(value_type.rank)
+        )
         output[slices] = value
         return output
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         size = tensor_nbytes(node.type)
-        return OpCost(bytes_read=size, bytes_written=size, notes=("vector-pad", ))
+        return OpCost(bytes_read=size, bytes_written=size, notes=("vector-pad",))
 
 
 __all__ = ["Pad"]

@@ -1,0 +1,58 @@
+// flagmega-kernel: gdn_convolution/persistent platform=generic
+{% import "entrypoints/_common.cpp.jinja" as entry with context %}
+{% if render_calls is defined %}
+{% for call in render_calls %}
+{% if call.family == "gdn_convolution" and call.variant == "persistent" %}
+static FTT_DEVICE void {{ call.symbol }}({{ entry.device_signature(call) }}) {
+{{ entry.mesh_coordinates() }}
+{{ entry.thread_identity() }}
+    auto *const ftt_gdn_qkv = {{ call.qkv | cppexpr }};
+    auto *const ftt_gdn_state = {{ call.state | cppexpr }};
+    auto *const ftt_gdn_weight = {{ call.weight | cppexpr }};
+    auto *const ftt_gdn_result = {{ call.result | cppexpr }};
+{{ entry.strided_loop("local_channels", call.local_capacity) }} {
+        if (!(local_channels < ({{ call.active_channels | cppexpr }})) || !({{ call.writer_active | cppexpr }})) continue;
+        const ftt::dim_t channel = {{ call.global_channel | cppexpr }};
+        const ftt::dim_t weight_base = {{ call.weight_offset | cppexpr }};
+        for (ftt::dim_t token_index = 0; token_index < {{ call.tokens }}LL; ++token_index) {
+            const float current = ftt::to_float(ftt_gdn_qkv[{{ call.source_offset | cppexpr }}]);
+            const float current_coefficient = ftt::to_float(ftt_gdn_weight[weight_base + {{ call.history * call.weight_kernel_stride }}LL]);
+            float accumulator = 0.0f;
+{% if call.current_first %}
+            accumulator = current * current_coefficient;
+{% if call.round_products %}
+            accumulator = ftt::to_float(ftt::to_bfloat16(accumulator));
+{% endif %}
+{% endif %}
+            for (ftt::dim_t history_index = 0; history_index < {{ call.history }}LL; ++history_index) {
+                const ftt::dim_t state_offset = (channel / 8) * {{ call.history * 8 }}LL + history_index * 8 + channel % 8;
+                const float old = ftt::to_float(ftt_gdn_state[state_offset]);
+                const float coefficient = ftt::to_float(ftt_gdn_weight[weight_base + history_index * {{ call.weight_kernel_stride }}LL]);
+{% if call.round_products %}
+                accumulator += ftt::to_float(ftt::to_bfloat16(old * coefficient));
+{% else %}
+                accumulator = __builtin_fmaf(old, coefficient, accumulator);
+{% endif %}
+                if (history_index + 1 < {{ call.history }}LL)
+                    ftt_gdn_state[state_offset] = ftt_gdn_state[state_offset + 8];
+            }
+{% if call.history > 0 %}
+            ftt_gdn_state[(channel / 8) * {{ call.history * 8 }}LL + {{ (call.history - 1) * 8 }}LL + channel % 8] = ftt::store_as(ftt_gdn_state, current);
+{% endif %}
+{% if not call.current_first %}
+{% if call.round_products %}
+            accumulator += ftt::to_float(ftt::to_bfloat16(current * current_coefficient));
+{% else %}
+            accumulator = __builtin_fmaf(current, current_coefficient, accumulator);
+{% endif %}
+{% endif %}
+{% if call.round_before_activation %}
+            accumulator = ftt::to_float(ftt::to_bfloat16(accumulator));
+{% endif %}
+            ftt_gdn_result[{{ call.result_offset | cppexpr }}] = ftt::store_as(ftt_gdn_result, ftt::silu(accumulator));
+        }
+    }
+}
+{% endif %}
+{% endfor %}
+{% endif %}

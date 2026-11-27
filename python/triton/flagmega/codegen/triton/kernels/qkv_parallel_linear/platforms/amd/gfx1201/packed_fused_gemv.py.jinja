@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: qkv_parallel_linear/packed_fused_gemv platform=amd architecture=gfx1201
+# flagmega-kernel: qkv_parallel_linear/packed_fused_gemv platform=amd architecture=gfx1201
 {# Each owner's weight slab is contiguous, so owners in lockstep all read the
     same slab offset; starting each owner on a different N tile spreads them
     over DRAM (R9700 qkv 31.5 -> 28.4 us/layer). Rows are independent, so values

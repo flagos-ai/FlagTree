@@ -9,11 +9,11 @@ from collections.abc import Callable, Sequence
 from triton.flagmega.ir.model import Node
 from triton.flagmega.pattern_match.pattern import Pattern
 
+
 PatternGenerator = Callable[[Sequence[Node]], Sequence[Pattern]]
 
 
 class VArgsPattern(Pattern):
-
     def __init__(
         self,
         fields: Sequence[Pattern] | PatternGenerator,

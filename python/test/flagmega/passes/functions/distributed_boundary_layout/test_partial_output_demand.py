@@ -5,9 +5,11 @@ from dataclasses import replace
 
 from triton.flagmega import ir as fm
 from triton.flagmega.passes.auto_distributed import (
-    PyNttDistributedReshardRealizationPolicy, )
+    PyNttDistributedReshardRealizationPolicy,
+)
 from triton.flagmega.passes.functions import (
-    propagate_post_auto_distributed_function_boundary_layouts, )
+    propagate_post_auto_distributed_function_boundary_layouts,
+)
 
 
 def _module(*, mixed_consumer: bool):
@@ -21,21 +23,22 @@ def _module(*, mixed_consumer: bool):
     partial = replace(materialized, partial=fm.SBP.partial((0, 1)))
 
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="ntt", stage="distributed", entry="main")
 
         def forward(self):
             layer_input = self.input("layer_input", partial, id="layer_input")
             value = self.input("value", partial, id="value")
-            call = fm.F.builtin.call(value, result_type=partial, callee="layer", name="call")
-            demanded = fm.F.distributed.boxing(call, materialized, name="demanded")
-            outputs = (demanded, call) if mixed_consumer else (demanded, )
-            self.function("main", (value, ), outputs)
+            call = fm.F.builtin.call(
+                value, result_type=partial, callee="layer", name="call")
+            demanded = fm.F.distributed.boxing(
+                call, materialized, name="demanded")
+            outputs = (demanded, call) if mixed_consumer else (demanded,)
+            self.function("main", (value,), outputs)
             self.function(
                 "layer",
-                (layer_input, ),
-                (layer_input, ),
+                (layer_input,),
+                (layer_input,),
                 attrs={"reusable": True, "noinline": True},
             )
 
@@ -67,6 +70,6 @@ def test_keeps_partial_abi_when_an_unmaterialized_consumer_exists():
         PyNttDistributedReshardRealizationPolicy(),
     )
 
-    assert rewritten.function_map["layer"].outputs == ("layer_input", )
+    assert rewritten.function_map["layer"].outputs == ("layer_input",)
     assert rewritten.node_map["call"].type == partial
     assert rewritten.node_map["demanded"].type == materialized

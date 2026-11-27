@@ -40,35 +40,48 @@ class PrimFunctionCall(TIRStmt):
     dependencies: tuple[str, ...] = ()
 
     def __init__(
-            self,
-            call_id: str,
-            callee: str,
-            arguments: tuple[PrimCallBinding, ...] = (),
-            results: tuple[PrimCallBinding, ...] = (),
-            workspaces: tuple[PrimCallBinding, ...] = (),
-            shared_workspace_buffers: tuple[Buffer, ...] = (),
-            transfer_sources: tuple[str, ...] = (),
-            reads: tuple[str, ...] = (),
-            writes: tuple[str, ...] = (),
-            effect_kind: str = "pure",
-            effect_resource: str | None = None,
-            workspace_offset: int = 0,
-            workspace_nbytes: int = 0,
-            dependencies: tuple[str, ...] = (),
-            *,
-            memory_pools: tuple[MemoryPoolFrame, ...] | None = None,
+        self,
+        call_id: str,
+        callee: str,
+        arguments: tuple[PrimCallBinding, ...] = (),
+        results: tuple[PrimCallBinding, ...] = (),
+        workspaces: tuple[PrimCallBinding, ...] = (),
+        shared_workspace_buffers: tuple[Buffer, ...] = (),
+        transfer_sources: tuple[str, ...] = (),
+        reads: tuple[str, ...] = (),
+        writes: tuple[str, ...] = (),
+        effect_kind: str = "pure",
+        effect_resource: str | None = None,
+        workspace_offset: int = 0,
+        workspace_nbytes: int = 0,
+        dependencies: tuple[str, ...] = (),
+        *,
+        memory_pools: tuple[MemoryPoolFrame, ...] | None = None,
     ) -> None:
         if memory_pools is not None and (workspace_offset or workspace_nbytes):
-            raise IRSchemaError("PrimFunctionCall memory_pools cannot be combined with legacy "
-                                "workspace fields.")
-        pools = (tuple(memory_pools) if memory_pools is not None else (MemoryPoolFrame(
-            "workspace", None, workspace_offset, workspace_nbytes), ) if workspace_offset or workspace_nbytes else ())
+            raise IRSchemaError(
+                "PrimFunctionCall memory_pools cannot be combined with legacy "
+                "workspace fields."
+            )
+        pools = (
+            tuple(memory_pools)
+            if memory_pools is not None
+            else (
+                MemoryPoolFrame(
+                    "workspace", None, workspace_offset, workspace_nbytes
+                ),
+            )
+            if workspace_offset or workspace_nbytes
+            else ()
+        )
         object.__setattr__(self, "call_id", call_id)
         object.__setattr__(self, "callee", callee)
         object.__setattr__(self, "arguments", tuple(arguments))
         object.__setattr__(self, "results", tuple(results))
         object.__setattr__(self, "workspaces", tuple(workspaces))
-        object.__setattr__(self, "shared_workspace_buffers", tuple(shared_workspace_buffers))
+        object.__setattr__(
+            self, "shared_workspace_buffers", tuple(shared_workspace_buffers)
+        )
         object.__setattr__(self, "transfer_sources", tuple(transfer_sources))
         object.__setattr__(self, "reads", tuple(reads))
         object.__setattr__(self, "writes", tuple(writes))
@@ -87,7 +100,9 @@ class PrimFunctionCall(TIRStmt):
 
     @property
     def workspace_pool(self) -> MemoryPoolFrame | None:
-        return self.memory_pool_map.get("workspace") or (self.memory_pools[0] if len(self.memory_pools) == 1 else None)
+        return self.memory_pool_map.get("workspace") or (
+            self.memory_pools[0] if len(self.memory_pools) == 1 else None
+        )
 
     @property
     def workspace_offset(self) -> int:
@@ -105,7 +120,9 @@ def validate_physical_bindings(operation):
     object.__setattr__(operation, "arguments", tuple(operation.arguments))
     object.__setattr__(operation, "results", tuple(operation.results))
     object.__setattr__(operation, "workspaces", tuple(operation.workspaces))
-    object.__setattr__(operation, "shared_workspace_buffers", tuple(operation.shared_workspace_buffers))
+    object.__setattr__(
+        operation, "shared_workspace_buffers", tuple(operation.shared_workspace_buffers)
+    )
     object.__setattr__(operation, "transfer_sources", tuple(operation.transfer_sources))
     object.__setattr__(operation, "reads", tuple(operation.reads))
     object.__setattr__(operation, "writes", tuple(operation.writes))
@@ -118,28 +135,53 @@ def validate_physical_bindings(operation):
         ("workspace", operation.workspaces),
     ):
         if any(not isinstance(value, PrimCallBinding) for value in bindings):
-            raise IRSchemaError(f"PrimFunctionCall {name} bindings must be PrimCallBinding values.")
+            raise IRSchemaError(
+                f"PrimFunctionCall {name} bindings must be PrimCallBinding values."
+            )
         formals = tuple(value.formal for value in bindings)
         if len(set(formals)) != len(formals):
-            raise IRSchemaError(f"PrimFunctionCall {operation.call_id!r} has duplicate {name} formals.")
-    if any(not isinstance(value, Buffer) for value in operation.shared_workspace_buffers):
-        raise IRSchemaError("PrimFunctionCall shared workspaces must be typed TIR Buffers.")
-    actuals = {value.actual for value in (*operation.arguments, *operation.results, *operation.workspaces)}
+            raise IRSchemaError(
+                f"PrimFunctionCall {operation.call_id!r} has duplicate {name} formals."
+            )
+    if any(
+        not isinstance(value, Buffer) for value in operation.shared_workspace_buffers
+    ):
+        raise IRSchemaError(
+            "PrimFunctionCall shared workspaces must be typed TIR Buffers."
+        )
+    actuals = {
+        value.actual
+        for value in (*operation.arguments, *operation.results, *operation.workspaces)
+    }
     if not set(operation.transfer_sources).issubset(actuals):
-        raise IRSchemaError("PrimFunctionCall transfer sources must reference physical call bindings.")
+        raise IRSchemaError(
+            "PrimFunctionCall transfer sources must reference physical call bindings."
+        )
     if not set(operation.reads).issubset(actuals) or not set(operation.writes).issubset(actuals):
-        raise IRSchemaError("PrimFunctionCall effects must reference physical call bindings.")
+        raise IRSchemaError(
+            "PrimFunctionCall effects must reference physical call bindings."
+        )
     if not operation.effect_kind:
         raise IRSchemaError("PrimFunctionCall requires a non-empty effect kind.")
     if any(not isinstance(value, MemoryPoolFrame) for value in operation.memory_pools):
-        raise IRSchemaError("PrimFunctionCall memory pools must be MemoryPoolFrame values.")
-    if len({value.memory_space for value in operation.memory_pools}) != len(operation.memory_pools):
-        raise IRSchemaError(f"PrimFunctionCall {operation.call_id!r} has duplicate memory-pool frames.")
-    if (any(not value for value in operation.dependencies)
-            or len(set(operation.dependencies)) != len(operation.dependencies)
-            or operation.call_id in operation.dependencies):
-        raise IRSchemaError("PrimFunctionCall dependencies must be unique non-empty call ids "
-                            "and cannot contain the call itoperation.")
+        raise IRSchemaError(
+            "PrimFunctionCall memory pools must be MemoryPoolFrame values."
+        )
+    if len({value.memory_space for value in operation.memory_pools}) != len(
+        operation.memory_pools
+    ):
+        raise IRSchemaError(
+            f"PrimFunctionCall {operation.call_id!r} has duplicate memory-pool frames."
+        )
+    if (
+        any(not value for value in operation.dependencies)
+        or len(set(operation.dependencies)) != len(operation.dependencies)
+        or operation.call_id in operation.dependencies
+    ):
+        raise IRSchemaError(
+            "PrimFunctionCall dependencies must be unique non-empty call ids "
+            "and cannot contain the call itoperation."
+        )
 
 
 __all__ = ["PrimFunctionCall"]

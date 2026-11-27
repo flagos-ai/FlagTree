@@ -15,13 +15,22 @@ def test_packed_norm_stats_pipeline_matches_torch_on_sm90(
     packed_norm_stats_descriptor_pipeline_module,
 ):
     torch = pytest.importorskip("torch")
-    if (not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0)):
+    if (
+        not torch.cuda.is_available()
+        or torch.cuda.get_device_capability() != (9, 0)
+    ):
         pytest.skip("SM90 CUDA is required")
 
     generator = torch.Generator().manual_seed(20260904)
-    weight = torch.randn((2048, 2048), generator=generator, dtype=torch.bfloat16) / 32
-    scale = torch.randn((2048, ), generator=generator, dtype=torch.bfloat16) / 8 + 1
-    bias = torch.randn((2048, ), generator=generator, dtype=torch.bfloat16) / 64
+    weight = torch.randn(
+        (2048, 2048), generator=generator, dtype=torch.bfloat16
+    ) / 32
+    scale = torch.randn(
+        (2048,), generator=generator, dtype=torch.bfloat16
+    ) / 8 + 1
+    bias = torch.randn(
+        (2048,), generator=generator, dtype=torch.bfloat16
+    ) / 64
     checkpoint = MemoryCheckpoint(
         {},
         {
@@ -47,15 +56,29 @@ def test_packed_norm_stats_pipeline_matches_torch_on_sm90(
         emit_executable=True,
     )
     runtime = load(artifact, device="cuda:0")
-    value = (torch.randn((1, 2048), generator=generator, dtype=torch.bfloat16).to("cuda:0") / 8)
-    residual = (torch.randn((1, 2048), generator=generator, dtype=torch.bfloat16).to("cuda:0") / 8)
+    value = (
+        torch.randn((1, 2048), generator=generator, dtype=torch.bfloat16)
+        .to("cuda:0")
+        / 8
+    )
+    residual = (
+        torch.randn((1, 2048), generator=generator, dtype=torch.bfloat16)
+        .to("cuda:0")
+        / 8
+    )
     residual_before = residual.clone()
     output = runtime.create_outputs()
 
-    expected_value = (value @ weight.to("cuda:0").T + residual_before).to(torch.bfloat16)
+    expected_value = (value @ weight.to("cuda:0").T + residual_before).to(
+        torch.bfloat16
+    )
     square_sum = expected_value.float().square().sum(dim=-1, keepdim=True)
-    expected = (expected_value.float() * torch.rsqrt(square_sum / 2048 + 1e-6) * scale.to("cuda:0").float() +
-                bias.to("cuda:0").float()).to(torch.bfloat16)
+    expected = (
+        expected_value.float()
+        * torch.rsqrt(square_sum / 2048 + 1e-6)
+        * scale.to("cuda:0").float()
+        + bias.to("cuda:0").float()
+    ).to(torch.bfloat16)
 
     runtime.prepare(value, residual, output=output)
     runtime.run_into(output, value, residual)

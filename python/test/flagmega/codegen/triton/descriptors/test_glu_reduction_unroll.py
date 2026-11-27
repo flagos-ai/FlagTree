@@ -14,9 +14,8 @@ from triton.flagmega.errors import CodegenError
 
 def _raw(module):
     binding = describe_function_runtime_binding(module)
-    return deepcopy(
-        next(value for value in binding["call_abi"]["kernel_calls"]
-             if value["semantic_op"] == "nn.packed_dense_matmul_glu"))
+    return deepcopy(next(value for value in binding["call_abi"]["kernel_calls"]
+                         if value["semantic_op"] == "nn.packed_dense_matmul_glu"))
 
 
 @pytest.mark.parametrize("unroll", (1, 4, 16, 32))
@@ -40,8 +39,7 @@ def test_glu_default_retains_full_unroll(packed_glu_paired_table_inline_descript
     assert call["reduction_unroll"] == call["reduction_groups_per_stage"]
 
 
-def test_glu_template_consumes_unroll_without_helper_call_boundary(
-        packed_glu_paired_table_inline_descriptor_pipeline_module):
+def test_glu_template_consumes_unroll_without_helper_call_boundary(packed_glu_paired_table_inline_descriptor_pipeline_module):
     package = describe_tir_package(packed_glu_paired_table_inline_descriptor_pipeline_module)
     calls = tuple(value for value in package["render_calls"] if value["family"] == "dense_matmul_glu")
     assert calls

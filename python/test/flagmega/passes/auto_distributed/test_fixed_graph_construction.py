@@ -41,10 +41,9 @@ def test_constrained_graph_preserves_surface_and_optimum(output_index, structura
     if structural:
         value_type = module.node_map["output"].type
         pair = fm.Node("pair", "builtin.tuple", ("output", "value"), fm.TupleType((value_type, value_type)))
-        picked = fm.Node("picked", "builtin.get_item", ("pair", ), value_type, attrs={"index": 0})
-        module = fm.verify_module(
-            replace(module, nodes=module.nodes + (pair, picked), functions=(replace(module.functions[0],
-                                                                                    outputs=("picked", )), )))
+        picked = fm.Node("picked", "builtin.get_item", ("pair",), value_type, attrs={"index": 0})
+        module = fm.verify_module(replace(module, nodes=module.nodes + (pair, picked),
+                                          functions=(replace(module.functions[0], outputs=("picked",)),)))
     full = AutoDistributedPass._build_graph(module, target)
     candidate = full.bucket_map["output"].candidates[output_index]
     fixed = {"output": candidate.id}
@@ -73,9 +72,9 @@ def test_constrained_graph_cannot_be_solved_after_relaxing_choices():
     search.solve_search_graph(reduced, fixed_selections=fixed)
 
 
-@pytest.mark.parametrize("fixed, message", [({"missing": "bad"}, "unknown nodes"), ({"output": "bad"}, "not legal")])
+@pytest.mark.parametrize("fixed, message", [({"missing": "bad"}, "unknown nodes"),
+                                           ({"output": "bad"}, "not legal")])
 def test_invalid_construction_choices_fail_before_adapter_proofs(monkeypatch, fixed, message):
-
     def forbidden(*args, **kwargs):
         pytest.fail("invalid hard choice reached adapter planning")
 

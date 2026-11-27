@@ -27,8 +27,10 @@ def test_execution_schedule_is_real_editable_python_ir(tmp_path):
     assert "DependsOn: ['prepared']" in script
     loaded = fm.load_module(path)
     assert loaded.semantic_hash == module.semantic_hash
-    assert (fm.execution_calls_of(loaded.execution_function_map["main"])[1].memory_pools == fm.execution_calls_of(
-        module.execution_function_map["main"])[1].memory_pools)
+    assert (
+        fm.execution_calls_of(loaded.execution_function_map["main"])[1].memory_pools
+        == fm.execution_calls_of(module.execution_function_map["main"])[1].memory_pools
+    )
 
 
 def test_execution_schedule_function_directory_is_dumpable_and_mergeable(tmp_path):
@@ -38,22 +40,20 @@ def test_execution_schedule_function_directory_is_dumpable_and_mergeable(tmp_pat
     dumped = dumper.dump_module(module, "After", category=DumpFlags.PASS_IR)
 
     assert dumped is not None
-    assert {path.stem
-            for path in dumped.directory.glob("*.py")} == {
-                "main",
-                "worker",
-            }
+    assert {path.stem for path in dumped.directory.glob("*.py")} == {
+        "main", "worker",
+    }
     assert fm.load_module(dumped.directory) == module
 
 
 def test_execution_schedule_mismatch_is_rejected_outside_dump_fragment():
     module = scheduled_nested_module()
     worker = module.function_map["worker"]
-    mismatched = replace(module, functions=(worker, ), entry="worker")
+    mismatched = replace(module, functions=(worker,), entry="worker")
 
     with pytest.raises(
-            IRVerificationError,
-            match="ExecutionFunction set must exactly cover graph functions",
+        IRVerificationError,
+        match="ExecutionFunction set must exactly cover graph functions",
     ):
         fm.verify_module(mismatched)
 
@@ -63,7 +63,7 @@ def test_execution_dump_fragment_requires_complete_schedule_signatures():
     worker = module.function_map["worker"]
     forged_fragment = replace(
         module,
-        functions=(worker, ),
+        functions=(worker,),
         entry="worker",
         metadata={
             **module.metadata,
@@ -73,7 +73,7 @@ def test_execution_dump_fragment_requires_complete_schedule_signatures():
     )
 
     with pytest.raises(
-            IRVerificationError,
-            match="ExecutionFunction set must exactly cover graph functions",
+        IRVerificationError,
+        match="ExecutionFunction set must exactly cover graph functions",
     ):
         fm.verify_module(forged_fragment)

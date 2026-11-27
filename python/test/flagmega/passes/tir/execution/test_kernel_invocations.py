@@ -31,12 +31,12 @@ def test_function_and_kernel_symbol_domains_cannot_be_interchanged():
     first, *rest = main.body.fields
     for invalid, message in (
         (replace(first, kernel="worker"), "missing kernel definition"),
-        (fm.T.prim_function_call(first.call_id, first.kernel, arguments=first.arguments, results=first.results,
-                                 reads=first.reads, writes=first.writes), "non-function kernel"),
+        (fm.T.prim_function_call(first.call_id, first.kernel, arguments=first.arguments,
+                                 results=first.results, reads=first.reads, writes=first.writes), "non-function kernel"),
     ):
-        edited = replace(
-            module, execution_functions=tuple(
-                replace(function, body=fm.T.sequential((invalid, *rest))) if function.name == "main" else function
-                for function in module.execution_functions))
+        edited = replace(module, execution_functions=tuple(
+            replace(function, body=fm.T.sequential((invalid, *rest))) if function.name == "main" else function
+            for function in module.execution_functions
+        ))
         with pytest.raises(IRVerificationError, match=message):
             fm.verify_module(edited)

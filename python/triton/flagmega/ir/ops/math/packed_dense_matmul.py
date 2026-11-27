@@ -60,9 +60,13 @@ class PackedDenseMatMul(OpDefinition):
         attrs = super().normalize_attrs(attributes)
         n_lane, _, mesh_interleaved = parse_k_major_layout(attrs["packed_layout"])
         logical_n = attrs["logical_n"]
-        if logical_n is not None and (isinstance(logical_n, bool) or not isinstance(logical_n, int) or logical_n <= 0
-                                      or logical_n % n_lane):
-            raise IRSchemaError(f"PackedDenseMatMul logical_n must be a positive multiple of {n_lane}.")
+        if logical_n is not None and (
+            isinstance(logical_n, bool) or not isinstance(logical_n, int)
+            or logical_n <= 0 or logical_n % n_lane
+        ):
+            raise IRSchemaError(
+                f"PackedDenseMatMul logical_n must be a positive multiple of {n_lane}."
+            )
         if mesh_interleaved and logical_n is None:
             raise IRSchemaError("Mesh-interleaved PackedDenseMatMul requires logical_n.")
         return normalize_output_data_type(normalize_reduction_order(attrs, allow_split_k4=True))
@@ -72,9 +76,9 @@ class PackedDenseMatMul(OpDefinition):
         lhs_type = cls.lhs.type_of(inputs)
         validate_reduction_order(attrs, lhs_type, 1)
         weight_type = cls.weight.type_of(inputs)
-        if attrs.get("reduction_order") == SPLIT_K4_REDUCTION_ORDER and isinstance(
-                weight_type, DistributedType) and (weight_type.partial is not None
-                                                   or weight_type.axis_policies[0] != SBP.broadcast()):
+        if attrs.get("reduction_order") == SPLIT_K4_REDUCTION_ORDER and isinstance(weight_type, DistributedType) and (
+            weight_type.partial is not None or weight_type.axis_policies[0] != SBP.broadcast()
+        ):
             raise IRSchemaError("An ordered MMA reduction cannot consume partial or K-sharded packed weights.")
         lhs = tensor_of(lhs_type)
         weight = tensor_of(weight_type)
@@ -82,19 +86,29 @@ class PackedDenseMatMul(OpDefinition):
         layout = str(attrs["packed_layout"])
         n_lane, k_lane, mesh_interleaved = parse_k_major_layout(layout)
         expected_rank = 5 if mesh_interleaved else 4
-        if (None in shape or len(shape) != expected_rank or _product(shape[-2:]) != n_lane * k_lane):
-            raise IRSchemaError("PackedDenseMatMul weight shape does not match its physical layout.")
+        if (
+            None in shape
+            or len(shape) != expected_rank
+            or _product(shape[-2:]) != n_lane * k_lane
+        ):
+            raise IRSchemaError(
+                "PackedDenseMatMul weight shape does not match its physical layout.")
         logical_k = int(shape[0]) * k_lane
-        logical_n = (int(attrs["logical_n"]) if mesh_interleaved else int(shape[1]) * n_lane)
+        logical_n = (
+            int(attrs["logical_n"])
+            if mesh_interleaved
+            else int(shape[1]) * n_lane
+        )
         if lhs.shape[1].fixed_value != logical_k or lhs.dtype != weight.dtype:
-            raise IRSchemaError("PackedDenseMatMul lhs dtype/K does not match the packed weight.")
-        output = tensor_type(DType(attrs.get("output_data_type") or lhs.dtype), (lhs.shape[0], logical_n),
-                             layout=lhs.layout)
+            raise IRSchemaError(
+                "PackedDenseMatMul lhs dtype/K does not match the packed weight.")
+        output = tensor_type(DType(attrs.get("output_data_type") or lhs.dtype), (lhs.shape[0], logical_n), layout=lhs.layout)
         placement = placement_of(lhs_type, weight_type)
         if placement is None:
             return output
         if not isinstance(lhs_type, DistributedType) or not isinstance(weight_type, DistributedType):
-            raise IRSchemaError("Distributed PackedDenseMatMul requires both operands to name a placement.")
+            raise IRSchemaError(
+                "Distributed PackedDenseMatMul requires both operands to name a placement.")
         if all_broadcast(lhs_type) and all_broadcast(weight_type):
             return DistributedType(output, (SBP.broadcast(), SBP.broadcast()), placement)
         weight_n_axis = 2 if mesh_interleaved else 1
@@ -107,41 +121,68 @@ class PackedDenseMatMul(OpDefinition):
             if weight_n_split is None:
                 return SBP.broadcast()
             if mesh_interleaved:
-                return SBPSplit(
-                    tuple(SplitStage.block_cyclic(stage.hierarchy_axes, n_lane) for stage in weight_n_split.stages))
+                return SBPSplit(tuple(
+                    SplitStage.block_cyclic(stage.hierarchy_axes, n_lane)
+                    for stage in weight_n_split.stages
+                ))
             scaled = scale_split_units(weight_n_split, n_lane, 1)
             if scaled is None:  # pragma: no cover - multiplication is exact.
-                raise IRSchemaError("PackedDenseMatMul cannot scale its physical N split.")
+                raise IRSchemaError(
+                    "PackedDenseMatMul cannot scale its physical N split."
+                )
             return scaled
 
-        logical_weight_k_split = (None if weight_k_split is None else scale_split_units(weight_k_split, k_lane, 1))
+        logical_weight_k_split = (
+            None
+            if weight_k_split is None
+            else scale_split_units(weight_k_split, k_lane, 1)
+        )
 
-        if (not mesh_interleaved and lhs_type.partial is None and weight_type.partial is None
-                and lhs_k_split is not None and lhs_k_split == logical_weight_k_split
-                and lhs_type.axis_policies[0] == SBP.broadcast()
-                and all(weight_type.axis_policies[axis] == SBP.broadcast()
-                        for axis in range(weight.rank)
-                        if axis not in {weight_k_axis, weight_n_axis})):
+        if (
+            not mesh_interleaved
+            and lhs_type.partial is None
+            and weight_type.partial is None
+            and lhs_k_split is not None
+            and lhs_k_split == logical_weight_k_split
+            and lhs_type.axis_policies[0] == SBP.broadcast()
+            and all(
+                weight_type.axis_policies[axis] == SBP.broadcast()
+                for axis in range(weight.rank)
+                if axis not in {weight_k_axis, weight_n_axis}
+            )
+        ):
             reduction_axes = tuple(lhs_k_split.hierarchy_axes)
             output_n_policy = logical_n_policy()
-            output_axes = (tuple(output_n_policy.hierarchy_axes) if isinstance(output_n_policy, SBPSplit) else ())
+            output_axes = (
+                tuple(output_n_policy.hierarchy_axes)
+                if isinstance(output_n_policy, SBPSplit)
+                else ()
+            )
             if set(reduction_axes) & set(output_axes):
-                raise IRSchemaError("PackedDenseMatMul output and reduction splits must use disjoint "
-                                    "placement axes.")
+                raise IRSchemaError(
+                    "PackedDenseMatMul output and reduction splits must use disjoint "
+                    "placement axes."
+                )
             return DistributedType(
                 output,
                 (SBP.broadcast(), output_n_policy),
                 placement,
                 partial=SBPPartial(reduction_axes),
             )
-        if (all_broadcast(lhs_type) and weight_n_split is not None
-                and all(weight_type.axis_policies[axis] == SBP.broadcast()
-                        for axis in range(weight.rank)
-                        if axis != weight_n_axis)):
+        if (
+            all_broadcast(lhs_type)
+            and weight_n_split is not None
+            and all(
+                weight_type.axis_policies[axis] == SBP.broadcast()
+                for axis in range(weight.rank)
+                if axis != weight_n_axis
+            )
+        ):
             logical_n_split = logical_n_policy()
             return DistributedType(output, (SBP.broadcast(), logical_n_split), placement)
-        raise IRSchemaError("Distributed PackedDenseMatMul requires replicated/output-split operands "
-                            "or aligned physical-K reduction splits.")
+        raise IRSchemaError(
+            "Distributed PackedDenseMatMul requires replicated/output-split operands "
+            "or aligned physical-K reduction splits.")
 
     @classmethod
     def evaluate(cls, node, arguments, context):
@@ -153,7 +194,7 @@ class PackedDenseMatMul(OpDefinition):
             node.attrs.get("logical_n"),
         )
         return matmul_value(lhs, weight.transpose(-2, -1), node.attrs.get("output_data_type"), context,
-                            reduction_order=node.attrs.get("reduction_order"))
+                              reduction_order=node.attrs.get("reduction_order"))
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
@@ -161,7 +202,7 @@ class PackedDenseMatMul(OpDefinition):
             flops=None,
             bytes_read=None,
             bytes_written=tensor_nbytes(node.type),
-            notes=("packed-k-major-dense-matmul", ),
+            notes=("packed-k-major-dense-matmul",),
         )
 
 

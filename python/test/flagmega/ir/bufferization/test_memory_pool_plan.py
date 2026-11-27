@@ -25,8 +25,8 @@ def test_function_and_call_memory_pools_round_trip_without_workspace_projection(
         (),
         (),
         memory_pools=(
-            FunctionMemoryPool("chip_data", 512, 256, ("chip-buffer", )),
-            FunctionMemoryPool("block_data", 128, 64, ("block-buffer", )),
+            FunctionMemoryPool("chip_data", 512, 256, ("chip-buffer",)),
+            FunctionMemoryPool("block_data", 128, 64, ("block-buffer",)),
         ),
     )
     call = CallBufferBinding(
@@ -55,11 +55,13 @@ def test_function_and_call_memory_pools_round_trip_without_workspace_projection(
 def test_legacy_v5_custom_workspace_identity_resumes_and_reemits_v6():
     generic = BufferizationOptions.generic()
     spaces = tuple(
-        replace(space, name="data") if space.name == "workspace" else space for space in generic.memory_spaces)
+        replace(space, name="data") if space.name == "workspace" else space
+        for space in generic.memory_spaces
+    )
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
-    source = builder.var("source", fm.tensor_type("float32", (16, )), id="source")
-    output = builder.call("test.unary", (source, ), source.type, id="output")
-    builder.function("main", (source, ), (output, ))
+    source = builder.var("source", fm.tensor_type("float32", (16,)), id="source")
+    output = builder.call("test.unary", (source,), source.type, id="output")
+    builder.function("main", (source,), (output,))
     plan = fm.make_buffer_plan(
         builder.build(entry="main"),
         options=BufferizationOptions(spaces, workspace="data"),

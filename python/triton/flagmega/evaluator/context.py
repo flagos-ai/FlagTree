@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Typed state shared by FlagMega evaluator backends and op definitions.
 
-The context is the Python counterpart of the reference ``IEvaluateContext``.  It
+The context is the Python counterpart of nncase's ``IEvaluateContext``.  It
 does not locate handlers (op definitions own their behavior), but it gives a
 handler a stable current-call view, named ``ParameterInfo`` access, recursive
 evaluation, value memo access and dynamic-dimension bindings.
@@ -22,6 +22,7 @@ from triton.flagmega.ir.ops.core import OpDefinition, ParameterInfo, ParameterKi
 if TYPE_CHECKING:
     from triton.flagmega.evaluator.torch_backend import WeightResolver
 
+
 EvaluateCallback = Callable[[str], Any]
 
 
@@ -35,7 +36,7 @@ class EvaluationFrame:
 
 
 class EvaluationContext:
-    """Runtime evaluation context with named argument access."""
+    """Runtime evaluation context with nncase-style named argument access."""
 
     def __init__(
         self,
@@ -205,8 +206,7 @@ class EvaluationContext:
             candidate = getattr(self.weights, "device", None)
             if candidate is None:
                 candidate = next(
-                    (getattr(value, "device", None)
-                     for value in self.inputs.values()
+                    (getattr(value, "device", None) for value in self.inputs.values()
                      if getattr(value, "device", None) is not None),
                     None,
                 )

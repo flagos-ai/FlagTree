@@ -23,3 +23,13 @@ def test_strict_numerical_contract_preserves_separate_rounding(target):
     strict = compilation_options(contract, target, floating_point_contract="strict")
     assert strict["enable_fp_fusion"] is False
     assert "enable_fp_fusion" not in compilation_options(contract, target)
+
+
+def test_pipeline_depth_is_explicit_and_checked(monkeypatch):
+    contract = ResourceContract(compute_num_warps=4, resident_blocks_per_sm=1)
+    monkeypatch.setenv('FLAGMEGA_NUM_STAGES', 'invalid-legacy-setting')
+    assert 'num_stages' not in compilation_options(contract)
+    assert compilation_options(contract, num_stages=2)['num_stages'] == 2
+    for invalid in (0, 9, True, '2'):
+        with pytest.raises(ValueError):
+            compilation_options(contract, num_stages=invalid)

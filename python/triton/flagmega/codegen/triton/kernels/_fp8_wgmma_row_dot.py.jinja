@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}@triton.jit
+@triton.jit
 def _flagmega_fp8_wgmma_row_dot(quantized, weight, row_offsets, k_offsets, n_mask, K: tl.constexpr):
     """Keep weight rows on WGMMA's M axis, including owner-local N tails."""
     N: tl.constexpr = row_offsets.shape[0]
@@ -13,3 +12,4 @@ def _flagmega_fp8_wgmma_row_dot(quantized, weight, row_offsets, k_offsets, n_mas
     product = tl.dot(matrix, activation, out_dtype=tl.float32)
     product = tl.reshape(tl.gather(product, tl.full((ROWS, 1), 0, tl.int32), 1), (ROWS,))
     return tl.gather(product, tl.arange(0, N), 0)
+

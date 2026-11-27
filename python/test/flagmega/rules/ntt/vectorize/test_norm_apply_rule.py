@@ -11,7 +11,6 @@ from triton.flagmega.rules.ntt.vectorize import VectorizeNormApply
 
 
 class _ApplyModule(fm.Module):
-
     def __init__(self, extent=16, dtypes=("bfloat16", "bfloat16", "bfloat16"), output_dtype=None):
         super().__init__(dialect="nn", stage="decomposed", entry="main")
         self.extent = extent
@@ -34,7 +33,7 @@ class _ApplyModule(fm.Module):
             output_dtype=self.output_dtype,
             name="output",
         )
-        self.function("main", (value, scale, bias), (output, ))
+        self.function("main", (value, scale, bias), (output,))
 
 
 def test_norm_apply_rule_packs_input_scale_bias_but_not_stats():
@@ -46,10 +45,9 @@ def test_norm_apply_rule_packs_input_scale_bias_but_not_stats():
     compute = next(node for node in result.prefix_nodes if node.op == "nn.norm_apply")
     assert compute.inputs[1] == "stats"
     assert all(
-        isinstance(next(node
-                        for node in result.prefix_nodes
-                        if node.id == input_id).type.dtype, fm.VectorType)
-        for input_id in (compute.inputs[0], compute.inputs[2], compute.inputs[3]))
+        isinstance(next(node for node in result.prefix_nodes if node.id == input_id).type.dtype, fm.VectorType)
+        for input_id in (compute.inputs[0], compute.inputs[2], compute.inputs[3])
+    )
 
 
 def test_norm_apply_rule_rewrite_is_evaluator_equivalent():
@@ -60,12 +58,12 @@ def test_norm_apply_rule_rewrite_is_evaluator_equivalent():
         "VectorizeNormApply:output",
         lambda node, _: node.id == "output" and "vectorized_from" not in node.metadata,
         lambda node, current: rule.rewrite(node, current, candidate),
-    ), ), remove_unused=False).rewrite(module)
+    ),), remove_unused=False).rewrite(module)
 
     inputs = {
         "value": torch.randn((2, 16), dtype=torch.bfloat16),
-        "scale": torch.randn((16, ), dtype=torch.bfloat16),
-        "bias": torch.randn((16, ), dtype=torch.bfloat16),
+        "scale": torch.randn((16,), dtype=torch.bfloat16),
+        "bias": torch.randn((16,), dtype=torch.bfloat16),
     }
     evaluator = TorchEvaluator(DictWeightResolver({}))
     torch.testing.assert_close(
@@ -80,23 +78,21 @@ def test_norm_apply_rule_rejects_reduction_padding():
 
 
 @pytest.mark.parametrize("output_dtype", [None, "bfloat16", "float32"])
-@pytest.mark.parametrize("dtypes", [("float32", "bfloat16", "bfloat16"), ("float32", "bfloat16", "float32"),
-                                    ("bfloat16", "float32", "float32")])
+@pytest.mark.parametrize("dtypes", [("float32", "bfloat16", "bfloat16"),
+                                   ("float32", "bfloat16", "float32"),
+                                   ("bfloat16", "float32", "float32")])
 def test_mixed_parameter_precision_vectorizes_without_changing_value_or_stats(dtypes, output_dtype, tmp_path):
     module = _ApplyModule(dtypes=dtypes, output_dtype=output_dtype).build()
     rule = VectorizeNormApply()
     candidates = rule.candidates(module.node_map["output"], module)
     assert len(candidates) == 1
     rewritten = DataflowRewriter((RewriteRule(
-        "VectorizeMixedNorm",
-        lambda node, _: node.id == "output" and "vectorized_from" not in node.metadata,
+        "VectorizeMixedNorm", lambda node, _: node.id == "output" and "vectorized_from" not in node.metadata,
         lambda node, current: rule.rewrite(node, current, candidates[0]),
-    ), ), remove_unused=False).rewrite(module)
+    ),), remove_unused=False).rewrite(module)
     generator = torch.Generator().manual_seed(67)
-    inputs = {
-        name: torch.randn(shape, generator=generator).to(getattr(torch, dtype))
-        for name, shape, dtype in zip(("value", "scale", "bias"), ((2, 16), (16, ), (16, )), dtypes, strict=True)
-    }
+    inputs = {name: torch.randn(shape, generator=generator).to(getattr(torch, dtype))
+              for name, shape, dtype in zip(("value", "scale", "bias"), ((2, 16), (16,), (16,)), dtypes, strict=True)}
     evaluator = TorchEvaluator(DictWeightResolver({}))
     torch.testing.assert_close(evaluator.run(rewritten, inputs)[0], evaluator.run(module, inputs)[0], rtol=0, atol=0)
     assert fm.load_module(fm.emit_module(rewritten, tmp_path / "mixed.py")) == rewritten

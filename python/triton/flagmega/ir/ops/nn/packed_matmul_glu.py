@@ -79,7 +79,8 @@ class PackedMatMulGlu(OpDefinition):
                 raise IRSchemaError(f"PackedMatMulGlu {name} must be a string or None.")
         for name in ("gate_clamp_max", "up_clamp"):
             value = result[name]
-            if (value is not None and (isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0)):
+            if (value is not None and
+                    (isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0)):
                 raise IRSchemaError(f"PackedMatMulGlu {name} must be a positive number or None.")
         if result.get("gate_weight_encoding") is not None or result.get("up_weight_encoding") is not None:
             raise IRSchemaError("PackedMatMulGlu vector-FP8 storage does not support native GGUF byte rows.")
@@ -107,17 +108,24 @@ class PackedMatMulGlu(OpDefinition):
         up_scale_type = cls.up_scale.type_of(inputs)
         verify_block_scaled_precision_inputs(value, gate, tensor_of(gate_scale_type), attrs, "PackedMatMulGlu")
         verify_block_scaled_precision_inputs(value, up, tensor_of(up_scale_type), attrs, "PackedMatMulGlu")
-        distributed_inputs = (value_type, gate_type, up_type, gate_scale_type, up_scale_type)
+        distributed_inputs = (
+            value_type, gate_type, up_type, gate_scale_type, up_scale_type)
         placement = placement_of(*distributed_inputs)
         if placement is None:
             return output
         if not all(isinstance(item, DistributedType) for item in distributed_inputs):
-            raise IRSchemaError("Distributed PackedMatMulGlu requires every tensor operand to name a placement.")
+            raise IRSchemaError(
+                "Distributed PackedMatMulGlu requires every tensor operand to name a placement.")
         if all(all_broadcast(item) for item in distributed_inputs):
             return DistributedType(output, (SBP.broadcast(), SBP.broadcast()), placement)
         gate_split = split_policy(gate_type, 0)
-        if (gate_split is None or gate_split != split_policy(up_type, 0) or not all_broadcast(value_type)
-                or not all_broadcast(gate_scale_type) or not all_broadcast(up_scale_type)):
+        if (
+            gate_split is None
+            or gate_split != split_policy(up_type, 0)
+            or not all_broadcast(value_type)
+            or not all_broadcast(gate_scale_type)
+            or not all_broadcast(up_scale_type)
+        ):
             raise IRSchemaError("PackedMatMulGlu gate/up weights must use the same output split.")
         return DistributedType(output, (SBP.broadcast(), gate_split), placement)
 
@@ -131,10 +139,12 @@ class PackedMatMulGlu(OpDefinition):
             "output_dtype": context.torch_dtype(tensor_of(node.type).dtype),
             "activation_quantization": node.attrs.get("activation_quantization", "dynamic_fp8"),
         }
-        gate = block_scaled_linear(cls.value.read(arguments), gate_weight.reshape(gate_weight.shape[0], -1),
-                                   cls.gate_scale.read(arguments), **common)
-        up = block_scaled_linear(cls.value.read(arguments), up_weight.reshape(up_weight.shape[0], -1),
-                                 cls.up_scale.read(arguments), **common)
+        gate = block_scaled_linear(
+            cls.value.read(arguments), gate_weight.reshape(gate_weight.shape[0], -1),
+            cls.gate_scale.read(arguments), **common)
+        up = block_scaled_linear(
+            cls.value.read(arguments), up_weight.reshape(up_weight.shape[0], -1),
+            cls.up_scale.read(arguments), **common)
         if node.attrs["gate_clamp_max"] is not None:
             gate = context.torch.clamp(gate, max=node.attrs["gate_clamp_max"])
         if node.attrs["up_clamp"] is not None:
@@ -145,7 +155,7 @@ class PackedMatMulGlu(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         size = tensor_nbytes(node.type) if isinstance(node.type, TensorType) else None
-        return OpCost(flops=None, bytes_read=None, bytes_written=size, notes=("packed-two-matmuls+glu", ))
+        return OpCost(flops=None, bytes_read=None, bytes_written=size, notes=("packed-two-matmuls+glu",))
 
 
 __all__ = ["PackedMatMulGlu"]

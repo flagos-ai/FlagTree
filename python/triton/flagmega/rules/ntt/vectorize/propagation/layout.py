@@ -24,8 +24,11 @@ from triton.flagmega.rules.ntt.vectorize.utility import (
 
 def _pack_axes(node: Node, rank: int) -> tuple[int, ...]:
     lanes = tuple(int(value) for value in node.attrs["lanes"])
-    values = (tuple(int(value) for value in node.attrs["axes"]) if "axes" in node.attrs else
-              (int(node.attrs["axis"]), ) * len(lanes))
+    values = (
+        tuple(int(value) for value in node.attrs["axes"])
+        if "axes" in node.attrs
+        else (int(node.attrs["axis"]),) * len(lanes)
+    )
     return normalize_axes(values, rank)
 
 
@@ -33,10 +36,13 @@ def _unpack_contract(node: Node, module: IRModule) -> tuple[Node, tuple[int, ...
     vector = module.node_map[node.inputs[0]]
     assert isinstance(vector.type, TensorType) and isinstance(vector.type.dtype, VectorType)
     axis_count = len(tuple(node.attrs["axes"])) if "axes" in node.attrs else len(vector.type.dtype.lanes)
-    values = (tuple(int(value) for value in node.attrs["axes"]) if "axes" in node.attrs else
-              (int(node.attrs["axis"]), ) * axis_count)
+    values = (
+        tuple(int(value) for value in node.attrs["axes"])
+        if "axes" in node.attrs
+        else (int(node.attrs["axis"]),) * axis_count
+    )
     axes = normalize_axes(values, vector.type.rank)
-    return vector, axes, vector.type.dtype.lanes[:len(axes)]
+    return vector, axes, vector.type.dtype.lanes[: len(axes)]
 
 
 def _make(
@@ -71,14 +77,14 @@ def _pack_permute(node: Node, module: IRModule) -> RewriteResult:
     packed = _make(
         f"{node.id}.propagated.pack",
         "tensors.pack",
-        (source, ),
+        (source,),
         {"lanes": tuple(node.attrs["lanes"]), "axes": input_axes},
         propagation_helper_metadata(node, node.id, "propagated-pack"),
     )
     replacement = _make(
         node.id,
         "tensors.permute",
-        (packed, ),
+        (packed,),
         permute.attrs,
         propagation_result_metadata(
             permute,
@@ -89,7 +95,7 @@ def _pack_permute(node: Node, module: IRModule) -> RewriteResult:
             internal_role="propagated-permute",
         ),
     )
-    return RewriteResult(replacement, (packed, ))
+    return RewriteResult(replacement, (packed,))
 
 
 def _permute_unpack_matches(node: Node, module: IRModule) -> bool:
@@ -104,7 +110,7 @@ def _permute_unpack(node: Node, module: IRModule) -> RewriteResult:
     transformed = _make(
         f"{node.id}.propagated.permute",
         "tensors.permute",
-        (vector, ),
+        (vector,),
         node.attrs,
         propagation_result_metadata(
             node,
@@ -118,7 +124,7 @@ def _permute_unpack(node: Node, module: IRModule) -> RewriteResult:
     replacement = _make(
         node.id,
         "tensors.unpack",
-        (transformed, ),
+        (transformed,),
         {"axes": output_axes},
         propagation_result_metadata(
             node,
@@ -128,8 +134,8 @@ def _permute_unpack(node: Node, module: IRModule) -> RewriteResult:
             rule="TransposeDevectorizePropagation",
         ),
     )
-    assert lanes == vector.type.dtype.lanes[:len(output_axes)]
-    return RewriteResult(replacement, (transformed, ))
+    assert lanes == vector.type.dtype.lanes[: len(output_axes)]
+    return RewriteResult(replacement, (transformed,))
 
 
 def _scaled_shape(
@@ -154,8 +160,9 @@ def _pack_shape_op_matches(node: Node, module: IRModule, op: str, attr: str) -> 
     axes = _pack_axes(node, transform.type.rank)
     source_type = module.node_map[transform.inputs[0]].type
     if not isinstance(source_type, TensorType) or any(
-            try_div_exactly(source_type.shape[axis], lane) is None
-            for axis, lane in zip(axes, tuple(int(value) for value in node.attrs["lanes"]))):
+        try_div_exactly(source_type.shape[axis], lane) is None
+        for axis, lane in zip(axes, tuple(int(value) for value in node.attrs["lanes"]))
+    ):
         return False
     values = tuple(int(value) for value in transform.attrs[attr])
     return _scaled_shape(values, axes, tuple(int(value) for value in node.attrs["lanes"])) is not None
@@ -171,14 +178,14 @@ def _pack_shape_op(node: Node, module: IRModule, op: str, attr: str) -> RewriteR
     packed = _make(
         f"{node.id}.propagated.pack",
         "tensors.pack",
-        (source, ),
+        (source,),
         {"lanes": lanes, "axes": axes},
         propagation_helper_metadata(node, node.id, "propagated-pack"),
     )
     replacement = _make(
         node.id,
         op,
-        (packed, ),
+        (packed,),
         {**dict(transform.attrs), attr: scaled},
         propagation_result_metadata(
             transform,
@@ -189,7 +196,7 @@ def _pack_shape_op(node: Node, module: IRModule, op: str, attr: str) -> RewriteR
             internal_role=f"propagated-{op.rsplit('.', 1)[-1]}",
         ),
     )
-    return RewriteResult(replacement, (packed, ))
+    return RewriteResult(replacement, (packed,))
 
 
 def _shape_op_unpack_matches(node: Node, module: IRModule, op: str, attr: str) -> bool:
@@ -211,7 +218,7 @@ def _shape_op_unpack(node: Node, module: IRModule, op: str, attr: str) -> Rewrit
     transformed = _make(
         f"{node.id}.propagated.{op.rsplit('.', 1)[-1]}",
         op,
-        (vector, ),
+        (vector,),
         {**dict(node.attrs), attr: scaled},
         propagation_result_metadata(
             node,
@@ -225,7 +232,7 @@ def _shape_op_unpack(node: Node, module: IRModule, op: str, attr: str) -> Rewrit
     replacement = _make(
         node.id,
         "tensors.unpack",
-        (transformed, ),
+        (transformed,),
         {"axes": axes},
         propagation_result_metadata(
             node,
@@ -235,37 +242,38 @@ def _shape_op_unpack(node: Node, module: IRModule, op: str, attr: str) -> Rewrit
             rule=f"{op.rsplit('.', 1)[-1].title()}DevectorizePropagation",
         ),
     )
-    return RewriteResult(replacement, (transformed, ))
+    return RewriteResult(replacement, (transformed,))
 
 
 def layout_propagation_rules() -> tuple[RewriteRule, ...]:
     return (
-        RewriteRule("VectorizeTransposePropagation", _pack_permute_matches, _pack_permute, root_ops=("tensors.pack", )),
-        RewriteRule("TransposeDevectorizePropagation", _permute_unpack_matches, _permute_unpack,
-                    root_ops=("tensors.permute", )),
+        RewriteRule("VectorizeTransposePropagation", _pack_permute_matches, _pack_permute, root_ops=("tensors.pack",)),
+        RewriteRule(
+            "TransposeDevectorizePropagation", _permute_unpack_matches, _permute_unpack, root_ops=("tensors.permute",)
+        ),
         RewriteRule(
             "VectorizePadPropagation",
             lambda node, module: _pack_shape_op_matches(node, module, "tensors.pad", "pad_end"),
             lambda node, module: _pack_shape_op(node, module, "tensors.pad", "pad_end"),
-            root_ops=("tensors.pack", ),
+            root_ops=("tensors.pack",),
         ),
         RewriteRule(
             "PadDevectorizePropagation",
             lambda node, module: _shape_op_unpack_matches(node, module, "tensors.pad", "pad_end"),
             lambda node, module: _shape_op_unpack(node, module, "tensors.pad", "pad_end"),
-            root_ops=("tensors.pad", ),
+            root_ops=("tensors.pad",),
         ),
         RewriteRule(
             "VectorizeSliceToShapePropagation",
             lambda node, module: _pack_shape_op_matches(node, module, "tensors.slice_to_shape", "shape"),
             lambda node, module: _pack_shape_op(node, module, "tensors.slice_to_shape", "shape"),
-            root_ops=("tensors.pack", ),
+            root_ops=("tensors.pack",),
         ),
         RewriteRule(
             "SliceToShapeDevectorizePropagation",
             lambda node, module: _shape_op_unpack_matches(node, module, "tensors.slice_to_shape", "shape"),
             lambda node, module: _shape_op_unpack(node, module, "tensors.slice_to_shape", "shape"),
-            root_ops=("tensors.slice_to_shape", ),
+            root_ops=("tensors.slice_to_shape",),
         ),
     )
 

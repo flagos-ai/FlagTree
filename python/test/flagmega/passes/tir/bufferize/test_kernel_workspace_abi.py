@@ -22,23 +22,21 @@ def _selected_workspace_kernels() -> fm.IRModule:
         "semantic_op": "math.silu",
         "candidate": "tir.unary.workspace",
         "parameters": {
-            "family":
-            "unary",
-            "variant":
-            "workspace",
+            "family": "unary",
+            "variant": "workspace",
             "workspaces": ({
                 "name": "partials",
-                "type": fm.tensor_type("float32", (32, )),
+                "type": fm.tensor_type("float32", (32,)),
                 "memory_space": "workspace",
                 "alignment": 512,
-            }, ),
+            },),
         },
         "facts": {},
         "semantic_attrs": {},
     }
-    first = builder.call("tir.kernel", (lhs, ), value_type, id="first", attrs=attributes)
-    second = builder.call("tir.kernel", (lhs, ), value_type, id="second", attrs=attributes)
-    builder.function("main", (lhs, ), (first, second))
+    first = builder.call("tir.kernel", (lhs,), value_type, id="first", attrs=attributes)
+    second = builder.call("tir.kernel", (lhs,), value_type, id="second", attrs=attributes)
+    builder.function("main", (lhs,), (first, second))
     return materialize_kernel_prim_functions(builder.build(entry="main"))
 
 
@@ -70,7 +68,7 @@ def _attention_workspace_plan():
     ))
     attention = builder.call(
         "tir.kernel",
-        (source, ),
+        (source,),
         hidden_type,
         id="attention",
         attrs={
@@ -85,7 +83,7 @@ def _attention_workspace_plan():
             "semantic_attrs": {},
         },
     )
-    builder.function("main", (source, ), (attention, ))
+    builder.function("main", (source,), (attention,))
     selected = materialize_kernel_prim_functions(builder.build(entry="main"))
     return fm.make_buffer_plan(selected)
 
@@ -96,32 +94,34 @@ def _retained_workspace_plan():
     source = builder.var("source", value_type, id="source")
     first = builder.call(
         "tir.kernel",
-        (source, ),
+        (source,),
         value_type,
         id="first",
         attrs={
             "semantic_op": "math.silu",
             "candidate": "tir.unary.retained_workspace",
             "parameters": {
-                "family":
-                "unary",
-                "variant":
-                "retained_workspace",
+                "family": "unary",
+                "variant": "retained_workspace",
                 "workspaces": ({
                     "name": "carry",
-                    "type": fm.tensor_type("float32", (128, )),
+                    "type": fm.tensor_type("float32", (128,)),
                     "memory_space": "workspace",
                     "alignment": 256,
                     "lifetime": "function",
-                }, ),
+                },),
             },
             "facts": {},
             "semantic_attrs": {},
         },
     )
-    second = builder.call("math.silu", (first, ), value_type, id="second")
-    builder.function("main", (source, ), (second, ))
-    return fm.make_buffer_plan(materialize_kernel_prim_functions(builder.build(entry="main")))
+    second = builder.call(
+        "math.silu", (first,), value_type, id="second"
+    )
+    builder.function("main", (source,), (second,))
+    return fm.make_buffer_plan(
+        materialize_kernel_prim_functions(builder.build(entry="main"))
+    )
 
 
 def test_kernel_workspaces_are_caller_owned_sat_allocations():
@@ -146,7 +146,10 @@ def test_kernel_workspaces_are_caller_owned_sat_allocations():
 
 def test_simultaneously_live_attention_scratch_cannot_alias_each_other_or_result():
     plan = _attention_workspace_plan()
-    scratch = tuple(plan.resolve_kernel_workspace("attention", name) for name in ("qkv_query", "qkv_key", "qkv_value"))
+    scratch = tuple(
+        plan.resolve_kernel_workspace("attention", name)
+        for name in ("qkv_query", "qkv_key", "qkv_value")
+    )
     result = plan.buffer_map[dict(plan.function_map["main"].outputs)["attention"][0]]
 
     for index, lhs in enumerate(scratch):
@@ -189,7 +192,10 @@ def test_kernel_workspace_verifier_rejects_wrong_actual_type():
         **module.metadata["buffer_plan"],
         "buffers": [dict(value) for value in module.metadata["buffer_plan"]["buffers"]],
     }
-    target = next(value for value in data["buffers"] if value["id"] == "first.workspace.partials")
+    target = next(
+        value for value in data["buffers"]
+        if value["id"] == "first.workspace.partials"
+    )
     target["dtype"] = "bfloat16"
     corrupted = replace(module, metadata={**module.metadata, "buffer_plan": data})
 

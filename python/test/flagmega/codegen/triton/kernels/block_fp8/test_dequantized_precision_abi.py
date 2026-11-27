@@ -15,12 +15,10 @@ def _raw(attrs, *, dtype=fm.DType.BFLOAT16, variant="simt"):
     weight = _descriptor("weight", fm.DType.FLOAT8_E4M3FN, (64, 64))
     scale = _descriptor("scale", fm.DType.FLOAT32, (2, 2))
     output = _descriptor("output", dtype, (1, 64))
-    return {
-        "call": "linear", "family": "block_fp8", "variant": variant, "execution_kind": "local_shard", "parameters":
-        {"tile_n": 16}, "semantic_attrs": {"weight_block_n": 32, "weight_block_k": 32, **attrs}, "inputs":
-        (_parameter("value", value), _parameter("weight", weight), _parameter("weight_scale", scale)), "outputs":
-        (_parameter("result", output), ), "workspaces": ()
-    }
+    return {"call": "linear", "family": "block_fp8", "variant": variant, "execution_kind": "local_shard",
+            "parameters": {"tile_n": 16}, "semantic_attrs": {"weight_block_n": 32, "weight_block_k": 32, **attrs},
+            "inputs": (_parameter("value", value), _parameter("weight", weight), _parameter("weight_scale", scale)),
+            "outputs": (_parameter("result", output),), "workspaces": ()}
 
 
 @pytest.mark.parametrize("attrs,dtype,variant", [
@@ -33,12 +31,12 @@ def _raw(attrs, *, dtype=fm.DType.BFLOAT16, variant="simt"):
 ])
 def test_raw_precision_cannot_silently_fall_back(attrs, dtype, variant):
     with pytest.raises(CodegenError):
-        prepare_kernel_calls((_raw(attrs, dtype=dtype, variant=variant), ), function_name="main")
+        prepare_kernel_calls((_raw(attrs, dtype=dtype, variant=variant),), function_name="main")
 
 
 def test_raw_mma_requires_and_passes_matching_16_bit_precision():
     raw = _raw({"activation_quantization": "none", "weight_dequant_dtype": "bfloat16"}, variant="mma")
-    call, = prepare_kernel_calls((raw, ), function_name="main")
+    call, = prepare_kernel_calls((raw,), function_name="main")
     assert call["activation_quantization"] == "none"
     assert call["weight_dequant_type"] == "tl.bfloat16"
 
@@ -48,7 +46,7 @@ def test_dequantized_mma_rejects_invalid_partition_counts(splits):
     raw = _raw({"activation_quantization": "none", "weight_dequant_dtype": "bfloat16"}, variant="mma")
     raw["parameters"]["dequant_mma_splits"] = splits
     with pytest.raises(CodegenError, match="dequant_mma_splits"):
-        prepare_kernel_calls((raw, ), function_name="main")
+        prepare_kernel_calls((raw,), function_name="main")
 
 
 @pytest.mark.parametrize("variant,attrs,splits", [
@@ -60,11 +58,11 @@ def test_dequantized_partitions_require_matching_precision_and_whole_scale_block
     raw = _raw(attrs, variant=variant)
     raw["parameters"]["dequant_mma_splits"] = splits
     with pytest.raises(CodegenError, match="dequant_mma_splits"):
-        prepare_kernel_calls((raw, ), function_name="main")
+        prepare_kernel_calls((raw,), function_name="main")
 
 
 def test_dequantized_partition_choice_survives_resumed_tir_rendering():
     raw = _raw({"activation_quantization": "none", "weight_dequant_dtype": "bfloat16"}, variant="mma")
     raw["parameters"]["dequant_mma_splits"] = 2
-    call, = prepare_kernel_calls((raw, ), function_name="main")
+    call, = prepare_kernel_calls((raw,), function_name="main")
     assert call["dequant_mma_splits"] == 2

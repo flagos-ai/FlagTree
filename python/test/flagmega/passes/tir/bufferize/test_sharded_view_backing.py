@@ -10,8 +10,8 @@ def test_internal_full_mesh_producer_is_promoted_for_canonical_sharded_view():
     split_type = fm.DistributedType(
         tensor,
         (
-            fm.SBP.split_block_cyclic((0, ), 1),
-            fm.SBP.split_block_cyclic((1, ), 1),
+            fm.SBP.split_block_cyclic((0,), 1),
+            fm.SBP.split_block_cyclic((1,), 1),
         ),
         placement,
     )
@@ -26,19 +26,25 @@ def test_internal_full_mesh_producer_is_promoted_for_canonical_sharded_view():
     produced = builder.call("math.add", (lhs, rhs), split_type, id="produced")
     view = builder.call(
         "distributed.sharded_view",
-        (produced, ),
+        (produced,),
         broadcast_type,
         id="view",
         attrs={"new_type": broadcast_type},
     )
-    builder.function("main", (lhs, rhs), (view, ))
+    builder.function("main", (lhs, rhs), (view,))
 
     plan = fm.make_buffer_plan(builder.build(entry="main"))
     produced_buffer = plan.buffer_map["produced"]
     view_buffer = plan.buffer_map["view"]
 
     assert produced_buffer.mem_span.must_alias(view_buffer.mem_span)
-    assert (produced_buffer.distributed_storage_kind is fm.DistributedBufferStorageKind.CANONICAL_GLOBAL)
-    assert (view_buffer.distributed_storage_kind is fm.DistributedBufferStorageKind.CANONICAL_GLOBAL)
+    assert (
+        produced_buffer.distributed_storage_kind
+        is fm.DistributedBufferStorageKind.CANONICAL_GLOBAL
+    )
+    assert (
+        view_buffer.distributed_storage_kind
+        is fm.DistributedBufferStorageKind.CANONICAL_GLOBAL
+    )
     assert produced_buffer.nbytes == 128 * 128 * 2
     assert produced_buffer.strides == (128, 1)

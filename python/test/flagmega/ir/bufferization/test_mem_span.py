@@ -1,5 +1,3 @@
-# Copyright 2026 FlagOS Contributors
-# SPDX-License-Identifier: MIT
 from triton.flagmega.ir.bufferization import MemSpan, PhysicalBuffer
 from triton.flagmega.ir.dim_expr import dim
 

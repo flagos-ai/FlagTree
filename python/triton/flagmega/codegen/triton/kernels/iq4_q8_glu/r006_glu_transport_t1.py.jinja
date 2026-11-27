@@ -1,0 +1,96 @@
+{# Generated from the accepted numerical AST by the r006 transport lowering. #}
+from triton.flagmega.codegen.triton.iq4_q8_kernels import E,packets
+from triton.flagmega.codegen.triton.iq4_q8_persistent_reduce import persistent_typed_reduce as typed_reduce
+import triton.experimental.tle.language.gpu as gpu
+{% for call in render_calls %}
+{% if call.variant == 'r006_glu_transport_t1' and call.family == 'iq4_q8_glu' %}
+@triton.jit
+def {{ call.symbol }}__dot_group_stage(W, Q, row, kbx, g, active, K: tl.constexpr):
+    base = (kbx % 16).to(tl.int64) * 34
+    QP = Q.to(tl.pointer_type(tl.uint32))
+    header = gpu.set_layout(tl.load(gpu.local_ptr(W, (0, 4 * base // 16, 4 * base % 16), shape=(4, 32)).to(tl.pointer_type(tl.uint64, 3)), active, 0), E)
+    h = (header & 0xffffffff).to(tl.uint32)
+    s = (header >> 32).to(tl.uint32)
+    sg = s >> 8 * (g // 2) + 4 * (g % 2) & 15 | (h >> 16 + 2 * g & 3) << 4
+    sg = sg.to(tl.int32) - 32
+    dq = gpu.set_layout(tl.load(QP + (8 * kbx.to(tl.int64) + g) * 9, active, 0), E)
+    dw = (h & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    dx = (dq & 65535).to(tl.uint16).to(tl.float16, bitcast=True).to(tl.float32)
+    I = tl.full((4, 32), 0, tl.int32)
+    I = gpu.set_layout(I, E)
+    packed0 = gpu.set_layout(tl.load(gpu.local_ptr(W, (0, 4 * (base + 2 + 4 * g + 0) // 16, 4 * (base + 2 + 4 * g + 0) % 16), shape=(4, 32)).to(tl.pointer_type(tl.uint64, 3)), active, 0), E)
+    packed1 = gpu.set_layout(tl.load(gpu.local_ptr(W, (0, 4 * (base + 2 + 4 * g + 2) // 16, 4 * (base + 2 + 4 * g + 2) % 16), shape=(4, 32)).to(tl.pointer_type(tl.uint64, 3)), active, 0), E)
+    for j in tl.static_range(4):
+        pair = packed0 if j < 2 else packed1
+        word = gpu.set_layout((pair >> (32 * (j % 2))).to(tl.uint32), E)
+        (a, b) = packets(word)
+        q0 = gpu.set_layout(tl.load(QP + (8 * kbx.to(tl.int64) + g) * 9 + 1 + j, active, 0).to(tl.int32, bitcast=True), E)
+        q1 = gpu.set_layout(tl.load(QP + (8 * kbx.to(tl.int64) + g) * 9 + 5 + j, active, 0).to(tl.int32, bitcast=True), E)
+        I = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[a, q0, I], dtype=tl.int32, is_pure=True, pack=1)
+        I = tl.inline_asm_elementwise('dp4a.s32.s32 $0,$1,$2,$3;', constraints='=r,r,r,r', args=[b, q1, I], dtype=tl.int32, is_pure=True, pack=1)
+    D = tl.inline_asm_elementwise('mul.rn.f32 $0,$1,$2;', constraints='=f,f,f', args=[dw, dx], dtype=tl.float32, is_pure=True, pack=1)
+    return (gpu.set_layout((I * sg).to(tl.float32), E), gpu.set_layout(D, E))
+
+@triton.jit
+def {{ call.symbol }}__producer({{ (call.pipeline_producer_parameters + (call.signature,)) | join(', ') }}):
+{% for d in call.transport_descriptors %}
+    tle.gpu.tensor_map_fenceproxy_acquire({{ d }})
+{% endfor %}
+    row_count = tl.cdiv({{ call.transport_n }} - tl.program_id(0), tl.num_programs(0))
+    for row_iteration in range(row_count):
+        row_index = tl.program_id(0) + row_iteration * tl.num_programs(0)
+        for it in range({{ call.pipeline_commits_per_invocation }}):
+            epoch = (2 * row_iteration + it).to(tl.int32)
+{% for channel in call.pipeline_channels %}
+            _slot{{ loop.index0 }}={{ channel.writer_parameter }}.acquire(epoch)
+            _map{{ loop.index0 }}=tle.gpu.reinterpret_tensor_map({{ call.transport_descriptors[loop.index0] }},_slot{{ loop.index0 }}.{{ channel.name }})
+            tle.gpu.copy(_map{{ loop.index0 }},_slot{{ loop.index0 }}.{{ channel.name }},[1,256,16],[row_index.to(tl.int32),136*it,0])
+            {{ channel.writer_parameter }}.commit(epoch)
+{% endfor %}
+{% for channel in call.pipeline_channels %}
+    {{ channel.writer_parameter }}.close((2 * row_count).to(tl.int32))
+{% endfor %}
+
+@triton.jit
+def {{ call.symbol }}__consumer({{ (call.pipeline_consumer_parameters + (call.signature,)) | join(', ') }}):
+    w = gpu.set_layout(tl.broadcast_to(tl.arange(0, 4)[:, None], (4, 32)), E)
+    l = gpu.set_layout(tl.broadcast_to(tl.arange(0, 32)[None, :], (4, 32)), E)
+    tid = w * 32 + l
+    g = tid % 8
+    row_count = tl.cdiv({{ call.transport_n }} - tl.program_id(0), tl.num_programs(0))
+    for row_iteration in range(row_count):
+        row_index = tl.program_id(0) + row_iteration * tl.num_programs(0)
+        row = gpu.set_layout(tl.full((4, 32), row_index, tl.int64), E)
+        p = gpu.set_layout(tl.full((4, 32), 0.0, tl.float32), E)
+        u = gpu.set_layout(tl.full((4, 32), 0.0, tl.float32), E)
+        for it in range(tl.cdiv({{ call.transport_k }} // 256, 16)):
+            __READY0__ = {{ call.pipeline_channels[0].reader_parameter }}.wait((2 * row_iteration + it).to(tl.int32))
+{% if call.transport_mode == 1 %}
+            __READY1__ = {{ call.pipeline_channels[1].reader_parameter }}.wait((2 * row_iteration + it).to(tl.int32))
+{% endif %}
+            kbx = tid // 8 + 16 * it
+            active = (row < {{ call.transport_n }}) & (kbx < {{ call.transport_k }} // 256)
+            (J, D) = {{ call.symbol }}__dot_group_stage(__READY0__.slot.gate, {{ call.pointers[0] }}, row, kbx, g, active, {{ call.transport_k }})
+            pn = tl.inline_asm_elementwise('fma.rn.f32 $0,$1,$2,$3;', constraints='=f,f,f,f', args=[D, J, p], dtype=tl.float32, is_pure=True, pack=1)
+            p = tl.where(active, pn, p)
+            if {{ call.transport_mode }} == 1:
+                (J, D) = {{ call.symbol }}__dot_group_stage(__READY1__.slot.up, {{ call.pointers[0] }}, row, kbx, g, active, {{ call.transport_k }})
+                un = tl.inline_asm_elementwise('fma.rn.f32 $0,$1,$2,$3;', constraints='=f,f,f,f', args=[D, J, u], dtype=tl.float32, is_pure=True, pack=1)
+                u = tl.where(active, un, u)
+            {{ call.pipeline_channels[0].reader_parameter }}.release((2 * row_iteration + it).to(tl.int32))
+{% if call.transport_mode == 1 %}
+            {{ call.pipeline_channels[1].reader_parameter }}.release((2 * row_iteration + it).to(tl.int32))
+{% endif %}
+        tl.static_assert({{ call.transport_k }} % 256 == 0, 'R003 requires complete original K256 blocks')
+        (p, u) = typed_reduce(p, u, w, l, {{ call.transport_mode }} == 1)
+        if {{ call.transport_mode }} == 1:
+            p = p / (1.0 + tl.exp(-p)) * u
+        writer = (row < {{ call.transport_n }}) & (w == 0) & (l == 0)
+        if {{ call.transport_mode }} == 2:
+            out = tl.where(row % 512 // 256 == 0, {{ call.pointers[3] }}, {{ call.pointers[4] }})
+            offset = row // 512 * 256 + row % 256
+            tl.store(out + offset, p.to(tl.bfloat16), writer)
+        else:
+            tl.store({{ call.pointers[3] }} + row, p, writer)
+{% endif %}
+{% endfor %}

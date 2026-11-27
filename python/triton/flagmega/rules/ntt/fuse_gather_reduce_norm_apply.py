@@ -36,6 +36,8 @@ def fuse_gather_reduce_norm_apply_rule() -> RewriteRule:
 
 def _rewrite(result, module: IRModule):
     norm, boxing, partial = (result[name] for name in ("norm", "boxing", "partial"))
+    if norm.attrs.get("compute_profile", "default") != "default":
+        return norm
     attrs = {
         "materialized_stats_type":
         boxing.type,

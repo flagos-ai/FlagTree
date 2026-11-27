@@ -1,0 +1,11 @@
+# Copyright 2026 FlagOS Contributors
+# SPDX-License-Identifier: MIT
+# The model caller owns readonly parameter rows, state View and phase arena.
+{% with render_calls=() %}
+{% include "kernels/gdn_recurrent/r004_column_v6.py.jinja" %}
+{% endwith %}
+{% for call in render_calls if call.family == "gdn_recurrent" and call.variant == "r004_column_v6" %}
+@triton.jit
+def {{ call.symbol }}({{ call.signature }}):
+    _r004_column_{{ call.phase }}_v6({{ call.model_native_arguments | join(", ") }})
+{% endfor %}

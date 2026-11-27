@@ -35,7 +35,7 @@ class MemoryAllocationScope(str, Enum):
 class MemorySharingScope(str, Enum):
     """Physical agents which may address the same memory instance.
 
-    This is the Python IR equivalent of reference ``MemorySharingScope``.  It is
+    This is the Python IR equivalent of nncase ``MemorySharingScope``.  It is
     deliberately independent from ``MemoryAllocationScope``: a function-owned
     arena can either be replicated per block or shared by the complete chip.
     """
@@ -65,14 +65,24 @@ class MemorySpace:
             raise IRSchemaError("Memory-space granularity must be a positive power of two.")
         if self.maximum_bytes <= 0:
             raise IRSchemaError("Memory-space maximum_bytes must be positive.")
-        object.__setattr__(self, "allocation_scope", MemoryAllocationScope(self.allocation_scope))
+        object.__setattr__(
+            self, "allocation_scope", MemoryAllocationScope(self.allocation_scope)
+        )
         object.__setattr__(self, "sharing_scope", MemorySharingScope(self.sharing_scope))
-        if (self.strategy is AllocationStrategy.EXTERNAL
-                and self.allocation_scope is not MemoryAllocationScope.EXTERNAL):
-            raise IRSchemaError("An external memory space requires external allocation ownership.")
-        if (self.allocation_scope is MemoryAllocationScope.EXTERNAL
-                and self.strategy is not AllocationStrategy.EXTERNAL):
-            raise IRSchemaError("External allocation ownership requires the external strategy.")
+        if (
+            self.strategy is AllocationStrategy.EXTERNAL
+            and self.allocation_scope is not MemoryAllocationScope.EXTERNAL
+        ):
+            raise IRSchemaError(
+                "An external memory space requires external allocation ownership."
+            )
+        if (
+            self.allocation_scope is MemoryAllocationScope.EXTERNAL
+            and self.strategy is not AllocationStrategy.EXTERNAL
+        ):
+            raise IRSchemaError(
+                "External allocation ownership requires the external strategy."
+            )
 
     @property
     def supports_lifetime_reuse(self) -> bool:
@@ -96,8 +106,10 @@ class MemorySpace:
         else:  # pragma: no cover - exhaustive enum guard
             raise IRSchemaError(f"Unsupported allocation policy {self.allocation_policy!r}.")
         if result > self.maximum_bytes:
-            raise IRSchemaError(f"Memory space {self.name!r} requires {result} bytes after "
-                                f"{self.allocation_policy.value} rounding, exceeding {self.maximum_bytes}.")
+            raise IRSchemaError(
+                f"Memory space {self.name!r} requires {result} bytes after "
+                f"{self.allocation_policy.value} rounding, exceeding {self.maximum_bytes}."
+            )
         return result
 
     def to_data(self) -> dict[str, object]:
@@ -122,8 +134,11 @@ class MemorySpace:
             strategy=AllocationStrategy(str(data["strategy"])),
             allocation_policy=AllocationPolicy(str(data["allocation_policy"])),
             allocation_scope=MemoryAllocationScope(
-                str(data.get("allocation_scope", data.get("shared_scope", "function")))),
-            sharing_scope=MemorySharingScope(str(data.get("sharing_scope", _legacy_sharing_scope(data)))),
+                str(data.get("allocation_scope", data.get("shared_scope", "function")))
+            ),
+            sharing_scope=MemorySharingScope(
+                str(data.get("sharing_scope", _legacy_sharing_scope(data)))
+            ),
         )
 
 

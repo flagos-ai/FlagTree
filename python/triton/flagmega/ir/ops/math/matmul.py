@@ -14,6 +14,7 @@ from triton.flagmega.ir.ops.core import OpCost, OpDefinition, attribute_paramete
 from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import DType, VectorType
 
+
 SPLIT_K4_REDUCTION_ORDER = "split_k4_k32_mma_k16_pairtree"
 
 
@@ -74,12 +75,19 @@ class MatMul(OpDefinition):
             reduction_axes = tuple(sorted(set(lhs_k_split.hierarchy_axes)))
             output_axes = {
                 hierarchy_axis
-                for policy in output_policies if isinstance(policy, SBPSplit)
+                for policy in output_policies
+                if isinstance(policy, SBPSplit)
                 for hierarchy_axis in policy.hierarchy_axes
             }
-            if (lhs_type.partial is None and rhs_type.partial is None
-                    and all(policy == SBP.broadcast() or isinstance(policy, SBPSplit) for policy in output_policies)
-                    and not output_axes.intersection(reduction_axes)):
+            if (
+                lhs_type.partial is None
+                and rhs_type.partial is None
+                and all(
+                    policy == SBP.broadcast() or isinstance(policy, SBPSplit)
+                    for policy in output_policies
+                )
+                and not output_axes.intersection(reduction_axes)
+            ):
                 return DistributedType(
                     logical_output,
                     output_policies,
@@ -87,9 +95,12 @@ class MatMul(OpDefinition):
                     partial=SBPPartial(reduction_axes),
                 )
         if all_broadcast(lhs_type) and all_broadcast(rhs_type):
-            return DistributedType(logical_output, (SBP.broadcast(), SBP.broadcast()), placement)
-        raise IRSchemaError("Distributed MatMul operand policies do not form a legal M, N, K, "
-                            "or disjoint output/reduction partition.")
+            return DistributedType(
+                logical_output, (SBP.broadcast(), SBP.broadcast()), placement)
+        raise IRSchemaError(
+            "Distributed MatMul operand policies do not form a legal M, N, K, "
+            "or disjoint output/reduction partition."
+        )
 
     @classmethod
     def evaluate(cls, node, arguments, context):
@@ -106,7 +117,7 @@ class MatMul(OpDefinition):
     def cost(cls, node: Node) -> OpCost:
         assert isinstance(node.type, TensorType)
         size = tensor_nbytes(node.type)
-        return OpCost(flops=None, bytes_read=None, bytes_written=size, notes=("matmul", ))
+        return OpCost(flops=None, bytes_read=None, bytes_written=size, notes=("matmul",))
 
 
 def normalize_output_data_type(attrs):
@@ -139,8 +150,9 @@ def validate_reduction_order(attrs, lhs_type, k_axis):
     scalar = dtype.elem_type if isinstance(dtype, VectorType) else dtype
     if scalar != DType.BFLOAT16:
         raise IRSchemaError("The ordered MMA reduction requires BF16 operands.")
-    if isinstance(lhs_type, DistributedType) and (lhs_type.partial is not None
-                                                  or lhs_type.axis_policies[k_axis] != SBP.broadcast()):
+    if isinstance(lhs_type, DistributedType) and (
+        lhs_type.partial is not None or lhs_type.axis_policies[k_axis] != SBP.broadcast()
+    ):
         raise IRSchemaError("An ordered MMA reduction cannot reassociate independently accumulated K shards.")
     if order == SPLIT_K4_REDUCTION_ORDER:
         # Four F32 carries consume K=128*q+32*b+j, b=0..3, j=0..31.
@@ -155,8 +167,10 @@ def validate_reduction_order(attrs, lhs_type, k_axis):
 def matmul_value(lhs, rhs, output_data_type, context, *, reduction_order=None):
     """F32 output consumes the accumulator, never a previously rounded BF16 result."""
     if reduction_order == SPLIT_K4_REDUCTION_ORDER:
-        raise EvaluationError("An exact evaluator for split_k4_k32_mma_k16_pairtree is not implemented; "
-                              "ordinary GEMM does not preserve its four K16 carries and final pair tree.")
+        raise EvaluationError(
+            "An exact evaluator for split_k4_k32_mma_k16_pairtree is not implemented; "
+            "ordinary GEMM does not preserve its four K16 carries and final pair tree."
+        )
     dtype = context.torch_dtype(DType(output_data_type)) if output_data_type is not None else lhs.dtype
     if dtype == context.torch.float32 and lhs.is_floating_point():
         if (reduction_order == "mma_k16" and lhs.is_cuda

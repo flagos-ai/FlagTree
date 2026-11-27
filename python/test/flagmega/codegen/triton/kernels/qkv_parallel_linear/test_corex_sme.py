@@ -12,29 +12,27 @@ from triton.flagmega.codegen.triton.templates import KernelTemplateSpec, TritonT
 
 def _call(k=192, owners=4, n_lane=4, active_k=None):
     strides = (k * 256, 4096, n_lane * 16)
-    weight_abi = dict(scalar_dtype="bfloat16", local_capacity_shape=[owners, k // 16, 256 // n_lane
-                                                                     ], logical_shape=[owners, k // 16, 256 // n_lane],
+    weight_abi = dict(scalar_dtype="bfloat16", local_capacity_shape=[owners, k // 16, 256 // n_lane],
+                      logical_shape=[owners, k // 16, 256 // n_lane],
                       active_shape_expressions=list(map(str, (owners, k // 16, 256 // n_lane))),
-                      scalar_lane_shape=[n_lane, 2, 8], scalar_storage_strides=list(strides), distributed_type=None,
-                      coordinate_space="canonical_global", storage_kind="compact_local", alignment_bytes=256,
-                      pool_byte_offset=0)
+                      scalar_lane_shape=[n_lane, 2, 8], scalar_storage_strides=list(strides),
+                      distributed_type=None, coordinate_space="canonical_global",
+                      storage_kind="compact_local", alignment_bytes=256, pool_byte_offset=0)
     source_abi = dict(scalar_dtype="bfloat16", scalar_lane_count=1, local_capacity_shape=[1, k],
                       scalar_storage_strides=[k, 1])
-    outputs = [
-        dict(result=f"Y{i}", local_n_capacity=n, active=f"qkv_local_n_offsets < {n - i}",
-             result_offset=f"shard_index*{n}+qkv_local_n_offsets", weight_group_start=start // n_lane)
-        for i, (n, start) in enumerate(((128, 0), (64, 128), (64, 192)))
-    ]
-    return dict(
-        family="qkv_parallel_linear", variant="packed_fused_gemv", symbol="run", signature="X, W, Y0, Y1, Y2",
-        source="X", weight="W", source_offset=f"shard_index*{k}+qkv_local_k_offsets",
-        source_active=f"qkv_local_k_offsets < {k if active_k is None else active_k}", local_k_capacity=k, tile_n=128,
-        block_k=64, n_lane=n_lane, k_lane=16, weight_owner_stride=strides[0], weight_k_group_stride=strides[1],
-        weight_n_group_stride=strides[2], outputs=outputs, output_type="tl.float32",
-        parameters=dict(distribution=dict(placement=dict(hierarchy=[owners, 1]))), inputs=[
-            dict(buffers=[dict(formal="input", runtime_argument="X", abi=source_abi)]),
-            dict(buffers=[dict(formal="q_weight_qkv_fused", runtime_argument="W", abi=weight_abi)])
-        ])
+    outputs = [dict(result=f"Y{i}", local_n_capacity=n, active=f"qkv_local_n_offsets < {n - i}",
+                    result_offset=f"shard_index*{n}+qkv_local_n_offsets", weight_group_start=start // n_lane)
+               for i, (n, start) in enumerate(((128, 0), (64, 128), (64, 192)))]
+    return dict(family="qkv_parallel_linear", variant="packed_fused_gemv", symbol="run",
+                signature="X, W, Y0, Y1, Y2", source="X", weight="W",
+                source_offset=f"shard_index*{k}+qkv_local_k_offsets",
+                source_active=f"qkv_local_k_offsets < {k if active_k is None else active_k}",
+                local_k_capacity=k, tile_n=128, block_k=64, n_lane=n_lane, k_lane=16,
+                weight_owner_stride=strides[0], weight_k_group_stride=strides[1],
+                weight_n_group_stride=strides[2], outputs=outputs, output_type="tl.float32",
+                parameters=dict(distribution=dict(placement=dict(hierarchy=[owners, 1]))),
+                inputs=[dict(buffers=[dict(formal="input", runtime_argument="X", abi=source_abi)]),
+                        dict(buffers=[dict(formal="q_weight_qkv_fused", runtime_argument="W", abi=weight_abi)])])
 
 
 @pytest.mark.parametrize("n_lane,k", [(4, 128), (8, 192), (4, 2048)])
@@ -44,9 +42,8 @@ def test_complete_packed_qkv_selects_owned_sme(n_lane, k):
     assert call["corex_flat_sme_qkv"]
 
 
-@pytest.mark.parametrize("change", [
-    "alignment", "group_stride", "n_stride", "owner_stride", "k_tail", "active_weight", "view", "owner_count", "dtype"
-])
+@pytest.mark.parametrize("change", ["alignment", "group_stride", "n_stride", "owner_stride",
+                                    "k_tail", "active_weight", "view", "owner_count", "dtype"])
 def test_qkv_sme_requires_complete_aligned_weight_rows(change):
     call = _call()
     w = call["inputs"][1]["buffers"][0]["abi"]
@@ -75,9 +72,7 @@ def test_qkv_sme_requires_complete_aligned_weight_rows(change):
 def test_qkv_formal_uses_closed_call_alignment_proof():
     call = _call()
     call["inputs"][1]["buffers"][0]["abi"]["alignment_bytes"] = 16
-    plan = dict(device_functions=[
-        dict(function="qkv", function_pool_abi=dict(bindings=[dict(formal="W", alignment_bytes=256)]))
-    ])
+    plan = dict(device_functions=[dict(function="qkv", function_pool_abi=dict(bindings=[dict(formal="W", alignment_bytes=256)]))])
     attach_flat_sme_calls({"qkv": [call]}, plan)
     assert call["corex_flat_sme_qkv"]
 
@@ -108,21 +103,19 @@ def test_qkv_sme_matches_original_folds_and_owner_outputs(tmp_path, k, n_lane, a
             test_call.pop("corex_flat_sme_qkv")
         rendered = TritonTemplateRegistry().render_kernel(
             KernelTemplateSpec("qkv_parallel_linear", "packed_fused_gemv", "corex", "bi_v150"),
-            dict(render_calls=[test_call], num_warps=16, distributed_entry=True, mesh_hierarchy=(4, 1),
-                 mesh_axis_names=("block_y", "block_x")),
+            dict(render_calls=[test_call], num_warps=16, distributed_entry=True, mesh_hierarchy=(4, 1), mesh_axis_names=("block_y", "block_x")),
         ).source
         path = tmp_path / f"qkv_{sme}.py"
-        path.write_text(
-            "import triton\nimport triton.language as tl\nimport triton.experimental.tle.language as tle\n"
-            "FLAGMEGA_GRID_MESH = tl.constexpr(tle.device_mesh({'block':[('block_y',4),('block_x',1)]}))\n" + rendered)
+        path.write_text("import triton\nimport triton.language as tl\nimport triton.experimental.tle.language as tle\n"
+                        "FLAGMEGA_GRID_MESH = tl.constexpr(tle.device_mesh({'block':[('block_y',4),('block_x',1)]}))\n" + rendered)
         spec = importlib.util.spec_from_file_location(f"qkv_{sme}", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        y = [torch.full((4 * n + 17, ), -7., device="cuda", dtype=torch.float32) for n in (128, 64, 64)]
+        y = [torch.full((4 * n + 17,), -7., device="cuda", dtype=torch.float32) for n in (128, 64, 64)]
         fn = module.run
-        compiled = fn[(4, )](x, weight, *y, num_warps=16, enable_fp_fusion=False)
+        compiled = fn[(4,)](x, weight, *y, num_warps=16, enable_fp_fusion=False)
         with torch.cuda.graph(graph := torch.cuda.CUDAGraph()):
-            fn[(4, )](x, weight, *y, num_warps=16, enable_fp_fusion=False)
+            fn[(4,)](x, weight, *y, num_warps=16, enable_fp_fusion=False)
         for _ in range(12):
             graph.replay()
         torch.cuda.synchronize()
@@ -132,6 +125,5 @@ def test_qkv_sme_matches_original_folds_and_owner_outputs(tmp_path, k, n_lane, a
             assert "warpsPerCTA = [4, 4]" in compiled.asm["ttgir"]
         for i, (output, n) in enumerate(zip(y, (128, 64, 64))):
             assert torch.equal(output[-17:], torch.full_like(output[-17:], -7.))
-            assert torch.equal(output[:4 * n].reshape(4, n)[:, n - i:],
-                               torch.full_like(output[:4 * n].reshape(4, n)[:, n - i:], -7.))
+            assert torch.equal(output[:4 * n].reshape(4, n)[:, n - i:], torch.full_like(output[:4 * n].reshape(4, n)[:, n - i:], -7.))
     assert all(torch.equal(a, b) for a, b in zip(*results))

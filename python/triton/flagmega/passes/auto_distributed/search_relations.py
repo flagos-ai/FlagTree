@@ -33,16 +33,18 @@ def add_reshard_relations(model, graph, domains, variables):
 
     edges = defaultdict(list)
     for site in graph.reshard_sites:
-        if site.producer_index in domains[site.producer_id] and (site.consumer_index is None
-                                                                 or site.consumer_index in domains[site.consumer_id]):
+        if site.producer_index in domains[site.producer_id] and (
+            site.consumer_index is None or site.consumer_index in domains[site.consumer_id]
+        ):
             edges[site.key].append(site)
     indexes = {}
 
     def selected_class(node_id, classes):
         signature = (node_id, tuple(classes[index] for index in domains[node_id]))
         if signature not in indexes:
-            value = model.NewIntVarFromDomain(Domain.FromValues(tuple(classes.values())),
-                                              f"relation_class__{node_id}_{len(indexes)}")
+            value = model.NewIntVarFromDomain(
+                Domain.FromValues(tuple(classes.values())), f"relation_class__{node_id}_{len(indexes)}"
+            )
             model.Add(value == sum(classes[index] * variables[(node_id, index)] for index in domains[node_id]))
             indexes[signature] = value
         return indexes[signature]
@@ -84,12 +86,13 @@ def add_reshard_relations(model, graph, domains, variables):
         output = sites[0].consumer_index is None
         producer_bucket = graph.bucket_map[producer_id]
         if output:
-            target = function_output_type(graph.module, consumer_id.removeprefix("@function:"), producer_id,
-                                          graph.placement)
+            target = function_output_type(
+                graph.module, consumer_id.removeprefix("@function:"), producer_id, graph.placement
+            )
             for producer in domains[producer_id]:
                 if (producer, None) not in matrix and producer_bucket.candidates[producer].return_type == target:
-                    matrix[(producer, None)] = ((0, 0), )
-            consumers = (None, )
+                    matrix[(producer, None)] = ((0, 0),)
+            consumers = (None,)
         else:
             consumers = domains[consumer_id]
             consumer_bucket = graph.bucket_map[consumer_id]
@@ -97,16 +100,17 @@ def add_reshard_relations(model, graph, domains, variables):
                 source = producer_bucket.candidates[producer].return_type
                 for consumer in consumers:
                     candidate = consumer_bucket.candidates[consumer]
-                    target = (candidate.return_type
-                              if sites[0].edge_kind == "loop_yield" else candidate.input_types[input_index])
+                    target = (candidate.return_type if sites[0].edge_kind == "loop_yield"
+                              else candidate.input_types[input_index])
                     if (producer, consumer) not in matrix and source == target:
-                        matrix[(producer, consumer)] = ((0, 0), )
+                        matrix[(producer, consumer)] = ((0, 0),)
         producer_classes, producers = _relation_classes(
             domains[producer_id],
             lambda p, matrix=matrix, consumers=consumers: tuple(matrix.get((p, c), ()) for c in consumers),
         )
         consumer_classes, consumers = _relation_classes(
-            consumers, lambda c, matrix=matrix, producers=producers: tuple(matrix.get((p, c), ()) for p in producers))
+            consumers, lambda c, matrix=matrix, producers=producers: tuple(matrix.get((p, c), ()) for p in producers)
+        )
         rows = []
         for producer in producers:
             for consumer in consumers:
@@ -118,10 +122,12 @@ def add_reshard_relations(model, graph, domains, variables):
                     row.extend(int(code == option) for code in groups.values())
                     rows.append(tuple(row))
         option_column = 1 if output else 2
-        path = model.NewIntVarFromDomain(Domain.FromValues(tuple(row[option_column] for row in rows)),
-                                         f"edge_path__{ordinal}")
-        cost = model.NewIntVarFromDomain(Domain.FromValues(tuple(row[option_column + 1] for row in rows)),
-                                         f"edge_cost__{ordinal}")
+        path = model.NewIntVarFromDomain(
+            Domain.FromValues(tuple(row[option_column] for row in rows)), f"edge_path__{ordinal}"
+        )
+        cost = model.NewIntVarFromDomain(
+            Domain.FromValues(tuple(row[option_column + 1] for row in rows)), f"edge_cost__{ordinal}"
+        )
         columns = [selected_class(producer_id, producer_classes)]
         if not output:
             columns.append(selected_class(consumer_id, consumer_classes))

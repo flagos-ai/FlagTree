@@ -25,7 +25,7 @@ from triton.flagmega.errors import (
 )
 from triton.flagmega.evaluator.recipe_scope import recipe_output_scope
 from triton.flagmega.importer.checkpoint import Checkpoint, TensorByteRange
-from triton.flagmega.ir import DType, DistributedType, IRModule, TensorType, VectorType, verify_module
+from triton.flagmega.ir import DType, DistributedType, IRModule, TensorType, TupleType, VectorType, verify_module
 from triton.flagmega.ir.ops.core import get_definition
 
 
@@ -56,7 +56,6 @@ class NumpyStorageReader:
 
 
 class NumpyMaterializationContext:
-
     def __init__(self, module: IRModule, checkpoint: Checkpoint, *, recipe=None, storage_reader=None) -> None:
         try:
             import numpy
@@ -95,12 +94,16 @@ class NumpyMaterializationContext:
         byte_range = None if byte_range_of is None else byte_range_of(key)
         if byte_range is not None:
             if not isinstance(byte_range, TensorByteRange):
-                raise ArtifactError(f"Checkpoint tensor_byte_range({key!r}) returned "
-                                    f"{type(byte_range).__name__}, expected TensorByteRange or None.")
+                raise ArtifactError(
+                    f"Checkpoint tensor_byte_range({key!r}) returned "
+                    f"{type(byte_range).__name__}, expected TensorByteRange or None."
+                )
             expected = _shape_product(shape) * value_type.dtype.itemsize // _lane_count(value_type)
             if byte_range.nbytes != expected:
-                raise ArtifactError(f"Checkpoint byte range for {key!r} has {byte_range.nbytes} bytes; "
-                                    f"constant recipe requires {expected}.")
+                raise ArtifactError(
+                    f"Checkpoint byte range for {key!r} has {byte_range.nbytes} bytes; "
+                    f"constant recipe requires {expected}."
+                )
             return self.storage_reader.array(byte_range, self.storage_dtype(value_type.dtype), shape)
         return self._tensor_to_numpy(self.checkpoint.load_tensor(key, device="cpu"), value_type)
 
@@ -121,12 +124,16 @@ class NumpyMaterializationContext:
             else:
                 result = detached.numpy()
         else:
-            raise EvaluationError(f"Checkpoint returned {type(value).__name__}; NumPy materialization "
-                                  "requires an ndarray or CPU tensor.")
+            raise EvaluationError(
+                f"Checkpoint returned {type(value).__name__}; NumPy materialization "
+                "requires an ndarray or CPU tensor."
+            )
         shape = _physical_shape(value_type)
         if tuple(result.shape) != shape:
             if int(result.size) != _shape_product(shape):
-                raise EvaluationError(f"Checkpoint tensor has shape {tuple(result.shape)}, expected {shape}.")
+                raise EvaluationError(
+                    f"Checkpoint tensor has shape {tuple(result.shape)}, expected {shape}."
+                )
             result = result.reshape(shape)
         return self.as_contiguous(result)
 
@@ -150,7 +157,9 @@ class NumpyMaterializationContext:
             product = _shape_product(tuple(lane for _, lane in factors))
             extent = int(value.shape[axis])
             if extent % product:
-                raise EvaluationError(f"NumPy pack axis {axis} extent {extent} is not divisible by {product}.")
+                raise EvaluationError(
+                    f"NumPy pack axis {axis} extent {extent} is not divisible by {product}."
+                )
             split_shape.append(extent // product)
             outer_positions.append(cursor)
             cursor += 1
@@ -180,7 +189,9 @@ class NumpyMaterializationContext:
             encoded = self.numpy.uint16(rounded >> 16)
             return self.numpy.full(shape, encoded, dtype=self.numpy.uint16)
         if scalar == DType.FLOAT8_E4M3FN:
-            raise NumpyMaterializationUnsupported("NumPy float8 splat encoding is not implemented.")
+            raise NumpyMaterializationUnsupported(
+                "NumPy float8 splat encoding is not implemented."
+            )
         return self.numpy.full(shape, value, dtype=self.storage_dtype(tensor.dtype))
 
 
@@ -200,8 +211,11 @@ def iter_numpy_materialized_constant_assets(
         raise EvaluationError(f"Unknown constant recipe outputs: {missing}.")
     storage_reader = NumpyStorageReader()
     for recipe in module.constant_recipes:
-        selected = (recipe.outputs if requested is None else tuple(output for output in recipe.outputs
-                                                                   if output in requested))
+        selected = (
+            recipe.outputs
+            if requested is None
+            else tuple(output for output in recipe.outputs if output in requested)
+        )
         if not selected:
             continue
         values = materialize_numpy_recipe(module, recipe, checkpoint, storage_reader=storage_reader, outputs=selected)
@@ -250,8 +264,15 @@ def materialize_numpy_recipe(module, recipe, checkpoint, *, storage_reader=None,
     return values
 
 
-def _validate_storage_value(node, value, context: NumpyMaterializationContext) -> None:
-    tensor = _tensor_type(node.type)
+def _validate_storage_value(node, value, context: NumpyMaterializationContext, *, value_type=None) -> None:
+    value_type = node.type if value_type is None else value_type
+    if isinstance(value_type, TupleType):
+        if not isinstance(value, tuple) or len(value) != len(value_type.fields):
+            raise EvaluationError(f"NumPy materializer tuple {node.id!r} has an invalid field count.", node_id=node.id)
+        for field, field_type in zip(value, value_type.fields, strict=True):
+            _validate_storage_value(node, field, context, value_type=field_type)
+        return
+    tensor = _tensor_type(value_type)
     expected_shape = _physical_shape(tensor)
     if not isinstance(value, context.numpy.ndarray):
         raise EvaluationError(

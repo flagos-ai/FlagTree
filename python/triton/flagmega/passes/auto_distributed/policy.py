@@ -11,7 +11,8 @@ from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.passes.auto_distributed.candidates import DistributedCandidateProviderRegistry
 from triton.flagmega.passes.auto_distributed.greedy_sample_provider import GreedySampleCandidateProvider
 from triton.flagmega.passes.auto_distributed.inference_providers import (
-    TypeInferenceCandidateProvider, )
+    TypeInferenceCandidateProvider,
+)
 from triton.flagmega.passes.auto_distributed.norm_providers import (
     AddNormStatsCandidateProvider,
     BindNormStatsCandidateProvider,
@@ -36,7 +37,8 @@ from triton.flagmega.passes.auto_distributed.providers import (
     PackedQKVParallelLinearCombineCandidateProvider,
 )
 from triton.flagmega.passes.auto_distributed.qkv_rope_with_cache_provider import (
-    QKVRoPEWithCacheCandidateProvider, )
+    QKVRoPEWithCacheCandidateProvider,
+)
 from triton.flagmega.passes.auto_distributed.realization import (
     DistributedReshardRealizationPolicy,
     NttDistributedReshardRealizationPolicy,
@@ -50,7 +52,8 @@ from triton.flagmega.passes.auto_distributed.sparse_experts_providers import (
     SparseExpertsGateUpCandidateProvider,
 )
 from triton.flagmega.passes.auto_distributed.split_candidates import (
-    ContiguousDistributedSplitCandidateProvider, )
+    ContiguousDistributedSplitCandidateProvider,
+)
 from triton.flagmega.passes.constants import ConstnessAnalysis
 from triton.flagmega.passes.vector_contracts import (
     NATIVE_VECTOR_COMPUTE_OPS,
@@ -77,16 +80,27 @@ class NttDistributionPolicy:
         if not placements:
             raise ValueError("NTT AutoDistribution requires at least one placement.")
         self._placements = tuple(placements)
-        self._split_candidate_provider = (split_candidate_provider or ContiguousDistributedSplitCandidateProvider())
-        self._reshard_realization_policy = (reshard_realization_policy or NttDistributedReshardRealizationPolicy())
+        self._split_candidate_provider = (
+            split_candidate_provider
+            or ContiguousDistributedSplitCandidateProvider()
+        )
+        self._reshard_realization_policy = (
+            reshard_realization_policy
+            or NttDistributedReshardRealizationPolicy()
+        )
 
     @property
     def identity(self) -> str:
-        placements = ";".join(f"{value.name}={'x'.join(str(axis) for axis in value.hierarchy)}"
-                              f"/{value.hierarchy_levels}" for value in self._placements)
-        return ("ntt-auto-distributed/v11("
-                f"placements={placements},"
-                f"split={self._split_candidate_provider.identity})")
+        placements = ";".join(
+            f"{value.name}={'x'.join(str(axis) for axis in value.hierarchy)}"
+            f"/{value.hierarchy_levels}"
+            for value in self._placements
+        )
+        return (
+            "ntt-auto-distributed/v11("
+            f"placements={placements},"
+            f"split={self._split_candidate_provider.identity})"
+        )
 
     def placements(self, module: IRModule) -> tuple[Placement, ...]:
         del module
@@ -166,22 +180,20 @@ class NttDistributionPolicy:
                     "tensors.reshape",
                     "tensors.unpack",
                 })))
-        registry.add(
-            BroadcastCandidateProvider(
-                frozenset({
-                    "math.vectorized_matmul",
-                    # The mHC stages contract the hidden axis inside the Sinkhorn
-                    # normalization and reject any non-broadcast operand in their own
-                    # inference, so replication is the only legal layout today.
-                    "nn.mhc_post",
-                    "nn.mhc_pre",
-                    "nn.rotary_embedding",
-                    "nn.vectorized_rms_norm",
-                    "tensors.cast",
-                    "tensors.pad",
-                    "tensors.permute",
-                    "tensors.slice_to_shape",
-                })))
+        registry.add(BroadcastCandidateProvider(frozenset({
+            "math.vectorized_matmul",
+            # The mHC stages contract the hidden axis inside the Sinkhorn
+            # normalization and reject any non-broadcast operand in their own
+            # inference, so replication is the only legal layout today.
+            "nn.mhc_post",
+            "nn.mhc_pre",
+            "nn.rotary_embedding",
+            "nn.vectorized_rms_norm",
+            "tensors.cast",
+            "tensors.pad",
+            "tensors.permute",
+            "tensors.slice_to_shape",
+        })))
 
     def reshard_realization_policy(self) -> DistributedReshardRealizationPolicy:
         return self._reshard_realization_policy
@@ -239,13 +251,18 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
     # Native consumers own their physical operand graph even when they were
     # constructed directly and carry no vectorization provenance.
     pending = [
-        node.id
-        for node in module.nodes
-        if node.op in native_vector_ops or vectorization_root(node) in native_vector_roots
-        or node.id in native_vector_roots and node.metadata.get("vectorized_from") is not None or (
-            large_model and node.metadata.get("vectorization_propagated") is not None
-            and isinstance(tensor_of(node.type).dtype, VectorType)) or (
-                node.metadata.get("vectorized_from") is not None and node.op in {"tensors.unpack", "tensors.bitcast"})
+        node.id for node in module.nodes if node.op in native_vector_ops
+        or vectorization_root(node) in native_vector_roots
+        or node.id in native_vector_roots and node.metadata.get("vectorized_from") is not None
+        or (
+            large_model
+            and node.metadata.get("vectorization_propagated") is not None
+            and isinstance(tensor_of(node.type).dtype, VectorType)
+        )
+        or (
+            node.metadata.get("vectorized_from") is not None
+            and node.op in {"tensors.unpack", "tensors.bitcast"}
+        )
     ]
     # Retained result/layout boundaries (e.g. Concat of a native result and
     # a packed Slice) also own physical operands. Starting only at native
@@ -444,8 +461,8 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
                 actual = prepared_input(compute_roots.get(source_id, source_id))
                 definition = get_definition(node.op)
                 attrs = definition.normalize_attrs({**node.attrs, "new_type": target_type})
-                prepared = replace(prepared, inputs=(actual.id, ), type=definition.infer_type((actual, ), attrs),
-                                   attrs=attrs)
+                prepared = replace(prepared, inputs=(actual.id,),
+                                   type=definition.infer_type((actual,), attrs), attrs=attrs)
             # Scalarizing a propagated helper (for example a reshape) rewrites
             # the value this adapter reads, but an adapter names one logical
             # tensor on both sides, so it cannot absorb that dtype change.
@@ -455,24 +472,34 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             # scalar source, which ``sharded_view_error`` rejects.
             if len(prepared.inputs) == 1:
                 source = prepared_by_id.get(prepared.inputs[0], node_map.get(prepared.inputs[0]))
-                target_tensor = (None if not isinstance(prepared.type,
-                                                        (TensorType, DistributedType)) else tensor_of(prepared.type))
-                source_tensor = (None if source is None or not isinstance(source.type, (TensorType, DistributedType))
-                                 else tensor_of(source.type))
-                if (source is not None and source_tensor is not None and target_tensor is not None
-                        and isinstance(target_tensor.dtype, VectorType)
-                        and not isinstance(source_tensor.dtype, VectorType)):
+                target_tensor = (
+                    None if not isinstance(prepared.type, (TensorType, DistributedType))
+                    else tensor_of(prepared.type)
+                )
+                source_tensor = (
+                    None if source is None or not isinstance(source.type, (TensorType, DistributedType))
+                    else tensor_of(source.type)
+                )
+                if (
+                    source is not None
+                    and source_tensor is not None
+                    and target_tensor is not None
+                    and isinstance(target_tensor.dtype, VectorType)
+                    and not isinstance(source_tensor.dtype, VectorType)
+                ):
                     axes = tuple(range(
                         source_tensor.rank - len(target_tensor.dtype.lanes),
                         source_tensor.rank,
                     ))
                     pack_definition = get_definition("tensors.pack")
-                    packed = pack_definition.prepare((source, ), {"axes": axes, "lanes": target_tensor.dtype.lanes})
+                    packed = pack_definition.prepare(
+                        (source,), {"axes": axes, "lanes": target_tensor.dtype.lanes}
+                    )
                     pack_id = f"{prepared.id}.semantic_input.pack"
                     pack = Node(
                         pack_id,
                         "tensors.pack",
-                        (source.id, ),
+                        (source.id,),
                         packed.result_type,
                         packed.effect,
                         packed.attrs,
@@ -480,7 +507,7 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
                     )
                     nodes.append(pack)
                     prepared_by_id[pack.id] = pack
-                    prepared = replace(prepared, inputs=(pack.id, ))
+                    prepared = replace(prepared, inputs=(pack.id,))
             nodes.append(prepared)
             prepared_by_id[prepared.id] = prepared
             continue
@@ -565,7 +592,10 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             nodes.append(node)
             prepared_by_id[node.id] = node
             continue
-        if (node.metadata.get("vectorized_from") is not None and node.op in {"tensors.unpack", "tensors.bitcast"}):
+        if (
+            node.metadata.get("vectorized_from") is not None
+            and node.op in {"tensors.unpack", "tensors.bitcast"}
+        ):
             # These are explicit scalar/vector representation boundaries in
             # the selected expression. Reconstructing the producer semantic
             # op in their place would erase the boundary and feed a later
@@ -577,8 +607,10 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
             nodes.append(prepared)
             prepared_by_id[prepared.id] = prepared
             continue
-        if ((node.id in native_vector_roots or current_vector_root in native_vector_roots)
-                and node.metadata.get("vectorized_from") is not None):
+        if (
+            (node.id in native_vector_roots or current_vector_root in native_vector_roots)
+            and node.metadata.get("vectorized_from") is not None
+        ):
             # Keep the typed-vector result boundary (usually Unpack) as an
             # explicit zero-copy view.  Its native compute node above owns the
             # executable vector schedule.
@@ -603,31 +635,33 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
                 if actual is None:
                     actual = node_map[value]
                 original = node_map[value]
-                if not isinstance(actual.type,
-                                  (TensorType, DistributedType)) or not isinstance(original.type,
-                                                                                   (TensorType, DistributedType)):
+                if not isinstance(actual.type, (TensorType, DistributedType)) or not isinstance(
+                    original.type, (TensorType, DistributedType)
+                ):
                     semantic_edges.append(mapped)
                     continue
                 actual_tensor = tensor_of(actual.type)
                 original_tensor = tensor_of(original.type)
-                if (isinstance(actual_tensor.dtype, VectorType) and not isinstance(original_tensor.dtype, VectorType)):
-                    axes = tuple(
-                        int(axis) for axis in original.metadata.get(
-                            "vector_axes",
-                            actual.metadata.get("selected_vector_axes", ()),
-                        ))
+                if (
+                    isinstance(actual_tensor.dtype, VectorType)
+                    and not isinstance(original_tensor.dtype, VectorType)
+                ):
+                    axes = tuple(int(axis) for axis in original.metadata.get(
+                        "vector_axes",
+                        actual.metadata.get("selected_vector_axes", ()),
+                    ))
                     if not axes:
                         axes = tuple(range(
                             actual_tensor.rank - len(actual_tensor.dtype.lanes),
                             actual_tensor.rank,
                         ))
                     definition = get_definition("tensors.unpack")
-                    unpacked = definition.prepare((actual, ), {"axes": axes})
+                    unpacked = definition.prepare((actual,), {"axes": axes})
                     boundary_id = f"{node.id}.semantic_input{input_index}.unpack"
                     boundary = Node(
                         boundary_id,
                         "tensors.unpack",
-                        (actual.id, ),
+                        (actual.id,),
                         unpacked.result_type,
                         unpacked.effect,
                         unpacked.attrs,
@@ -672,17 +706,17 @@ def lower_vectorization_contracts(module: IRModule) -> IRModule:
         # vector-lane shape is applied once more and reshape/slice inference
         # changes the element count.
         if large_model and semantic_op in {
-                "tensors.reshape",
-                "tensors.broadcast_to",
-                "tensors.slice",
-                "tensors.slice_to_shape",
-                "tensors.pad",
+            "tensors.reshape", "tensors.broadcast_to", "tensors.slice",
+            "tensors.slice_to_shape", "tensors.pad",
         }:
             # semantic_input may have inserted an Unpack for a native vector
             # producer. In that case the original scalar shape is required;
             # if the semantic edge remains vector-typed, use the packed shape
             # carried by the current node.
-            vector_input = any(isinstance(tensor_of(value.type).dtype, VectorType) for value in input_nodes)
+            vector_input = any(
+                isinstance(tensor_of(value.type).dtype, VectorType)
+                for value in input_nodes
+            )
             if vector_input:
                 axes = tuple(int(axis) for axis in node.metadata.get("vector_axes", ()))
                 lanes = tuple(int(lane) for lane in node.metadata.get("vector_lanes", ()))
@@ -739,21 +773,33 @@ def _recover_semantic_inputs(
     """
 
     compute = _referenced_vector_expression(root, module)
-    generated = tuple(node for node in module.nodes if node.metadata.get("vectorization_internal") is True
-                      and str(node.metadata.get("vectorization_semantic_id")) == root.id)
+    generated = tuple(
+        node
+        for node in module.nodes
+        if node.metadata.get("vectorization_internal") is True
+        and str(node.metadata.get("vectorization_semantic_id")) == root.id
+    )
     if compute is None and not generated:
         generated = tuple(
-            node for node in module.nodes if node.metadata.get("vectorization_internal") is True and node.metadata.get(
-                "vectorization_role") == "compute" and str(node.metadata.get("vectorization_root")) == root.id)
+            node
+            for node in module.nodes
+            if node.metadata.get("vectorization_internal") is True
+            and node.metadata.get("vectorization_role") == "compute"
+            and str(node.metadata.get("vectorization_root")) == root.id
+        )
     if compute is None and generated:
         if len(generated) != 1:
-            raise ValueError(f"Vectorization root {root.id!r} has {len(generated)} generated compute nodes.")
+            raise ValueError(
+                f"Vectorization root {root.id!r} has {len(generated)} generated compute nodes."
+            )
         compute = generated[0]
     if compute is None:
         compute = root
 
     return tuple(
-        _peel_vector_operand(value, module, compute_roots=compute_roots, seen=frozenset()) for value in compute.inputs)
+        _peel_vector_operand(value, module, compute_roots=compute_roots, seen=frozenset())
+        for value in compute.inputs
+    )
 
 
 def _referenced_vector_expression(root: Node, module: IRModule) -> Node | None:
@@ -769,9 +815,11 @@ def _referenced_vector_expression(root: Node, module: IRModule) -> Node | None:
     stops at the nearest expression denoting the current semantic boundary.
     """
 
-    if (root.metadata.get("vectorization_internal") is True
-            and root.metadata.get("vectorization_semantic_id") is not None
-            and root.op not in _DISTRIBUTION_ADAPTER_OPS):
+    if (
+        root.metadata.get("vectorization_internal") is True
+        and root.metadata.get("vectorization_semantic_id") is not None
+        and root.op not in _DISTRIBUTION_ADAPTER_OPS
+    ):
         return root
     if len(root.inputs) != 1:
         return None
@@ -788,20 +836,28 @@ def _referenced_vector_expression(root: Node, module: IRModule) -> Node | None:
             continue
         if str(value.metadata.get("vectorization_semantic_id")) == root.id:
             return value
-        if (value.metadata.get("vectorization_internal") is True
-                and value.metadata.get("vectorization_role") == "compute"):
+        if (
+            value.metadata.get("vectorization_internal") is True
+            and value.metadata.get("vectorization_role") == "compute"
+        ):
             return value
-        if (value.metadata.get("vectorization_internal") is not True or value.op not in {
+        if (
+            value.metadata.get("vectorization_internal") is not True
+            or value.op not in {
                 "distributed.sharded_view",
                 "tensors.bitcast",
                 "tensors.pack",
                 "tensors.pad",
                 "tensors.slice_to_shape",
                 "tensors.unpack",
-        } or len(value.inputs) != 1):
+            }
+            or len(value.inputs) != 1
+        ):
             return None
         value_id = value.inputs[0]
-    raise ValueError(f"Cycle while locating generated compute for vectorization root {root.id!r}.")
+    raise ValueError(
+        f"Cycle while locating generated compute for vectorization root {root.id!r}."
+    )
 
 
 def _peel_vector_operand(
@@ -822,9 +878,13 @@ def _peel_vector_operand(
     if node.metadata.get("vectorization_role") == "compute":
         return str(node.metadata["vectorization_root"])
     if node.op not in {"tensors.pack", "tensors.pad", "tensors.unpack", "tensors.slice_to_shape", "tensors.bitcast"}:
-        raise ValueError(f"Cannot recover semantic operand through compiler-owned {node.op!r} node {node.id!r}.")
+        raise ValueError(
+            f"Cannot recover semantic operand through compiler-owned {node.op!r} node {node.id!r}."
+        )
     if len(node.inputs) != 1:
-        raise ValueError(f"Compiler-owned vector boundary {node.id!r} must have one input, got {len(node.inputs)}.")
+        raise ValueError(
+            f"Compiler-owned vector boundary {node.id!r} must have one input, got {len(node.inputs)}."
+        )
     if node.op == "tensors.bitcast":
         source_dtype = tensor_of(module.node_map[node.inputs[0]].type).dtype
         result_dtype = tensor_of(node.type).dtype

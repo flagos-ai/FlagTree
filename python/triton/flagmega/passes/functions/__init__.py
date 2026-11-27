@@ -17,7 +17,8 @@ from .function_boundary_layout import propagate_function_boundary_layouts
 from .post_boundary_pack import post_function_boundary_pack_propagation
 from .remove_unused import remove_unused_functions
 from .distributed_boundary_layout import (
-    propagate_post_auto_distributed_function_boundary_layouts, )
+    propagate_post_auto_distributed_function_boundary_layouts,
+)
 from .absorb_bank_transforms import absorb_bank_parameter_transforms
 from .lift_parameter_transforms import lift_parameter_constant_transforms
 from .lift_constant_expressions import lift_constant_parameter_expressions

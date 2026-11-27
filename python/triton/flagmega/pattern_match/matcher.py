@@ -77,8 +77,12 @@ def find_matches(
     options: MatchOptions | None = None,
 ) -> tuple[MatchResult, ...]:
     reachable = {node.id for node in _output_first_nodes(module)}
-    return tuple(result for node in module.nodes
-                 if node.id in reachable and (result := try_match_root(node, pattern, module, options)) is not None)
+    return tuple(
+        result
+        for node in module.nodes
+        if node.id in reachable
+        and (result := try_match_root(node, pattern, module, options)) is not None
+    )
 
 
 def _match(
@@ -110,8 +114,7 @@ def _match(
                     return False
                 scope.matches = branch.matches
                 return True
-            if (len(current.inputs) != 1 or current.id in {value.id
-                                                           for value in path}
+            if (len(current.inputs) != 1 or current.id in {value.id for value in path}
                     or not _match(current, pattern.step, module, _MatchScope(), options)):
                 return False
             path.append(current)

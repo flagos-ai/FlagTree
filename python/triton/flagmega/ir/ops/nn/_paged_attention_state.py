@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: MIT
 """Physical paged-attention cache ABI for single-request token chunks.
 
-The semantic axes and vector-lane representation follow the reference ``PagedAttentionConfig``: ``[NumBlocks, NumLayers, KV, BlockSize,
+The semantic axes and vector-lane representation follow nncase's
+``PagedAttentionConfig``: ``[NumBlocks, NumLayers, KV, BlockSize,
 NumKVHeads, HeadDim / lanes]<lanes>``.  Scheduler tensors are explicit fields
 so Python IR checkpoints retain the complete resumable entry ABI.
 ``slot_mapping[0]`` is the logical base position of the current query chunk,
@@ -30,6 +31,7 @@ class PagedAttentionStateConfig:
     block_size: int = 256
     num_blocks: int = 16
     lanes: int = 8
+    cache_dtype: DType = DType.BFLOAT16
 
     def __post_init__(self) -> None:
         values = (self.num_layers, self.num_kv_heads, self.head_dim, self.block_size, self.num_blocks, self.lanes)
@@ -38,6 +40,13 @@ class PagedAttentionStateConfig:
         if self.head_dim % self.lanes:
             raise IRSchemaError(
                 f"Paged-attention head dimension {self.head_dim} is not divisible by {self.lanes} lanes.")
+        try:
+            dtype = DType(self.cache_dtype)
+        except (TypeError, ValueError) as error:
+            raise IRSchemaError("Paged-attention cache element type must be bfloat16 or float16.") from error
+        if dtype not in {DType.BFLOAT16, DType.FLOAT16}:
+            raise IRSchemaError("Paged-attention cache element type must be bfloat16 or float16.")
+        object.__setattr__(self, "cache_dtype", dtype)
 
     @property
     def max_sequence_length(self) -> int:
@@ -46,7 +55,7 @@ class PagedAttentionStateConfig:
     @property
     def cache_type(self):
         return tensor_type(
-            VectorType(DType.BFLOAT16, (self.lanes, )),
+            VectorType(self.cache_dtype, (self.lanes,)),
             [self.num_blocks, self.num_layers, 2, self.block_size, self.num_kv_heads, self.head_dim // self.lanes],
         )
 
@@ -76,28 +85,38 @@ class PagedAttentionStateConfig:
         )
 
 
-def paged_attention_state_config_from_type(value_type: IRType, ) -> PagedAttentionStateConfig:
+def paged_attention_state_config_from_type(
+    value_type: IRType,
+) -> PagedAttentionStateConfig:
     """Recover the semantic cache contract encoded by a resumable RefType.
 
     The Python checkpoint must carry enough information to resume compilation
     without an importer-side object.  Consequently the cache configuration is
     reconstructed from the reference fields instead of hidden in compiler
-    session state, using configured reference element type.
+    session state, matching nncase's configured reference element type.
     """
 
     if not isinstance(value_type, RefType) or value_type.name != "paged_attention_kv_cache":
-        raise IRSchemaError("Expected a configured paged-attention cache reference.")
+        raise IRSchemaError(
+            "Expected a configured paged-attention cache reference."
+        )
     fields = dict(value_type.fields)
     cache = fields.get("kv_caches")
     if not isinstance(cache, TensorType) or not isinstance(cache.dtype, VectorType):
-        raise IRSchemaError("Expected a configured paged-attention cache reference with a "
-                            "vectorized kv_caches field.")
-    if cache.dtype.elem_type != DType.BFLOAT16:
-        raise IRSchemaError("Paged-attention KV cache element type must be bfloat16.")
+        raise IRSchemaError(
+            "Expected a configured paged-attention cache reference with a "
+            "vectorized kv_caches field."
+        )
+    if cache.dtype.elem_type not in {DType.BFLOAT16, DType.FLOAT16}:
+        raise IRSchemaError("Paged-attention KV cache element type must be bfloat16 or float16.")
     if len(cache.dtype.lanes) != 1:
-        raise IRSchemaError("Paged-attention state currently requires one cache vector axis.")
+        raise IRSchemaError(
+            "Paged-attention state currently requires one cache vector axis."
+        )
     if cache.rank != 6 or any(not dimension.is_fixed for dimension in cache.shape):
-        raise IRSchemaError("Paged-attention KV cache must have a static rank-six physical type.")
+        raise IRSchemaError(
+            "Paged-attention KV cache must have a static rank-six physical type."
+        )
     shape = tuple(dimension.fixed_value for dimension in cache.shape)
     if shape[2] != 2:
         raise IRSchemaError("Paged-attention KV cache axis 2 must contain K and V.")
@@ -109,10 +128,13 @@ def paged_attention_state_config_from_type(value_type: IRType, ) -> PagedAttenti
         block_size=shape[3],
         num_blocks=shape[0],
         lanes=lanes,
+        cache_dtype=cache.dtype.elem_type,
     )
     expected_fields = dict(config.ref_type.fields)
     if fields != expected_fields:
-        raise IRSchemaError("Paged-attention cache reference fields do not match its encoded configuration.")
+        raise IRSchemaError(
+            "Paged-attention cache reference fields do not match its encoded configuration."
+        )
     return config
 
 
@@ -141,13 +163,15 @@ class PagedAttentionState:
 
     def validate(self, *, dynamic_values: bool = True) -> None:
         torch = _torch()
-        if tuple(self.kv_caches.shape) != self.config.storage_shape or self.kv_caches.dtype != torch.bfloat16:
-            raise EvaluationError(f"Packed KV cache must be BF16{self.config.storage_shape}, got "
-                                  f"{self.kv_caches.dtype}{tuple(self.kv_caches.shape)}.")
+        dtype = getattr(torch, self.config.cache_dtype.value)
+        if tuple(self.kv_caches.shape) != self.config.storage_shape or self.kv_caches.dtype != dtype:
+            raise EvaluationError(
+                f"Packed KV cache must be {self.config.cache_dtype.value}{self.config.storage_shape}, got "
+                f"{self.kv_caches.dtype}{tuple(self.kv_caches.shape)}.")
         contracts = (
-            ("query_start_loc", self.query_start_loc, (2, ), torch.int32),
-            ("seq_lens", self.seq_lens, (1, ), torch.int32),
-            ("slot_mapping", self.slot_mapping, (1, ), torch.int64),
+            ("query_start_loc", self.query_start_loc, (2,), torch.int32),
+            ("seq_lens", self.seq_lens, (1,), torch.int32),
+            ("slot_mapping", self.slot_mapping, (1,), torch.int64),
             ("block_table", self.block_table, (1, self.config.num_blocks), torch.int32),
         )
         for name, value, shape, dtype in contracts:
@@ -248,15 +272,15 @@ class PagedAttentionState:
         for position in range(length):
             block, offset = divmod(position, self.config.block_size)
             physical_block = int(self.block_table[0, block].item())
-            keys.append(self.kv_caches[physical_block, layer_id, 0, offset].reshape(self.config.num_kv_heads,
-                                                                                    self.config.head_dim))
-            values.append(self.kv_caches[physical_block, layer_id, 1,
-                                         offset].reshape(self.config.num_kv_heads, self.config.head_dim))
+            keys.append(self.kv_caches[physical_block, layer_id, 0, offset].reshape(
+                self.config.num_kv_heads, self.config.head_dim))
+            values.append(self.kv_caches[physical_block, layer_id, 1, offset].reshape(
+                self.config.num_kv_heads, self.config.head_dim))
         torch = _torch()
         if not keys:
             empty = torch.empty(
                 (0, self.config.num_kv_heads, self.config.head_dim),
-                dtype=torch.bfloat16,
+                dtype=self.kv_caches.dtype,
                 device=self.kv_caches.device,
             )
             return empty, empty.clone()
@@ -270,10 +294,10 @@ class PagedAttentionState:
 def create_paged_attention_state(config: PagedAttentionStateConfig, *, device: str = "cpu") -> PagedAttentionState:
     torch = _torch()
     state = PagedAttentionState(
-        torch.zeros(config.storage_shape, dtype=torch.bfloat16, device=device),
+        torch.zeros(config.storage_shape, dtype=getattr(torch, config.cache_dtype.value), device=device),
         torch.tensor([0, 1], dtype=torch.int32, device=device),
-        torch.zeros((1, ), dtype=torch.int32, device=device),
-        torch.zeros((1, ), dtype=torch.int64, device=device),
+        torch.zeros((1,), dtype=torch.int32, device=device),
+        torch.zeros((1,), dtype=torch.int64, device=device),
         torch.arange(config.num_blocks, dtype=torch.int32, device=device).reshape(1, -1),
         config,
     )

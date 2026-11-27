@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}@triton.jit
+@triton.jit
 def {{ dense_matmul_accumulate_helper }}(
     source, weight, source_offsets, weight_offsets, k_mask, n_mask,
 ):

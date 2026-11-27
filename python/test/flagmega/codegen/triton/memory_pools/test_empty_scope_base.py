@@ -9,7 +9,7 @@ from triton.flagmega.ir.bufferization.memory_pool import FunctionMemoryPool
 
 def test_used_empty_pool_is_distinct_from_absent_pool():
     assert not FunctionMemoryPool("workspace", 0, 16).requires_binding
-    assert FunctionMemoryPool("workspace", 0, 16, ("empty", )).requires_binding
+    assert FunctionMemoryPool("workspace", 0, 16, ("empty",)).requires_binding
     assert FunctionMemoryPool("workspace", 256, 16).requires_binding
 
 
@@ -20,10 +20,7 @@ def test_empty_block_scopes_share_the_undereferenced_base():
 
 
 @pytest.mark.parametrize("change", [
-    {"scope_nbytes": -1},
-    {"scope_index": ""},
-    {"scope_index": "unknown"},
-    {"scope": "die"},
+    {"scope_nbytes": -1}, {"scope_index": ""}, {"scope_index": "unknown"}, {"scope": "die"},
 ])
 def test_empty_pool_does_not_weaken_scope_validation(change):
     pool = {"scope_count": 4, "scope_nbytes": 0, "scope": "block", "scope_index": "program_id_x"}

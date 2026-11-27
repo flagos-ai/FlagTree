@@ -19,8 +19,11 @@ def _pack_unpack_matches(node: Node, module: IRModule) -> bool:
         return False
     unpack_axes = _axes(unpack, len(source.type.dtype.lanes))
     pack_axes = _axes(node, len(tuple(node.attrs["lanes"])))
-    return (tuple(node.attrs["lanes"]) == source.type.dtype.lanes[:len(unpack_axes)] and pack_axes == unpack_axes
-            and node.type == source.type)
+    return (
+        tuple(node.attrs["lanes"]) == source.type.dtype.lanes[: len(unpack_axes)]
+        and pack_axes == unpack_axes
+        and node.type == source.type
+    )
 
 
 def _unpack_pack_matches(node: Node, module: IRModule) -> bool:
@@ -37,7 +40,7 @@ def _unpack_pack_matches(node: Node, module: IRModule) -> bool:
 def _axes(node: Node, lane_count: int) -> tuple[int, ...]:
     if "axes" in node.attrs:
         return tuple(node.attrs["axes"])
-    return (int(node.attrs["axis"]), ) * lane_count
+    return (int(node.attrs["axis"]),) * lane_count
 
 
 def fold_boundary_rules() -> tuple[RewriteRule, ...]:
@@ -46,13 +49,13 @@ def fold_boundary_rules() -> tuple[RewriteRule, ...]:
             "FoldPackUnpack",
             _pack_unpack_matches,
             lambda node, module: RewriteRedirect(module.node_map[node.inputs[0]].inputs[0]),
-            root_ops=("tensors.pack", ),
+            root_ops=("tensors.pack",),
         ),
         RewriteRule(
             "FoldUnpackPack",
             _unpack_pack_matches,
             lambda node, module: RewriteRedirect(module.node_map[node.inputs[0]].inputs[0]),
-            root_ops=("tensors.unpack", ),
+            root_ops=("tensors.unpack",),
         ),
     )
 

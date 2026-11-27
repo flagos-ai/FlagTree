@@ -20,16 +20,24 @@ def _policy():
 
 def test_policy_proposes_capability_filtered_agent_editable_point():
     proposed = _policy().propose(semantic_packed_qkv_module(), StubTarget())
-    point = next(value for value in proposed.selection_points if value.id == "microkernel.packed_qkv")
+    point = next(
+        value for value in proposed.selection_points
+        if value.id == "microkernel.packed_qkv"
+    )
 
     assert point.kind == "tir_microkernel"
     assert point.owner is None
     assert point.default_candidate == "test.qkv.pipeline"
     assert proposed.selection_map[point.id].candidate_id == "test.qkv.pipeline"
 
-    filtered = _policy().propose(semantic_packed_qkv_module(), StubTarget(supported=()))
-    point = next(value for value in filtered.selection_points if value.id == "microkernel.packed_qkv")
-    assert tuple(value.id for value in point.candidates) == ("test.qkv.scalar", )
+    filtered = _policy().propose(
+        semantic_packed_qkv_module(), StubTarget(supported=())
+    )
+    point = next(
+        value for value in filtered.selection_points
+        if value.id == "microkernel.packed_qkv"
+    )
+    assert tuple(value.id for value in point.candidates) == ("test.qkv.scalar",)
 
 
 def test_agent_selection_materializes_microkernel_without_changing_semantic_tir():
@@ -38,8 +46,10 @@ def test_agent_selection_materializes_microkernel_without_changing_semantic_tir(
     edited = replace(
         proposed,
         selections=tuple(
-            replace(record, candidate_id="test.qkv.scalar", origin="agent", policy="agent") if record.point_id ==
-            "microkernel.packed_qkv" else record for record in proposed.selections),
+            replace(record, candidate_id="test.qkv.scalar", origin="agent", policy="agent")
+            if record.point_id == "microkernel.packed_qkv" else record
+            for record in proposed.selections
+        ),
     )
     selected = fm.verify_module(_policy().apply(edited, target))
     dispatch = kernel_dispatch_of(selected.prim_function_map["packed_qkv"])
@@ -52,7 +62,9 @@ def test_agent_selection_materializes_microkernel_without_changing_semantic_tir(
 
 def test_selected_microkernel_survives_editable_python_checkpoint(tmp_path):
     target = StubTarget()
-    selected = _policy().apply(_policy().propose(semantic_packed_qkv_module(), target), target)
+    selected = _policy().apply(
+        _policy().propose(semantic_packed_qkv_module(), target), target
+    )
     checkpoint = fm.emit_module(selected, tmp_path / "selected_qkv.py")
     resumed = fm.load_module(checkpoint)
 

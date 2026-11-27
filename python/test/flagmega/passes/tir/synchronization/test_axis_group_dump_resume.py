@@ -21,11 +21,13 @@ def test_axis_group_barrier_survives_python_dump_edit_resume(tmp_path):
         "prepared",
         "nested",
         "grid",
-        ("WRITE->READ", ),
-        (MemoryRange("workspace", "workspace:@main", 0, 32, "read"), ),
-        (0, ),
-    ), ))
-    module = materialize_memory_synchronization(scheduled_nested_module(), plan)
+        ("WRITE->READ",),
+        (MemoryRange("workspace", "workspace:@main", 0, 32, "read"),),
+        (0,),
+    ),))
+    module = materialize_memory_synchronization(
+        scheduled_nested_module(), plan
+    )
 
     path = fm.emit_module(module, tmp_path / "synchronized.py")
     source = path.read_text(encoding="utf-8")

@@ -25,9 +25,11 @@ def _loop(source):
 
 @pytest.mark.parametrize("arch", sorted(_AMD))
 def test_amd_decode_t16_renders_per_row_state(arch):
-    assert TritonTemplateRegistry().resolve(
-        _AMD[arch]) == ("kernels/paged_attention_partial/platforms/amd/gfx1100/decode_t16.py.jinja"
-                        if arch == "gfx1100" else "kernels/paged_attention_partial/platforms/amd/decode_t16.py.jinja")
+    assert TritonTemplateRegistry().resolve(_AMD[arch]) == (
+        "kernels/paged_attention_partial/platforms/amd/gfx1100/decode_t16.py.jinja"
+        if arch == "gfx1100"
+        else "kernels/paged_attention_partial/platforms/amd/decode_t16.py.jinja"
+    )
     amd = _render(_AMD[arch])
     compile(amd, "amd_decode_t16.py", "exec")
     loop = _loop(amd)
@@ -84,17 +86,18 @@ def test_per_row_partial_matches_dense_reference(tmp_path, context):
     cache = kv_cache.view(8, 2, 256, 128)[block_table.long()].double()
     keys = cache[:, 0].reshape(-1, 128)[:context]
     values = cache[:, 1].reshape(-1, 128)[:context]
-    reference = torch.softmax(keys @ query.double() * 128**-.5, 0) @ values
+    reference = torch.softmax(keys @ query.double() * 128 ** -.5, 0) @ values
     for name, source in sources.items():
         maxima, sums = torch.empty(4, device="cuda"), torch.empty(4, device="cuda")
         accumulators = torch.empty(4 * 128, device="cuda")
-        _module(tmp_path, source, name).run[(4, )](query, kv_cache, slot_mapping, block_table, maxima, sums,
-                                                   accumulators, token_tile=16)
+        _module(tmp_path, source, name).run[(4,)](
+            query, kv_cache, slot_mapping, block_table, maxima, sums, accumulators, token_tile=16)
         torch.cuda.synchronize()
         # Shards with no tokens report the empty state.
         empty = sums == 0
         assert torch.all(maxima[empty] == -float("inf"))
         assert torch.all(accumulators.view(4, 128)[empty] == 0)
         weights = torch.exp(maxima - maxima.max()).double()
-        combined = (weights[:, None] * accumulators.view(4, 128).double()).sum(0) / (weights * sums.double()).sum()
+        combined = (weights[:, None] * accumulators.view(4, 128).double()).sum(0) / (
+            weights * sums.double()).sum()
         torch.testing.assert_close(combined, reference, rtol=1e-4, atol=1e-4, msg=name)

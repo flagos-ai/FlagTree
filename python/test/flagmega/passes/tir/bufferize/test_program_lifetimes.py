@@ -9,13 +9,12 @@ import pytest
 
 from triton.flagmega import ir as fm
 from triton.flagmega.compiler import Compiler
+from triton.flagmega.passes.functions import function_nodes
 from triton.flagmega.targets import NvidiaSm90Target
 
 
 def repeated_private_frame_graph():
-
     class Graph(fm.Module):
-
         def forward(self):
             ty = fm.tensor_type("bfloat16", (1, 128))
             p = self.input("p", ty, id="p")
@@ -23,33 +22,24 @@ def repeated_private_frame_graph():
             wb = self.input("wb", fm.tensor_type("bfloat16", (32, 64)), id="wb")
             mid = fm.F.math.matmul(p, wa, transpose_b=True, name="mid")
             out = fm.F.math.matmul(mid, wb, transpose_b=True, name="out")
-            self.function("worker", (p, wa, wb), (out, ), attrs={"reusable": True, "noinline": True})
+            self.function("worker", (p, wa, wb), (out,), attrs={"reusable": True, "noinline": True})
             x0 = self.input("x0", ty, id="x0")
             x1 = self.input("x1", ty, id="x1")
             a = self.input("a", wa.type, id="a")
             b = self.input("b", wb.type, id="b")
-            calls = [
-                fm.F.builtin.call(x, a, b, result_type=out.type, callee="worker", name=f"call{i}")
-                for i, x in enumerate((x0, x1))
-            ]
+            calls = [fm.F.builtin.call(x, a, b, result_type=out.type, callee="worker", name=f"call{i}")
+                     for i, x in enumerate((x0, x1))]
             self.function("main", (x0, x1, a, b), tuple(calls))
-
     return Graph(dialect="nn", stage="frozen_constants", entry="main").build()
 
 
 def compile_private_frames(*, ordered=True):
-
     class Target(NvidiaSm90Target):
-
         def propose_tir(self, module):
             proposed = super().propose_tir(module)
-            return replace(
-                proposed, metadata={
-                    **proposed.metadata, "kernel_program_partition":
-                    (dict(symbol="first", calls=("call0", ), num_warps=4, depends_on=()),
-                     dict(symbol="second", calls=("call1", ), num_warps=4, depends_on=("first", ) if ordered else ()))
-                })
-
+            return replace(proposed, metadata={**proposed.metadata, "kernel_program_partition": (
+                dict(symbol="first", calls=("call0",), num_warps=4, depends_on=()),
+                dict(symbol="second", calls=("call1",), num_warps=4, depends_on=("first",) if ordered else ()))})
     compiler = Compiler()
     compiler.target = Target()
     return compiler.compile(repeated_private_frame_graph()).module
@@ -78,12 +68,10 @@ def test_unordered_programs_cannot_share_private_frames():
 def projection(parents):
     from triton.flagmega.passes.tir.bufferize.program_lifetimes import program_use_ends
 
-    programs = tuple(
-        dict(symbol=f"p{i}", calls=(f"call{i}", ), depends_on=tuple(f"p{p}"
-                                                                    for p in ps))
-        for i, ps in enumerate(parents))
-    nodes = tuple(node for i in range(len(parents)) for node in (SimpleNamespace(id=f"call{i}", op="tir.call"),
-                                                                 SimpleNamespace(id=f"view{i}", op="builtin.get_item")))
+    programs = tuple(dict(symbol=f"p{i}", calls=(f"call{i}",), depends_on=tuple(f"p{p}" for p in ps))
+                     for i, ps in enumerate(parents))
+    nodes = tuple(node for i in range(len(parents)) for node in (
+        SimpleNamespace(id=f"call{i}", op="tir.call"), SimpleNamespace(id=f"view{i}", op="builtin.get_item")))
     module = SimpleNamespace(entry="main", stage="test", metadata={"kernel_program_partition": programs})
     return program_use_ends(module, SimpleNamespace(name="main"), nodes)
 
@@ -93,9 +81,7 @@ def test_projected_interference_is_sound_for_every_four_program_dag_and_topologi
     for mask in range(1 << len(edges)):
         selected = tuple(edge for i, edge in enumerate(edges) if mask & (1 << i))
         parents = [tuple(a for a, b in selected if b == i) for i in range(4)]
-        positions = [{v: i
-                      for i, v in enumerate(order)}
-                     for order in permutations(range(4))
+        positions = [{v: i for i, v in enumerate(order)} for order in permutations(range(4))
                      if all(order.index(a) < order.index(b) for a, b in selected)]
         ends = projection(parents)
         allocations = []
@@ -107,14 +93,12 @@ def test_projected_interference_is_sound_for_every_four_program_dag_and_topologi
         for left, right in combinations(allocations, 2):
             for earlier, later in ((left, right), (right, left)):
                 if earlier[2] < later[0] * 2:
-                    assert all(max(p[v]
-                                   for v in earlier[1]) < p[later[0]]
-                               for p in positions), (selected, earlier, later)
+                    assert all(max(p[v] for v in earlier[1]) < p[later[0]] for p in positions), (selected, earlier, later)
 
 
 def test_all_readers_contribute_even_when_the_last_reader_is_ordered_before_reuse():
     # p1 and p2 both read p0's allocation. p3 follows p2 but can overlap p1.
-    ends = projection(((), (0, ), (0, ), (2, )))
+    ends = projection(((), (0,), (0,), (2,)))
     assert ends["call1"] >= 6
     assert ends["call2"] < 6
     assert max(ends[f"call{i}"] for i in (0, 1, 2)) >= 6
@@ -124,7 +108,7 @@ def test_forty_five_layer_fork_join_scratch_stops_before_the_next_layer():
     parents = []
     for layer in range(45):
         i = layer * 6
-        parents.extend(((i - 1, ) if layer else (), (i, ), (i + 1, ), (i, ), (i + 3, ), (i + 2, i + 4)))
+        parents.extend(((i - 1,) if layer else (), (i,), (i + 1,), (i,), (i + 3,), (i + 2, i + 4)))
     ends = projection(parents)
     for layer in range(45):
         i = layer * 6
@@ -137,15 +121,16 @@ def test_incomplete_or_invalid_legalized_entry_partitions_are_rejected_before_al
     from triton.flagmega.errors import IRVerificationError
     from triton.flagmega.passes.tir.bufferize.program_lifetimes import program_use_ends
 
-    programs = [dict(symbol="p0", calls=("a", ), depends_on=()), dict(symbol="p1", calls=("b", ), depends_on=("p0", ))]
+    programs = [dict(symbol="p0", calls=("a",), depends_on=()),
+                dict(symbol="p1", calls=("b",), depends_on=("p0",))]
     if case == "missing":
         programs.pop()
     elif case == "duplicate":
-        programs[1]["calls"] = ("a", )
+        programs[1]["calls"] = ("a",)
     elif case == "foreign":
-        programs[0]["calls"] = ("callee_only", )
+        programs[0]["calls"] = ("callee_only",)
     else:
-        programs[0]["calls"], programs[1]["calls"] = ("b", ), ("a", )
+        programs[0]["calls"], programs[1]["calls"] = ("b",), ("a",)
     module = SimpleNamespace(entry="main", stage="test", metadata={"kernel_program_partition": programs})
     nodes = (SimpleNamespace(id="a", op="tir.call"), SimpleNamespace(id="b", op="tir.call"))
     with pytest.raises(IRVerificationError, match="program lifetimes"):
@@ -162,28 +147,22 @@ def test_device_private_frame_reuse_preserves_distinct_outputs_and_graph(tmp_pat
     from triton.flagmega.runtime.module import GeneratedTirCallGraphModule as Runtime
 
     module = compile_private_frames(ordered=ordered)
-    runtime = load(write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True),
-                   device="cuda:0")
+    runtime = load(write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True), device="cuda:0")
     generator = torch.Generator(device="cuda").manual_seed(523)
-    inputs = {
-        name: torch.empty(shape, dtype=torch.bfloat16, device="cuda")
-        for name, shape in (("x0", (1, 128)), ("x1", (1, 128)), ("a", (64, 128)), ("b", (32, 64)))
-    }
-    storages = [torch.full((64, ), -123., dtype=torch.bfloat16, device="cuda") for _ in range(2)]
+    inputs = {name: torch.empty(shape, dtype=torch.bfloat16, device="cuda") for name, shape in
+              (("x0", (1, 128)), ("x1", (1, 128)), ("a", (64, 128)), ("b", (32, 64)))}
+    storages = [torch.full((64,), -123., dtype=torch.bfloat16, device="cuda") for _ in range(2)]
     outputs = [value[16:-16].reshape(1, 32) for value in storages]
     stream = torch.cuda.Stream()
-
     def args():
         results = iter(outputs)
         return tuple(next(results) if s["role"] == "result" else inputs[s["value"]] for s in runtime.external_arguments)
-
     try:
         Runtime.prepare(runtime, *args())
         assert all(report["spill_bytes"] == 0 for report in runtime.resource_report)
         for mutation in range(6):
             for value in inputs.values():
-                value.copy_(
-                    (torch.randint(-4, 5, value.shape, generator=generator, device="cuda").float() / 16).bfloat16())
+                value.copy_((torch.randint(-4, 5, value.shape, generator=generator, device="cuda").float()/16).bfloat16())
             if mutation == 5:
                 inputs["x0"].zero_()
             for value in outputs:

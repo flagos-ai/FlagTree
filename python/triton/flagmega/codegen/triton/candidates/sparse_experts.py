@@ -15,33 +15,31 @@ from .dense_matmul import _supports_reduction_order
 
 
 class SparseExpertsCandidateProvider:
-    op_names = frozenset({
-        "nn.sparse_experts_gate_up", "nn.sparse_experts_down", "nn.partitioned_sparse_experts_down",
-        "ntt.dispatched_experts_gate_up", "ntt.sparse_experts_down_combine", "nn.sparse_experts_dispatch",
-        "nn.sparse_experts_weighted_sum"
-    })
+    op_names = frozenset({"nn.sparse_experts_gate_up", "nn.sparse_experts_down",
+                          "nn.partitioned_sparse_experts_down",
+                          "ntt.dispatched_experts_gate_up", "ntt.sparse_experts_down_combine",
+                          "nn.sparse_experts_dispatch", "nn.sparse_experts_weighted_sum"})
 
     def propose(self, node, context):
-        family = {
-            "ntt.dispatched_experts_gate_up": "sparse_experts_gate_up", "ntt.sparse_experts_down_combine":
-            "sparse_experts_down"
-        }.get(node.op, node.op.removeprefix("nn."))
+        family = {"ntt.dispatched_experts_gate_up": "sparse_experts_gate_up",
+                  "ntt.sparse_experts_down_combine": "sparse_experts_down"}.get(node.op, node.op.removeprefix("nn."))
         candidates = tuple(
             context.configure_implementation(implementation)
             for implementation in context.implementations(family, indexing="local", rounding="explicit")
-            if _supports_local_n(implementation, node.type) and _supports_reduction_order(implementation, node.attrs)
-            and _supports_bf16(implementation, node, context) and _supports_weight_tiles(implementation, node, context)
+            if _supports_local_n(implementation, node.type)
+            and _supports_reduction_order(implementation, node.attrs)
+            and _supports_bf16(implementation, node, context)
+            and _supports_weight_tiles(implementation, node, context)
             and (not implementation.contract.get("requires_chip_scale_blocks", False)
-                 or node.op == "nn.sparse_experts_gate_up" and cooperative_gate_geometry(
-                     {
-                         parameter.name: context.module.node_map[node.inputs[index]].type
-                         for index, parameter in enumerate(get_definition(node.op).input_parameters)
-                     }, node.type) is not None) and (
-                         not implementation.contract.get("requires_block_fp8_wgmma", False) or supports_block_fp8_wgmma(
-                             node.op, {
-                                 parameter.name: context.module.node_map[node.inputs[index]].type
-                                 for index, parameter in enumerate(get_definition(node.op).input_parameters)
-                             }, node.attrs)))
+                 or node.op == "nn.sparse_experts_gate_up" and cooperative_gate_geometry({
+                     parameter.name: context.module.node_map[node.inputs[index]].type
+                     for index, parameter in enumerate(get_definition(node.op).input_parameters)
+                 }, node.type) is not None)
+            and (not implementation.contract.get("requires_block_fp8_wgmma", False)
+                 or supports_block_fp8_wgmma(node.op, {
+                     parameter.name: context.module.node_map[node.inputs[index]].type
+                     for index, parameter in enumerate(get_definition(node.op).input_parameters)
+                 }, node.attrs)))
         if not candidates:
             return None
         return TritonCandidateProposal(
@@ -56,9 +54,8 @@ def _supports_bf16(implementation, node, context):
     definition = get_definition(node.op)
     parameters = tuple(p for p in definition.input_parameters
                        if p.name in {"q", "dispatched", "activations", "gate_weight", "up_weight", "down_weight"})
-    return all(
-        element_type(logical_type(context.module.node_map[p.read(node.inputs)].type).dtype) == DType.BFLOAT16
-        for p in parameters)
+    return all(element_type(logical_type(context.module.node_map[p.read(node.inputs)].type).dtype) == DType.BFLOAT16
+               for p in parameters)
 
 
 def _supports_local_n(implementation, result_type):
@@ -84,7 +81,8 @@ def _supports_weight_tiles(implementation, node, context):
         value = context.module.node_map[node.inputs[index]].type
         weight = logical_type(value)
         if (weight.dtype.value != implementation.contract["required_weight_dtype"]
-                or any(not extent.is_fixed for extent in weight.shape) or weight.layout.strides or weight.layout.order):
+                or any(not extent.is_fixed for extent in weight.shape)
+                or weight.layout.strides or weight.layout.order):
             return False
         shape = tuple(extent.fixed_value for extent in weight.shape)
         if (max(shape) > implementation.contract["max_weight_axis_extent"]
@@ -93,8 +91,7 @@ def _supports_weight_tiles(implementation, node, context):
         if isinstance(value, DistributedType):
             for owner in product(*(range(extent) for extent in value.placement.hierarchy)):
                 descriptor = local_shard_descriptor(value, owner)
-                if any(axis.affine_stride is None
-                       for axis in descriptor.axes) or descriptor.axes[-1].affine_stride != 1:
+                if any(axis.affine_stride is None for axis in descriptor.axes) or descriptor.axes[-1].affine_stride != 1:
                     return False
                 # Expert and row strides are already aligned by the dense K extent.
                 if descriptor.axes[-1].map_local_to_global(0).fixed_value * weight.dtype.itemsize % alignment:

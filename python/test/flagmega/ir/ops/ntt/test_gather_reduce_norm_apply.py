@@ -8,7 +8,8 @@ from triton.flagmega import ir as fm
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.ir.ops.ntt.gather_reduce_norm_apply import (
-    GatherReduceNormApply, )
+    GatherReduceNormApply,
+)
 
 
 def _types(reduce_op=fm.ReduceOp.SUM):
@@ -20,7 +21,9 @@ def _types(reduce_op=fm.ReduceOp.SUM):
         (broadcast, split),
         placement,
     )
-    parameter = fm.DistributedType(fm.tensor_type("bfloat16", (8, )), (split, ), placement)
+    parameter = fm.DistributedType(
+        fm.tensor_type("bfloat16", (8,)), (split,), placement
+    )
     materialized = fm.DistributedType(
         fm.tensor_type("float32", (1, 1, 1)),
         (broadcast, broadcast, broadcast),
@@ -62,7 +65,9 @@ def test_type_requires_sum_partial_statistics_and_preserves_value_layout():
 
 
 def test_type_rejects_non_sum_partial_statistics():
-    value_type, parameter_type, partial_type, materialized_type = _types(fm.ReduceOp.MAX)
+    value_type, parameter_type, partial_type, materialized_type = _types(
+        fm.ReduceOp.MAX
+    )
     with pytest.raises(IRSchemaError, match="Sum-partial"):
         GatherReduceNormApply.infer_type(
             (
@@ -85,7 +90,6 @@ def test_evaluator_uses_logical_partial_value_and_can_elide_proven_zero_bias():
     value_type, parameter_type, partial_type, materialized_type = _types()
 
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="ntt", stage="distributed", entry="main")
 
@@ -106,15 +110,19 @@ def test_evaluator_uses_logical_partial_value_and_can_elide_proven_zero_bias():
                 has_bias=False,
                 name="output",
             )
-            self.function("main", (partial, value, scale, bias), (output, ))
+            self.function("main", (partial, value, scale, bias), (output,))
 
     value = torch.randn((1, 8), dtype=torch.bfloat16)
-    scale = torch.randn((8, ), dtype=torch.bfloat16)
-    bias = torch.full((8, ), 100, dtype=torch.bfloat16)
+    scale = torch.randn((8,), dtype=torch.bfloat16)
+    bias = torch.full((8,), 100, dtype=torch.bfloat16)
     stats = value.float().square().sum(-1, keepdim=True).unsqueeze(0)
     actual = TorchEvaluator(DictWeightResolver({})).run(
         Graph().build(),
         {"partial": stats, "value": value, "scale": scale, "bias": bias},
     )[0]
-    expected = (value.float() * torch.rsqrt(stats.squeeze(0) / 8 + 1e-6) * scale.float()).to(torch.bfloat16)
+    expected = (
+        value.float()
+        * torch.rsqrt(stats.squeeze(0) / 8 + 1e-6)
+        * scale.float()
+    ).to(torch.bfloat16)
     torch.testing.assert_close(actual, expected)

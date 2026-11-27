@@ -111,7 +111,7 @@ class GatedDeltaNetConvolution(OpDefinition):
             flops=None,
             bytes_read=None,
             bytes_written=None,
-            notes=("stateful-depthwise-convolution", ),
+            notes=("stateful-depthwise-convolution",),
         )
 
 
@@ -128,10 +128,14 @@ def gated_delta_net_convolution(
 ):
     torch = torch or _torch()
     if not isinstance(state, GatedDeltaNetState):
-        raise EvaluationError(f"GatedDeltaNet state must be GatedDeltaNetState, got {type(state).__name__}.")
+        raise EvaluationError(
+            f"GatedDeltaNet state must be GatedDeltaNetState, got {type(state).__name__}."
+        )
     conv_dim = int(qkv.shape[-1])
     if state.config.conv_dim != conv_dim or state.config.conv_kernel_size != conv_kernel_size:
-        raise EvaluationError("Packed GatedDeltaNet convolution state configuration does not match the operation.")
+        raise EvaluationError(
+            "Packed GatedDeltaNet convolution state configuration does not match the operation."
+        )
     conv_state = state.convolution_layer(0)
     weight = conv_weight.reshape(conv_dim, conv_kernel_size).to(dtype=qkv.dtype)
     outputs = []
@@ -172,17 +176,23 @@ def _materialized_or_partial_axes(value: DistributedType, tensor_axis: int) -> t
     placement_axes = set(range(value.placement.rank))
     split = value.axis_policies[tensor_axis]
     split_axes = set(split.hierarchy_axes) if isinstance(split, SBPSplit) else set()
-    if any(not isinstance(policy, SBPBroadCast)
-           for index, policy in enumerate(value.axis_policies)
-           if index != tensor_axis):
+    if any(
+        not isinstance(policy, SBPBroadCast)
+        for index, policy in enumerate(value.axis_policies)
+        if index != tensor_axis
+    ):
         raise IRSchemaError("GatedDeltaNetConvolution supports only channel distribution.")
     if value.partial is None:
         if not isinstance(split, SBPSplit) or split_axes != placement_axes:
-            raise IRSchemaError("GatedDeltaNetConvolution materialized QKV channels must cover the placement.")
+            raise IRSchemaError(
+                "GatedDeltaNetConvolution materialized QKV channels must cover the placement."
+            )
         return tuple(sorted(split_axes))
     partial_axes = set(value.partial.axes)
     if split_axes & partial_axes or split_axes | partial_axes != placement_axes:
-        raise IRSchemaError("GatedDeltaNetConvolution partial QKV must partition all placement axes.")
+        raise IRSchemaError(
+            "GatedDeltaNetConvolution partial QKV must partition all placement axes."
+        )
     return tuple(range(value.placement.rank))
 
 

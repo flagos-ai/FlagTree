@@ -11,19 +11,18 @@ from triton.flagmega.runtime import load
 
 
 @pytest.mark.parametrize("dtype", ["bfloat16", "float32"])
-def test_rope_preserves_reference_fp32_compute_contract(tmp_path, dtype):
+def test_rope_preserves_nncase_fp32_compute_contract(tmp_path, dtype):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
 
     class Graph(fm.Module):
-
         def forward(self):
             value = self.input("value", fm.tensor_type(dtype, (2, 2, 64)))
             cosine = self.input("cosine", fm.tensor_type("float32", (2, 1, 64)))
             sine = self.input("sine", cosine.type)
             result = fm.F.nn.rope(value, cosine, sine, name="rotated")
-            self.function("main", (value, cosine, sine), (result, ))
+            self.function("main", (value, cosine, sine), (result,))
 
     source = Graph(dialect="high_level", stage="imported", entry="main").build()
     compiled = Compiler().compile(source).module

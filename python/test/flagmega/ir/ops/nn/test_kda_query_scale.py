@@ -29,14 +29,15 @@ def test_query_scale_changes_the_readout_but_not_the_updated_state(l2norm):
 @pytest.mark.parametrize("scale", (False, 0, -1, float("inf"), float("nan"), "0.5"))
 def test_query_scale_rejects_invalid_attention_scales(definition, scale):
     with pytest.raises(IRSchemaError, match="query_scale must be a positive finite"):
-        definition.normalize_attrs({"lower_bound": -5.0, "query_scale": scale} if definition is
-                                   KdaGatedRecurrentCore else {"query_scale": scale})
+        definition.normalize_attrs({"lower_bound": -5.0, "query_scale": scale}
+                                   if definition is KdaGatedRecurrentCore else {"query_scale": scale})
 
 
 def test_query_scale_roundtrips_without_changing_legacy_default_ir(tmp_path):
     legacy = _module()
     assert legacy.semantic_hash == _module(query_scale=1.).semantic_hash
-    assert all("query_scale" not in node.attrs for node in legacy.nodes if node.op == "nn.kda_gated_recurrent_core")
+    assert all("query_scale" not in node.attrs for node in legacy.nodes
+               if node.op == "nn.kda_gated_recurrent_core")
     scaled = _module(query_scale=.5)
     path = tmp_path / "scaled.py"
     fm.emit_module(scaled, path)

@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Form semantic QKV/RoPE/cache-update regions."""
+"""Form nncase-compatible semantic QKV/RoPE/cache-update regions."""
 
 from __future__ import annotations
 
@@ -103,6 +103,8 @@ def _legal_region(result, module):
         return None
     q_head, k_head = (qkv_head_from_match(result, prefix) for prefix in ("q", "k"))
     if q_head is None or k_head is None:
+        return None
+    if any(head.norm.attrs.get("compute_profile", "default") != "default" for head in (q_head, k_head)):
         return None
     if any(head.norm.attrs.get("math_mode", "fast") != "fast" for head in (q_head, k_head)):
         # This fused ABI currently specifies the fast Q/K inverse square root.

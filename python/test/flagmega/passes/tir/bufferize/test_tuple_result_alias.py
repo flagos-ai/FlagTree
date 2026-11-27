@@ -40,29 +40,20 @@ def _module() -> fm.IRModule:
         },
     )
     value = builder.call(
-        "builtin.get_item",
-        (combined, ),
-        value_type,
-        id="value",
-        attrs={"index": 0},
+        "builtin.get_item", (combined,), value_type,
+        id="value", attrs={"index": 0},
     )
     stats_type = prepared.result_type.fields[1]
     stats = builder.call(
-        "builtin.get_item",
-        (combined, ),
-        stats_type,
-        id="stats",
-        attrs={"index": 1},
+        "builtin.get_item", (combined,), stats_type,
+        id="stats", attrs={"index": 1},
     )
     builder.function("decode", (lhs, rhs, addend), (value, stats))
 
     main_lhs = builder.var("main_lhs", lhs_type, id="main_lhs")
     main_rhs = builder.var("main_rhs", rhs_type, id="main_rhs")
     main_addend = builder.call(
-        "math.add",
-        (main_lhs, main_lhs),
-        value_type,
-        id="main_addend",
+        "math.add", (main_lhs, main_lhs), value_type, id="main_addend",
     )
     call = builder.call(
         "builtin.call",
@@ -71,7 +62,7 @@ def _module() -> fm.IRModule:
         id="decode_call",
         attrs={"callee": "decode"},
     )
-    builder.function("main", (main_lhs, main_rhs), (call, ))
+    builder.function("main", (main_lhs, main_rhs), (call,))
     return materialize_kernel_prim_functions(builder.build(entry="main"))
 
 

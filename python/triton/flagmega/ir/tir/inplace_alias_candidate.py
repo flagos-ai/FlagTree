@@ -25,7 +25,9 @@ class InplaceAliasCandidate(TIRNode):
 
     def __post_init__(self) -> None:
         if not self.output or not self.input:
-            raise IRSchemaError("InplaceAliasCandidate requires named output and input ABI values.")
+            raise IRSchemaError(
+                "InplaceAliasCandidate requires named output and input ABI values."
+            )
 
 
 __all__ = ["InplaceAliasCandidate"]

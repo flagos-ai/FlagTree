@@ -17,6 +17,7 @@ from triton.flagmega.ir.bufferization.memory import MemorySpace
 from triton.flagmega.ir.bufferization.physical_buffer import PhysicalBuffer
 from triton.flagmega.ir.bufferization.allocation_record import AllocationRecord
 
+
 BUFFER_PLAN_SCHEMA = "flagmega.buffer-plan/v6"
 LEGACY_BUFFER_PLAN_SCHEMA = "flagmega.buffer-plan/v5"
 
@@ -73,8 +74,10 @@ class BufferPlan:
         try:
             return self.memory_space_map[self.default_workspace]
         except KeyError as error:
-            raise IRVerificationError(f"Default workspace {self.default_workspace!r} is not a declared "
-                                      "memory space.") from error
+            raise IRVerificationError(
+                f"Default workspace {self.default_workspace!r} is not a declared "
+                "memory space."
+            ) from error
 
     @cached_property
     def call_map(self):
@@ -82,7 +85,11 @@ class BufferPlan:
 
     @cached_property
     def kernel_call_map(self):
-        return {call.call: call for function in self.functions for call in function.kernel_calls}
+        return {
+            call.call: call
+            for function in self.functions
+            for call in function.kernel_calls
+        }
 
     def resolve_kernel_workspace(self, call_id: str, formal: str) -> BufferDescriptor:
         """Resolve a selected PrimFunction workspace parameter in its caller."""
@@ -92,23 +99,32 @@ class BufferPlan:
             actual_id = dict(call.workspaces)[formal]
             return self.buffer_map[actual_id]
         except KeyError as error:
-            raise IRVerificationError(f"Kernel call {call_id!r} has no workspace parameter {formal!r}.") from error
+            raise IRVerificationError(
+                f"Kernel call {call_id!r} has no workspace parameter {formal!r}."
+            ) from error
 
-    def function_memory_space_bytes(self, function_name: str, memory_space: str) -> int:
+    def function_memory_space_bytes(
+        self, function_name: str, memory_space: str
+    ) -> int:
         """Return the per-scope high-water mark for one function pool."""
 
         try:
             function = self.function_map[function_name]
             space = self.memory_space_map[memory_space]
         except KeyError as error:
-            raise IRVerificationError(f"Unknown function/memory space {function_name!r}/{memory_space!r}.") from error
+            raise IRVerificationError(
+                f"Unknown function/memory space {function_name!r}/{memory_space!r}."
+            ) from error
         pool = function.memory_pool_map.get(memory_space)
         if pool is not None:
             return pool.scope_bytes
         high_water = max(
-            (value.offset + value.nbytes
-             for value in self.physical_buffers
-             if value.function == function_name and value.memory_space == memory_space),
+            (
+                value.offset + value.nbytes
+                for value in self.physical_buffers
+                if value.function == function_name
+                and value.memory_space == memory_space
+            ),
             default=0,
         )
         return space.allocation_bytes(high_water)
@@ -121,9 +137,12 @@ class BufferPlan:
             descriptor = self.buffer_map[buffer_id]
         except KeyError as error:
             raise IRVerificationError(
-                f"Cannot resolve buffer {buffer_id!r} at unknown/incomplete call {call_id!r}.") from error
+                f"Cannot resolve buffer {buffer_id!r} at unknown/incomplete call {call_id!r}."
+            ) from error
         if descriptor.function != call.callee:
-            raise IRVerificationError(f"Buffer {buffer_id!r} belongs to @{descriptor.function}, not @{call.callee}.")
+            raise IRVerificationError(
+                f"Buffer {buffer_id!r} belongs to @{descriptor.function}, not @{call.callee}."
+            )
         result_map = dict(call.results)
         if buffer_id in result_map:
             return self.buffer_map[result_map[buffer_id]]
@@ -151,7 +170,10 @@ class BufferPlan:
                 function=call.caller,
                 role="call_parameter_alias",
             )
-        output_roots = {self.buffer_map[formal].mem_span.buffer.id: (formal, actual) for formal, actual in call.results}
+        output_roots = {
+            self.buffer_map[formal].mem_span.buffer.id: (formal, actual)
+            for formal, actual in call.results
+        }
         if descriptor.mem_span.buffer.id in output_roots:
             formal_id, actual_id = output_roots[descriptor.mem_span.buffer.id]
             formal = self.buffer_map[formal_id]
@@ -171,11 +193,17 @@ class BufferPlan:
             )
         memory_space = descriptor.mem_span.buffer.memory_space
         space = self.memory_space_map.get(memory_space)
-        if (space is not None and space.allocation_scope.value == "function" and space.kind != "shared"):
+        if (
+            space is not None
+            and space.allocation_scope.value == "function"
+            and space.kind != "shared"
+        ):
             pool = call.memory_pool_map.get(memory_space)
             if pool is None or pool.allocation is None:
-                raise IRVerificationError(f"Call {call_id!r} has no {memory_space!r} PhysicalBuffer "
-                                          f"for {buffer_id!r}.")
+                raise IRVerificationError(
+                    f"Call {call_id!r} has no {memory_space!r} PhysicalBuffer "
+                    f"for {buffer_id!r}."
+                )
             frame = self.physical_buffer_map[pool.allocation]
             return replace(
                 descriptor,
@@ -197,8 +225,12 @@ class BufferPlan:
             "workspace_bytes": self.workspace_bytes,
             "rdata_bytes": self.rdata_bytes,
             "alignment": self.alignment,
-            "entry_inputs": [{"node": node, "buffers": list(buffers)} for node, buffers in self.entry_inputs],
-            "entry_outputs": [{"node": node, "buffers": list(buffers)} for node, buffers in self.entry_outputs],
+            "entry_inputs": [
+                {"node": node, "buffers": list(buffers)} for node, buffers in self.entry_inputs
+            ],
+            "entry_outputs": [
+                {"node": node, "buffers": list(buffers)} for node, buffers in self.entry_outputs
+            ],
             "default_workspace": self.default_workspace,
             "optimization_level": self.optimization_level,
             "allocation_records": [record.to_data() for record in self.allocation_records],
@@ -208,33 +240,53 @@ class BufferPlan:
     def from_data(cls, data: Mapping[str, Any]) -> BufferPlan:
         if data.get("schema") not in {BUFFER_PLAN_SCHEMA, LEGACY_BUFFER_PLAN_SCHEMA}:
             raise IRVerificationError(
-                f"Unsupported buffer-plan schema {data.get('schema')!r}; expected {BUFFER_PLAN_SCHEMA}.")
+                f"Unsupported buffer-plan schema {data.get('schema')!r}; expected {BUFFER_PLAN_SCHEMA}."
+            )
         bindings = lambda values: tuple(
-            (str(value["node"]), tuple(str(item) for item in value.get("buffers", ()))) for value in values)
-        physical_buffers = tuple(PhysicalBuffer.from_data(value) for value in data.get("physical_buffers", ()))
+            (str(value["node"]), tuple(str(item) for item in value.get("buffers", ())))
+            for value in values
+        )
+        physical_buffers = tuple(
+            PhysicalBuffer.from_data(value) for value in data.get("physical_buffers", ())
+        )
         physical_buffer_map = {value.id: value for value in physical_buffers}
-        memory_spaces = tuple(MemorySpace.from_data(value) for value in data.get("memory_spaces", ()))
+        memory_spaces = tuple(
+            MemorySpace.from_data(value) for value in data.get("memory_spaces", ())
+        )
         schema = str(data.get("schema"))
         if schema == LEGACY_BUFFER_PLAN_SCHEMA:
-            candidates = tuple(value for value in memory_spaces if value.supports_lifetime_reuse
-                               and value.allocation_scope.value == "function" and value.kind != "shared")
+            candidates = tuple(
+                value
+                for value in memory_spaces
+                if value.supports_lifetime_reuse
+                and value.allocation_scope.value == "function"
+                and value.kind != "shared"
+            )
             named = tuple(value for value in candidates if value.name == "workspace")
             if len(named) == 1:
                 default_workspace = named[0].name
             elif len(candidates) == 1:
                 default_workspace = candidates[0].name
             else:
-                raise IRVerificationError("Legacy buffer-plan/v5 requires exactly one function SAT "
-                                          "workspace memory space.")
+                raise IRVerificationError(
+                    "Legacy buffer-plan/v5 requires exactly one function SAT "
+                    "workspace memory space."
+                )
         else:
             default_workspace = str(data.get("default_workspace", ""))
         return cls(
-            buffers=tuple(BufferDescriptor.from_data(value, physical_buffer_map) for value in data.get("buffers", ())),
+            buffers=tuple(
+                BufferDescriptor.from_data(value, physical_buffer_map)
+                for value in data.get("buffers", ())
+            ),
             physical_buffers=physical_buffers,
             memory_spaces=memory_spaces,
             functions=tuple(
-                FunctionBufferPlan.from_data(value, legacy_memory_space=default_workspace)
-                for value in data.get("functions", ())),
+                FunctionBufferPlan.from_data(
+                    value, legacy_memory_space=default_workspace
+                )
+                for value in data.get("functions", ())
+            ),
             workspace_bytes=int(data.get("workspace_bytes", -1)),
             rdata_bytes=int(data.get("rdata_bytes", -1)),
             alignment=int(data.get("alignment", 0)),

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from triton.flagmega.ir import IRModule
 
@@ -13,8 +13,7 @@ from triton.flagmega.ir import IRModule
 class AnalysisProvider(Protocol):
     name: str
 
-    def analyze(self, module: IRModule, function: str | None = None) -> object:
-        ...
+    def analyze(self, module: IRModule, function: str | None = None) -> object: ...
 
 
 @dataclass(frozen=True)
@@ -70,7 +69,9 @@ class AnalysisManager:
         try:
             provider = self._providers[name]
         except KeyError as error:
-            raise KeyError(f"Analysis {name!r} is not registered; available: {sorted(self._providers)}") from error
+            raise KeyError(
+                f"Analysis {name!r} is not registered; available: {sorted(self._providers)}"
+            ) from error
         result = provider.analyze(module, function)
         self._cache[key] = result
         return result
@@ -91,8 +92,14 @@ class AnalysisManager:
                 if key.semantic_hash == input_hash and key.name in preserved
             }
             self._cache.update(promoted)
-        self._cache = {key: value for key, value in self._cache.items() if key.name in preserved}
-        self._seeded = {name: value for name, value in self._seeded.items() if name in preserved}
+        self._cache = {
+            key: value for key, value in self._cache.items()
+            if key.name in preserved
+        }
+        self._seeded = {
+            name: value for name, value in self._seeded.items()
+            if name in preserved
+        }
         return invalidated
 
 

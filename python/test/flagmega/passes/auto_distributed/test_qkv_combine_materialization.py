@@ -20,9 +20,18 @@ class RaggedQKVModule(fm.Module):
 
     def forward(self):
         value = self.input("value", fm.tensor_type("bfloat16", (1, 2048)))
-        q_weight = self.weight("q_weight", fm.tensor_type("bfloat16", (2048, 96)), source="memory", key="q_weight")
-        k_weight = self.weight("k_weight", fm.tensor_type("bfloat16", (2048, 48)), source="memory", key="k_weight")
-        v_weight = self.weight("v_weight", fm.tensor_type("bfloat16", (2048, 48)), source="memory", key="v_weight")
+        q_weight = self.weight(
+            "q_weight", fm.tensor_type("bfloat16", (2048, 96)),
+            source="memory", key="q_weight"
+        )
+        k_weight = self.weight(
+            "k_weight", fm.tensor_type("bfloat16", (2048, 48)),
+            source="memory", key="k_weight"
+        )
+        v_weight = self.weight(
+            "v_weight", fm.tensor_type("bfloat16", (2048, 48)),
+            source="memory", key="v_weight"
+        )
         none = fm.F.builtin.none(name="none")
         qkv = fm.F.nn.qkv_parallel_linear(
             value,
@@ -43,7 +52,7 @@ class RaggedQKVModule(fm.Module):
             output_data_type="bfloat16",
             name="qkv",
         )
-        self.function("main", (value, ), (qkv, ))
+        self.function("main", (value,), (qkv,))
 
 
 @pytest.mark.parametrize("force_partial", [False, True])
@@ -54,9 +63,10 @@ def test_cp_sat_preserves_coupled_direct_qkv_before_three_unpacks(tmp_path, forc
 
     if force_partial:
         graph = AutoDistributedPass._build_graph(packed, target)
-        projection = next(c for c in graph.bucket_map["qkv.packed_projection"].candidates if all(
-            field.partial == fm.SBP.partial((0, )) and isinstance(field.axis_policies[-1], fm.SBPSplit)
-            for field in c.return_type.fields))
+        projection = next(c for c in graph.bucket_map["qkv.packed_projection"].candidates
+                          if all(field.partial == fm.SBP.partial((0,))
+                                 and isinstance(field.axis_policies[-1], fm.SBPSplit)
+                                 for field in c.return_type.fields))
         selected = solve_search_graph(graph, fixed_selections={"qkv.packed_projection": projection.id})
         result = fm.verify_module(DistributedMaterializer(selected, policy=target.distribution_policy.identity).run())
     else:
@@ -65,14 +75,23 @@ def test_cp_sat_preserves_coupled_direct_qkv_before_three_unpacks(tmp_path, forc
     projection = result.node_map["qkv.packed_projection"]
     combine = result.node_map["qkv.packed_combine"]
     if force_partial:
-        assert all(field.partial == fm.SBP.partial((0, )) for field in projection.type.fields)
-    assert all(isinstance(field.axis_policies[-1], fm.SBPSplit) for field in projection.type.fields)
-    assert combine.inputs == (projection.id, )
+        assert all(field.partial == fm.SBP.partial((0,)) for field in projection.type.fields)
+    assert all(
+        isinstance(field.axis_policies[-1], fm.SBPSplit)
+        for field in projection.type.fields
+    )
+    assert combine.inputs == (projection.id,)
     assert all(field.partial is None for field in combine.type.fields)
     assert can_materialize_packed_qkv(projection.type, combine.type)
     assert combine.attrs["output_type"] == combine.type
-    assert not any(node.op == "distributed.boxing" and node.inputs == (projection.id, ) for node in result.nodes)
-    assert all(result.node_map[f"qkv.{role}.packed"].inputs == (combine.id, ) for role in ("q", "k", "v"))
+    assert not any(
+        node.op == "distributed.boxing" and node.inputs == (projection.id,)
+        for node in result.nodes
+    )
+    assert all(
+        result.node_map[f"qkv.{role}.packed"].inputs == (combine.id,)
+        for role in ("q", "k", "v")
+    )
 
     path = fm.emit_module(result, tmp_path / "auto_distributed_qkv.py")
     assert fm.load_module(path) == result

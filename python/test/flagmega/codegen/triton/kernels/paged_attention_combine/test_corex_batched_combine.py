@@ -9,17 +9,18 @@ from triton.flagmega.codegen.triton.templates import KernelTemplateSpec, TritonT
 
 
 def _call(capacity=512, active=None):
-    return dict(family="paged_attention_combine", variant="decode", symbol="run", signature="M, S, A, Y",
-                local_capacity=capacity, tile=128,
-                active=f"attention_output_offsets < {capacity if active is None else active}", writer_active="True",
-                head="attention_output_offsets//128", dimension="attention_output_offsets%128", context_shards=4,
+    return dict(family="paged_attention_combine", variant="decode", symbol="run",
+                signature="M, S, A, Y", local_capacity=capacity, tile=128,
+                active=f"attention_output_offsets < {capacity if active is None else active}",
+                writer_active="True", head="attention_output_offsets//128",
+                dimension="attention_output_offsets%128", context_shards=4,
                 partial_owner="attention_part", partial_sum_owner="attention_part",
-                partial_accumulator_owner="attention_part", partial_max="M", partial_sum="S", partial_accumulator="A",
-                partial_max_owner_stride=capacity // 128, partial_sum_owner_stride=capacity // 128,
-                partial_accumulator_owner_stride=capacity, partial_max_offset="attention_head",
-                partial_sum_offset="attention_head",
-                partial_accumulator_offset="attention_head*128+attention_dimension", result="Y",
-                result_offset="attention_output_offsets")
+                partial_accumulator_owner="attention_part", partial_max="M", partial_sum="S",
+                partial_accumulator="A", partial_max_owner_stride=capacity // 128,
+                partial_sum_owner_stride=capacity // 128, partial_accumulator_owner_stride=capacity,
+                partial_max_offset="attention_head", partial_sum_offset="attention_head",
+                partial_accumulator_offset="attention_head*128+attention_dimension",
+                result="Y", result_offset="attention_output_offsets")
 
 
 def _render(call, corex=True, warps=16):
@@ -62,14 +63,12 @@ def test_batched_combine_preserves_partial_order_and_output_masks(tmp_path, capa
     results = []
     for corex in (False, True):
         path = tmp_path / f"combine_{corex}.py"
-        path.write_text(
-            "import triton\nimport triton.language as tl\nimport triton.experimental.tle.language as tle\n" +
-            _render(_call(capacity, active), corex))
+        path.write_text("import triton\nimport triton.language as tl\nimport triton.experimental.tle.language as tle\n" + _render(_call(capacity, active), corex))
         spec = importlib.util.spec_from_file_location(f"combine_{corex}", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        output = torch.full((capacity + 17, ), -7., device="cuda", dtype=torch.bfloat16)
-        module.run[(1, )](maximum, total, accumulator, output, num_warps=16, enable_fp_fusion=False)
+        output = torch.full((capacity + 17,), -7., device="cuda", dtype=torch.bfloat16)
+        module.run[(1,)](maximum, total, accumulator, output, num_warps=16, enable_fp_fusion=False)
         torch.cuda.synchronize()
         results.append(output)
         assert torch.equal(output[active:], torch.full_like(output[active:], -7.))

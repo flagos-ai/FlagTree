@@ -28,20 +28,23 @@ from triton.flagmega.stages import get_stage
 # baseline cache dimensions (``bf16<8>[32,28,2,256,8,16]``).
 QWEN3_CACHE = PagedAttentionStateConfig(28, 8, 128, block_size=256, num_blocks=32)
 MHA_CACHE = PagedAttentionStateConfig(28, 16, 128, block_size=256, num_blocks=32)
-QWEN3_MESH = (fm.Placement((8, 16), "yx", "bb"), )
+QWEN3_MESH = (fm.Placement((8, 16), "yx", "bb"),)
 ATTENTION_TILE = 64
 
 
 class _AttentionModule(fm.Module):
-
     def __init__(self, *, query_heads=16, cache=QWEN3_CACHE):
-        super().__init__(dialect="high_level", stage="stats_threaded", entry="main")
+        super().__init__(
+            dialect="high_level", stage="stats_threaded", entry="main"
+        )
         self.query_heads = query_heads
         self.cache = cache
 
     def forward(self):
         head_dim = self.cache.head_dim
-        query = self.input("query", fm.tensor_type("bfloat16", (1, self.query_heads, head_dim)))
+        query = self.input(
+            "query", fm.tensor_type("bfloat16", (1, self.query_heads, head_dim))
+        )
         state = self.input("state", self.cache.ref_type)
         layer = self.input("layer", fm.tensor_type("int32", ()))
         attention = fm.F.nn.paged_attention(
@@ -54,7 +57,7 @@ class _AttentionModule(fm.Module):
             name="attention",
             metadata={"source": "unit"},
         )
-        self.function("main", (query, state, layer), (attention, ))
+        self.function("main", (query, state, layer), (attention,))
 
 
 class _MeshTarget:
@@ -73,8 +76,13 @@ class _MeshTarget:
 def _split_plan_of(module, placements=QWEN3_MESH):
     """Run the real stage and read back the plan it recorded on the partial."""
 
-    decomposed = get_stage("decompose-paged-attention").run(module, _MeshTarget(placements))
-    partial = next(node for node in decomposed.nodes if node.op == "ntt.paged_attention_partial")
+    decomposed = get_stage("decompose-paged-attention").run(
+        module, _MeshTarget(placements)
+    )
+    partial = next(
+        node for node in decomposed.nodes
+        if node.op == "ntt.paged_attention_partial"
+    )
     return (
         int(partial.attrs["split_hierarchy_axis"]),
         int(partial.attrs["split_count"]),
@@ -162,22 +170,23 @@ def test_split_plan_still_rejects_an_unusable_mesh():
     work = paged_attention_work(_AttentionModule().build())
     for placements in (
         (),
-        (fm.Placement((1, 1), "yx", "bb"), ),
-        (fm.Placement((8, ), "x", "b"), fm.Placement((8, 16), "yx", "bb")),
+        (fm.Placement((1, 1), "yx", "bb"),),
+        (fm.Placement((8,), "x", "b"), fm.Placement((8, 16), "yx", "bb")),
     ):
         with pytest.raises(ValueError, match="paged-attention decomposition"):
             paged_attention_split_plan(placements, work)
 
 
 class _NoAttentionModule(fm.Module):
-
     def __init__(self):
-        super().__init__(dialect="high_level", stage="stats_threaded", entry="main")
+        super().__init__(
+            dialect="high_level", stage="stats_threaded", entry="main"
+        )
 
     def forward(self):
         value = self.input("value", fm.tensor_type("float32", (4, 8)))
         result = fm.F.math.silu(value, name="result")
-        self.function("main", (value, ), (result, ))
+        self.function("main", (value,), (result,))
 
 
 def test_stage_is_a_no_op_without_any_paged_attention():
@@ -186,6 +195,10 @@ def test_stage_is_a_no_op_without_any_paged_attention():
     # attention-free module that passes through this stage.
     module = _NoAttentionModule().build()
 
-    decomposed = get_stage("decompose-paged-attention").run(module, _MeshTarget(QWEN3_MESH))
+    decomposed = get_stage("decompose-paged-attention").run(
+        module, _MeshTarget(QWEN3_MESH)
+    )
 
-    assert not any(node.op.startswith("ntt.paged_attention") for node in decomposed.nodes)
+    assert not any(
+        node.op.startswith("ntt.paged_attention") for node in decomposed.nodes
+    )

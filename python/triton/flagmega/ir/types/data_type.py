@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Scalar and vector data types."""
+"""Scalar and nncase-style vector data types."""
 
 from __future__ import annotations
 
@@ -76,8 +76,13 @@ class MaskVectorType:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "style", MaskVectorStyle(self.style))
-        if (isinstance(self.element_bits, bool) or self.element_bits <= 0 or self.element_bits % 8
-                or isinstance(self.lanes, bool) or self.lanes <= 0):
+        if (
+            isinstance(self.element_bits, bool)
+            or self.element_bits <= 0
+            or self.element_bits % 8
+            or isinstance(self.lanes, bool)
+            or self.lanes <= 0
+        ):
             raise IRSchemaError("MaskVectorType requires byte-sized positive elements and lanes.")
 
     @property
@@ -104,7 +109,7 @@ class MaskVectorType:
 class VectorType:
     """A scalar element type with one or more physical vector lane axes.
 
-    This follows the reference ``VectorType(ElemType, Lanes)`` model. Tensor shape
+    This follows nncase's ``VectorType(ElemType, Lanes)`` model. Tensor shape
     stores the outer logical extents while ``lanes`` describes the fixed-size
     element payload, so ``shape * lanes * elem_type.itemsize`` is the exact
     physical byte size.

@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: greedy_sample/distributed_argmax
+# flagmega-kernel: greedy_sample/distributed_argmax
 {% include "kernels/greedy_sample/_reduce.py.jinja" %}
 @triton.jit
 def _flagmega_cast_logits_and_local_argmax(

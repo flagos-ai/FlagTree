@@ -9,7 +9,6 @@ from triton.flagmega.rules.ntt.vectorize.propagation.producer_demand import fina
 
 
 def block_scaled_matmul_producer_rule():
-
     def rewrite(node, module):
         lanes = final_axis_pack_demand(module, {node.id})
         if lanes is None:
@@ -25,21 +24,22 @@ def block_scaled_matmul_producer_rule():
         restored = make_node(
             "tensors.unpack",
             node.id,
-            (packed, ),
-            {"axes": (tensor_of(node.type).rank - 1, ) * len(lanes)},
+            (packed,),
+            {"axes": (tensor_of(node.type).rank - 1,) * len(lanes)},
             {**dict(node.metadata), **metadata},
         )
         assert restored.type == node.type
-        return RewriteResult(restored, (packed, ))
+        return RewriteResult(restored, (packed,))
 
     return RewriteRule(
         "VectorizeBlockScaledMatMulPropagation",
-        lambda node, _: node.op in {
-            "math.block_scaled_matmul", "math.packed_block_scaled_matmul", "nn.partitioned_sparse_experts_down",
-            "nn.mla_projection", "nn.partitioned_linear", "nn.partitioned_block_scaled_linear"
-        },
+        lambda node, _: node.op in {"math.block_scaled_matmul", "math.packed_block_scaled_matmul",
+                                    "math.iq4_xs_q8_1_matmul", "nn.iq4_xs_q8_1_glu",
+                                    "nn.partitioned_sparse_experts_down", "nn.mla_projection", "nn.partitioned_linear",
+                                    "nn.partitioned_block_scaled_linear"},
         rewrite,
-        root_ops=("math.block_scaled_matmul", "math.packed_block_scaled_matmul", "nn.partitioned_sparse_experts_down",
+        root_ops=("math.block_scaled_matmul", "math.packed_block_scaled_matmul",
+                                    "math.iq4_xs_q8_1_matmul", "nn.iq4_xs_q8_1_glu", "nn.partitioned_sparse_experts_down",
                   "nn.mla_projection", "nn.partitioned_linear", "nn.partitioned_block_scaled_linear"),
     )
 

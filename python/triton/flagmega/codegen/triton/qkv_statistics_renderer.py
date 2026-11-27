@@ -36,8 +36,9 @@ def _logical_view_abi(source, value_type):
     shape = tuple(dim.fixed_value for dim in tensor.shape)
     lanes = prod(tensor.dtype.lanes) if isinstance(tensor.dtype, VectorType) else 1
     scalar = tensor.dtype.elem_type if isinstance(tensor.dtype, VectorType) else tensor.dtype
-    if (int(source.get("scalar_lane_count", 1)) != lanes or
-        (source["scalar_dtype"] != scalar.value and (source["scalar_dtype"], scalar.value) != ("float32", "bfloat16"))):
+    if (int(source.get("scalar_lane_count", 1)) != lanes
+            or (source["scalar_dtype"] != scalar.value
+                and (source["scalar_dtype"], scalar.value) != ("float32", "bfloat16"))):
         raise CodegenError("Fused QKV materialized view requires matching lanes and a supported rounding boundary.")
     coordinates = tuple(f"shard_coord_{axis}" for axis in range(value_type.placement.rank))
     shard = local_shard_descriptor(value_type, coordinates)
@@ -46,37 +47,20 @@ def _logical_view_abi(source, value_type):
     return {
         # This is the virtual result AFTER the owner sum, not a storage alias.
         # Every physical load uses the separate partial_sources ABI above.
-        **dict(source),
-        "dtype":
-        tensor.dtype.value,
-        "scalar_dtype":
-        scalar.value,
-        "logical_shape":
-        shape,
-        "local_capacity_shape":
-        capacity,
-        "active_shape_expressions":
-        tuple(emit_dimension(dim) for dim in shard.active_shape),
-        "logical_coordinate_expressions":
-        tuple(
-            emit_dimension(axis.map_local_to_global(f"local_coord_{index}")) for index, axis in enumerate(shard.axes)),
-        "storage_strides":
-        strides,
-        "scalar_storage_strides":
-        tuple(stride * lanes for stride in strides),
-        "coordinate_space":
-        "local",
-        "distributed_type":
-        value_type.to_data(),
+        **dict(source), "dtype": tensor.dtype.value, "scalar_dtype": scalar.value,
+        "logical_shape": shape, "local_capacity_shape": capacity,
+        "active_shape_expressions": tuple(emit_dimension(dim) for dim in shard.active_shape),
+        "logical_coordinate_expressions": tuple(
+            emit_dimension(axis.map_local_to_global(f"local_coord_{index}"))
+            for index, axis in enumerate(shard.axes)),
+        "storage_strides": strides, "scalar_storage_strides": tuple(stride * lanes for stride in strides),
+        "coordinate_space": "local", "distributed_type": value_type.to_data(),
     }
 
 
 def partial_qkv_access(source, domain, layout, member, *, materialized_dtype):
     from .kernel_call_renderers import (
-        _compact_source_coordinates,
-        _linear_owner_expression,
-        _static_shape,
-        _triton_dtype,
+        _compact_source_coordinates, _linear_owner_expression, _static_shape, _triton_dtype,
     )
 
     abi = source["abi"]
@@ -93,8 +77,8 @@ def partial_qkv_access(source, domain, layout, member, *, materialized_dtype):
     for kind in layout:
         linear = f"(({linear}) * {domain['global_extents'][kind]} + ({domain['global_by_kind'][kind]}))"
     physical = f"(({linear}) // {lanes})"
-    coordinates = tuple(
-        f"((({physical}) // {stride}) % {extent})" for extent, stride in zip(shape, _dense_strides(shape)))
+    coordinates = tuple(f"((({physical}) // {stride}) % {extent})"
+                        for extent, stride in zip(shape, _dense_strides(shape)))
     local, split_owner = _compact_source_coordinates(abi, coordinates)
     # Split-owner coordinates come from the SOURCE policies, which can differ
     # from the consumer's head ownership. Partial axes fill only the remaining
@@ -111,12 +95,9 @@ def partial_qkv_access(source, domain, layout, member, *, materialized_dtype):
     count = prod(hierarchy[axis] for axis in axes)
     return {
         "storage": emit_storage_pointer(abi, str(source["runtime_argument"])),
-        "owner": owner,
-        "owner_stride": stride,
+        "owner": owner, "owner_stride": stride,
         "offset": emit_local_scalar_offset(abi, local, lane_coordinate=f"(({linear}) % {lanes})"),
-        "member": member,
-        "member_count": count,
-        "member_width": 1 << (count - 1).bit_length(),
+        "member": member, "member_count": count, "member_width": 1 << (count - 1).bit_length(),
         "scalar_dtype": _triton_dtype(str(abi["scalar_dtype"])),
         "materialized_dtype": materialized_dtype,
     }

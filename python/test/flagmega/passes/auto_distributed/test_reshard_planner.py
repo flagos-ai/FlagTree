@@ -7,14 +7,16 @@ from triton.flagmega.passes.auto_distributed import DistributedReshardPlanner, c
 
 def _types():
     tensor = fm.tensor_type("bfloat16", [1, 128])
-    placement = fm.Placement((8, ), "b", "b")
-    broadcast = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.broadcast()), placement)
-    split = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ))), placement)
+    placement = fm.Placement((8,), "b", "b")
+    broadcast = fm.DistributedType(
+        tensor, (fm.SBP.broadcast(), fm.SBP.broadcast()), placement)
+    split = fm.DistributedType(
+        tensor, (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,))), placement)
     partial = fm.DistributedType(
         tensor,
         (fm.SBP.broadcast(), fm.SBP.broadcast()),
         placement,
-        partial=fm.SBP.partial((0, )),
+        partial=fm.SBP.partial((0,)),
     )
     return tensor, broadcast, split, partial
 
@@ -25,15 +27,16 @@ def test_direct_reshard_is_preferred_when_boxing_supports_it():
     plans = DistributedReshardPlanner.plan(broadcast, split)
 
     assert len(plans) == 1
-    assert plans[0].step_types == (split, )
+    assert plans[0].step_types == (split,)
 
 
 def test_complete_device_partial_can_handoff_to_the_collective_mesh_before_reduction():
     from dataclasses import replace
     tensor = fm.tensor_type(fm.vector_type('bfloat16', (2, 4)), (1, 512))
-    source = fm.DistributedType(tensor, (fm.SBP.broadcast(), ) * 2, fm.Placement((4, 1, 1), 'cyx', 'cbb'),
-                                partial=fm.SBP.partial((0, )))
-    target = fm.DistributedType(tensor, (fm.SBP.broadcast(), ) * 2, fm.Placement((4, 8, 16), 'cyx', 'cbb'))
+    source = fm.DistributedType(tensor, (fm.SBP.broadcast(),) * 2,
+        fm.Placement((4, 1, 1), 'cyx', 'cbb'), partial=fm.SBP.partial((0,)))
+    target = fm.DistributedType(tensor, (fm.SBP.broadcast(),) * 2,
+        fm.Placement((4, 8, 16), 'cyx', 'cbb'))
     assert not DistributedReshardPlanner.plan(source, target, max_hops=1)
     plans = DistributedReshardPlanner.plan(source, target, max_hops=2)
     assert plans and plans[0].step_types == (replace(source, placement=target.placement), target)
@@ -42,30 +45,29 @@ def test_complete_device_partial_can_handoff_to_the_collective_mesh_before_reduc
 def test_cross_mesh_component_handoff_does_not_ignore_device_identity_or_fragmentation():
     tensor = fm.tensor_type('float32', (1, 4096))
     source_place = fm.Placement((4, 4, 16), 'cyx', 'cbb')
-    source = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.split_contiguous((1, 2))), source_place,
-                                partial=fm.SBP.partial((0, )))
-    target = fm.DistributedType(tensor, (fm.SBP.broadcast(), ) * 2, fm.Placement((4, 8, 16), 'cyx', 'cbb'))
+    source = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.split_contiguous((1, 2))),
+        source_place, partial=fm.SBP.partial((0,)))
+    target = fm.DistributedType(tensor, (fm.SBP.broadcast(),) * 2, fm.Placement((4, 8, 16), 'cyx', 'cbb'))
     assert not DistributedReshardPlanner.plan(source, target)
-    complete = fm.DistributedType(tensor, (fm.SBP.broadcast(), ) * 2, fm.Placement((4, 1, 1), 'cyx', 'cbb'),
-                                  partial=fm.SBP.partial((0, )))
+    complete = fm.DistributedType(tensor, (fm.SBP.broadcast(),) * 2,
+        fm.Placement((4, 1, 1), 'cyx', 'cbb'), partial=fm.SBP.partial((0,)))
     for place in (fm.Placement((8, 8, 16), 'cyx', 'cbb'), fm.Placement((4, 8, 16), 'dyx', 'cbb')):
-        target = fm.DistributedType(tensor, (fm.SBP.broadcast(), ) * 2, place)
+        target = fm.DistributedType(tensor, (fm.SBP.broadcast(),) * 2, place)
         assert not DistributedReshardPlanner.plan(complete, target)
 
 
 def test_component_handoff_cannot_bypass_the_target_edge_policy():
     tensor = fm.tensor_type('float32', (1, 4096))
-    source = fm.DistributedType(tensor, (fm.SBP.broadcast(), ) * 2, fm.Placement((4, 1, 1), 'cyx', 'cbb'),
-                                partial=fm.SBP.partial((0, )))
-    target = fm.DistributedType(tensor, (fm.SBP.broadcast(), ) * 2, fm.Placement((4, 8, 16), 'cyx', 'cbb'))
+    source = fm.DistributedType(tensor, (fm.SBP.broadcast(),) * 2,
+        fm.Placement((4, 1, 1), 'cyx', 'cbb'), partial=fm.SBP.partial((0,)))
+    target = fm.DistributedType(tensor, (fm.SBP.broadcast(),) * 2,
+        fm.Placement((4, 8, 16), 'cyx', 'cbb'))
     # A logical component proof does not authorize physical backing or a
     # collective that the target cannot realize. Reject either stage.
     for reject_handoff in (True, False):
-
         def supported(lhs, rhs):
             forbidden = lhs.placement != rhs.placement if reject_handoff else rhs.partial is None
             return not forbidden and can_box(lhs, rhs)
-
         assert not DistributedReshardPlanner.plan(source, target, supported)
 
 
@@ -95,18 +97,18 @@ def test_planner_keeps_direct_and_partial_reduce_scatter_programs_for_global_sea
     )
     target = fm.DistributedType(
         tensor,
-        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 8)),
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 8)),
         placement,
     )
 
     plans = DistributedReshardPlanner.plan(source, target)
 
-    assert any(plan.step_types == (target, ) for plan in plans)
+    assert any(plan.step_types == (target,) for plan in plans)
     staged = next(plan for plan in plans if len(plan.step_types) == 2)
     intermediate = staged.step_types[0]
     assert isinstance(intermediate, fm.DistributedType)
     assert intermediate.partial is None
-    assert intermediate.axis_policies[0] == fm.SBP.split_contiguous((1, ), 4)
+    assert intermediate.axis_policies[0] == fm.SBP.split_contiguous((1,), 4)
     assert intermediate.axis_policies[1] == target.axis_policies[1]
 
 
@@ -119,12 +121,12 @@ def test_planner_rejects_logically_different_tensors():
 
 def test_partial_reduce_scatter_skips_tensor_axes_smaller_than_the_placement():
     tensor = fm.tensor_type("bfloat16", [1, 1024])
-    placement = fm.Placement((8, ), "b", "b")
+    placement = fm.Placement((8,), "b", "b")
     source = fm.DistributedType(
         tensor,
         (fm.SBP.broadcast(), fm.SBP.broadcast()),
         placement,
-        partial=fm.SBP.partial((0, )),
+        partial=fm.SBP.partial((0,)),
     )
     target = fm.DistributedType(
         tensor,
@@ -134,7 +136,11 @@ def test_partial_reduce_scatter_skips_tensor_axes_smaller_than_the_placement():
 
     plans = DistributedReshardPlanner.plan(source, target)
 
-    intermediates = {plan.step_types[0] for plan in plans if len(plan.step_types) == 2}
+    intermediates = {
+        plan.step_types[0]
+        for plan in plans
+        if len(plan.step_types) == 2
+    }
     assert intermediates
     assert all(isinstance(value, fm.DistributedType) for value in intermediates)
     assert all(isinstance(value.axis_policies[0], fm.SBPBroadCast) for value in intermediates)

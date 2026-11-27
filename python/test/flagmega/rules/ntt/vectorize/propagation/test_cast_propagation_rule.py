@@ -22,43 +22,39 @@ def _assert_equivalent(original, rewritten, inputs):
 
 
 def test_vectorize_cast_preserves_outer_extent_and_merges_input_packets(materialize_rewrite):
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
-            value = self.input("value", fm.tensor_type("bfloat16", (32, )), id="value")
+            value = self.input("value", fm.tensor_type("bfloat16", (32,)), id="value")
             cast = fm.F.tensors.cast(value, fm.DType.FLOAT32, name="cast")
             root = fm.F.tensors.pack(cast, (2, 4), axes=(0, 0), name="root")
-            self.function("main", (value, ), (root, ))
+            self.function("main", (value,), (root,))
 
     module = Graph().build()
     result = _rule("VectorizeCastPropagation").apply(module.node_map["root"], module)
     assert result is not None
-    assert result.prefix_nodes[0].attrs["lanes"] == (8, )
+    assert result.prefix_nodes[0].attrs["lanes"] == (8,)
     assert result.replacement.op == "ntt.vectorized_cast"
-    assert result.replacement.type == fm.tensor_type(fm.vector_type("float32", (2, 4)), (4, ))
+    assert result.replacement.type == fm.tensor_type(fm.vector_type("float32", (2, 4)), (4,))
     rewritten = materialize_rewrite(module, result)
     _assert_equivalent(module, rewritten, {"value": torch.randn(32, dtype=torch.bfloat16)})
 
 
 @pytest.mark.parametrize("direction", ["pack", "unpack"])
 def test_vectorization_keeps_explicit_store_contract(direction, materialize_rewrite):
-
     class Graph(fm.Module):
-
         def forward(self):
             if direction == "pack":
-                value = self.input("value", fm.tensor_type("float32", (32, )), id="value")
+                value = self.input("value", fm.tensor_type("float32", (32,)), id="value")
                 rounded = fm.F.tensors.cast(value, "bfloat16", rounding_contract="preserve")
-                root = fm.F.tensors.pack(rounded, (8, ), axes=(0, ), name="root")
+                root = fm.F.tensors.pack(rounded, (8,), axes=(0,), name="root")
             else:
-                value = self.input("value", fm.tensor_type(fm.vector_type("float32", (8, )), (4, )), id="value")
-                scalar = fm.F.tensors.unpack(value, axes=(0, ))
+                value = self.input("value", fm.tensor_type(fm.vector_type("float32", (8,)), (4,)), id="value")
+                scalar = fm.F.tensors.unpack(value, axes=(0,))
                 root = fm.F.tensors.cast(scalar, "bfloat16", rounding_contract="preserve", name="root")
-            self.function("main", (value, ), (root, ))
+            self.function("main", (value,), (root,))
 
     module = Graph(dialect="high_level", stage="imported", entry="main").build()
     rule = _rule("VectorizeCastPropagation" if direction == "pack" else "CastDevectorizePropagation")
@@ -73,24 +69,24 @@ def test_vectorization_keeps_explicit_store_contract(direction, materialize_rewr
 
 @pytest.mark.parametrize("lane", [8, 16])
 def test_cast_devectorize_splits_packets_without_changing_outer_extent(materialize_rewrite, lane):
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
-            value = self.input("value", fm.tensor_type(fm.vector_type("bfloat16", (lane, )), (2, )), id="value")
-            unpacked = fm.F.tensors.unpack(value, axes=(0, ), name="unpacked")
+            value = self.input(
+                "value", fm.tensor_type(fm.vector_type("bfloat16", (lane,)), (2,)), id="value"
+            )
+            unpacked = fm.F.tensors.unpack(value, axes=(0,), name="unpacked")
             root = fm.F.tensors.cast(unpacked, fm.DType.FLOAT32, name="root")
-            self.function("main", (value, ), (root, ))
+            self.function("main", (value,), (root,))
 
     module = Graph().build()
     result = _rule("CastDevectorizePropagation").apply(module.node_map["root"], module)
     assert result is not None
     vectorized = result.prefix_nodes[0]
     assert vectorized.op == "ntt.vectorized_cast"
-    assert vectorized.type == fm.tensor_type(fm.vector_type("float32", (2, lane // 2)), (2, ))
+    assert vectorized.type == fm.tensor_type(fm.vector_type("float32", (2, lane // 2)), (2,))
     assert result.replacement.op == "tensors.unpack"
     rewritten = materialize_rewrite(module, result)
     _assert_equivalent(
@@ -101,33 +97,33 @@ def test_cast_devectorize_splits_packets_without_changing_outer_extent(materiali
 
 
 def test_vectorize_cast_rejects_fractional_lane_scaling():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
-            value = self.input("value", fm.tensor_type("int64", (8, )), id="value")
+            value = self.input("value", fm.tensor_type("int64", (8,)), id="value")
             cast = fm.F.tensors.cast(value, fm.DType.BFLOAT16, name="cast")
-            root = fm.F.tensors.pack(cast, (1, ), axes=(0, ), name="root")
-            self.function("main", (value, ), (root, ))
+            root = fm.F.tensors.pack(cast, (1,), axes=(0,), name="root")
+            self.function("main", (value,), (root,))
 
     module = Graph().build()
     assert _rule("VectorizeCastPropagation").apply(module.node_map["root"], module) is None
 
 
 def test_fold_nop_vectorized_cast_returns_input_definition():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
-            value = self.input("value", fm.tensor_type(fm.vector_type("bfloat16", (8, )), (2, )), id="value")
-            root = fm.F.ntt.vectorized_cast(value, fm.vector_type("bfloat16", (8, )), (0, ), name="root")
-            self.function("main", (value, ), (root, ))
+            value = self.input(
+                "value", fm.tensor_type(fm.vector_type("bfloat16", (8,)), (2,)), id="value"
+            )
+            root = fm.F.ntt.vectorized_cast(
+                value, fm.vector_type("bfloat16", (8,)), (0,), name="root"
+            )
+            self.function("main", (value,), (root,))
 
     module = Graph().build()
     result = _rule("FoldNopVectorizedCast").apply(module.node_map["root"], module)
@@ -136,17 +132,15 @@ def test_fold_nop_vectorized_cast_returns_input_definition():
 
 
 def test_pack_cast_supports_nested_lane_groups_on_one_axis(materialize_rewrite):
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
-            value = self.input("value", fm.tensor_type("float32", (64, )), id="value")
+            value = self.input("value", fm.tensor_type("float32", (64,)), id="value")
             cast = fm.F.tensors.cast(value, fm.DType.BFLOAT16, name="cast")
             root = fm.F.tensors.pack(cast, (4, 8), axes=(0, 0), name="root")
-            self.function("main", (value, ), (root, ))
+            self.function("main", (value,), (root,))
 
     module = Graph().build()
     result = _rule("VectorizeCastPropagation").apply(module.node_map["root"], module)

@@ -11,7 +11,6 @@ from triton.flagmega.pattern_match.pattern import Pattern
 
 
 class OpPattern(Pattern):
-
     def __init__(
         self,
         op_name: str,
@@ -31,9 +30,12 @@ class OpPattern(Pattern):
         self.attributes = canonical_attributes(attributes or {})
 
     def match_leaf(self, node: Node) -> bool:
-        return (super().match_leaf(node) and node.op == self.op_name
-                and all(key in node.attrs and node.attrs[key] == value for key, value in self.attributes.items())
-                and bool(self.condition(node)))
+        return (
+            super().match_leaf(node)
+            and node.op == self.op_name
+            and all(key in node.attrs and node.attrs[key] == value for key, value in self.attributes.items())
+            and bool(self.condition(node))
+        )
 
 
 def is_op(

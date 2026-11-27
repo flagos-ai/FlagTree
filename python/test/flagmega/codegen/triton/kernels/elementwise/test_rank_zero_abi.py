@@ -21,9 +21,7 @@ from triton.flagmega.targets.portable_triton_implementations import portable_tri
 @pytest.mark.parametrize("tile", (1, 256))
 @pytest.mark.parametrize("variant", ("add", "mul", "silu", "cast"))
 def test_rank_zero_arithmetic_is_not_silently_lowered_as_tensor_pointer(tmp_path, tile, variant):
-
     class Graph(fm.Module):
-
         def forward(self):
             value = self.input("value", fm.tensor_type("bfloat16", ()), id="value")
             if variant == "cast":
@@ -32,12 +30,12 @@ def test_rank_zero_arithmetic_is_not_silently_lowered_as_tensor_pointer(tmp_path
                 output = fm.F.math.silu(value, name="output")
             else:
                 output = getattr(fm.F.math, variant)(value, value, name="output")
-            self.function("main", (value, ), (output, ))
+            self.function("main", (value,), (output,))
 
     model = portable_triton_implementation_model()
     implementations = tuple(
-        replace(value, parameters={"elements_per_program": tile}) if value.id ==
-        f"tir.elementwise.{variant}.scalar" else value for value in model.implementations)
+        replace(value, parameters={"elements_per_program": tile})
+        if value.id == f"tir.elementwise.{variant}.scalar" else value for value in model.implementations)
     compiler = Compiler()
     compiler.target = NvidiaSm90Target(triton_implementation_model=replace(model, implementations=implementations))
     final = compiler.compile(Graph(dialect="nn", stage="frozen_constants", entry="main").build()).module

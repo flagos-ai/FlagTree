@@ -6,20 +6,28 @@ import torch
 from triton.flagmega import ir as fm
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.passes.functions import (
-    propagate_function_boundary_layouts, )
+    propagate_function_boundary_layouts,
+)
 
 
 class _RepeatedPackedLayer(fm.Module):
-
     def __init__(self):
         super().__init__(dialect="ntt", stage="packed", entry="main")
 
     def forward(self):
         logical_type = fm.tensor_type("float32", (4, 16))
-        layer_input = self.input("layer_input", logical_type, id="layer_input")
-        packed = fm.F.tensors.pack(layer_input, (4, ), axes=(1, ), name="layer_pack")
-        computed = fm.F.math.vectorized_unary(packed, unary_op="silu", name="layer_compute")
-        layer_output = fm.F.tensors.unpack(computed, axes=(1, ), name="layer_unpack")
+        layer_input = self.input(
+            "layer_input", logical_type, id="layer_input"
+        )
+        packed = fm.F.tensors.pack(
+            layer_input, (4,), axes=(1,), name="layer_pack"
+        )
+        computed = fm.F.math.vectorized_unary(
+            packed, unary_op="silu", name="layer_compute"
+        )
+        layer_output = fm.F.tensors.unpack(
+            computed, axes=(1,), name="layer_unpack"
+        )
 
         value = self.input("value", logical_type, id="value")
         call0 = fm.F.builtin.call(
@@ -34,11 +42,11 @@ class _RepeatedPackedLayer(fm.Module):
             callee="layer",
             name="call1",
         )
-        self.function("main", (value, ), (call1, ))
+        self.function("main", (value,), (call1,))
         self.function(
             "layer",
-            (layer_input, ),
-            (layer_output, ),
+            (layer_input,),
+            (layer_output,),
             attrs={"reusable": True, "noinline": True},
         )
 

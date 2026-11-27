@@ -40,6 +40,7 @@ from triton.flagmega.ir.ops.nn._norm import (
 from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import DType, VectorType
 
+
 _ACTIVATIONS = frozenset({"sigmoid", "silu", "swish"})
 
 
@@ -83,14 +84,14 @@ class GatedNormApply(OpDefinition):
             try:
                 output_dtype = DType(output_dtype)
             except (ValueError, TypeError) as error:
-                raise IRSchemaError("GatedNormApply output_dtype must be bfloat16 or float32.") from error
+                raise IRSchemaError(
+                    "GatedNormApply output_dtype must be bfloat16 or float32.") from error
             if output_dtype not in {DType.BFLOAT16, DType.FLOAT32}:
                 raise IRSchemaError("GatedNormApply output_dtype must be bfloat16 or float32.")
-        return {
-            **({"output_dtype": output_dtype.value} if output_dtype is not None else {}), "axis": axis, "epsilon":
-            epsilon, "use_mean": bool(attrs["use_mean"]), "activation": str(attrs["activation"]), "round_before_scale":
-            attrs["round_before_scale"]
-        }
+        return {**({"output_dtype": output_dtype.value} if output_dtype is not None else {}),
+                "axis": axis, "epsilon": epsilon, "use_mean": bool(attrs["use_mean"]),
+                "activation": str(attrs["activation"]),
+                "round_before_scale": attrs["round_before_scale"]}
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -106,12 +107,14 @@ class GatedNormApply(OpDefinition):
         gate = tensor_of(gate_type)
         axis = normalize_axis(int(attrs["axis"]), value.rank)
         if not all(is_float_dtype(item.dtype) for item in (value, scale, bias, gate)):
-            raise IRSchemaError("GatedNormApply input, scale, bias and gate must be floating point.")
+            raise IRSchemaError(
+                "GatedNormApply input, scale, bias and gate must be floating point.")
         if isinstance(value.dtype, VectorType) or isinstance(gate.dtype, VectorType):
             raise IRSchemaError("GatedNormApply does not support vector elements.")
         expected_stats = stats_tensor_type(value, axis, bool(attrs["use_mean"]))
         if stats != expected_stats:
-            raise IRSchemaError(f"GatedNormApply stats type {stats!r} does not match expected {expected_stats!r}.")
+            raise IRSchemaError(
+                f"GatedNormApply stats type {stats!r} does not match expected {expected_stats!r}.")
         _require_suffix_parameter(value, scale, axis, "scale")
         _require_suffix_parameter(value, bias, axis, "bias")
         # The gate is elementwise over the whole value, not over the normalized
@@ -122,11 +125,14 @@ class GatedNormApply(OpDefinition):
         if attrs.get("output_dtype") is not None:
             output = replace(value, dtype=DType(attrs["output_dtype"]))
         distributed = tuple(
-            isinstance(item, DistributedType) for item in (value_type, stats_type, scale_type, bias_type, gate_type))
+            isinstance(item, DistributedType)
+            for item in (value_type, stats_type, scale_type, bias_type, gate_type)
+        )
         if not any(distributed):
             return output
         if not all(distributed):
-            raise IRSchemaError("Distributed GatedNormApply requires all arguments to be distributed tensors.")
+            raise IRSchemaError(
+                "Distributed GatedNormApply requires all arguments to be distributed tensors.")
         assert isinstance(value_type, DistributedType)
         assert isinstance(stats_type, DistributedType)
         assert isinstance(scale_type, DistributedType)
@@ -135,30 +141,39 @@ class GatedNormApply(OpDefinition):
         operands = (value_type, stats_type, scale_type, bias_type, gate_type)
         if len({item.placement for item in operands}) != 1:
             raise IRSchemaError("GatedNormApply argument placements must be equal.")
-        if any(item.partial is not None or any(isinstance(policy, SBPPartial)
-                                               for policy in item.axis_policies)
-               for item in operands):
+        if any(
+            item.partial is not None
+            or any(isinstance(policy, SBPPartial) for policy in item.axis_policies)
+            for item in operands
+        ):
             raise IRSchemaError("GatedNormApply requires non-partial operands.")
-        if len(stats_type.axis_policies) != value.rank + 1 or not isinstance(stats_type.axis_policies[0], SBPBroadCast):
+        if len(stats_type.axis_policies) != value.rank + 1 or not isinstance(
+            stats_type.axis_policies[0], SBPBroadCast
+        ):
             raise IRSchemaError("GatedNormApply stats policies must match NormStats output rank.")
         for index, input_policy in enumerate(value_type.axis_policies):
             stats_policy = stats_type.axis_policies[index + 1]
             if index < axis:
                 if input_policy != stats_policy:
-                    raise IRSchemaError(f"GatedNormApply stats policy on outer axis {index} must match the input.")
+                    raise IRSchemaError(
+                        f"GatedNormApply stats policy on outer axis {index} must match the input.")
             elif not isinstance(stats_policy, SBPBroadCast):
-                raise IRSchemaError(f"GatedNormApply stats policy on normalized axis {index} must be broadcast.")
+                raise IRSchemaError(
+                    f"GatedNormApply stats policy on normalized axis {index} must be broadcast.")
         if gate_type.axis_policies != value_type.axis_policies:
             raise IRSchemaError("GatedNormApply gate policies must match the input; insert Boxing.")
         parameter_rank = value.rank - axis
         if scale.rank != parameter_rank or bias.rank != parameter_rank:
-            raise IRSchemaError("Distributed GatedNormApply parameters must have normalized-suffix rank.")
+            raise IRSchemaError(
+                "Distributed GatedNormApply parameters must have normalized-suffix rank.")
         for index in range(parameter_rank):
             input_policy = value_type.axis_policies[axis + index]
             if scale_type.axis_policies[index] != input_policy:
-                raise IRSchemaError(f"GatedNormApply scale policy {index} must match the input suffix.")
+                raise IRSchemaError(
+                    f"GatedNormApply scale policy {index} must match the input suffix.")
             if bias_type.axis_policies[index] != input_policy:
-                raise IRSchemaError(f"GatedNormApply bias policy {index} must match the input suffix.")
+                raise IRSchemaError(
+                    f"GatedNormApply bias policy {index} must match the input suffix.")
         return replace(value_type, tensor=output, partial=None)
 
     @classmethod
@@ -174,8 +189,8 @@ class GatedNormApply(OpDefinition):
             use_mean=bool(node.attrs["use_mean"]),
             round_before_scale=bool(node.attrs.get("round_before_scale", False)),
         )
-        gated = normalized * gate_activation_value(cls.gate.read(arguments), str(node.attrs.get(
-            "activation", "sigmoid")))
+        gated = normalized * gate_activation_value(
+            cls.gate.read(arguments), str(node.attrs.get("activation", "sigmoid")))
         return gated.to(dtype=context.torch_dtype(tensor_of(node.type).dtype))
 
     @classmethod
@@ -186,7 +201,7 @@ class GatedNormApply(OpDefinition):
             flops=None if elements is None else elements * (10 if node.attrs["use_mean"] else 8),
             bytes_read=None,
             bytes_written=tensor_nbytes(output),
-            notes=("gated-normalization-apply", ),
+            notes=("gated-normalization-apply",),
         )
 
     @classmethod
@@ -197,21 +212,25 @@ class GatedNormApply(OpDefinition):
         return_type: IRType,
     ) -> OpCostFactors | None:
         tensors = tuple(
-            _local_cost_tensor(value) for value in (
+            _local_cost_tensor(value)
+            for value in (
                 cls.value.type_of(inputs),
                 cls.stats.type_of(inputs),
                 cls.scale.type_of(inputs),
                 cls.bias.type_of(inputs),
                 cls.gate.type_of(inputs),
                 return_type,
-            ))
+            )
+        )
         if any(not dimension.is_fixed for tensor in tensors for dimension in tensor.shape):
             return None
         input_tensor = tensors[0]
         input_elements = prod(dimension.fixed_value for dimension in input_tensor.shape)
         return OpCostFactors(
             cpu_cycles=input_elements * (10 if attrs["use_mean"] else 8),
-            block_local_memory_load_bytes=sum(_fixed_tensor_nbytes(tensor) for tensor in tensors[:-1]),
+            block_local_memory_load_bytes=sum(
+                _fixed_tensor_nbytes(tensor) for tensor in tensors[:-1]
+            ),
             block_local_memory_store_bytes=_fixed_tensor_nbytes(tensors[-1]),
         )
 
@@ -222,7 +241,8 @@ def _require_suffix_parameter(value: TensorType, parameter: TensorType, axis: in
         raise IRSchemaError(f"GatedNormApply {name} rank must equal the normalized suffix rank.")
     for expected, actual in zip(suffix, parameter.shape):
         if actual != expected and not (actual.is_fixed and actual.fixed_value == 1):
-            raise IRSchemaError(f"GatedNormApply {name} is not broadcastable to the normalized suffix.")
+            raise IRSchemaError(
+                f"GatedNormApply {name} is not broadcastable to the normalized suffix.")
 
 
 def _local_cost_tensor(value: IRType) -> TensorType:

@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}@triton.jit
+@triton.jit
 def _flagmega_quantize_block_fp8(source_value, MODE: tl.constexpr, AXIS: tl.constexpr = 0):
     tl.static_assert(AXIS == 0 or AXIS == 1, "Unsupported block quantization axis")
     if MODE == "dynamic_fp8_sm90":
@@ -32,3 +31,4 @@ def _flagmega_quantize_block_fp8(source_value, MODE: tl.constexpr, AXIS: tl.cons
             divisor = scale
         quantized = tl.maximum(tl.minimum(tl.div_rn(source_value, divisor), 448.), -448.).to(tl.float8e4nv)
     return quantized, scale
+

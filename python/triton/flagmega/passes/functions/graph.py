@@ -58,7 +58,9 @@ def callee_first_functions(module: IRModule) -> tuple[Function, ...]:
             return
         if state.get(name) == 1:
             cycle = " -> ".join((*stack, name))
-            raise IRVerificationError(f"Callee-first traversal does not support recursive call graph: {cycle}.")
+            raise IRVerificationError(
+                f"Callee-first traversal does not support recursive call graph: {cycle}."
+            )
         state[name] = 1
         for callee in callees[name]:
             visit(callee, (*stack, name))
@@ -73,8 +75,12 @@ def callee_first_functions(module: IRModule) -> tuple[Function, ...]:
 def reusable_function_node_ids(module: IRModule) -> frozenset[str]:
     """Return nodes owned by explicitly reusable graph functions."""
 
-    return frozenset(node.id for function in module.functions if function.attrs.get("reusable") is True
-                     for node in function_nodes(module, function))
+    return frozenset(
+        node.id
+        for function in module.functions
+        if function.attrs.get("reusable") is True
+        for node in function_nodes(module, function)
+    )
 
 
 def static_function_invocation_counts(module: IRModule) -> dict[str, int]:
@@ -82,7 +88,8 @@ def static_function_invocation_counts(module: IRModule) -> dict[str, int]:
 
     function_map = module.function_map
     if module.entry not in function_map:
-        raise IRVerificationError(f"Entry function @{module.entry} is not defined.", stage=module.stage)
+        raise IRVerificationError(
+            f"Entry function @{module.entry} is not defined.", stage=module.stage)
     direct: dict[str, dict[str, int]] = {}
     for function in module.functions:
         counts: dict[str, int] = {}
@@ -135,7 +142,10 @@ def static_function_invocation_counts(module: IRModule) -> dict[str, int]:
         if caller_count is None:
             continue
         for callee, calls_per_invocation in direct[caller].items():
-            updated = (invocations.get(callee, 0) + caller_count * calls_per_invocation)
+            updated = (
+                invocations.get(callee, 0)
+                + caller_count * calls_per_invocation
+            )
             if updated > maximum:
                 raise IRVerificationError(
                     f"Static invocation count for @{callee} exceeds signed "

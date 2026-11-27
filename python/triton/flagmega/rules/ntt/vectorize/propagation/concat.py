@@ -28,8 +28,11 @@ def _make(node_id, op, inputs, attrs, metadata):
 
 def _pack_contract(node: Node, rank: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
     lanes = tuple(int(value) for value in node.attrs["lanes"])
-    raw_axes = (tuple(int(value) for value in node.attrs["axes"]) if "axes" in node.attrs else
-                (int(node.attrs["axis"]), ) * len(lanes))
+    raw_axes = (
+        tuple(int(value) for value in node.attrs["axes"])
+        if "axes" in node.attrs
+        else (int(node.attrs["axis"]),) * len(lanes)
+    )
     return normalize_axes(raw_axes, rank), lanes
 
 
@@ -38,15 +41,19 @@ def _unpack_contract(node: Node, module: IRModule):
     if not isinstance(vector.type, TensorType) or not isinstance(vector.type.dtype, VectorType):
         return None
     axis_count = len(tuple(node.attrs["axes"])) if "axes" in node.attrs else len(vector.type.dtype.lanes)
-    raw_axes = (tuple(int(value) for value in node.attrs["axes"]) if "axes" in node.attrs else
-                (int(node.attrs["axis"]), ) * axis_count)
+    raw_axes = (
+        tuple(int(value) for value in node.attrs["axes"])
+        if "axes" in node.attrs
+        else (int(node.attrs["axis"]),) * axis_count
+    )
     axes = normalize_axes(raw_axes, vector.type.rank)
-    return vector, axes, vector.type.dtype.lanes[:len(axes)]
+    return vector, axes, vector.type.dtype.lanes[: len(axes)]
 
 
 def _packable(value: Node, axes: tuple[int, ...], lanes: tuple[int, ...]) -> bool:
     return isinstance(value.type, TensorType) and all(
-        try_div_exactly(value.type.shape[axis], lane) is not None for axis, lane in zip(axes, lanes))
+        try_div_exactly(value.type.shape[axis], lane) is not None for axis, lane in zip(axes, lanes)
+    )
 
 
 def _pack_concat_matches(node: Node, module: IRModule) -> bool:
@@ -67,10 +74,12 @@ def _pack_concat(node: Node, module: IRModule) -> RewriteResult:
         _make(
             f"{node.id}.propagated.pack{index}",
             "tensors.pack",
-            (module.node_map[input_id], ),
+            (module.node_map[input_id],),
             {"axes": axes, "lanes": lanes},
             propagation_helper_metadata(node, node.id, "propagated-pack"),
-        ) for index, input_id in enumerate(concat.inputs))
+        )
+        for index, input_id in enumerate(concat.inputs)
+    )
     replacement = _make(
         node.id,
         "tensors.concat",
@@ -118,9 +127,9 @@ def _concat_unpack(node: Node, module: IRModule) -> RewriteResult:
     contract = _concat_unpack_contract(node, module)
     assert contract is not None
     axes, lanes = contract
-    boundary = next(module.node_map[candidate]
-                    for candidate in node.inputs
-                    if module.node_map[candidate].op == "tensors.unpack")
+    boundary = next(
+        module.node_map[candidate] for candidate in node.inputs if module.node_map[candidate].op == "tensors.unpack"
+    )
     helpers: list[Node] = []
     vector_inputs: list[Node] = []
     for index, input_id in enumerate(node.inputs):
@@ -131,7 +140,7 @@ def _concat_unpack(node: Node, module: IRModule) -> RewriteResult:
         packed = _make(
             f"{node.id}.propagated.pack{index}",
             "tensors.pack",
-            (value, ),
+            (value,),
             {"axes": axes, "lanes": lanes},
             propagation_helper_metadata(boundary, node.id, "propagated-pack"),
         )
@@ -155,7 +164,7 @@ def _concat_unpack(node: Node, module: IRModule) -> RewriteResult:
     replacement = _make(
         node.id,
         "tensors.unpack",
-        (vector_concat, ),
+        (vector_concat,),
         {"axes": axes},
         propagation_result_metadata(
             node,
@@ -170,9 +179,10 @@ def _concat_unpack(node: Node, module: IRModule) -> RewriteResult:
 
 def concat_propagation_rules() -> tuple[RewriteRule, ...]:
     return (
-        RewriteRule("VectorizeConcatPropagation", _pack_concat_matches, _pack_concat, root_ops=("tensors.pack", )),
-        RewriteRule("ConcatDevectorizePropagation", _concat_unpack_matches, _concat_unpack,
-                    root_ops=("tensors.concat", )),
+        RewriteRule("VectorizeConcatPropagation", _pack_concat_matches, _pack_concat, root_ops=("tensors.pack",)),
+        RewriteRule(
+            "ConcatDevectorizePropagation", _concat_unpack_matches, _concat_unpack, root_ops=("tensors.concat",)
+        ),
     )
 
 

@@ -26,9 +26,11 @@ from triton.flagmega.passes.auto_distributed.candidates import (
     DistributedCandidateProviderBase,
 )
 from triton.flagmega.passes.auto_distributed.candidate_identity import (
-    distributed_candidate_id, )
+    distributed_candidate_id,
+)
 from triton.flagmega.passes.auto_distributed.inference_providers import (
-    TypeInferenceCandidateProvider, )
+    TypeInferenceCandidateProvider,
+)
 
 
 class PagedAttentionPartialCandidateProvider(TypeInferenceCandidateProvider):
@@ -69,10 +71,12 @@ class PagedAttentionCombineCandidateProvider(DistributedCandidateProviderBase):
                     (),
                     value_type,
                     attrs={"name": f"<{node.id}.input.{index}>"},
-                ) for index, value_type in enumerate(input_types))
+                )
+                for index, value_type in enumerate(input_types)
+            )
             # A materialized gate already fixes the output ownership. Do not
             # discard valid producer layouts absent from the leaf generator.
-            for output_type in ((input_types[3], ) if gated else outputs):
+            for output_type in ((input_types[3],) if gated else outputs):
                 normalized = definition.normalize_attrs({
                     **dict(node.attrs),
                     "output_type": output_type,
@@ -88,27 +92,26 @@ class PagedAttentionCombineCandidateProvider(DistributedCandidateProviderBase):
                     continue
                 seen.add(relation)
                 attrs = definition.ir_attrs(normalized)
-                candidates.append(
-                    DistributedCandidate(
-                        distributed_candidate_id(
-                            node.id,
-                            "paged_attention_combine",
-                            output_type,
-                            tuple(input_types),
-                        ),
+                candidates.append(DistributedCandidate(
+                    distributed_candidate_id(
+                        node.id,
+                        "paged_attention_combine",
                         output_type,
                         tuple(input_types),
-                        min(sum(_local_bytes(value) for value in input_types), 2_000_000_000),
-                        "paged-attention-combine-sbp",
-                        target_op=node.op,
-                        objective_kind="analytic",
-                        objective_model="flagmega.paged-attention-combine-distribution/v1",
-                        objective_evidence=(
-                            "matching-p-max-p-sum-p-sum-states",
-                            "output-type-rebuild",
-                        ),
-                        target_attrs=attrs,
-                    ))
+                    ),
+                    output_type,
+                    tuple(input_types),
+                    min(sum(_local_bytes(value) for value in input_types), 2_000_000_000),
+                    "paged-attention-combine-sbp",
+                    target_op=node.op,
+                    objective_kind="analytic",
+                    objective_model="flagmega.paged-attention-combine-distribution/v1",
+                    objective_evidence=(
+                        "matching-p-max-p-sum-p-sum-states",
+                        "output-type-rebuild",
+                    ),
+                    target_attrs=attrs,
+                ))
         return tuple(candidates)
 
     def create_candidate_attrs(
@@ -117,11 +120,10 @@ class PagedAttentionCombineCandidateProvider(DistributedCandidateProviderBase):
         return_type: IRType,
     ) -> Mapping[str, object]:
         definition = get_definition(context.source_call.op)
-        return definition.ir_attrs(
-            definition.normalize_attrs({
-                **dict(context.source_call.attrs),
-                "output_type": return_type,
-            }))
+        return definition.ir_attrs(definition.normalize_attrs({
+            **dict(context.source_call.attrs),
+            "output_type": return_type,
+        }))
 
 
 def _local_bytes(value: IRType) -> int:

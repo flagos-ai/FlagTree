@@ -1,6 +1,6 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""reference GenerateBoxingValue semantics, independent of target kernels."""
+"""nncase GenerateBoxingValue semantics, independent of target kernels."""
 
 from dataclasses import replace
 
@@ -14,8 +14,8 @@ def _graph(op="distributed.boxing", *, literal=False, identity=False):
     tensor = fm.tensor_type("float32", (2, 259))
     placement = fm.Placement((8, 16), "yx", "bb")
     local = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.split_block_cyclic((0, 1), 1)), placement)
-    partial = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.broadcast()), placement,
-                                 fm.SBP.partial((0, 1), fm.ReduceOp.SUM))
+    partial = fm.DistributedType(tensor, (fm.SBP.broadcast(), fm.SBP.broadcast()),
+                                 placement, fm.SBP.partial((0, 1), fm.ReduceOp.SUM))
     source_type = fm.TupleType((local, fm.TupleType((tensor, partial))))
     target_type = source_type if identity else fm.TupleType((tensor, fm.TupleType((local, partial))))
     builder = fm.IRBuilder(dialect="distributed", stage="distributed_ops_fused")
@@ -26,9 +26,9 @@ def _graph(op="distributed.boxing", *, literal=False, identity=False):
         parameters = (a, b, c)
     else:
         source = builder.var("source", source_type, id="source")
-        parameters = (source, )
-    result = builder.call(op, (source, ), target_type, id="result", attrs={"new_type": target_type})
-    builder.function("main", parameters, (result, ))
+        parameters = (source,)
+    result = builder.call(op, (source,), target_type, id="result", attrs={"new_type": target_type})
+    builder.function("main", parameters, (result,))
     return fm.verify_module(builder.build(entry="main"))
 
 

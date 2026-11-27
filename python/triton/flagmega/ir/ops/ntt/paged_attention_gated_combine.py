@@ -13,8 +13,8 @@ from triton.flagmega.ir.type_pattern import is_tensor
 from triton.flagmega.ir.types import DType, VectorType
 
 
-@op_definition("ntt.paged_attention_gated_combine", namespace="ntt", functional_name="paged_attention_gated_combine",
-               display_name="NTT.PagedAttentionGatedCombine")
+@op_definition("ntt.paged_attention_gated_combine", namespace="ntt",
+               functional_name="paged_attention_gated_combine", display_name="NTT.PagedAttentionGatedCombine")
 class PagedAttentionGatedCombine(OpDefinition):
     max_state = input_parameter(is_tensor(), memory_effect=MemoryEffect.READ.across_partial_owners())
     sum_state = input_parameter(is_tensor(), memory_effect=MemoryEffect.READ.across_partial_owners())

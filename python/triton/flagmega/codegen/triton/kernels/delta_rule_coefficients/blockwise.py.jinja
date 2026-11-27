@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: delta_rule_coefficients/blockwise
+# flagmega-kernel: delta_rule_coefficients/blockwise
 @triton.jit
 def _flagmega_delta_rule_coefficients_tile(key, beta):
     row = tl.arange(0, 64)

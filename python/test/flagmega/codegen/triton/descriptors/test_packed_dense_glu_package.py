@@ -7,17 +7,29 @@ from copy import deepcopy
 from triton.flagmega.codegen.triton import describe_tir_package, render_tir_package
 
 
-def test_packed_glu_pipeline_materializes_dual_descriptors_and_one_channel(packed_glu_descriptor_pipeline_module, ):
+def test_packed_glu_pipeline_materializes_dual_descriptors_and_one_channel(
+    packed_glu_descriptor_pipeline_module,
+):
     package = describe_tir_package(packed_glu_descriptor_pipeline_module)
-    call = next(value for value in package["render_calls"] if value["family"] == "dense_matmul_glu")
+    call = next(
+        value
+        for value in package["render_calls"]
+        if value["family"] == "dense_matmul_glu"
+    )
 
     assert call["semantic_op"] == "nn.packed_dense_matmul_glu"
     assert call["family"] == "dense_matmul_glu"
-    assert call["variant"] == ("packed_tensor_descriptor_smem_pipeline_gemv")
-    assert tuple(request["parameter"]
-                 for request in call["host_tensor_descriptor_requests"]) == ("gate_weight_descriptor",
-                                                                             "up_weight_descriptor")
-    assert all(request["block_shape"] == (64, 2, 2, 64) for request in call["host_tensor_descriptor_requests"])
+    assert call["variant"] == (
+        "packed_tensor_descriptor_smem_pipeline_gemv"
+    )
+    assert tuple(
+        request["parameter"]
+        for request in call["host_tensor_descriptor_requests"]
+    ) == ("gate_weight_descriptor", "up_weight_descriptor")
+    assert all(
+        request["block_shape"] == (64, 2, 2, 64)
+        for request in call["host_tensor_descriptor_requests"]
+    )
     assert len(call["shared_workspaces"]) == 2
     assert call["shared_workspaces"][0]["shape"] == (4, 64, 2, 2, 64)
     assert call["shared_workspaces"][1]["name"] == "lhs_stage"
@@ -25,7 +37,7 @@ def test_packed_glu_pipeline_materializes_dual_descriptors_and_one_channel(packe
     assert call["pipeline_consumer_workspaces"] == ({
         "name": "lhs_stage",
         "parameter": "pipeline_consumer_lhs_stage",
-    }, )
+    },)
     assert call["transfer_pipeline"]["channels"] == [{
         "name": "weight",
         "source_argument_indices": [1, 2],
@@ -34,7 +46,9 @@ def test_packed_glu_pipeline_materializes_dual_descriptors_and_one_channel(packe
     }]
 
 
-def test_packed_glu_pipeline_source_has_interleaved_tiles_and_dynamic_offsets(packed_glu_descriptor_pipeline_module, ):
+def test_packed_glu_pipeline_source_has_interleaved_tiles_and_dynamic_offsets(
+    packed_glu_descriptor_pipeline_module,
+):
     package = describe_tir_package(packed_glu_descriptor_pipeline_module)
     source = render_tir_package(package, "unit")
 
@@ -53,15 +67,23 @@ def test_packed_glu_pipeline_source_has_interleaved_tiles_and_dynamic_offsets(pa
     assert "dense_glu_source_pointer = tle.gpu.local_ptr(" in source
     assert "tl.load(dense_glu_source_pointer)" in source
     copy_commit = source.index("dense_glu_input_copy_k = tle.gpu.set_layout(")
-    first_weight_wait = source.index("dense_glu_gate_ready = pipeline_weight_reader.wait(")
+    first_weight_wait = source.index(
+        "dense_glu_gate_ready = pipeline_weight_reader.wait("
+    )
     copy_wait = source.index("tle.gpu.async_wait_group(0)", copy_commit)
     assert copy_commit < first_weight_wait < copy_wait
     assert "qwen" not in source.lower()
 
 
-def test_complete_lhs_consumer_stage_has_only_value_dependencies(packed_glu_descriptor_pipeline_module, ):
+def test_complete_lhs_consumer_stage_has_only_value_dependencies(
+    packed_glu_descriptor_pipeline_module,
+):
     package = describe_tir_package(packed_glu_descriptor_pipeline_module)
-    call = next(value for value in package["render_calls"] if value["family"] == "dense_matmul_glu")
+    call = next(
+        value
+        for value in package["render_calls"]
+        if value["family"] == "dense_matmul_glu"
+    )
     source = render_tir_package(package, "unit")
 
     symbol = call["symbol"]
@@ -71,19 +93,29 @@ def test_complete_lhs_consumer_stage_has_only_value_dependencies(packed_glu_desc
     header_end = consumer_stage.index("):") + 2
     header = consumer_stage[:header_end]
 
-    assert header == (f"def {symbol}__consumer_stage(\n"
-                      "    gate_weight_stage,\n"
-                      "    up_weight_stage,\n"
-                      "    pipeline_consumer_lhs_stage,\n"
-                      "    dense_glu_local_k_start,\n"
-                      "):")
+    assert header == (
+        f"def {symbol}__consumer_stage(\n"
+        "    gate_weight_stage,\n"
+        "    up_weight_stage,\n"
+        "    pipeline_consumer_lhs_stage,\n"
+        "    dense_glu_local_k_start,\n"
+        "):"
+    )
     assert "shard_coord" not in consumer_stage
     assert "shard_index" not in consumer_stage
 
 
-def test_direct_lhs_consumer_stage_has_only_value_dependencies(packed_glu_direct_lhs_descriptor_pipeline_module, ):
-    package = describe_tir_package(packed_glu_direct_lhs_descriptor_pipeline_module)
-    call = next(value for value in package["render_calls"] if value["family"] == "dense_matmul_glu")
+def test_direct_lhs_consumer_stage_has_only_value_dependencies(
+    packed_glu_direct_lhs_descriptor_pipeline_module,
+):
+    package = describe_tir_package(
+        packed_glu_direct_lhs_descriptor_pipeline_module
+    )
+    call = next(
+        value
+        for value in package["render_calls"]
+        if value["family"] == "dense_matmul_glu"
+    )
     source = render_tir_package(package, "unit")
 
     symbol = call["symbol"]
@@ -93,22 +125,30 @@ def test_direct_lhs_consumer_stage_has_only_value_dependencies(packed_glu_direct
     header_end = consumer_stage.index("):") + 2
     header = consumer_stage[:header_end]
 
-    assert header == (f"def {symbol}__consumer_stage(\n"
-                      "    gate_weight_stage,\n"
-                      "    up_weight_stage,\n"
-                      "    dense_glu_local_k_start,\n"
-                      "    dense_glu_source,\n"
-                      "    dense_glu_source_owner_active,\n"
-                      "    dense_glu_source_active_extent,\n"
-                      "):")
+    assert header == (
+        f"def {symbol}__consumer_stage(\n"
+        "    gate_weight_stage,\n"
+        "    up_weight_stage,\n"
+        "    dense_glu_local_k_start,\n"
+        "    dense_glu_source,\n"
+        "    dense_glu_source_owner_active,\n"
+        "    dense_glu_source_active_extent,\n"
+        "):"
+    )
     assert "shard_coord" not in consumer_stage
     assert "shard_index" not in consumer_stage
     assert "_descriptor" not in header
 
 
-def test_inline_consumer_candidate_removes_noinline_boundary(packed_glu_inline_descriptor_pipeline_module, ):
+def test_inline_consumer_candidate_removes_noinline_boundary(
+    packed_glu_inline_descriptor_pipeline_module,
+):
     package = describe_tir_package(packed_glu_inline_descriptor_pipeline_module)
-    call = next(value for value in package["render_calls"] if value["family"] == "dense_matmul_glu")
+    call = next(
+        value
+        for value in package["render_calls"]
+        if value["family"] == "dense_matmul_glu"
+    )
     source = render_tir_package(package, "unit")
 
     symbol = call["symbol"]
@@ -118,13 +158,22 @@ def test_inline_consumer_candidate_removes_noinline_boundary(packed_glu_inline_d
 
 
 def test_paired_weight_pipeline_uses_one_sequence_for_gate_and_up(
-    packed_glu_paired_inline_descriptor_pipeline_module, ):
-    package = describe_tir_package(packed_glu_paired_inline_descriptor_pipeline_module)
-    call = next(value for value in package["render_calls"] if value["family"] == "dense_matmul_glu")
+    packed_glu_paired_inline_descriptor_pipeline_module,
+):
+    package = describe_tir_package(
+        packed_glu_paired_inline_descriptor_pipeline_module
+    )
+    call = next(
+        value
+        for value in package["render_calls"]
+        if value["family"] == "dense_matmul_glu"
+    )
     source = render_tir_package(package, "unit")
 
     assert call["paired_weight_fields"] is True
-    assert tuple(value["name"] for value in call["shared_workspaces"]) == ("gate_stage", "up_stage")
+    assert tuple(
+        value["name"] for value in call["shared_workspaces"]
+    ) == ("gate_stage", "up_stage")
     assert call["pipeline_channels"][0]["fields"] == (
         {"name": "gate", "workspace_name": "gate_stage"},
         {"name": "up", "workspace_name": "up_stage"},
@@ -141,9 +190,16 @@ def test_paired_weight_pipeline_uses_one_sequence_for_gate_and_up(
 
 
 def test_paired_owner_descriptor_tables_rebase_both_weights_to_local_offsets(
-    packed_glu_paired_table_inline_descriptor_pipeline_module, ):
-    package = describe_tir_package(packed_glu_paired_table_inline_descriptor_pipeline_module)
-    call = next(value for value in package["render_calls"] if value["family"] == "dense_matmul_glu")
+    packed_glu_paired_table_inline_descriptor_pipeline_module,
+):
+    package = describe_tir_package(
+        packed_glu_paired_table_inline_descriptor_pipeline_module
+    )
+    call = next(
+        value
+        for value in package["render_calls"]
+        if value["family"] == "dense_matmul_glu"
+    )
     requests = call["host_tensor_descriptor_requests"]
     source = render_tir_package(package, "unit")
 
@@ -156,7 +212,10 @@ def test_paired_owner_descriptor_tables_rebase_both_weights_to_local_offsets(
         2,
         64,
     )
-    assert all(value["entries"][0]["shape"] == expected_local_shape for value in requests)
+    assert all(
+        value["entries"][0]["shape"] == expected_local_shape
+        for value in requests
+    )
     assert f"dense_glu_gate_descriptor_entry = {call['gate_weight_descriptor']} + shard_index * 128" in source
     assert f"dense_glu_up_descriptor_entry = {call['up_weight_descriptor']} + shard_index * 128" in source
     assert source.count("tle.gpu.reinterpret_tensor_map(") >= 2
@@ -166,9 +225,16 @@ def test_paired_owner_descriptor_tables_rebase_both_weights_to_local_offsets(
 
 
 def test_paired_full_lhs_pipeline_has_shared_source_and_inline_stage(
-    packed_glu_paired_full_lhs_descriptor_pipeline_module, ):
-    package = describe_tir_package(packed_glu_paired_full_lhs_descriptor_pipeline_module)
-    call = next(value for value in package["render_calls"] if value["family"] == "dense_matmul_glu")
+    packed_glu_paired_full_lhs_descriptor_pipeline_module,
+):
+    package = describe_tir_package(
+        packed_glu_paired_full_lhs_descriptor_pipeline_module
+    )
+    call = next(
+        value
+        for value in package["render_calls"]
+        if value["family"] == "dense_matmul_glu"
+    )
     source = render_tir_package(package, "unit")
 
     assert call["paired_weight_fields"] is True
@@ -176,7 +242,7 @@ def test_paired_full_lhs_pipeline_has_shared_source_and_inline_stage(
     assert call["pipeline_consumer_workspaces"] == ({
         "name": "lhs_stage",
         "parameter": "pipeline_consumer_lhs_stage",
-    }, )
+    },)
     symbol = call["symbol"]
     start = source.index(f"def {symbol}__consumer_stage(")
     annotation = source[source.rfind("@triton.jit", 0, start):start]
@@ -191,16 +257,23 @@ def test_paired_full_lhs_pipeline_has_shared_source_and_inline_stage(
 
 
 def test_full_lhs_inline_candidate_combines_shared_source_and_inline_stage(
-    packed_glu_full_lhs_inline_descriptor_pipeline_module, ):
-    package = describe_tir_package(packed_glu_full_lhs_inline_descriptor_pipeline_module)
-    call = next(value for value in package["render_calls"] if value["family"] == "dense_matmul_glu")
+    packed_glu_full_lhs_inline_descriptor_pipeline_module,
+):
+    package = describe_tir_package(
+        packed_glu_full_lhs_inline_descriptor_pipeline_module
+    )
+    call = next(
+        value
+        for value in package["render_calls"]
+        if value["family"] == "dense_matmul_glu"
+    )
     source = render_tir_package(package, "unit")
 
     assert "inline_consumer_stage" not in call
     assert call["pipeline_consumer_workspaces"] == ({
         "name": "lhs_stage",
         "parameter": "pipeline_consumer_lhs_stage",
-    }, )
+    },)
     symbol = call["symbol"]
     start = source.index(f"def {symbol}__consumer_stage(")
     annotation = source[source.rfind("@triton.jit", 0, start):start]
@@ -211,8 +284,12 @@ def test_full_lhs_inline_candidate_combines_shared_source_and_inline_stage(
     assert "dense_glu_source_owner_active" not in stage
 
 
-def test_pipeline_renderer_emits_a_valid_empty_role(packed_glu_direct_lhs_descriptor_pipeline_module, ):
-    package = deepcopy(describe_tir_package(packed_glu_direct_lhs_descriptor_pipeline_module))
+def test_pipeline_renderer_emits_a_valid_empty_role(
+    packed_glu_direct_lhs_descriptor_pipeline_module,
+):
+    package = deepcopy(describe_tir_package(
+        packed_glu_direct_lhs_descriptor_pipeline_module
+    ))
     package["pipeline_schedule"]["producer_events"] = []
 
     source = render_tir_package(package, "unit")

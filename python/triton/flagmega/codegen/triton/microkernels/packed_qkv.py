@@ -34,30 +34,48 @@ class PackedQKVMicroKernelProvider:
     op_names = frozenset({"ntt.packed_qkv_parallel_linear_fused_rhs"})
     family = "qkv_parallel_linear"
 
-    def propose(self, context: TIRMicroKernelContext) -> TIRMicroKernelProposal | None:
+    def propose(
+        self, context: TIRMicroKernelContext
+    ) -> TIRMicroKernelProposal | None:
         dispatch = context.dispatch
         rhs_layout = str(dispatch.semantic_attrs.get("rhs_layout", ""))
         capacities = dispatch.semantic_attrs.get("projection_n_capacities")
         if rhs_layout != "k_major":
-            raise CodegenError("Canonical Packed-QKV microkernel selection requires K-major RHS.")
-        if (not isinstance(capacities, tuple) or len(capacities) != 3
-                or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in capacities)):
-            raise CodegenError("Canonical Packed-QKV microkernel selection requires three positive "
-                               "projection N capacities.")
+            raise CodegenError(
+                "Canonical Packed-QKV microkernel selection requires K-major RHS."
+            )
+        if (
+            not isinstance(capacities, tuple)
+            or len(capacities) != 3
+            or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0
+                   for value in capacities)
+        ):
+            raise CodegenError(
+                "Canonical Packed-QKV microkernel selection requires three positive "
+                "projection N capacities."
+            )
         if len(dispatch.outputs) != 3:
-            raise CodegenError("Canonical Packed-QKV microkernel selection requires Q/K/V outputs.")
+            raise CodegenError(
+                "Canonical Packed-QKV microkernel selection requires Q/K/V outputs."
+            )
         if dispatch.semantic_attrs.get("reduction_order", "relaxed") not in ("relaxed", "mma_k16"):
             raise CodegenError("Packed-QKV reduction_order must be relaxed or mma_k16.")
-        implementations = tuple(implementation for implementation in context.implementations(
-            self.family,
-            input_kind="fused_rhs",
-            rhs_layout=rhs_layout,
-        ) if (dispatch.semantic_attrs.get("reduction_order", "relaxed") != "mma_k16"
-              or implementation.facts.get("ordered_mma_accumulation", False))
-                                if _applicable(context, implementation.contract))
+        implementations = tuple(
+            implementation
+            for implementation in context.implementations(
+                self.family,
+                input_kind="fused_rhs",
+                rhs_layout=rhs_layout,
+            )
+            if (dispatch.semantic_attrs.get("reduction_order", "relaxed") != "mma_k16"
+                or implementation.facts.get("ordered_mma_accumulation", False))
+            if _applicable(context, implementation.contract)
+        )
         if not implementations:
-            raise CodegenError(f"Implementation model {context.implementation_model.name!r} has no "
-                               "canonical Packed-QKV implementation.")
+            raise CodegenError(
+                f"Implementation model {context.implementation_model.name!r} has no "
+                "canonical Packed-QKV implementation."
+            )
         candidates = tuple(context.candidate(value) for value in implementations)
         return TIRMicroKernelProposal(
             candidates,
@@ -78,9 +96,14 @@ def _applicable(context: TIRMicroKernelContext, contract) -> bool:
         return False
     source = logical_type(source_type)
     outputs = tuple(logical_type(value) for value in output_types)
-    if (not isinstance(source, TensorType) or not isinstance(weight_type, TensorType)
-            or any(not isinstance(value, TensorType) for value in outputs) or source.rank != 2
-            or weight_type.rank not in {2, 3} or any(value.rank != 2 for value in outputs)):
+    if (
+        not isinstance(source, TensorType)
+        or not isinstance(weight_type, TensorType)
+        or any(not isinstance(value, TensorType) for value in outputs)
+        or source.rank != 2
+        or weight_type.rank not in {2, 3}
+        or any(value.rank != 2 for value in outputs)
+    ):
         return False
     source_shape = _local_fixed_shape(source_type)
     output_shapes = tuple(_local_fixed_shape(value) for value in output_types)
@@ -92,62 +115,72 @@ def _applicable(context: TIRMicroKernelContext, contract) -> bool:
     weight_lanes = _lanes(weight_type.dtype)
     output_lanes = tuple(_lanes(value.dtype) for value in outputs)
     observed = {
-        "reduction_order":
-        dispatch.semantic_attrs.get("reduction_order", "relaxed"),
-        "required_input_dtype":
-        _scalar_dtype(source.dtype).value,
-        "required_weight_dtype":
-        _scalar_dtype(weight_type.dtype).value,
-        "required_input_lanes":
-        source_lanes,
-        "required_weight_lanes":
-        weight_lanes,
-        "required_weight_rank":
-        weight_type.rank,
-        "required_output_lanes":
-        output_lanes[0],
-        "required_local_rows":
-        source_shape[-2],
-        "required_local_reduction_extent":
-        source_shape[-1] * _lane_count(source.dtype),
-        "required_local_output_extent":
-        sum(shape[-1] * _lane_count(value.dtype) for shape, value in zip(output_shapes, outputs, strict=True)),
+        "reduction_order": dispatch.semantic_attrs.get("reduction_order", "relaxed"),
+        "required_input_dtype": _scalar_dtype(source.dtype).value,
+        "required_weight_dtype": _scalar_dtype(weight_type.dtype).value,
+        "required_input_lanes": source_lanes,
+        "required_weight_lanes": weight_lanes,
+        "required_weight_rank": weight_type.rank,
+        "required_output_lanes": output_lanes[0],
+        "required_local_rows": source_shape[-2],
+        "required_local_reduction_extent": source_shape[-1]
+        * _lane_count(source.dtype),
+        "required_local_output_extent": sum(
+            shape[-1] * _lane_count(value.dtype)
+            for shape, value in zip(output_shapes, outputs, strict=True)
+        ),
     }
     for key, value in observed.items():
         required = contract.get(key)
         if required is not None and required != value:
             return False
     max_output = contract.get("max_local_output_extent")
-    if max_output is not None and (type(max_output) is not int or max_output <= 0
-                                   or observed["required_local_output_extent"] > max_output):
+    if max_output is not None and (
+        type(max_output) is not int or max_output <= 0
+        or observed["required_local_output_extent"] > max_output
+    ):
         return False
     required_output_dtype = contract.get("required_output_dtype")
     if required_output_dtype is not None and any(
-            _scalar_dtype(value.dtype).value != required_output_dtype for value in outputs):
+        _scalar_dtype(value.dtype).value != required_output_dtype
+        for value in outputs
+    ):
         return False
     supported_output_dtypes = contract.get("supported_output_dtypes")
-    if supported_output_dtypes is not None and (len({_scalar_dtype(value.dtype)
-                                                     for value in outputs}) != 1 or any(
-                                                         _scalar_dtype(value.dtype).value not in supported_output_dtypes
-                                                         for value in outputs)):
+    if supported_output_dtypes is not None and (
+        len({_scalar_dtype(value.dtype) for value in outputs}) != 1
+        or any(_scalar_dtype(value.dtype).value not in supported_output_dtypes for value in outputs)
+    ):
         return False
-    if contract.get("requires_matching_output_lanes", False) and any(lanes != output_lanes[0]
-                                                                     for lanes in output_lanes[1:]):
+    if contract.get("requires_matching_output_lanes", False) and any(
+        lanes != output_lanes[0] for lanes in output_lanes[1:]
+    ):
         return False
     if contract.get("requires_full_output_placement_ownership", False) and any(
-            not isinstance(value, DistributedType) or not is_fully_sharded_across_placement(value)
-            for value in output_types):
+        not isinstance(value, DistributedType)
+        or not is_fully_sharded_across_placement(value)
+        for value in output_types
+    ):
         return False
     if contract.get("requires_weight_owner_count_match", False):
-        if (any(not isinstance(value, DistributedType) for value in output_types)
-                or len({placement_owner_count(value)
-                        for value in output_types}) != 1 or not weight_type.shape[0].is_fixed
-                or weight_type.shape[0].fixed_value != placement_owner_count(output_types[0])):
+        if (
+            any(not isinstance(value, DistributedType) for value in output_types)
+            or len({placement_owner_count(value) for value in output_types}) != 1
+            or not weight_type.shape[0].is_fixed
+            or weight_type.shape[0].fixed_value
+            != placement_owner_count(output_types[0])
+        ):
             return False
-    required_partial_reduce_op = contract.get("required_output_partial_reduce_op")
+    required_partial_reduce_op = contract.get(
+        "required_output_partial_reduce_op"
+    )
     if required_partial_reduce_op is not None:
-        if any(not isinstance(value, DistributedType) or value.partial is None
-               or value.partial.reduce_op.value != required_partial_reduce_op for value in output_types):
+        if any(
+            not isinstance(value, DistributedType)
+            or value.partial is None
+            or value.partial.reduce_op.value != required_partial_reduce_op
+            for value in output_types
+        ):
             return False
     if contract.get("requires_partial_axes_match_input_reduction_ownership", False):
         if not isinstance(source_type, DistributedType):
@@ -156,30 +189,48 @@ def _applicable(context: TIRMicroKernelContext, contract) -> bool:
         if not isinstance(reduction_policy, SBPSplit):
             return False
         reduction_axes = frozenset(reduction_policy.hierarchy_axes)
-        if any(not isinstance(value, DistributedType) or value.partial is None
-               or value.partial.reduce_op is not ReduceOp.SUM or frozenset(value.partial.axes) != reduction_axes
-               for value in output_types):
+        if any(
+            not isinstance(value, DistributedType)
+            or value.partial is None
+            or value.partial.reduce_op is not ReduceOp.SUM
+            or frozenset(value.partial.axes) != reduction_axes
+            for value in output_types
+        ):
             return False
     if contract.get("requires_matching_packed_extents", False):
-        if (weight_type.rank != 3 or len(weight_lanes) != 3 or any(not value.is_fixed for value in weight_type.shape)
-                or source_shape[-1] <= 0 or weight_type.shape[1].fixed_value * weight_lanes[1] * weight_lanes[2]
-                != observed["required_local_reduction_extent"]
-                or weight_type.shape[2].fixed_value * weight_lanes[0] != observed["required_local_output_extent"]):
+        if (
+            weight_type.rank != 3 or len(weight_lanes) != 3
+            or any(not value.is_fixed for value in weight_type.shape)
+            or source_shape[-1] <= 0
+            or weight_type.shape[1].fixed_value * weight_lanes[1] * weight_lanes[2]
+            != observed["required_local_reduction_extent"]
+            or weight_type.shape[2].fixed_value * weight_lanes[0]
+            != observed["required_local_output_extent"]
+        ):
             return False
     if contract.get("requires_uniform_full_input_reduction_tiles", False):
         if not isinstance(source_type, DistributedType):
             return False
         reduction_policy = source_type.axis_policies[-1]
-        if (not isinstance(reduction_policy, SBPSplit) or not source.shape[-1].is_fixed):
+        if (
+            not isinstance(reduction_policy, SBPSplit)
+            or not source.shape[-1].is_fixed
+        ):
             return False
         reduction_owner_count = 1
         for axis in reduction_policy.hierarchy_axes:
             reduction_owner_count *= source_type.placement.hierarchy[axis]
-        if (source.shape[-1].fixed_value * _lane_count(source.dtype)
-                != source_shape[-1] * _lane_count(source.dtype) * reduction_owner_count):
+        if (
+            source.shape[-1].fixed_value * _lane_count(source.dtype)
+            != source_shape[-1]
+            * _lane_count(source.dtype)
+            * reduction_owner_count
+        ):
             return False
-    if contract.get("requires_none_optional_inputs", False) and any(not isinstance(parameters[name].type, NoneType)
-                                                                    for name in dispatch.arguments[2:]):
+    if contract.get("requires_none_optional_inputs", False) and any(
+        not isinstance(parameters[name].type, NoneType)
+        for name in dispatch.arguments[2:]
+    ):
         return False
     return True
 

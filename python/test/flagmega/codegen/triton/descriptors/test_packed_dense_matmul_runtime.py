@@ -15,19 +15,26 @@ def test_packed_descriptor_pipeline_matches_torch_on_sm90(
     packed_descriptor_pipeline_module,
 ):
     torch = pytest.importorskip("torch")
-    if (not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0)):
+    if (
+        not torch.cuda.is_available()
+        or torch.cuda.get_device_capability() != (9, 0)
+    ):
         pytest.skip("SM90 CUDA is required")
 
     generator = torch.Generator().manual_seed(20260904)
-    weight = torch.randn((2048, 2048), generator=generator, dtype=torch.bfloat16) / 32
+    weight = torch.randn(
+        (2048, 2048), generator=generator, dtype=torch.bfloat16
+    ) / 32
     checkpoint = MemoryCheckpoint(
         {},
-        {"weight": TensorInfo(
-            "weight",
-            DType.BFLOAT16,
-            (2048, 2048),
-            "memory",
-        )},
+        {
+            "weight": TensorInfo(
+                "weight",
+                DType.BFLOAT16,
+                (2048, 2048),
+                "memory",
+            )
+        },
         {"weight": weight},
     )
     artifact = write_artifact(
@@ -38,7 +45,9 @@ def test_packed_descriptor_pipeline_matches_torch_on_sm90(
         emit_executable=True,
     )
     runtime = load(artifact, device="cuda:0")
-    value = torch.randn((1, 2048), generator=generator, dtype=torch.bfloat16).to("cuda:0") / 8
+    value = torch.randn(
+        (1, 2048), generator=generator, dtype=torch.bfloat16
+    ).to("cuda:0") / 8
     output = torch.empty((1, 2048), dtype=torch.bfloat16, device="cuda:0")
 
     runtime.prepare(value, output=output)

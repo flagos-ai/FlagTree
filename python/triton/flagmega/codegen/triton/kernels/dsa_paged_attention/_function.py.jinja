@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% macro score_tile(call) %}
+{% macro score_tile(call) %}
             token_slot = token_start + topk_offsets
             logical_token = tl.load({{ call.topk }} + token_slot * {{ call.topk_stride }},
                                     mask=token_slot < {{ call.topk_width }}, other=-1).to(tl.int32)

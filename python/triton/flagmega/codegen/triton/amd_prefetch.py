@@ -72,16 +72,14 @@ def _prefetch_event(definition: Mapping, calls: Sequence[Mapping]) -> dict | Non
     weight = _input_buffer(call, "q_weight_qkv_fused")
     if weight is None:
         return None
-    field = next(
-        (f for f in plan["bindings"] if str(f["formal"]) == str(weight["runtime_argument"]) and "record_column" in f),
-        None)
+    field = next((f for f in plan["bindings"]
+                  if str(f["formal"]) == str(weight["runtime_argument"]) and "record_column" in f), None)
     if field is None:
         return None
     width = int(plan["record_width"])
     rows = plan["calls"]
     offsets = [int(row["record_offset"]) for row in rows]
-    if (len(rows) < 2 or len({row["caller"]
-                              for row in rows}) != 1
+    if (len(rows) < 2 or len({row["caller"] for row in rows}) != 1
             or offsets != list(range(offsets[0], offsets[0] + width * len(rows), width))):
         return None
     index = _last_collective_index(events)
@@ -94,16 +92,16 @@ def _prefetch_event(definition: Mapping, calls: Sequence[Mapping]) -> dict | Non
         return None
     if slab_bytes <= 0:
         return None
-    next_column = width + int(field["record_column"])
-    displacement = (f"tl.load({OFFSET_TABLE}.to(tl.pointer_type(tl.int64)) + "
-                    f"{CALL_RECORD} + {next_column}, volatile=True)")
+    displacement = f"tl.load({CALL_RECORD} + {width + int(field['record_column'])}, volatile=True)"
     if int(field.get("byte_offset", 0)):
         displacement = f"({displacement} + {int(field['byte_offset'])})"
     nbytes = min(slab_bytes, MAX_PREFETCH_BYTES)
     return {
         "kind": "prefetch",
         "call": str(qkv_events[0]["call"]),
-        "guard": f"{CALL_RECORD} != {offsets[-1]}",
+        # Triton rejects pointer comparisons, so compare the record addresses.
+        "guard": (f"{CALL_RECORD}.to(tl.int64, bitcast=True) != "
+                  f"({OFFSET_TABLE}.to(tl.pointer_type(tl.int64)) + {offsets[-1]}).to(tl.int64, bitcast=True)"),
         "base": f"{pool_parameter(str(field['storage']))}.to(tl.pointer_type(tl.uint8)) + {displacement}",
         "slab_bytes": slab_bytes,
         "chunks": -(-nbytes // PREFETCH_CHUNK_BYTES),
@@ -182,13 +180,13 @@ def _split_k_tile_prefetch(call: Mapping, mesh: Mapping) -> dict | None:
 
     def mapping(code, owner, local_name, capacity):
         value = eval(code, shard_names(owner), {local_name: np.arange(capacity, dtype=np.int64)})
-        return np.broadcast_to(np.asarray(value, dtype=np.int64), (capacity, ))
+        return np.broadcast_to(np.asarray(value, dtype=np.int64), (capacity,))
 
     def weight_offsets(k, n):
         return np.asarray(eval(w_code, {"__builtins__": {}}, {"__k": k, "__n": n}), dtype=np.int64)
 
     def with_axis(owner, axis, value):
-        return owner[:axis] + (value, ) + owner[axis + 1:]
+        return owner[:axis] + (value,) + owner[axis + 1:]
 
     owners = list(itertools.product(*(range(extent) for extent in extents)))
     k_of = {owner: mapping(k_code, owner, "dense_local_k_offsets", k_capacity) for owner in owners}
@@ -197,8 +195,11 @@ def _split_k_tile_prefetch(call: Mapping, mesh: Mapping) -> dict | None:
     # Owners reading the same K slice share every weight tile: they form a row,
     # indexed by the row axes; the remaining (rank) axes order its members.
     origin = owners[0]
-    row_axes = tuple(axis for axis, extent in enumerate(extents) if any(
-        not np.array_equal(k_of[origin], k_of[with_axis(origin, axis, value)]) for value in range(1, extent)))
+    row_axes = tuple(
+        axis for axis, extent in enumerate(extents)
+        if any(not np.array_equal(k_of[origin], k_of[with_axis(origin, axis, value)])
+               for value in range(1, extent))
+    )
     rank_axes = tuple(axis for axis, extent in enumerate(extents) if extent > 1 and axis not in row_axes)
     if not rank_axes:
         return None
@@ -218,8 +219,9 @@ def _split_k_tile_prefetch(call: Mapping, mesh: Mapping) -> dict | None:
         members = [owner for owner in owners if row_of(owner) == row]
         k_groups = [np.unique(tile // 16) * 16 for tile in k_of[row].reshape(k_tiles, block_k)]
         for n_tile in range(n_tiles):
-            n_groups = np.unique(
-                np.concatenate([n_of[owner][n_tile * tile_n:(n_tile + 1) * tile_n] // 8 for owner in members])) * 8
+            n_groups = np.unique(np.concatenate([
+                n_of[owner][n_tile * tile_n:(n_tile + 1) * tile_n] // 8 for owner in members
+            ])) * 8
             for k_tile in range(k_tiles):
                 first = weight_offsets(k_groups[k_tile][None, :], n_groups[:, None])
                 last = weight_offsets(k_groups[k_tile][None, :] + 15, n_groups[:, None] + 7)
@@ -249,8 +251,8 @@ def _split_k_tile_prefetch(call: Mapping, mesh: Mapping) -> dict | None:
     n_stride = starts[base_row, 1, 0] - base if n_tiles > 1 else 0
     row_strides = {axis: starts[with_axis(base_row, axis, 1), 0, 0] - base for axis in row_axes}
     for (row, n_tile, k_tile), start in starts.items():
-        expected = (base + n_tile * n_stride + k_tile * k_stride + sum(row_strides[axis] * row[axis]
-                                                                       for axis in row_axes))
+        expected = (base + n_tile * n_stride + k_tile * k_stride
+                    + sum(row_strides[axis] * row[axis] for axis in row_axes))
         if start != expected:
             return None
 

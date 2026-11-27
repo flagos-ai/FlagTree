@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}@triton.jit
+@triton.jit
 def _flagmega_argmax_combine(left_value, left_index, right_value, right_index):
     # Match torch.argmax: NaN precedes every numeric value; ties (including
     # two NaNs and infinities) select the lowest logical index, not owner ID.

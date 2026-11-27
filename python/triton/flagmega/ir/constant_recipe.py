@@ -79,12 +79,14 @@ def constant_recipe_fingerprint(nodes: tuple[Node, ...], outputs: tuple[str, ...
 
     # Keep the name-independent fingerprint byte-for-byte, while sharing
     # immutable type/effect encodings across large constant islands.
-    encoded_nodes = ('{"attrs":' + _canonical_json(_plain(node.attrs)) + ',"effect":' +
-                     _semantic_component_json(node.effect) + ',"inputs":' +
-                     _canonical_json([positions[value]
-                                      for value in node.inputs]) + ',"op":' + _canonical_json(node.op) + ',"type":' +
-                     _semantic_component_json(node.type) + '}'
-                     for node in nodes)
+    encoded_nodes = (
+        '{"attrs":' + _canonical_json(_plain(node.attrs))
+        + ',"effect":' + _semantic_component_json(node.effect)
+        + ',"inputs":' + _canonical_json([positions[value] for value in node.inputs])
+        + ',"op":' + _canonical_json(node.op)
+        + ',"type":' + _semantic_component_json(node.type) + '}'
+        for node in nodes
+    )
     encoded = '{"nodes":[' + ",".join(encoded_nodes) + '],"outputs":' + _canonical_json(
         [positions[value] for value in outputs]) + "}"
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

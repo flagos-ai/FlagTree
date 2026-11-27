@@ -41,7 +41,9 @@ class Call(OpDefinition):
         required = {"result_type", "callee"}
         allowed = required | {"effect"}
         if not required.issubset(attributes) or not set(attributes).issubset(allowed):
-            raise IRSchemaError("F.builtin.call requires result_type and callee, with optional effect.")
+            raise IRSchemaError(
+                "F.builtin.call requires result_type and callee, with optional effect."
+            )
         result_type = attributes["result_type"]
         effect = attributes.get("effect", PURE)
         callee = str(attributes["callee"])
@@ -76,7 +78,7 @@ class Call(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(notes=(f"call @{node.attrs['callee']}", ))
+        return OpCost(notes=(f"call @{node.attrs['callee']}",))
 
     @classmethod
     def python_call(cls, node: Node) -> PythonCall:

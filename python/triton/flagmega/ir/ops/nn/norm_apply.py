@@ -9,6 +9,7 @@ from dataclasses import replace
 from math import prod
 
 from triton.flagmega.errors import IRSchemaError
+from triton.flagmega.ir.ops._compute_profile import normalize_compute_profile, require_host_reference, verify_complete_f32
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.distributed_type import SBPBroadCast, SBPPartial
 from triton.flagmega.ir.model import DistributedType, IRType, Node, TensorType
@@ -48,6 +49,10 @@ class NormApply(OpDefinition):
     and scaling. Intermediate and final input-dtype rounding use this dtype;
     ``output_dtype`` can then convert that rounded result. Defaults preserve
     the physical value dtype and existing checkpoint semantics.
+
+    ``ggml_f32_v1`` consumes F32 mean-square statistics, not additive sums.
+    It uses F32 sqrt, reciprocal, numerator and weight products in that order.
+    Zero bias is an identity without another addition, preserving signed zero.
     """
     value = input_parameter(is_tensor(), name="input")
     stats = input_parameter(is_tensor())
@@ -60,11 +65,13 @@ class NormApply(OpDefinition):
     output_dtype = attribute_parameter(default=None)
     input_dtype = attribute_parameter(default=None)
     math_mode = attribute_parameter(default="fast")
-    inplace_input_parameters = (value, )
+    compute_profile = attribute_parameter(default="default")
+    inplace_input_parameters = (value,)
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
         attrs = super().normalize_attrs(attributes)
+        profile = normalize_compute_profile(attrs, "NormApply", supported="ggml_f32_v1")
         axis = attrs["axis"]
         if isinstance(axis, bool) or not isinstance(axis, int):
             raise IRSchemaError("NormApply axis must be an integer.")
@@ -86,11 +93,13 @@ class NormApply(OpDefinition):
             if dtype not in {DType.BFLOAT16, DType.FLOAT32}:
                 raise IRSchemaError(f"NormApply {name} must be bfloat16 or float32.")
             optional_dtypes[name] = dtype.value
-        return {
-            **optional_dtypes, **({"math_mode": attrs["math_mode"]} if attrs["math_mode"] != "fast" else {}), "axis":
-            axis, "epsilon": epsilon, "use_mean": bool(attrs["use_mean"]), "round_before_scale":
-            attrs["round_before_scale"]
-        }
+        if profile and (attrs["use_mean"] or attrs["math_mode"] != "fast"
+                        or any(dtype != "float32" for dtype in optional_dtypes.values())):
+            raise IRSchemaError("NormApply ggml_f32_v1 requires F32 RMS mean-square statistics without precision overrides.")
+        return {**optional_dtypes, **profile,
+                **({"math_mode": attrs["math_mode"]} if attrs["math_mode"] != "fast" else {}),
+                "axis": axis, "epsilon": epsilon, "use_mean": bool(attrs["use_mean"]),
+                "round_before_scale": attrs["round_before_scale"]}
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -103,11 +112,21 @@ class NormApply(OpDefinition):
         scale = tensor_of(scale_type)
         bias = tensor_of(bias_type)
         axis = normalize_axis(int(attrs["axis"]), value.rank)
+        profile = attrs.get("compute_profile", "default")
+        source = cls.stats.read(inputs)
+        if source.op == "nn.norm_stats" and source.attrs.get("compute_profile", "default") != profile:
+            raise IRSchemaError("NormApply and NormStats compute profiles must match.")
+        if profile != "default":
+            for parameter in cls.input_parameters:
+                verify_complete_f32(parameter.type_of(inputs), "NormApply")
+            if axis != value.rank - 1:
+                raise IRSchemaError("NormApply ggml_f32_v1 normalizes the final axis.")
         if not all(is_float_dtype(item.dtype) for item in (value, scale, bias)):
             raise IRSchemaError("NormApply input, scale and bias must be floating point.")
         expected_stats = stats_tensor_type(value, axis, bool(attrs["use_mean"]))
         if stats != expected_stats:
-            raise IRSchemaError(f"NormApply stats type {stats!r} does not match expected {expected_stats!r}.")
+            raise IRSchemaError(
+                f"NormApply stats type {stats!r} does not match expected {expected_stats!r}.")
         _require_suffix_parameter(value, scale, axis, "scale")
         _require_suffix_parameter(value, bias, axis, "bias")
         output = value
@@ -118,7 +137,9 @@ class NormApply(OpDefinition):
                 dtype = VectorType(dtype, value.dtype.lanes)
             output = replace(value, dtype=dtype)
         distributed = tuple(
-            isinstance(item, DistributedType) for item in (value_type, stats_type, scale_type, bias_type))
+            isinstance(item, DistributedType)
+            for item in (value_type, stats_type, scale_type, bias_type)
+        )
         if not any(distributed):
             return output
         if not all(distributed):
@@ -129,19 +150,25 @@ class NormApply(OpDefinition):
         assert isinstance(bias_type, DistributedType)
         if len({item.placement for item in (value_type, stats_type, scale_type, bias_type)}) != 1:
             raise IRSchemaError("NormApply argument placements must be equal.")
-        if any(item.partial is not None or any(isinstance(policy, SBPPartial)
-                                               for policy in item.axis_policies)
-               for item in (value_type, stats_type, scale_type, bias_type)):
+        if any(
+            item.partial is not None
+            or any(isinstance(policy, SBPPartial) for policy in item.axis_policies)
+            for item in (value_type, stats_type, scale_type, bias_type)
+        ):
             raise IRSchemaError("NormApply requires non-partial input, stats, scale and bias.")
-        if len(stats_type.axis_policies) != value.rank + 1 or not isinstance(stats_type.axis_policies[0], SBPBroadCast):
+        if len(stats_type.axis_policies) != value.rank + 1 or not isinstance(
+            stats_type.axis_policies[0], SBPBroadCast
+        ):
             raise IRSchemaError("NormApply stats policies must match NormStats output rank.")
         for index, input_policy in enumerate(value_type.axis_policies):
             stats_policy = stats_type.axis_policies[index + 1]
             if index < axis:
                 if input_policy != stats_policy:
-                    raise IRSchemaError(f"NormApply stats policy on outer axis {index} must match the input.")
+                    raise IRSchemaError(
+                        f"NormApply stats policy on outer axis {index} must match the input.")
             elif not isinstance(stats_policy, SBPBroadCast):
-                raise IRSchemaError(f"NormApply stats policy on normalized axis {index} must be broadcast.")
+                raise IRSchemaError(
+                    f"NormApply stats policy on normalized axis {index} must be broadcast.")
         parameter_rank = value.rank - axis
         if scale.rank != parameter_rank or bias.rank != parameter_rank:
             raise IRSchemaError("Distributed NormApply parameters must have normalized-suffix rank.")
@@ -155,6 +182,7 @@ class NormApply(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
+        require_host_reference(node)
         input_type = tensor_of(context.types[cls.value.read(node.inputs)])
         scale_type = tensor_of(context.types[cls.scale.read(node.inputs)])
         bias_type = tensor_of(context.types[cls.bias.read(node.inputs)])
@@ -188,7 +216,7 @@ class NormApply(OpDefinition):
             flops=None if elements is None else elements * (7 if node.attrs["use_mean"] else 5),
             bytes_read=None,
             bytes_written=tensor_nbytes(output),
-            notes=("normalization-apply", ),
+            notes=("normalization-apply",),
         )
 
     @classmethod
@@ -199,21 +227,29 @@ class NormApply(OpDefinition):
         return_type: IRType,
     ) -> OpCostFactors | None:
         tensors = tuple(
-            _local_cost_tensor(value) for value in (
+            _local_cost_tensor(value)
+            for value in (
                 cls.value.type_of(inputs),
                 cls.stats.type_of(inputs),
                 cls.scale.type_of(inputs),
                 cls.bias.type_of(inputs),
                 return_type,
-            ))
-        if any(not dimension.is_fixed for tensor in tensors for dimension in tensor.shape):
+            )
+        )
+        if any(
+            not dimension.is_fixed
+            for tensor in tensors
+            for dimension in tensor.shape
+        ):
             return None
         input_tensor, stats_tensor, scale_tensor, bias_tensor, output_tensor = tensors
         input_elements = prod(dimension.fixed_value for dimension in input_tensor.shape)
         return OpCostFactors(
             cpu_cycles=input_elements * (7 if attrs["use_mean"] else 5),
             block_local_memory_load_bytes=sum(
-                _fixed_tensor_nbytes(tensor) for tensor in (input_tensor, stats_tensor, scale_tensor, bias_tensor)),
+                _fixed_tensor_nbytes(tensor)
+                for tensor in (input_tensor, stats_tensor, scale_tensor, bias_tensor)
+            ),
             block_local_memory_store_bytes=_fixed_tensor_nbytes(output_tensor),
         )
 

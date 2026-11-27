@@ -1,8 +1,7 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: dense_matmul/packed_k_major_gemv_norm_stats platform=generic
+# flagmega-kernel: dense_matmul/packed_k_major_gemv_norm_stats platform=generic
 {# Portable packed GEMV over one local shard with residual and RMS statistics.
 
-   Like the reference normal PackedMatMulNormStats TIR, the kernel sees only dense
+   Like nncase's normal PackedMatMulNormStats TIR, the kernel sees only dense
    local buffers.  A broadcast N axis produces a materialized statistic; an N
    split produces one Sum-partial statistic per participating owner.  Boxing
    and later consumers own any required inter-owner reduction. #}

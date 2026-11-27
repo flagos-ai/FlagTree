@@ -16,24 +16,35 @@ def test_packed_qkv_mma_pipeline_matches_torch_on_sm90(
     packed_qkv_mma_pipeline_module,
 ):
     torch = pytest.importorskip("torch")
-    if (not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0)):
+    if (
+        not torch.cuda.is_available()
+        or torch.cuda.get_device_capability() != (9, 0)
+    ):
         pytest.skip("SM90 CUDA is required")
 
     generator = torch.Generator().manual_seed(20260904)
     weights = {
-        "q_weight": torch.randn((2048, 2048), generator=generator, dtype=torch.bfloat16) / 32,
-        "k_weight": torch.randn((2048, 1024), generator=generator, dtype=torch.bfloat16) / 32,
-        "v_weight": torch.randn((2048, 1024), generator=generator, dtype=torch.bfloat16) / 32,
+        "q_weight": torch.randn(
+            (2048, 2048), generator=generator, dtype=torch.bfloat16
+        ) / 32,
+        "k_weight": torch.randn(
+            (2048, 1024), generator=generator, dtype=torch.bfloat16
+        ) / 32,
+        "v_weight": torch.randn(
+            (2048, 1024), generator=generator, dtype=torch.bfloat16
+        ) / 32,
     }
     checkpoint = MemoryCheckpoint(
         {},
-        {name: TensorInfo(
-            name,
-            DType.BFLOAT16,
-            tuple(value.shape),
-            "memory",
-        )
-         for name, value in weights.items()},
+        {
+            name: TensorInfo(
+                name,
+                DType.BFLOAT16,
+                tuple(value.shape),
+                "memory",
+            )
+            for name, value in weights.items()
+        },
         weights,
     )
     artifact = write_artifact(
@@ -44,13 +55,20 @@ def test_packed_qkv_mma_pipeline_matches_torch_on_sm90(
         emit_executable=True,
     )
     runtime = load(artifact, device="cuda:0")
-    value = (torch.randn((1, 2048), generator=generator, dtype=torch.bfloat16).to("cuda:0") / 8)
+    value = (
+        torch.randn((1, 2048), generator=generator, dtype=torch.bfloat16)
+        .to("cuda:0")
+        / 8
+    )
     outputs = (
         torch.empty((1, 2048), dtype=torch.bfloat16, device="cuda:0"),
         torch.empty((1, 1024), dtype=torch.bfloat16, device="cuda:0"),
         torch.empty((1, 1024), dtype=torch.bfloat16, device="cuda:0"),
     )
-    expected = tuple(value @ weights[name].to("cuda:0") for name in ("q_weight", "k_weight", "v_weight"))
+    expected = tuple(
+        value @ weights[name].to("cuda:0")
+        for name in ("q_weight", "k_weight", "v_weight")
+    )
 
     runtime.prepare(value, *outputs)
     runtime.run_into(value, *outputs)
@@ -71,10 +89,9 @@ def test_packed_qkv_mma_uses_the_execution_warp_count(tmp_path, warps):
     target = NvidiaSm90Target()
     model = target.triton_implementation_model
     identity = "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline"
-    model = replace(
-        model, implementations=tuple(
-            replace(value, parameters={**value.parameters, "compute_num_warps": warps}) if value.id ==
-            identity else value for value in model.implementations))
+    model = replace(model, implementations=tuple(
+        replace(value, parameters={**value.parameters, "compute_num_warps": warps})
+        if value.id == identity else value for value in model.implementations))
     module = _packed_qkv_mma_pipeline_module(target=NvidiaSm90Target(triton_implementation_model=model))
     from triton.flagmega.codegen.triton.tir_package import describe_tir_package
     assert describe_tir_package(module)["num_warps"] == warps

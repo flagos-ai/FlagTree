@@ -7,14 +7,10 @@ import pytest
 from triton.flagmega.artifacts import write_artifact
 from triton.flagmega.runtime import load
 
-
 @pytest.mark.parametrize("transpose_b", [False, True])
 @pytest.mark.parametrize("dag", [False, True])
 def test_reused_descriptor_gemv_matches_torch_on_sm90(
-    tmp_path,
-    transpose_b,
-    dag,
-    two_call_descriptor_module,
+    tmp_path, transpose_b, dag, two_call_descriptor_module,
 ):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
@@ -29,15 +25,16 @@ def test_reused_descriptor_gemv_matches_torch_on_sm90(
     runtime = load(artifact, device="cuda:0")
     stream = torch.cuda.Stream() if dag else None
     value = torch.randn((1, 128), dtype=torch.bfloat16, device="cuda:0")
-    first_weight = torch.randn((128, 128), dtype=torch.bfloat16, device="cuda:0") / 8
-    second_weight = torch.randn((128, 128), dtype=torch.bfloat16, device="cuda:0") / 8
+    first_weight = torch.randn(
+        (128, 128), dtype=torch.bfloat16, device="cuda:0") / 8
+    second_weight = torch.randn(
+        (128, 128), dtype=torch.bfloat16, device="cuda:0") / 8
     output = torch.empty((1, 128), dtype=torch.bfloat16, device="cuda:0")
 
     runtime.prepare(value, first_weight, second_weight, output=output)
     if stream is not None:
         stream.wait_stream(torch.cuda.current_stream())
-    runtime.run_into(output, value, first_weight, second_weight,
-                     stream=stream.cuda_stream if stream is not None else None)
+    runtime.run_into(output, value, first_weight, second_weight, stream=stream.cuda_stream if stream is not None else None)
     torch.cuda.synchronize()
 
     first_rhs = first_weight.T if transpose_b else first_weight
@@ -54,9 +51,9 @@ def test_reused_descriptor_gemv_matches_torch_on_sm90(
     torch.testing.assert_close(output, expected, rtol=3e-2, atol=3e-2)
     if dag:
         for mutation in range(6):
-            value = (torch.randint(-4, 5, (1, 128), device="cuda").float() / 16).bfloat16()
-            first_weight = (torch.randint(-4, 5, (128, 128), device="cuda").float() / 16).bfloat16()
-            second_weight = torch.zeros_like(first_weight) if mutation == 5 else first_weight.flip((0, )).contiguous()
+            value = (torch.randint(-4, 5, (1, 128), device="cuda").float()/16).bfloat16()
+            first_weight = (torch.randint(-4, 5, (128, 128), device="cuda").float()/16).bfloat16()
+            second_weight = torch.zeros_like(first_weight) if mutation == 5 else first_weight.flip((0,)).contiguous()
             stream.wait_stream(torch.cuda.current_stream())
             runtime.run_into(output, value, first_weight, second_weight, stream=stream.cuda_stream)
             torch.cuda.synchronize()

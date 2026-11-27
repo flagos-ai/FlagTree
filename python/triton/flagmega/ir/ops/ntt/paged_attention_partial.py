@@ -26,7 +26,8 @@ from triton.flagmega.ir.ops.nn.paged_attention import (
     paged_attention_scalar_value,
 )
 from triton.flagmega.ir.ops.ntt._paged_attention_split import (
-    create_partial_state_type, )
+    create_partial_state_type,
+)
 from triton.flagmega.ir.type_pattern import has_dtype, has_rank, is_ref, is_tensor
 
 
@@ -39,8 +40,7 @@ from triton.flagmega.ir.type_pattern import has_dtype, has_rank, is_ref, is_tens
 class PagedAttentionPartial(OpDefinition):
     q = input_parameter(is_tensor() & has_rank(3))
     state = input_parameter(
-        is_ref(),
-        parameter_kind=ParameterKind.ATTRIBUTE,
+        is_ref(), parameter_kind=ParameterKind.ATTRIBUTE,
         memory_effect=MemoryEffect.CHIP_READ.partitioned_by_argument(2),
     )
     layer_id = input_parameter(
@@ -63,7 +63,9 @@ class PagedAttentionPartial(OpDefinition):
         axis = attrs["split_hierarchy_axis"]
         count = attrs["split_count"]
         if isinstance(axis, bool) or not isinstance(axis, int) or axis < 0:
-            raise IRSchemaError("PagedAttentionPartial split_hierarchy_axis must be non-negative.")
+            raise IRSchemaError(
+                "PagedAttentionPartial split_hierarchy_axis must be non-negative."
+            )
         if isinstance(count, bool) or not isinstance(count, int) or count <= 1:
             raise IRSchemaError("PagedAttentionPartial split_count must exceed one.")
         result.update({
@@ -109,18 +111,23 @@ class PagedAttentionPartial(OpDefinition):
         stats_shape = list(attention.shape)
         stats_shape[dim_axis] = 1
         return (
-            context.torch.zeros(stats_shape, dtype=context.torch.float32, device=attention.device),
-            context.torch.ones(stats_shape, dtype=context.torch.float32, device=attention.device),
+            context.torch.zeros(
+                stats_shape, dtype=context.torch.float32, device=attention.device
+            ),
+            context.torch.ones(
+                stats_shape, dtype=context.torch.float32, device=attention.device
+            ),
             attention,
         )
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         if not isinstance(node.type, TupleType):
-            return OpCost(notes=("invalid-paged-attention-partial-type", ))
+            return OpCost(notes=("invalid-paged-attention-partial-type",))
         writes = tuple(tensor_nbytes(tensor_of(field)) for field in node.type.fields)
-        bytes_written = None if any(value is None for value in writes) else sum(value for value in writes
-                                                                                if value is not None)
+        bytes_written = None if any(value is None for value in writes) else sum(
+            value for value in writes if value is not None
+        )
         return OpCost(
             bytes_read=None,
             bytes_written=bytes_written,
@@ -128,7 +135,7 @@ class PagedAttentionPartial(OpDefinition):
             synchronizations=None,
             kind=CostKind.ANALYTIC,
             model="flagmega.paged-attention-partial/v1",
-            notes=("split-kv-online-softmax-state", ),
+            notes=("split-kv-online-softmax-state",),
         )
 
 

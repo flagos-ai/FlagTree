@@ -23,12 +23,21 @@ class MemoryPoolFrame(TIRNode):
     def __post_init__(self) -> None:
         if not self.memory_space:
             raise IRSchemaError("MemoryPoolFrame requires a memory-space identity.")
-        if (isinstance(self.offset, bool) or isinstance(self.nbytes, bool) or self.offset < 0 or self.nbytes < 0
-                or (self.nbytes == 0 and self.offset != 0)):
-            raise IRSchemaError("MemoryPoolFrame requires non-negative bounds and zero offset "
-                                "when empty.")
+        if (
+            isinstance(self.offset, bool)
+            or isinstance(self.nbytes, bool)
+            or self.offset < 0
+            or self.nbytes < 0
+            or (self.nbytes == 0 and self.offset != 0)
+        ):
+            raise IRSchemaError(
+                "MemoryPoolFrame requires non-negative bounds and zero offset "
+                "when empty."
+            )
         if self.allocation is not None and not self.allocation:
-            raise IRSchemaError("MemoryPoolFrame allocation must be non-empty when present.")
+            raise IRSchemaError(
+                "MemoryPoolFrame allocation must be non-empty when present."
+            )
 
 
 __all__ = ["MemoryPoolFrame"]

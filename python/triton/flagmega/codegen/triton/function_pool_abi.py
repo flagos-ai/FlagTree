@@ -24,8 +24,7 @@ def bank_row_strides(module, plan):
     alone must not introduce another runtime row displacement.
     """
     dynamic_rows = {
-        row.id
-        for row in module.nodes
+        row.id for row in module.nodes
         if row.op in {"control.bank_get", "tir.bank_get"}
         and module.node_map[row.inputs[1]].op not in {"builtin.scalar_const", "tir.scalar_const"}
     }
@@ -69,23 +68,25 @@ def function_pool_origins(bindings, row_strides=None, *, entry=None):
         for argument in bindings[name]["arguments"]:
             if argument.get("runtime_value_kind", "pointer") != "pointer":
                 continue
-            origins = [_origin(bindings[caller], argument, event, row_strides) for caller, event in rows]
+            origins = [_origin(bindings[caller], argument, event, row_strides)
+                       for caller, event in rows]
             if any(origin is None for origin in origins):
                 continue
             if len({(origin[0], origin[2]) for origin in origins}) != 1:
                 continue
-            alignment = gcd(*(gcd(origin[5], origin[4]) if origin[4] else origin[5] for origin in origins))
+            alignment = gcd(*(gcd(origin[5], origin[4]) if origin[4] else origin[5]
+                              for origin in origins))
             origins_by_name[argument["name"]] = {
                 "schema": "flagmega.closed-function-pool-origin/v1",
-                "storage": origins[0][0],
-                "alignment_bytes": alignment,
+                "storage": origins[0][0], "alignment_bytes": alignment,
                 "calls": tuple((caller, str(event["call"])) for caller, event in rows),
             }
         result[name] = origins_by_name
     return result
 
 
-def plan_function_pool_abis(bindings: Mapping[str, Mapping], row_strides: Mapping[str, int] | None = None,
+def plan_function_pool_abis(bindings: Mapping[str, Mapping],
+                            row_strides: Mapping[str, int] | None = None,
                             entry: str | None = None) -> tuple[dict, list]:
     """Prove each physical argument's origin at every closed direct call.
 
@@ -112,14 +113,16 @@ def plan_function_pool_abis(bindings: Mapping[str, Mapping], row_strides: Mappin
         callee = bindings[name]
         candidates = []
         for argument in (*callee["arguments"], *callee["pools"]):
-            origins = [_origin(bindings[caller], argument, event, row_strides) for caller, event in rows]
+            origins = [_origin(bindings[caller], argument, event, row_strides)
+                       for caller, event in rows]
             if any(origin is None for origin in origins):
                 continue
             if len({(origin[0], origin[2]) for origin in origins}) != 1:
                 continue
-            candidates.append(
-                (str(argument["name"]), origins[0][0], origins[0][2], [origin[3] for origin in origins], origins[0][4],
-                 gcd(*(origin[5] for origin in origins)), argument.get("runtime_value_kind", "pointer")))
+            candidates.append((str(argument["name"]), origins[0][0], origins[0][2],
+                               [origin[3] for origin in origins],
+                               origins[0][4], gcd(*(origin[5] for origin in origins)),
+                               argument.get("runtime_value_kind", "pointer")))
         roots = sorted({candidate[1] for candidate in candidates})
         # A dynamic bank-row displacement is required address semantics,
         # including when pooling does not reduce the signature's size.
@@ -129,10 +132,8 @@ def plan_function_pool_abis(bindings: Mapping[str, Mapping], row_strides: Mappin
         fields = []
         groups = []
         for formal, storage, dtype, offsets, row_stride, alignment, value_kind in candidates:
-            field = {
-                "formal": formal, "storage": storage, "scalar_dtype": dtype, "alignment_bytes":
-                gcd(alignment, row_stride) if row_stride else alignment
-            }
+            field = {"formal": formal, "storage": storage, "scalar_dtype": dtype,
+                     "alignment_bytes": gcd(alignment, row_stride) if row_stride else alignment}
             if value_kind == "scalar":
                 field["value_kind"] = "scalar"
             if row_stride:
@@ -165,32 +166,30 @@ def plan_function_pool_abis(bindings: Mapping[str, Mapping], row_strides: Mappin
                 continue
             offsets = groups[field["record_column"]][1]
             stride = offsets[1] - offsets[0]
-            if all(value == offsets[0] + index * stride for index, value in enumerate(offsets)):
+            if all(value == offsets[0] + index * stride
+                   for index, value in enumerate(offsets)):
                 field["record_affine"] = {
-                    "record_start": start,
-                    "record_width": width,
-                    "base": offsets[0],
-                    "stride": stride,
+                    "record_start": start, "record_width": width,
+                    "base": offsets[0], "stride": stride,
                     "records": len(offsets),
                 }
         for row in range(len(rows)):
             values.extend(anchor[row] for _, anchor in groups)
         plans[name] = {
-            "schema":
-            "flagmega.function-pool-abi/v2",
-            "bindings":
-            fields,
+            "schema": "flagmega.function-pool-abi/v2",
+            "bindings": fields,
             "pools": [{"storage": storage, "parameter": pool_parameter(storage)} for storage in roots],
-            "record_width":
-            width,
-            "calls": [{"caller": caller, "call": str(event["call"]), "record_offset": start + row * width}
+            "record_width": width,
+            "calls": [{"caller": caller, "call": str(event["call"]),
+                       "record_offset": start + row * width}
                       for row, (caller, event) in enumerate(rows)],
         }
     tables = [{"name": OFFSET_TABLE, "dtype": "int64", "values": values}] if values else []
     return plans, tables
 
 
-def _origin(caller: Mapping, argument: Mapping, event: Mapping, row_strides: Mapping[str, int] | None = None):
+def _origin(caller: Mapping, argument: Mapping, event: Mapping,
+            row_strides: Mapping[str, int] | None = None):
     pools = {str(pool["storage"]): pool for pool in caller["pools"]}
     if "buffer" in argument:
         edge = next((edge for edge in (*event["arguments"], *event["results"])
@@ -202,7 +201,8 @@ def _origin(caller: Mapping, argument: Mapping, event: Mapping, row_strides: Map
         pool = pools.get(storage)
         if (storage not in _POOLS or pool is None or not abi.get("pooled", False)
                 or str(edge["actual_runtime_argument"]) != str(pool["name"])
-                or int(abi.get("pool_scope_stride_bytes", 0)) or "view_byte_offset" in abi):
+                or int(abi.get("pool_scope_stride_bytes", 0))
+                or "view_byte_offset" in abi):
             return None
         dtype = str(abi["scalar_dtype"])
         offset = int(abi["pool_byte_offset"])
@@ -210,14 +210,15 @@ def _origin(caller: Mapping, argument: Mapping, event: Mapping, row_strides: Map
         if itemsize <= 0 or offset % itemsize:
             raise CodegenError("Function pool ABI requires scalar-aligned byte offsets.")
         stride = int((row_strides or {}).get("buffer:" + str(abi.get("buffer")),
-                                             (row_strides or {}).get(str(abi.get("physical_buffer")), 0)))
+                     (row_strides or {}).get(str(abi.get("physical_buffer")), 0)))
         alignment = abi.get("alignment_bytes", 1)
     else:
         storage = str(argument["storage"])
         pool = pools.get(storage)
         if storage not in _POOLS or pool is None or int(pool.get("scope_count", 1)) != 1:
             return None
-        frame = next((frame for frame in event["memory_pools"] if str(frame["memory_space"]) == storage), None)
+        frame = next((frame for frame in event["memory_pools"]
+                      if str(frame["memory_space"]) == storage), None)
         dtype = "uint8"
         offset = int(frame["offset"]) if frame is not None else 0
         # A pool frame is not a bank row, so it has no per-row stride.
@@ -250,9 +251,8 @@ def function_pool_aliases(plan: Mapping | None) -> dict[str, str]:
                 offset = (f"tl.load({OFFSET_TABLE}.to(tl.pointer_type(tl.int64)) + "
                           f"{CALL_RECORD} + {field['record_column']})")
             else:
-                if any(
-                        type(affine[name]) is not int
-                        for name in ("record_start", "record_width", "base", "stride", "records")):
+                if any(type(affine[name]) is not int for name in
+                       ("record_start", "record_width", "base", "stride", "records")):
                     raise CodegenError("Affine record proof requires integer parameters")
                 if affine["record_width"] != plan["record_width"] or affine["records"] != len(plan["calls"]):
                     raise CodegenError("Affine record proof must match its complete call domain")
@@ -273,13 +273,16 @@ def function_pool_aliases(plan: Mapping | None) -> dict[str, str]:
             # tl.cast normalizes constants and runtime scalars alike before
             # multiplying the byte stride in signed 64-bit arithmetic.
             displacement = f"tl.cast({ROW_INDEX}, tl.int64) * {stride}"
-            offset = (displacement if offset == "0" else f"({offset} + {displacement})")
+            offset = (displacement if offset == "0"
+                      else f"({offset} + {displacement})")
         base = f"{pool_parameter(field['storage'])}.to(tl.pointer_type(tl.uint8))"
         pointer = base if offset == "0" else f"({base} + {offset})"
         alignment = int(field.get("alignment_bytes", 1))
         if alignment > 1:
             pointer = f"tl.multiple_of({pointer}, {alignment})"
-        alias = (f"{pointer}.to(tl.pointer_type({emit_triton_scalar_type(str(field['scalar_dtype']))}))")
+        alias = (
+            f"{pointer}.to(tl.pointer_type({emit_triton_scalar_type(str(field['scalar_dtype']))}))"
+        )
         # A pooled address can back a by-value scalar formal. Preserve that
         # formal's value ABI when folding its physical allocation into a pool.
         aliases[str(field["formal"])] = f"tl.load({alias})" if field.get("value_kind") == "scalar" else alias
@@ -289,7 +292,8 @@ def function_pool_aliases(plan: Mapping | None) -> dict[str, str]:
 def function_pool_signature(signature, plan: Mapping | None, *, has_tables: bool):
     removed = set(function_pool_aliases(plan))
     retained = [value for value in signature if value not in removed]
-    if plan is not None and any(field.get("row_stride_bytes") for field in plan["bindings"]):
+    if plan is not None and any(
+            field.get("row_stride_bytes") for field in plan["bindings"]):
         retained.append(ROW_INDEX)
     if has_tables:
         retained.append(OFFSET_TABLE)
@@ -300,10 +304,11 @@ def function_pool_signature(signature, plan: Mapping | None, *, has_tables: bool
     return retained
 
 
-def function_pool_actuals(caller, call, plan: Mapping | None, actuals: Mapping[str, str], *, has_tables: bool,
-                          row_index: str | None = None):
+def function_pool_actuals(caller, call, plan: Mapping | None, actuals: Mapping[str, str], *,
+                          has_tables: bool, row_index: str | None = None):
     result = []
-    if plan is not None and any(field.get("row_stride_bytes") for field in plan["bindings"]):
+    if plan is not None and any(
+            field.get("row_stride_bytes") for field in plan["bindings"]):
         # One call site serves every trip, so the row this invocation reads is
         # only known from the loop's induction variable. A non-loop call still
         # reads row zero, but the callee casts this with ``.to(tl.int64)``, so
@@ -316,7 +321,8 @@ def function_pool_actuals(caller, call, plan: Mapping | None, actuals: Mapping[s
     pools = {str(pool["storage"]): str(pool["name"]) for pool in caller["pools"]}
     result.extend(actuals[pools[str(pool["storage"])]] for pool in plan["pools"])
     if plan["record_width"]:
-        row = next(row for row in plan["calls"] if row["caller"] == caller["function"] and row["call"] == call.call_id)
+        row = next(row for row in plan["calls"]
+                   if row["caller"] == caller["function"] and row["call"] == call.call_id)
         displacement = str(row["record_offset"])
         if row_index is not None:
             # A loop body has one call site but one record per iteration, so

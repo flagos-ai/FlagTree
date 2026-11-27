@@ -15,18 +15,17 @@ from triton.flagmega.ir.local_shard import local_shard_descriptor
 @pytest.mark.parametrize("policy", [
     fm.SBP.split_contiguous((0, 1), 5),
     fm.SBP.split_block_cyclic((1, 0), 3),
-    fm.SBP.split(fm.SplitStage.contiguous((0, ), 20), fm.SplitStage.block_cyclic((1, ), 3)),
-    fm.SBP.split(fm.SplitStage.block_cyclic((1, ), 6), fm.SplitStage.contiguous((0, ), 6)),
+    fm.SBP.split(fm.SplitStage.contiguous((0,), 20), fm.SplitStage.block_cyclic((1,), 3)),
+    fm.SBP.split(fm.SplitStage.block_cyclic((1,), 6), fm.SplitStage.contiguous((0,), 6)),
 ])
 def test_inverse_matches_staged_ragged_owner_maps(policy):
     placement = fm.Placement((2, 4, 2), "xyz", "bbb")
     value_type = fm.DistributedType(
-        fm.tensor_type("float32", (40, )),
-        (policy, ),
-        placement,
+        fm.tensor_type("float32", (40,)), (policy,), placement,
     )
-    local, owner = _compact_source_coordinates({"distributed_type": value_type.to_data(), "logical_shape": (40, )},
-                                               ("global_index", ))
+    local, owner = _compact_source_coordinates(
+        {"distributed_type": value_type.to_data(), "logical_shape": (40,)}, ("global_index",)
+    )
     seen = set()
     for x, y in product(range(2), range(4)):
         z = 0

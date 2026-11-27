@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""AutoDistributed search/extract/materialize pass."""
+"""nncase-shaped AutoDistributed search/extract/materialize pass."""
 
 from __future__ import annotations
 
@@ -37,7 +37,10 @@ class AutoDistributedPass:
             result,
             policy=target.distribution_policy.identity,
         )
-        old_ids = {point.id for point in module.selection_points if point.kind == "distribution"}
+        old_ids = {
+            point.id for point in module.selection_points
+            if point.kind == "distribution"
+        }
         metadata = dict(module.metadata)
         metadata["auto_distribution_proposal"] = {
             "schema": "flagmega.auto-distributed-proposal/v1",
@@ -49,8 +52,14 @@ class AutoDistributedPass:
         proposed = replace(
             module,
             metadata=metadata,
-            selection_points=tuple(point for point in module.selection_points if point.id not in old_ids) + points,
-            selections=tuple(record for record in module.selections if record.point_id not in old_ids) + records,
+            selection_points=tuple(
+                point for point in module.selection_points
+                if point.id not in old_ids
+            ) + points,
+            selections=tuple(
+                record for record in module.selections
+                if record.point_id not in old_ids
+            ) + records,
         )
         return verify_module(proposed)
 
@@ -66,7 +75,8 @@ class AutoDistributedPass:
             fixed = {
                 point.id.removeprefix("distribution."): module.selection_map[point.id].candidate_id
                 for point in module.selection_points
-                if point.kind == "distribution" and point.id.removeprefix("distribution.") in module.node_map
+                if point.kind == "distribution"
+                and point.id.removeprefix("distribution.") in module.node_map
                 and point.id in module.selection_map
             }
             graph = cls._build_graph(module, target, fixed_selections=fixed)
@@ -74,7 +84,11 @@ class AutoDistributedPass:
 
     @staticmethod
     def _apply_from_graph(module, target, graph):
-        proposal_points = {point.id: point for point in module.selection_points if point.kind == "distribution"}
+        proposal_points = {
+            point.id: point
+            for point in module.selection_points
+            if point.kind == "distribution"
+        }
         proposal_records = {
             point_id: module.selection_map[point_id]
             for point_id in proposal_points
@@ -95,7 +109,10 @@ class AutoDistributedPass:
                 f"missing_records={missing_records}, unexpected={unexpected}).",
                 stage=module.stage,
             )
-        fixed = {expected[point_id]: record.candidate_id for point_id, record in proposal_records.items()}
+        fixed = {
+            expected[point_id]: record.candidate_id
+            for point_id, record in proposal_records.items()
+        }
         result = solve_search_graph(
             graph,
             fixed_selections=fixed,
@@ -128,10 +145,12 @@ class AutoDistributedPass:
         if not placements:
             raise ValueError(f"Target {target.name!r} did not provide an AutoDistributed placement.")
         if len(placements) != 1:
-            raise ValueError("AutoDistributed requires exactly one selected Placement per "
-                             f"search, but target {target.name!r} provided {len(placements)}. "
-                             "Topology alternatives must be selected before distribution "
-                             "search rather than being silently ordered.")
+            raise ValueError(
+                "AutoDistributed requires exactly one selected Placement per "
+                f"search, but target {target.name!r} provided {len(placements)}. "
+                "Topology alternatives must be selected before distribution "
+                "search rather than being silently ordered."
+            )
         registry = DistributedCandidateProviderRegistry()
         target.register_auto_distributed_candidate_providers(registry)
         realization_policy = target.distributed_reshard_realization_policy()

@@ -18,25 +18,24 @@ def test_reusable_calls_preserve_borrowed_input_and_earlier_outputs(tmp_path, ne
     ty = fm.tensor_type("bfloat16", (1, 128))
 
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
             parameter = self.input("worker_parameter", ty, id="worker_parameter")
             doubled = fm.F.math.add(parameter, parameter, name="doubled")
-            self.function("worker", (parameter, ), (doubled, ), attrs={"reusable": True, "noinline": True})
+            self.function("worker", (parameter,), (doubled,), attrs={"reusable": True, "noinline": True})
             callee = "worker"
             if nested:
                 outer = self.input("outer_parameter", ty, id="outer_parameter")
                 result = fm.F.builtin.call(outer, result_type=ty, callee="worker", name="outer_call")
-                self.function("outer", (outer, ), (result, ), attrs={"reusable": True, "noinline": True})
+                self.function("outer", (outer,), (result,), attrs={"reusable": True, "noinline": True})
                 callee = "outer"
             value = self.input("value", ty, id="value")
             prepared = fm.F.math.add(value, value, name="prepared")
             first = fm.F.builtin.call(prepared, result_type=ty, callee=callee, name="first")
             second = fm.F.builtin.call(first, result_type=ty, callee=callee, name="second")
-            self.function("main", (value, ), (prepared, first, second))
+            self.function("main", (value,), (prepared, first, second))
 
     compiled = Compiler().compile(Graph().build()).module
     artifact = write_artifact(compiled, tmp_path / "borrowed", target="nvidia-sm90", emit_executable=True)

@@ -36,29 +36,26 @@ def _independent_reference(X, Gate, Weight, Stats, Out, Approx):
 
 
 def _module(dtype):
-
     class Graph(fm.Module):
-
         def forward(self):
             kind = fm.tensor_type("bfloat16", (16, 128))
             x = self.input("x", kind, id="x")
             gate = self.input("gate", kind, id="gate")
-            weight = self.input("weight", fm.tensor_type("bfloat16", (128, )), id="weight")
-            bias = self.input("bias", fm.tensor_type("bfloat16", (128, )), id="bias")
+            weight = self.input("weight", fm.tensor_type("bfloat16", (128,)), id="weight")
+            bias = self.input("bias", fm.tensor_type("bfloat16", (128,)), id="bias")
             stats = self.input("stats", fm.tensor_type("float32", (1, 16, 1)), id="stats")
-            out = fm.F.nn.gated_norm_apply(x, stats, weight, bias, gate, axis=-1, epsilon=1e-5, use_mean=False,
-                                           activation="sigmoid", output_dtype=dtype)
-            self.function("main", (x, gate, weight, bias, stats), (out, ))
+            out = fm.F.nn.gated_norm_apply(x, stats, weight, bias, gate, axis=-1,
+                epsilon=1e-5, use_mean=False, activation="sigmoid", output_dtype=dtype)
+            self.function("main", (x, gate, weight, bias, stats), (out,))
 
     return Graph(dialect="high_level", stage="imported", entry="main").build()
 
 
 def _compile(tmp_path, dtype, algorithm="sqrt_div"):
     base = NvidiaSm90Target().triton_implementation_model
-    catalog = replace(
-        base, implementations=tuple(
-            replace(item, parameters={**item.parameters, "compute_num_warps": 8, "inverse_std_algorithm": algorithm}
-                    ) if item.family == "gated_norm_apply" else item for item in base.implementations))
+    catalog = replace(base, implementations=tuple(replace(item,
+        parameters={**item.parameters, "compute_num_warps": 8, "inverse_std_algorithm": algorithm})
+        if item.family == "gated_norm_apply" else item for item in base.implementations))
     compiler = Compiler()
     compiler.target = NvidiaSm90Target(triton_implementation_model=catalog)
     module = compiler.compile(_module(dtype)).module
@@ -73,13 +70,13 @@ def test_selected_sqrt_div_matches_independent_reference(tmp_path, dtype):
         pytest.skip("requires SM90")
     generator = torch.Generator().manual_seed(20)
     values = {name: torch.randn((16, 128), generator=generator).bfloat16().cuda() for name in ("x", "gate")}
-    values["weight"] = torch.randn((128, ), generator=generator).bfloat16().cuda()
+    values["weight"] = torch.randn((128,), generator=generator).bfloat16().cuda()
     values["bias"] = torch.zeros_like(values["weight"])
     values["stats"] = torch.empty((1, 16, 1), device="cuda")
     expected = torch.empty((16, 128), dtype=getattr(torch, dtype), device="cuda")
     approximate = torch.empty_like(expected)
-    _independent_reference[(1, )](values["x"], values["gate"], values["weight"], values["stats"], expected, approximate,
-                                  num_warps=8)
+    _independent_reference[(1,)](values["x"], values["gate"], values["weight"], values["stats"],
+                                 expected, approximate, num_warps=8)
     assert torch.count_nonzero(expected != approximate), "fixture must distinguish the inverse algorithms"
     runtime = load(_compile(tmp_path, dtype), device="cuda:0")
     try:

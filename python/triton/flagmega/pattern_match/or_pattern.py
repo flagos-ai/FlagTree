@@ -9,7 +9,6 @@ from triton.flagmega.pattern_match.pattern import Pattern
 
 
 class OrPattern(Pattern):
-
     def __init__(self, lhs: Pattern, rhs: Pattern, name: str | None = None) -> None:
         super().__init__(name)
         self.lhs = lhs

@@ -12,7 +12,9 @@ from triton.flagmega.ir.ops.nn._norm import normalize_axis
 from triton.flagmega.ir.ops.ntt.add_norm_stats import AddNormStats
 from triton.flagmega.ir.ops.ntt._matmul_promotion import is_projection_promotion
 from triton.flagmega.passes.tir.projection_residual_norm import (
-    find_projection_residual_norm_matches, )
+    find_projection_residual_norm_matches,
+)
+
 
 _PARTIAL_CAPABLE_PRODUCERS = frozenset({
     "math.matmul",
@@ -37,7 +39,8 @@ class _Plan:
 def form_add_norm_stats(module: IRModule) -> IRModule:
     """Replace ``NormStats(Add(value, addend))`` with a tuple combine.
 
-    This is the flat-SSA counterpart of the reference ``FormPackedMatMulNormStatsCombinePass``.  Formation happens before
+    This is the flat-SSA counterpart of nncase's
+    ``FormPackedMatMulNormStatsCombinePass``.  Formation happens before
     AutoDistribution so the solver sees both results as one legal relation.
     A projection is preferred as the first operand because that position
     also admits Sum-partial materialization; other equal-shaped additions
@@ -53,17 +56,21 @@ def form_add_norm_stats(module: IRModule) -> IRModule:
         if node.op != "nn.norm_stats":
             continue
         source = node_map[node.inputs[0]]
-        if source.op == "math.add" or (source.op == "math.vectorized_binary"
-                                       and source.attrs.get("binary_op") == "add"):
+        if source.op == "math.add" or (
+            source.op == "math.vectorized_binary"
+            and source.attrs.get("binary_op") == "add"
+        ):
             stats_by_add.setdefault(source.id, []).append(node)
 
     plans: dict[str, _Plan] = {}
     stats_to_plan: dict[str, _Plan] = {}
     for add_id, stats_nodes in stats_by_add.items():
         add = node_map[add_id]
-        producers = tuple(node_map[input_id]
-                          for input_id in add.inputs
-                          if _projection_source(node_map[input_id], node_map).op in _PARTIAL_CAPABLE_PRODUCERS)
+        producers = tuple(
+            node_map[input_id]
+            for input_id in add.inputs
+            if _projection_source(node_map[input_id], node_map).op in _PARTIAL_CAPABLE_PRODUCERS
+        )
         producer = producers[0] if len(producers) == 1 else node_map[add.inputs[0]]
         addend = node_map[add.inputs[0] if add.inputs[1] == producer.id else add.inputs[1]]
         if producer.type != add.type or addend.type != add.type:
@@ -73,7 +80,8 @@ def form_add_norm_stats(module: IRModule) -> IRModule:
         for stats in stats_nodes:
             # AddNormStats permits partial-owner sums. It cannot express a
             # prescribed complete-vector tree, so retain that explicit op.
-            if (stats.attrs.get("reduction_group_size", 1) != 1
+            if (stats.attrs.get("compute_profile", "default") != "default"
+                    or stats.attrs.get("reduction_group_size", 1) != 1
                     or stats.attrs.get("reduction_order", "unspecified") != "unspecified"):
                 valid = False
                 break
@@ -107,7 +115,8 @@ def form_add_norm_stats(module: IRModule) -> IRModule:
         plan = plans.get(node.id)
         if plan is not None:
             attrs = {"axis": plan.axis, "use_mean": plan.use_mean}
-            combine_type = AddNormStats.infer_type((plan.producer, plan.addend), attrs)
+            combine_type = AddNormStats.infer_type(
+                (plan.producer, plan.addend), attrs)
             combine_metadata = {
                 **dict(plan.add.metadata),
                 "introduced_by": "FormAddNormStats",
@@ -124,47 +133,44 @@ def form_add_norm_stats(module: IRModule) -> IRModule:
                     "norm_consumer": fusion_match.norm_consumer,
                     "projection_adapters": fusion_match.adapters,
                 })
-            nodes.append(
-                Node(
-                    plan.combine_id,
-                    "ntt.add_norm_stats",
-                    (plan.producer.id, plan.addend.id),
-                    combine_type,
-                    PURE,
-                    attrs,
-                    combine_metadata,
-                ))
-            nodes.append(
-                Node(
-                    node.id,
-                    "builtin.get_item",
-                    (plan.combine_id, ),
-                    node.type,
-                    PURE,
-                    {"index": 0},
-                    {
-                        **dict(node.metadata),
-                        "introduced_by": "FormAddNormStats",
-                        "combine": plan.combine_id,
-                    },
-                ))
+            nodes.append(Node(
+                plan.combine_id,
+                "ntt.add_norm_stats",
+                (plan.producer.id, plan.addend.id),
+                combine_type,
+                PURE,
+                attrs,
+                combine_metadata,
+            ))
+            nodes.append(Node(
+                node.id,
+                "builtin.get_item",
+                (plan.combine_id,),
+                node.type,
+                PURE,
+                {"index": 0},
+                {
+                    **dict(node.metadata),
+                    "introduced_by": "FormAddNormStats",
+                    "combine": plan.combine_id,
+                },
+            ))
             continue
         plan = stats_to_plan.get(node.id)
         if plan is not None:
-            nodes.append(
-                Node(
-                    node.id,
-                    "builtin.get_item",
-                    (plan.combine_id, ),
-                    node.type,
-                    PURE,
-                    {"index": 1},
-                    {
-                        **dict(node.metadata),
-                        "introduced_by": "FormAddNormStats",
-                        "combine": plan.combine_id,
-                    },
-                ))
+            nodes.append(Node(
+                node.id,
+                "builtin.get_item",
+                (plan.combine_id,),
+                node.type,
+                PURE,
+                {"index": 1},
+                {
+                    **dict(node.metadata),
+                    "introduced_by": "FormAddNormStats",
+                    "combine": plan.combine_id,
+                },
+            ))
             continue
         nodes.append(node)
 

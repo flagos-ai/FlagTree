@@ -59,10 +59,8 @@ class LoopInvocation:
             raise IRSchemaError('Structured loop bounds must be integers with a nonzero step.')
 
     def to_data(self):
-        return {
-            'kind': 'loop', 'call': self.call, 'callee': self.callee, 'start': self.start, 'stop': self.stop, 'step':
-            self.step
-        }
+        return {'kind': 'loop', 'call': self.call, 'callee': self.callee,
+                'start': self.start, 'stop': self.stop, 'step': self.step}
 
 
 def invocation_from_data(data):
@@ -107,10 +105,8 @@ class ProgramExecution:
             raise IRSchemaError('Structured execution requires unique functions and a defined entry.')
 
     def to_data(self):
-        return {
-            'schema': PROGRAM_EXECUTION_SCHEMA, 'entry': self.entry, 'functions':
-            [value.to_data() for value in self.functions]
-        }
+        return {'schema': PROGRAM_EXECUTION_SCHEMA, 'entry': self.entry,
+                'functions': [value.to_data() for value in self.functions]}
 
     @classmethod
     def from_data(cls, data):
@@ -124,9 +120,8 @@ class ProgramExecution:
             if (not isinstance(value, Mapping) or set(value) != {'function', 'steps'}
                     or not isinstance(value['steps'], (tuple, list))):
                 raise IRSchemaError('Unknown structured function execution fields.')
-            functions.append(
-                FunctionProgramExecution(value['function'],
-                                         tuple(invocation_from_data(step) for step in value['steps'])))
+            functions.append(FunctionProgramExecution(value['function'], tuple(
+                invocation_from_data(step) for step in value['steps'])))
         return cls(data['entry'], tuple(functions))
 
 
@@ -165,7 +160,8 @@ def verify_program_execution(module):
     declared_names = graph_names
     if fragment:
         signatures = module.metadata.get('function_signatures')
-        if (len(graph_names) != 1 or not isinstance(signatures, Mapping) or not graph_names.issubset(signatures)
+        if (len(graph_names) != 1 or not isinstance(signatures, Mapping)
+                or not graph_names.issubset(signatures)
                 or plan.entry not in signatures):
             fail('dump fragment requires complete function signatures.')
         declared_names = set(signatures)
@@ -177,8 +173,8 @@ def verify_program_execution(module):
     for request in requests:
         if (not isinstance(request, Mapping) or not isinstance(request.get('symbol'), str)
                 or request['symbol'] in programs or not isinstance(request.get('function'), str)
-                or request['function'] not in declared_names or not isinstance(request.get('calls'),
-                                                                               (tuple, list)) or not request['calls']):
+                or request['function'] not in declared_names
+                or not isinstance(request.get('calls'), (tuple, list)) or not request['calls']):
             fail('has invalid or duplicate scoped program definitions.')
         if 'depends_on' in request or request.get('tasks_per_owner', 1) != 1:
             fail('requires serial invocation order and each selected program task contract.')
@@ -235,7 +231,6 @@ def verify_program_execution(module):
                 visit(step.callee)
         active.remove(name)
         visited.add(name)
-
     visit(plan.entry)
     if visited != set(functions):
         fail('contains unreachable function definitions.')

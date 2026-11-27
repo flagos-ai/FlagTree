@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: qkv_parallel_linear/packed_fused_gemv (batched packed outputs)
+# flagmega-kernel: qkv_parallel_linear/packed_fused_gemv (batched packed outputs)
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% if render_calls | selectattr("corex_flat_sme_qkv", "defined") | list %}
 from triton.experimental.tle.language.gpu.iluvatar import sme

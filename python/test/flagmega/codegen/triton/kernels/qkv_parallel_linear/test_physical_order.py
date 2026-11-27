@@ -7,6 +7,7 @@ import pytest
 
 from triton.flagmega.codegen.triton.templates import KernelTemplateSpec, TritonTemplateRegistry
 
+
 _GENERIC = KernelTemplateSpec("qkv_parallel_linear", "packed_fused_gemv")
 _AMD = KernelTemplateSpec("qkv_parallel_linear", "packed_fused_gemv", "amd", "gfx1100")
 _GFX1201 = KernelTemplateSpec("qkv_parallel_linear", "packed_fused_gemv", "amd", "gfx1201")
@@ -22,8 +23,7 @@ _GFX1201 = KernelTemplateSpec("qkv_parallel_linear", "packed_fused_gemv", "amd",
     (256, 256, (128, 64, 64), 128, 64),
 ])
 @pytest.mark.parametrize("rows", [1, 3])
-def test_packed_qkv_physical_order_and_active_tails(tmp_path, template_spec, k, active_k, capacities, tile_n, block_k,
-                                                    shard_index, rows):
+def test_packed_qkv_physical_order_and_active_tails(tmp_path, template_spec, k, active_k, capacities, tile_n, block_k, shard_index, rows):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("requires a GPU")
@@ -32,19 +32,18 @@ def test_packed_qkv_physical_order_and_active_tails(tmp_path, template_spec, k, 
     outputs = []
     start = 0
     for i, capacity in enumerate(capacities):
-        outputs.append({
-            "result": f"Y{i}", "local_n_capacity": capacity, "active": f"qkv_local_n_offsets < {capacity - i}",
-            "result_offset": f"qkv_local_m * {capacity} + qkv_local_n_offsets", "weight_group_start": start
-        })
+        outputs.append({"result": f"Y{i}", "local_n_capacity": capacity,
+                        "active": f"qkv_local_n_offsets < {capacity - i}",
+                        "result_offset": f"qkv_local_m * {capacity} + qkv_local_n_offsets", "weight_group_start": start})
         start += capacity // 8
-    call = {
-        "family": "qkv_parallel_linear", "variant": "packed_fused_gemv", "symbol": "run", "signature":
-        "X, W, Y0, Y1, Y2", "source": "X", "weight": "W", "local_m": rows, "rows": rows, "source_offset":
-        f"qkv_local_m * {k} + qkv_local_k_offsets", "source_active": f"qkv_local_k_offsets < {active_k}",
-        "local_k_capacity": k, "tile_n": tile_n, "block_k": block_k, "k_lane": 16, "n_lane": 8, "weight_owner_stride":
-        k * total_n, "weight_k_group_stride": total_n * 16, "weight_n_group_stride": 128, "outputs": outputs,
-        "output_type": "tl.bfloat16"
-    }
+    call = {"family": "qkv_parallel_linear", "variant": "packed_fused_gemv",
+            "symbol": "run", "signature": "X, W, Y0, Y1, Y2",
+            "source": "X", "weight": "W", "local_m": rows, "rows": rows,
+            "source_offset": f"qkv_local_m * {k} + qkv_local_k_offsets",
+            "source_active": f"qkv_local_k_offsets < {active_k}", "local_k_capacity": k,
+            "tile_n": tile_n, "block_k": block_k, "k_lane": 16, "n_lane": 8,
+            "weight_owner_stride": k * total_n, "weight_k_group_stride": total_n * 16,
+            "weight_n_group_stride": 128, "outputs": outputs, "output_type": "tl.bfloat16"}
     body = TritonTemplateRegistry().render_kernel(
         template_spec,
         {"render_calls": [call], "distributed_entry": False, "mesh_hierarchy": (1, 1)},
@@ -61,10 +60,10 @@ def test_packed_qkv_physical_order_and_active_tails(tmp_path, template_spec, k, 
     dense = torch.randint(-3, 4, (total_n, k), device="cuda").bfloat16()
     packed = dense.reshape(total_n // 8, 8, k // 16, 16).permute(2, 0, 1, 3).contiguous()
     # Each owner reads its own slab; earlier slabs contain NaN.
-    slabs = torch.full(((shard_index + 1) * packed.numel(), ), float("nan"), device="cuda", dtype=torch.bfloat16)
+    slabs = torch.full(((shard_index + 1) * packed.numel(),), float("nan"), device="cuda", dtype=torch.bfloat16)
     slabs[shard_index * packed.numel():] = packed.reshape(-1)
     results = [torch.full((rows, capacity), 777., device="cuda", dtype=torch.bfloat16) for capacity in capacities]
-    module.run[(1, )](x, slabs, *results)
+    module.run[(1,)](x, slabs, *results)
     expected = (x[:, :active_k].float() @ dense[:, :active_k].float().T).bfloat16()
     start = 0
     for i, (result, capacity) in enumerate(zip(results, capacities)):
@@ -87,17 +86,16 @@ def test_packed_qkv_rdna_template_is_amd_only(platform, architecture, expected):
 
 
 def test_gfx1201_qkv_rotates_only_multi_tile_outputs():
-    outputs = [{
-        "result": f"Y{i}", "local_n_capacity": capacity, "active": "True", "result_offset": "qkv_local_n_offsets",
-        "weight_group_start": 0
-    } for i, capacity in enumerate((128, 64, 64))]
-    call = {
-        "family": "qkv_parallel_linear", "variant": "packed_fused_gemv", "symbol": "run", "signature":
-        "X, W, Y0, Y1, Y2", "source": "X", "weight": "W", "local_m": 1, "source_offset": "qkv_local_k_offsets",
-        "source_active": "True", "local_k_capacity": 256, "tile_n": 128, "block_k": 64, "k_lane": 16, "n_lane": 8,
-        "weight_owner_stride": 65536, "weight_k_group_stride": 4096, "weight_n_group_stride": 128, "outputs": outputs,
-        "output_type": "tl.bfloat16"
-    }
+    outputs = [{"result": f"Y{i}", "local_n_capacity": capacity, "active": "True",
+                "result_offset": "qkv_local_n_offsets", "weight_group_start": 0}
+               for i, capacity in enumerate((128, 64, 64))]
+    call = {"family": "qkv_parallel_linear", "variant": "packed_fused_gemv",
+            "symbol": "run", "signature": "X, W, Y0, Y1, Y2",
+            "source": "X", "weight": "W", "local_m": 1, "source_offset": "qkv_local_k_offsets",
+            "source_active": "True", "local_k_capacity": 256,
+            "tile_n": 128, "block_k": 64, "k_lane": 16, "n_lane": 8,
+            "weight_owner_stride": 65536, "weight_k_group_stride": 4096,
+            "weight_n_group_stride": 128, "outputs": outputs, "output_type": "tl.bfloat16"}
     context = {"render_calls": [call], "distributed_entry": False, "mesh_hierarchy": (1, 1)}
     rotated = TritonTemplateRegistry().render_kernel(_GFX1201, context).source
     assert rotated.count("tl.cast(shard_index % 2, tl.int32) * 64") == 1

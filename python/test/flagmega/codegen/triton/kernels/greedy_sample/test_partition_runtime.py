@@ -17,8 +17,8 @@ from triton.flagmega.runtime import load
     ((2, 2, 2), fm.SBP.split_block_cyclic((0, 2), 4), 3, 1, fm.SBP.broadcast()),
     ((2, 4), fm.SBP.split_block_cyclic((0, 1), 8), 8195, 1, fm.SBP.broadcast()),
     ((2, 4), fm.SBP.split_block_cyclic((0, 1), 3), 37, 3, fm.SBP.broadcast()),
-    ((2, 4), fm.SBP.split_contiguous((1, ), 8), 32, 4, fm.SBP.split_contiguous((0, ), 2)),
-    ((2, 2, 2), fm.SBP.split_block_cyclic((0, 2), 3), 37, 3, fm.SBP.split_block_cyclic((1, ), 2)),
+    ((2, 4), fm.SBP.split_contiguous((1,), 8), 32, 4, fm.SBP.split_contiguous((0,), 2)),
+    ((2, 2, 2), fm.SBP.split_block_cyclic((0, 2), 3), 37, 3, fm.SBP.split_block_cyclic((1,), 2)),
 ])
 @pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
 def test_argmax_partition_tail_ties_infinities_and_nan(tmp_path, hierarchy, policy, vocab, batch, batch_policy, dtype):
@@ -30,21 +30,18 @@ def test_argmax_partition_tail_ties_infinities_and_nan(tmp_path, hierarchy, poli
     distributed = fm.DistributedType(logical, (batch_policy, policy), placement)
 
     class Graph(fm.Module):
-
         def forward(self):
             value = self.input("logits", logical)
             local = fm.F.distributed.force_boxing(value, distributed)
             token = fm.F.nn.greedy_sample(local, name="sample")
-            self.function("main", (value, ), (fm.F.distributed.force_boxing(token, fm.tensor_type("int32",
-                                                                                                  (batch, ))), ))
+            self.function("main", (value,), (
+                fm.F.distributed.force_boxing(token, fm.tensor_type("int32", (batch,))),
+            ))
 
-    module = Compiler().compile(
-        Graph(
-            dialect="distributed",
-            stage="frozen_constants",
-            entry="main",
-            metadata={"auto_distribution": {"placement": placement.to_data()}},
-        ).build()).module
+    module = Compiler().compile(Graph(
+        dialect="distributed", stage="frozen_constants", entry="main",
+        metadata={"auto_distribution": {"placement": placement.to_data()}},
+    ).build()).module
     artifact = write_artifact(module, tmp_path / "argmax", target="nvidia-sm90", emit_executable=True)
     runtime = load(artifact, device="cuda:0")
     value = torch.empty((batch, vocab), dtype=getattr(torch, dtype), device="cuda")

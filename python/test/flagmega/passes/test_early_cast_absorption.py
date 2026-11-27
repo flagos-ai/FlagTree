@@ -13,43 +13,37 @@ from triton.flagmega.ir.ops.core import get_definition
 from triton.flagmega.ir.memory_effect import MemoryEffect
 
 
-def residual_graph(axes=(1, )):
-
+def residual_graph(axes=(1,)):
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("x", fm.tensor_type(fm.vector_type("float32", (2, 2)), (1, 4)), id="x")
-            y = self.input("y", fm.tensor_type(fm.vector_type("float32", (4, )), (1, 4)), id="y")
-            narrow = fm.F.ntt.vectorized_cast(x, fm.vector_type("bfloat16", (4, )), axes, rounding_contract="preserve",
-                                              name="rounded")
-            wide = fm.F.ntt.vectorized_cast(narrow, fm.vector_type("float32", (4, )), axes,
-                                            rounding_contract="preserve", name="widened")
+            y = self.input("y", fm.tensor_type(fm.vector_type("float32", (4,)), (1, 4)), id="y")
+            narrow = fm.F.ntt.vectorized_cast(x, fm.vector_type("bfloat16", (4,)), axes,
+                                             rounding_contract="preserve", name="rounded")
+            wide = fm.F.ntt.vectorized_cast(narrow, fm.vector_type("float32", (4,)), axes,
+                                           rounding_contract="preserve", name="widened")
             result = fm.F.math.vectorized_binary(wide, y, binary_op="add", name="sum")
             self.function("main", (x, y), (result, x))
-
     return Graph(dialect="high_level", stage="boundary_layout_propagated", entry="main").build()
 
 
 def direct_embedding_graph(shared=None):
     state_config = PagedAttentionStateConfig(1, 2, 16)
-
     class Graph(fm.Module):
-
         def forward(self):
-            ids = self.input("ids", fm.tensor_type("int64", (2, )))
-            weight = self.input("weight", fm.tensor_type(fm.vector_type("bfloat16", (4, )), (7, 4)))
+            ids = self.input("ids", fm.tensor_type("int64", (2,)))
+            weight = self.input("weight", fm.tensor_type(fm.vector_type("bfloat16", (4,)), (7, 4)))
             state = self.input("state", state_config.ref_type)
             embedded = fm.F.nn.embedding(ids, weight, padding_idx=0, name="embedded")
             positions = fm.F.nn.rotary_embedding(embedded, state, head_dim=16, theta=10000., name="positions")
             cosine = fm.F.tensors.get_item(positions, index=0)
-            wide = fm.F.ntt.vectorized_cast(embedded, fm.vector_type("float32", (4, )), (1, ), name="wide")
+            wide = fm.F.ntt.vectorized_cast(embedded, fm.vector_type("float32", (4,)), (1,), name="wide")
             outputs = [wide, cosine]
             if shared == "public":
                 outputs.append(embedded)
             elif shared == "data":
                 outputs.append(fm.F.math.add(embedded, embedded))
             self.function("main", (ids, weight, state), tuple(outputs))
-
     return Graph(dialect="high_level", stage="boundary_layout_propagated", entry="main").build(), state_config
 
 
@@ -62,10 +56,8 @@ def test_residual_rounding_absorbed_at_original_packing_fixed_point(tmp_path):
     assert [n.attrs["new_type"]["elem_type"] for n in casts] == ["bfloat16", "float32"]
     assert all(n.attrs["rounding_contract"] == "preserve" for n in casts)
     evaluator = TorchEvaluator(DictWeightResolver({}))
-    values = {
-        "x": torch.linspace(.991, 1.009, 16).reshape(1, 4, 2, 2), "y":
-        torch.arange(16, dtype=torch.float32).reshape(1, 4, 4)
-    }
+    values = {"x": torch.linspace(.991, 1.009, 16).reshape(1, 4, 2, 2),
+              "y": torch.arange(16, dtype=torch.float32).reshape(1, 4, 4)}
     old, new = evaluator.run(source, values), evaluator.run(result, values)
     assert all(torch.equal(a.view(torch.int32), b.view(torch.int32)) for a, b in zip(old, new))
     assert fm.load_module(fm.emit_module(result, tmp_path / "rounding.py")).semantic_hash == result.semantic_hash
@@ -86,10 +78,8 @@ def test_direct_embedding_shape_reference_absorbs_only_boundary(tmp_path):
     alias = result.node_map["wide"]
     assert alias.op == "tensors.bitcast" and result.node_map[alias.inputs[0]].type == alias.type
     evaluator = TorchEvaluator(DictWeightResolver({}))
-    values = {
-        "ids": torch.tensor([0, 6]), "weight": torch.arange(112).reshape(7, 4, 4).bfloat16() / 32, "state":
-        create_paged_attention_state(config, device="cpu")
-    }
+    values = {"ids": torch.tensor([0, 6]), "weight": torch.arange(112).reshape(7, 4, 4).bfloat16() / 32,
+              "state": create_paged_attention_state(config, device="cpu")}
     torch.testing.assert_close(evaluator.run(result, values), evaluator.run(source, values), rtol=0, atol=0)
     assert fm.load_module(fm.emit_module(result, tmp_path / "embedding.py")).semantic_hash == result.semantic_hash
 
@@ -104,9 +94,8 @@ def test_direct_producer_shared_data_and_public_value_rejected(shared):
 
 def test_large_model_path_uses_the_same_supported_absorption():
     source = residual_graph()
-    padding = tuple(
-        fm.Node(f"unused{i}", "builtin.scalar_const", (), fm.tensor_type("int64", ()), attrs={"value": 0})
-        for i in range(20_001))
+    padding = tuple(fm.Node(f"unused{i}", "builtin.scalar_const", (), fm.tensor_type("int64", ()),
+                            attrs={"value": 0}) for i in range(20_001))
     large = replace(source, nodes=(*source.nodes, *padding))
     result = post_function_boundary_pack_propagation(large, NvidiaSm90Target())
     assert not any(n.op in {"tensors.cast", "ntt.vectorized_cast"} for n in result.nodes)
@@ -128,17 +117,15 @@ def test_early_fused_casts_keep_normal_distribution_relations():
     assert isinstance(materialized.node_map["sum"].type, fm.DistributedType)
 
 
-@pytest.mark.parametrize("axes", ((1, ), (-1, ), (1, 1), (-1, -1)))
+@pytest.mark.parametrize("axes", ((1,), (-1,), (1, 1), (-1, -1)))
 def test_fusion_forward_and_inverse_keep_storage_choices_and_split_units(axes):
     source = post_function_boundary_pack_propagation(residual_graph(axes), NvidiaSm90Target())
     node = source.node_map["sum"]
     definition = get_definition(node.op)
     mesh = fm.Placement((2, 2), "yx", "bb")
-    broad, split = fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 1)
-    choices = tuple(
-        tuple(fm.DistributedType(source.node_map[name].type, (broad, policy), mesh)
-              for policy in (broad, split))
-        for name in node.inputs)
+    broad, split = fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 1)
+    choices = tuple(tuple(fm.DistributedType(source.node_map[name].type, (broad, policy), mesh)
+                          for policy in (broad, split)) for name in node.inputs)
     inputs = tuple(definition.distributed_input_type_tuples(choices, node.attrs))
     assert inputs and all(all(value in offered for value, offered in zip(values, choices)) for values in inputs)
     outputs = definition.distributed_output_type_candidates(choices, node.type, node.attrs)
@@ -150,17 +137,17 @@ def test_fusion_forward_and_inverse_keep_storage_choices_and_split_units(axes):
         for storage in recovered:
             operands = tuple(replace(source.node_map[name], type=kind) for name, kind in zip(node.inputs, storage))
             assert definition.infer_call_type(operands, node.attrs) == output
-    partial = fm.DistributedType(node.type, (broad, broad), mesh, partial=fm.SBP.partial((0, ), "sum"))
+    partial = fm.DistributedType(node.type, (broad, broad), mesh, partial=fm.SBP.partial((0,), "sum"))
     assert definition.infer_distributed_input_types(partial, logical, node.attrs) == ()
 
 
 def test_no_fusion_relations_delegate_to_original_protocols():
     definition = get_definition("math.add")
     mesh = fm.Placement((2, 2), "yx", "bb")
-    kind = fm.DistributedType(fm.tensor_type("float32", (4, )), (fm.SBP.broadcast(), ), mesh)
-    choices, attrs = ((kind, ), (kind, )), {}
-    for name, args in (("distributed_input_type_tuples", (choices, attrs)), ("distributed_output_type_candidates",
-                                                                             (choices, kind, attrs)),
+    kind = fm.DistributedType(fm.tensor_type("float32", (4,)), (fm.SBP.broadcast(),), mesh)
+    choices, attrs = ((kind,), (kind,)), {}
+    for name, args in (("distributed_input_type_tuples", (choices, attrs)),
+                       ("distributed_output_type_candidates", (choices, kind, attrs)),
                        ("infer_distributed_input_types", (kind, (kind.tensor, kind.tensor), attrs))):
         method = getattr(definition, name)
         old = method.__func__.__wrapped__(definition, *args)
@@ -170,30 +157,27 @@ def test_no_fusion_relations_delegate_to_original_protocols():
 
 def test_postops_output_and_inverse_use_preconversion_result_type():
     from triton.flagmega.ir.op_fusion import _inverse_post_types
-    raw = fm.tensor_type("bfloat16", (4, ))
-
+    raw = fm.tensor_type("bfloat16", (4,))
     @fm.fusion(raw)
     def widen(x):
         return fm.F.tensors.cast(x, "float32", rounding_contract="preserve")
-
     mesh = fm.Placement((2, 2), "yx", "bb")
-    value = fm.DistributedType(raw, (fm.SBP.split_contiguous((0, ), 1), ), mesh)
-    attrs = {"post_ops": (widen, )}
+    value = fm.DistributedType(raw, (fm.SBP.split_contiguous((0,), 1),), mesh)
+    attrs = {"post_ops": (widen,)}
     definition = get_definition("math.add")
-    output, = definition.distributed_output_type_candidates(((value, ), (value, )), widen.output_type, attrs)
-    assert definition.infer_distributed_input_types(output, (raw, raw), attrs) == ((value, value), )
+    output, = definition.distributed_output_type_candidates(((value,), (value,)), widen.output_type, attrs)
+    assert definition.infer_distributed_input_types(output, (raw, raw), attrs) == ((value, value),)
     tuple_result = fm.TupleType((output, value))
-    assert _inverse_post_types(tuple_result, {"post_ops": (widen, None)}) == (fm.TupleType((value, value)), )
+    assert _inverse_post_types(tuple_result, {"post_ops": (widen, None)}) == (fm.TupleType((value, value)),)
 
 
 def test_unknown_fusion_inverse_stays_undeclared():
-    raw = fm.tensor_type("float32", (4, ))
-
+    raw = fm.tensor_type("float32", (4,))
     @fm.fusion(raw)
     def shared_expression(x):
         return fm.F.math.mul(x, x)
-
     mesh = fm.Placement((2, 2), "yx", "bb")
-    value = fm.DistributedType(raw, (fm.SBP.broadcast(), ), mesh)
+    value = fm.DistributedType(raw, (fm.SBP.broadcast(),), mesh)
     definition = get_definition("math.add")
-    assert definition.infer_distributed_input_types(value, (raw, raw), {"pre_ops": {"lhs": shared_expression}}) is None
+    assert definition.infer_distributed_input_types(value, (raw, raw),
+                                                     {"pre_ops": {"lhs": shared_expression}}) is None

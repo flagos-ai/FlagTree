@@ -13,17 +13,17 @@ from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 
 def _module(nested):
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
-    value_type = fm.tensor_type("float32", (8, ))
+    value_type = fm.tensor_type("float32", (8,))
     value = builder.var("value", value_type, id="value")
     hidden = builder.call("math.mul", (value, value), value_type, id="hidden")
     output = builder.call("math.add", (hidden, hidden), value_type, id="output")
     if nested:
-        builder.function("worker", (value, ), (output, ))
+        builder.function("worker", (value,), (output,))
         argument = builder.var("argument", value_type, id="argument")
-        result = builder.call("builtin.call", (argument, ), value_type, id="result", attrs={"callee": "worker"})
-        builder.function("main", (argument, ), (result, ))
+        result = builder.call("builtin.call", (argument,), value_type, id="result", attrs={"callee": "worker"})
+        builder.function("main", (argument,), (result,))
     else:
-        builder.function("main", (value, ), (output, ))
+        builder.function("main", (value,), (output,))
     return fm.verify_module(builder.build(entry="main"))
 
 
@@ -40,7 +40,7 @@ def test_dropping_a_trace_releases_intermediates_without_cyclic_gc(nested):
             output, = result.outputs
             del result
             assert hidden() is None, 'a recursive visitor retained the completed run'
-            torch.testing.assert_close(output, torch.full((8, ), 2.))
+            torch.testing.assert_close(output, torch.full((8,), 2.))
     finally:
         if enabled:
             gc.enable()

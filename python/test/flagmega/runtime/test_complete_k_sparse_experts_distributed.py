@@ -36,24 +36,21 @@ def device_group():
 
 
 @pytest.mark.skipif(os.environ.get("WORLD_SIZE") not in ("2", "4"), reason="requires torchrun on two/four SM90 GPUs")
-@pytest.mark.parametrize("task_n,packed,chip_rows,reduction", [(32, False, 512, 4096), (32, True, 512, 4096),
-                                                               (64, True, 640, 1536)])
-def test_complete_k_chip_publication_matches_ordered_reference(tmp_path, task_n, packed, chip_rows, reduction,
-                                                               device_group):
+@pytest.mark.parametrize("task_n,packed,chip_rows,reduction", [(32, False, 512, 4096), (32, True, 512, 4096), (64, True, 640, 1536)])
+def test_complete_k_chip_publication_matches_ordered_reference(tmp_path, task_n, packed, chip_rows, reduction, device_group):
     import torch
     import torch.distributed as dist
 
     size, device = dist.get_world_size(), device_group
     mesh = fm.Placement((size, 8, 16), "cyx", "cbb")
     rows = size * chip_rows
-    graph = stage_graph(placement=mesh, packed=packed, readonly=True, publish_result=True, rows=rows,
-                        reduction=reduction, experts=17)
+    graph = stage_graph(placement=mesh, packed=packed, readonly=True, publish_result=True,
+                        rows=rows, reduction=reduction, experts=17)
     values = stage_values(torch, graph)
-    shapes = [(1, 8, rows // 8, 8) if packed else (1, 8, rows), (128, )]
+    shapes = [(1, 8, rows // 8, 8) if packed else (1, 8, rows), (128,)]
     expected = []
     for label in ("reference", "complete"):
-        module = compile_stage(graph, mesh, True) if label == "reference" else compile_complete(
-            graph, mesh, task_n, stages=3)
+        module = compile_stage(graph, mesh, True) if label == "reference" else compile_complete(graph, mesh, task_n, stages=3)
         artifact = write_artifact(module, tmp_path / label, target="nvidia-sm90", emit_executable=True,
                                   checkpoint=TensorCheckpoint(values))
         runtime = load(artifact, device=device)
@@ -64,7 +61,7 @@ def test_complete_k_chip_publication_matches_ordered_reference(tmp_path, task_n,
                 continue
             shape = shapes[len(outputs)]
             dtype = torch.bfloat16 if not outputs else torch.float32
-            storage = torch.full((prod(shape) + 64, ), -123., device=device, dtype=dtype)
+            storage = torch.full((prod(shape) + 64,), -123., device=device, dtype=dtype)
             storages.append(storage)
             outputs[spec["value"]] = storage[32:-32].reshape(shape)
         arguments = tuple({**inputs, **outputs}[spec["value"]] for spec in runtime.external_arguments)
@@ -76,8 +73,7 @@ def test_complete_k_chip_publication_matches_ordered_reference(tmp_path, task_n,
                 inputs["dispatched"].copy_(x.reshape(inputs["dispatched"].shape).bfloat16())
                 if mutation == 1:
                     inputs["dispatched"].zero_()
-                inputs["router_expert_ids"].copy_(
-                    ((torch.arange(8, device=device) * 7 + mutation * 3) % 17).reshape(1, 8).int())
+                inputs["router_expert_ids"].copy_(((torch.arange(8, device=device) * 7 + mutation * 3) % 17).reshape(1, 8).int())
                 inputs["gate_proj_scale"].copy_(values["gate_proj_scale"].to(device) * (1 + mutation / 32))
                 inputs["up_input_scale"].copy_(values["up_input_scale"].to(device) + mutation / 32)
                 for value in outputs.values():
@@ -94,14 +90,11 @@ def test_complete_k_chip_publication_matches_ordered_reference(tmp_path, task_n,
                         assert torch.equal(old.view(torch.uint8), new.view(torch.uint8))
                 assert all(bool((value[:32] == -123).all() & (value[-32:] == -123).all()) for value in storages)
                 torch.testing.assert_close(actual[1], values["sentinel"] * 2, rtol=0, atol=0)
-            (tmp_path / f"{label}.json").write_text(
-                json.dumps(
-                    {
-                        "passed": True, "rank": dist.get_rank(), "world_size": size, "task_n": task_n, "packed": packed,
-                        "rows_per_chip": chip_rows, "reduction": reduction, "mutations": 3, "bitwise": True, "guards":
-                        True, "publication": "all chip shards to every rank", "source_sha256":
-                        runtime.codegen["source_sha256"], "resources": runtime.resource_report
-                    }, indent=2) + "\n")
+            (tmp_path / f"{label}.json").write_text(json.dumps({
+                "passed": True, "rank": dist.get_rank(), "world_size": size, "task_n": task_n,
+                "packed": packed, "rows_per_chip": chip_rows, "reduction": reduction,
+                "mutations": 3, "bitwise": True, "guards": True, "publication": "all chip shards to every rank",
+                "source_sha256": runtime.codegen["source_sha256"], "resources": runtime.resource_report}, indent=2) + "\n")
         finally:
             runtime.close()
             dist.barrier()

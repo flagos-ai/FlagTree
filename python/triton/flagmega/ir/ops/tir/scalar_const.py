@@ -55,7 +55,7 @@ class ScalarConst(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(notes=("compile-time-scalar", ))
+        return OpCost(notes=("compile-time-scalar",))
 
     @classmethod
     def python_call(cls, node: Node) -> PythonCall:

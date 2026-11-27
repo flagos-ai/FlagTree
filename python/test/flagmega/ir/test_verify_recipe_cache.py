@@ -21,12 +21,11 @@ from triton.flagmega.passes.constants import FreezeConstantIslandsPass
 def _frozen_module() -> fm.IRModule:
 
     class Graph(fm.Module):
-
         def forward(self):
-            x = self.input("x", fm.tensor_type("float32", (8, )))
+            x = self.input("x", fm.tensor_type("float32", (8,)))
             constant = fm.F.builtin.splat_const(x.type, 1.0, name="weight")
             output = fm.F.math.add(x, constant, name="output")
-            self.function("main", (x, ), (output, ))
+            self.function("main", (x,), (output,))
 
     return FreezeConstantIslandsPass().run(Graph(dialect="ntt", stage="canonical_constants", entry="main").build())
 
@@ -36,7 +35,7 @@ def test_recipe_index_is_reused_and_rebuilt_after_an_edit():
     assert recipe.node_map is recipe.node_map
     original = recipe.nodes[0]
     changed = replace(original, attrs={**original.attrs, "value": 2.0})
-    edited = replace(recipe, nodes=(changed, ))
+    edited = replace(recipe, nodes=(changed,))
     assert edited.node_map is not recipe.node_map
     assert edited.node_map[original.id] is changed
     assert recipe.node_map[original.id] is original
@@ -51,7 +50,6 @@ def _count_recipe_node_verifications(monkeypatch):
     original = verify_impl.get_definition
 
     class Counting:
-
         def __init__(self, definition):
             self._definition = definition
 
@@ -74,8 +72,9 @@ def _reconstructed_recipes(module):
 
 
 def _rewrite_main_graph(module):
-    return replace(module,
-                   nodes=tuple(replace(node, op="math.mul") if node.id == "output" else node for node in module.nodes))
+    return replace(
+        module, nodes=tuple(replace(node, op="math.mul") if node.id == "output" else node for node in module.nodes)
+    )
 
 
 def test_unchanged_recipes_are_not_reverified_for_every_rewritten_module(monkeypatch):
@@ -119,7 +118,8 @@ def test_recipe_caching_does_not_hide_a_broken_asset_binding():
         module,
         nodes=tuple(
             replace(node, attrs={**node.attrs, "recipe": "missing"}) if node.id == asset.id else node
-            for node in module.nodes),
+            for node in module.nodes
+        ),
     )
     with pytest.raises(IRVerificationError, match="no main-graph asset"):
         verify_impl.verify_module(broken)
@@ -148,7 +148,8 @@ def test_context_independent_recipe_is_verified_once_across_stage_changes(monkey
             dialect="tir",
             entry="renamed",
             functions=tuple(replace(f, name="renamed") for f in first_seen.functions),
-        ))
+        )
+    )
     assert counter["calls"] == initial
 
 

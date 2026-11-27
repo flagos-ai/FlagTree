@@ -8,6 +8,7 @@ from typing import Mapping, Sequence
 from math import isfinite, prod
 
 from triton.flagmega.errors import EvaluationError, IRSchemaError
+from triton.flagmega.ir.ops._compute_profile import require_host_reference
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.memory_effect import MemoryEffect
 from triton.flagmega.ir.model import (
@@ -39,15 +40,17 @@ from triton.flagmega.ir.types import VectorType
     display_name="NN.RotaryEmbedding",
 )
 class RotaryEmbedding(OpDefinition):
-    """Create the reference importer helper's decode-time cos/sin pair.
+    """Create the nncase importer helper's decode-time cos/sin pair.
 
-    reference spells this helper as primitive GetPositionIds/arithmetic/unsqueeze
+    nncase spells this helper as primitive GetPositionIds/arithmetic/unsqueeze
     operations.  FlagMega keeps it as one target-independent semantic op until
     those general broadcasting primitives are present; RoPE itself remains a
     separate operation and the pair is editable in Python IR.
     """
 
-    reference = input_parameter(is_tensor() & has_rank(2), memory_effect=MemoryEffect.NONE)
+    reference = input_parameter(
+        is_tensor() & has_rank(2), memory_effect=MemoryEffect.NONE
+    )
     state = input_parameter(is_ref(), memory_effect=MemoryEffect.CHIP_READ)
     cache = variadic_input_parameter(is_tensor() & has_rank(3), memory_effect=MemoryEffect.CHIP_READ)
     head_dim = attribute_parameter()
@@ -82,15 +85,17 @@ class RotaryEmbedding(OpDefinition):
         if output_dtype not in {DType.BFLOAT16, DType.FLOAT32}:
             raise IRSchemaError("RotaryEmbedding output_dtype must be BF16/FP32.")
         math_mode = attrs["math_mode"]
-        if math_mode not in {"fast", "accurate"}:
-            raise IRSchemaError("RotaryEmbedding math_mode must be fast or accurate.")
+        if math_mode not in {"fast", "accurate", "ggml"}:
+            raise IRSchemaError("RotaryEmbedding math_mode must be fast, accurate or ggml.")
         try:
             frequencies = tuple(float(value) for value in attrs["inverse_frequencies"])
         except (TypeError, ValueError) as error:
             raise IRSchemaError("RotaryEmbedding inverse_frequencies must be a sequence of numbers.") from error
-        if frequencies and (len(frequencies) != head_dim // 2 or any(not isfinite(value) or value <= 0
-                                                                     for value in frequencies)):
+        if frequencies and (len(frequencies) != head_dim // 2 or
+                            any(not isfinite(value) or value <= 0 for value in frequencies)):
             raise IRSchemaError("RotaryEmbedding inverse_frequencies must contain head_dim/2 positive finite values.")
+        if math_mode == "ggml" and (lanes or output_dtype != DType.FLOAT32 or scaling != 1.0 or frequencies):
+            raise IRSchemaError("RotaryEmbedding ggml mode requires unscaled scalar F32 output and angle recurrence.")
         result = {
             "head_dim": head_dim,
             "theta": theta,
@@ -108,16 +113,15 @@ class RotaryEmbedding(OpDefinition):
     def ir_attrs(cls, attrs: Mapping[str, object]) -> Mapping[str, object]:
         # Existing FP32 scalar/vector tables keep their canonical attributes.
         # A narrower table dtype is an explicit final-store rounding boundary.
-        return {
-            key: value
-            for key, value in attrs.items()
-            if (key != "output_lanes" or value) and (key != "output_dtype" or value != "float32")
-        }
+        return {key: value for key, value in attrs.items()
+                if (key != "output_lanes" or value) and (key != "output_dtype" or value != "float32")}
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         reference = tensor_of(cls.reference.type_of(inputs))
         caches = cls.cache.read(inputs)
+        if attrs.get("math_mode") == "ggml" and caches:
+            raise IRSchemaError("RotaryEmbedding ggml mode requires direct angle recurrence.")
         if len(caches) > 1:
             raise IRSchemaError("RotaryEmbedding accepts at most one precomputed cache.")
         if caches:
@@ -142,10 +146,13 @@ class RotaryEmbedding(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
+        if node.attrs.get("math_mode") == "ggml":
+            require_host_reference(node, key="math_mode", default="fast")
         reference = cls.reference.read(arguments)
         state = cls.state.read(arguments)
         if not isinstance(state, PagedAttentionState):
-            raise EvaluationError("RotaryEmbedding state must evaluate to PagedAttentionState.")
+            raise EvaluationError(
+                "RotaryEmbedding state must evaluate to PagedAttentionState.")
         state.validate()
         sequence = int(reference.shape[0])
         if state.sequence_length + sequence > state.config.max_sequence_length:
@@ -175,23 +182,24 @@ class RotaryEmbedding(OpDefinition):
             device=reference.device,
         )
         if node.attrs.get("inverse_frequencies"):
-            inverse_frequency = context.torch.tensor(node.attrs["inverse_frequencies"], dtype=context.torch.float32,
-                                                     device=reference.device)
+            inverse_frequency = context.torch.tensor(node.attrs["inverse_frequencies"],
+                                                     dtype=context.torch.float32, device=reference.device)
         elif node.attrs.get("math_mode", "fast") == "accurate":
-            inverse_frequency = 1.0 / (float(node.attrs["theta"])**(indices / head_dim))
+            inverse_frequency = 1.0 / (float(node.attrs["theta"]) ** (indices / head_dim))
         else:
-            inverse_frequency = float(node.attrs["theta"])**(-indices / head_dim)
+            inverse_frequency = float(node.attrs["theta"]) ** (-indices / head_dim)
         angles = context.torch.outer(positions, inverse_frequency)
         frequency = context.torch.cat((angles, angles), dim=-1).unsqueeze(1)
         scale = float(node.attrs["attention_scaling"])
         lanes = tuple(node.attrs.get("output_lanes", ()))
         shape = (sequence, 1, head_dim // prod(lanes), *lanes)
         dtype = getattr(context.torch, node.attrs.get("output_dtype", "float32"))
-        return ((frequency.cos() * scale).to(dtype).reshape(shape), (frequency.sin() * scale).to(dtype).reshape(shape))
+        return ((frequency.cos() * scale).to(dtype).reshape(shape),
+                (frequency.sin() * scale).to(dtype).reshape(shape))
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(notes=("position-dependent-rotary-cos-sin", ))
+        return OpCost(notes=("position-dependent-rotary-cos-sin",))
 
 
 __all__ = ["RotaryEmbedding"]

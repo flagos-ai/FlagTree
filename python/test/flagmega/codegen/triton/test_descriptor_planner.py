@@ -25,7 +25,9 @@ def test_coalesce_dense_weight_groups_preserves_role_row_origins():
         "right": _group(256 + 2 * 16 * 32 * 2, 8),
     }
 
-    descriptor = coalesce_dense_weight_groups(groups, ("left", "right"), argument="fused", block_shape=(8, 32))
+    descriptor = coalesce_dense_weight_groups(
+        groups, ("left", "right"), argument="fused", block_shape=(8, 32)
+    )
 
     assert descriptor["offset"] == 256
     assert descriptor["shape"] == [48, 32]
@@ -43,4 +45,6 @@ def test_coalesce_dense_weight_groups_rejects_padding_between_roles():
     }
 
     with pytest.raises(CodegenError, match="not byte-adjacent"):
-        coalesce_dense_weight_groups(groups, ("left", "right"), argument="fused", block_shape=(8, 32))
+        coalesce_dense_weight_groups(
+            groups, ("left", "right"), argument="fused", block_shape=(8, 32)
+        )

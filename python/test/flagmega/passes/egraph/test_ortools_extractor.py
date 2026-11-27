@@ -10,7 +10,7 @@ from triton.flagmega.rules import RewriteResult, RewriteRule
 
 def _shared_candidate_module():
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
-    value_type = fm.tensor_type("float32", (16, ))
+    value_type = fm.tensor_type("float32", (16,))
     lhs = builder.var("lhs", value_type, id="lhs")
     rhs = builder.var("rhs", value_type, id="rhs")
     first = builder.call("math.add", (lhs, rhs), value_type, id="first")
@@ -23,7 +23,7 @@ def _shared_candidate(node, _module):
     if node.id not in {"first", "second"} or node.metadata.get("candidate"):
         return None
     helper_id = f"shared_for_{node.id}"
-    helper = fm.Node(helper_id, "math.silu", ("lhs", ), node.type)
+    helper = fm.Node(helper_id, "math.silu", ("lhs",), node.type)
     replacement_op = "math.mul" if node.id == "first" else "math.add"
     replacement = replace(
         node,
@@ -31,7 +31,7 @@ def _shared_candidate(node, _module):
         inputs=(helper_id, "rhs"),
         metadata={"candidate": True},
     )
-    return RewriteResult(replacement, (helper, ))
+    return RewriteResult(replacement, (helper,))
 
 
 def _cost(node, _module):
@@ -49,7 +49,7 @@ def test_cp_sat_extracts_a_globally_shared_candidate_dag():
         "share-expensive-helper",
         lambda node, module: _shared_candidate(node, module) is not None,
         _shared_candidate,
-    ), ), cost=_cost)
+    ),), cost=_cost)
 
     result = rewriter.rewrite(_shared_candidate_module())
 
@@ -69,8 +69,8 @@ def test_equal_cost_extraction_is_deterministic_and_prefers_original():
         lambda node, _module: replace(node, inputs=tuple(reversed(node.inputs))),
     )
 
-    first = EGraphRewriter((commute, )).rewrite(module)
-    second = EGraphRewriter((commute, )).rewrite(module)
+    first = EGraphRewriter((commute,)).rewrite(module)
+    second = EGraphRewriter((commute,)).rewrite(module)
 
     assert first.semantic_hash == second.semantic_hash == module.semantic_hash
 
@@ -78,7 +78,7 @@ def test_equal_cost_extraction_is_deterministic_and_prefers_original():
 def test_extraction_preserves_effectful_boundary_outside_egraph():
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
     tensor = fm.tensor_type("bfloat16", (1, 8))
-    state_type = fm.RefType("state", (("data", tensor), ))
+    state_type = fm.RefType("state", (("data", tensor),))
     source = builder.var("source", tensor, id="source")
     state = builder.var("state", state_type, id="state")
     stateful_type = fm.TupleType((tensor, state_type))
@@ -96,9 +96,9 @@ def test_extraction_preserves_effectful_boundary_outside_egraph():
             "semantic_attrs": {},
         },
     )
-    value = builder.call("builtin.get_item", (stateful, ), tensor, id="value", attrs={"index": 0})
-    output = builder.call("math.silu", (value, ), tensor, id="output")
-    builder.function("main", (source, state), (output, ))
+    value = builder.call("builtin.get_item", (stateful,), tensor, id="value", attrs={"index": 0})
+    output = builder.call("math.silu", (value,), tensor, id="output")
+    builder.function("main", (source, state), (output,))
     module = fm.verify_module(builder.build(entry="main"))
 
     result = EGraphRewriter(()).rewrite(module)

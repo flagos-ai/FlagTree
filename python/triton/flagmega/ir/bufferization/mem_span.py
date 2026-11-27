@@ -33,8 +33,10 @@ class MemSpan:
             raise IRSchemaError("MemSpan size cannot be negative.")
         overflow = (self.end - self.buffer.size).simplify()
         if overflow.minimum is not None and overflow.minimum > 0:
-            raise IRSchemaError(f"MemSpan [{self.start}, {self.end}) exceeds PhysicalBuffer "
-                                f"{self.buffer.id!r} size {self.buffer.size}.")
+            raise IRSchemaError(
+                f"MemSpan [{self.start}, {self.end}) exceeds PhysicalBuffer "
+                f"{self.buffer.id!r} size {self.buffer.size}."
+            )
 
     @property
     def end(self) -> Dimension:
@@ -73,8 +75,11 @@ class MemSpan:
         )
 
     def must_alias(self, other: MemSpan) -> bool:
-        return (self.buffer.id == other.buffer.id and equivalent_dim(self.start, other.start)
-                and equivalent_dim(self.size, other.size))
+        return (
+            self.buffer.id == other.buffer.id
+            and equivalent_dim(self.start, other.start)
+            and equivalent_dim(self.size, other.size)
+        )
 
     def may_alias(self, other: MemSpan) -> bool:
         if self.buffer.id != other.buffer.id:
@@ -83,11 +88,17 @@ class MemSpan:
             return False
         # Unknown symbolic ordering is conservatively aliasing.  A false
         # negative would make rewrite/lifetime/synchronization unsound.
-        return not (_provably_le(self.end, other.start) or _provably_le(other.end, self.start))
+        return not (
+            _provably_le(self.end, other.start)
+            or _provably_le(other.end, self.start)
+        )
 
     def is_within(self, other: MemSpan) -> bool:
-        return (self.buffer.id == other.buffer.id and _provably_le(other.start, self.start)
-                and _provably_le(self.end, other.end))
+        return (
+            self.buffer.id == other.buffer.id
+            and _provably_le(other.start, self.start)
+            and _provably_le(self.end, other.end)
+        )
 
     def to_data(self) -> dict[str, object]:
         return {

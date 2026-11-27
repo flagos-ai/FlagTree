@@ -12,9 +12,7 @@ from triton.flagmega.ir import IRModule, SelectionPoint, SelectionRecord
 
 
 class CandidateCapability(Protocol):
-
-    def supports(self, requirements) -> bool:
-        ...
+    def supports(self, requirements) -> bool: ...
 
 
 class CapabilitySelectionPolicy:
@@ -34,7 +32,11 @@ class CapabilitySelectionPolicy:
         """
 
         candidate_ids = {candidate.id for candidate in candidates}
-        return (point.default_candidate if point.default_candidate in candidate_ids else candidates[0].id)
+        return (
+            point.default_candidate
+            if point.default_candidate in candidate_ids
+            else candidates[0].id
+        )
 
     def add_defaults(
         self,
@@ -51,10 +53,16 @@ class CapabilitySelectionPolicy:
         supported_points = []
         selected_policies: dict[str, str] = {}
         for point in points:
-            candidates = tuple(candidate for candidate in point.candidates
-                               if capability.supports(candidate_requirements(candidate)))
+            candidates = tuple(
+                candidate
+                for candidate in point.candidates
+                if capability.supports(candidate_requirements(candidate))
+            )
             if not candidates:
-                requirements = {candidate.id: candidate_requirements(candidate) for candidate in point.candidates}
+                requirements = {
+                    candidate.id: candidate_requirements(candidate)
+                    for candidate in point.candidates
+                }
                 raise IRVerificationError(
                     f"Target {target_name!r} selection point {point.id!r} has no "
                     "capability-supported "
@@ -74,8 +82,11 @@ class CapabilitySelectionPolicy:
                 candidates=candidates,
                 default_candidate=default,
             ))
-            selection_policy = (self.policy_identity
-                                if default != semantic_default and self.policy_identity is not None else policy_version)
+            selection_policy = (
+                self.policy_identity
+                if default != semantic_default and self.policy_identity is not None
+                else policy_version
+            )
             selected_policies[point.id] = selection_policy
         filtered = tuple(supported_points)
         selections = module.selections + tuple(
@@ -85,7 +96,9 @@ class CapabilitySelectionPolicy:
                 origin="default-policy",
                 policy=selected_policies[point.id],
                 rationale=rationale,
-            ) for point in filtered)
+            )
+            for point in filtered
+        )
         return replace(
             module,
             selection_points=module.selection_points + filtered,
@@ -96,7 +109,7 @@ class CapabilitySelectionPolicy:
 def candidate_requirements(candidate) -> tuple[str, ...]:
     value = candidate.facts.get("requires", ())
     if isinstance(value, str):
-        return (value, )
+        return (value,)
     return tuple(str(item) for item in value)
 
 

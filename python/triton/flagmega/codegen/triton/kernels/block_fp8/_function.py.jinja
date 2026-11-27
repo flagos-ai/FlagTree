@@ -1,10 +1,16 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls %}
 {% if call.family == "block_fp8" and call.variant == block_fp8_variant %}
 {{ entry.kernel_decorator(call) }}
 def {{ call.symbol }}({{ call.signature }}):
 {{ entry.mesh_coordinates() }}
+{% if call.local_m | default(1) != 1 %}
+    # One owner-local row per iteration: row r walks K in decode-1's order over
+    # its own activation row. The weight tile is read once per row and never
+    # folded into a wider reduction.
+    for linear_row in tl.range(0, {{ call.local_m }}):
+{% endif %}
+{% filter indent(4 if call.local_m | default(1) != 1 else 0, first=True) %}
 {% if call.weight_encoding in ("IQ4_XS", "Q4_K") %}
     for local_n_start in tl.range(0, {{ call.local_n_capacity }}, {{ call.tile_n }}):
         local_n_offsets = local_n_start + tl.arange(0, {{ call.tile_n }})
@@ -14,7 +20,7 @@ def {{ call.symbol }}({{ call.signature }}):
 {% else %}
         _flagmega_q4_k_linear_local_tile(
 {% endif %}
-            {{ call.value }}, {{ call.weight }}, {{ call.result }},
+            {{ call.value_row | default(call.value) }}, {{ call.weight }}, {{ call.result }},
             {{ call.weight_row_offset }},
             {{ call.destination_offset }}, n_mask, {{ call.k }},
         )
@@ -28,7 +34,7 @@ def {{ call.symbol }}({{ call.signature }}):
         scale_rows = {{ call.scale_row_offset }}
         destination_offsets = {{ call.destination_offset }}
         _flagmega_block_linear_local_tile(
-            {{ call.value }}, {{ call.weight }}, {{ call.scale }}, {{ call.result }},
+            {{ call.value_row | default(call.value) }}, {{ call.weight }}, {{ call.scale }}, {{ call.result }},
             weight_rows, scale_rows, destination_offsets, n_mask,
             {{ call.k }}, {{ call.block_k }},
             "{{ call.activation_quantization }}", {{ call.weight_dequant_type }},
@@ -38,6 +44,7 @@ def {{ call.symbol }}({{ call.signature }}):
 {% endif %}
         )
 {% endif %}
+{% endfilter %}
 
 
 {% endif %}

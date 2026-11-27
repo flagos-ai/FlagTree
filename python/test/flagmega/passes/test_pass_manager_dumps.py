@@ -10,13 +10,13 @@ from triton.flagmega.passes import FunctionalPass, PassManager
 
 def _two_function_module():
     builder = fm.IRBuilder(dialect="high_level", stage="imported")
-    value_type = fm.tensor_type("float32", (8, ))
+    value_type = fm.tensor_type("float32", (8,))
     main_input = builder.var("main_input", value_type, id="main_input")
-    main_output = builder.call("math.silu", (main_input, ), value_type, id="main_output")
+    main_output = builder.call("math.silu", (main_input,), value_type, id="main_output")
     helper_input = builder.var("helper_input", value_type, id="helper_input")
-    helper_output = builder.call("math.silu", (helper_input, ), value_type, id="helper_output")
-    builder.function("main", (main_input, ), (main_output, ))
-    builder.function("helper", (helper_input, ), (helper_output, ))
+    helper_output = builder.call("math.silu", (helper_input,), value_type, id="helper_output")
+    builder.function("main", (main_input,), (main_output,))
+    builder.function("helper", (helper_input,), (helper_output,))
     return builder.build(entry="main")
 
 
@@ -26,8 +26,9 @@ def _mark_transformed(module):
 
 def test_pass_manager_owns_before_after_dumps_for_every_function(tmp_path):
     dumper = DumpManager(tmp_path, DumpFlags.PASS_IR).root.create_sub_dumper("LargeStage")
-    result = PassManager("LargeStage", dumper=dumper).add(FunctionalPass("MarkTransformed",
-                                                                         _mark_transformed)).run(_two_function_module())
+    result = PassManager("LargeStage", dumper=dumper).add(
+        FunctionalPass("MarkTransformed", _mark_transformed)
+    ).run(_two_function_module())
 
     assert result.before_dump == str(tmp_path / "LargeStage" / "Before")
     assert result.after_dump == str(tmp_path / "LargeStage" / "After")
@@ -43,8 +44,9 @@ def test_pass_manager_owns_before_after_dumps_for_every_function(tmp_path):
 
 def test_pass_manager_dump_flag_still_controls_large_stage_boundaries(tmp_path):
     dumper = DumpManager(tmp_path, DumpFlags.EGRAPH_COST).root.create_sub_dumper("LargeStage")
-    result = PassManager("LargeStage", dumper=dumper).add(FunctionalPass("MarkTransformed",
-                                                                         _mark_transformed)).run(_two_function_module())
+    result = PassManager("LargeStage", dumper=dumper).add(
+        FunctionalPass("MarkTransformed", _mark_transformed)
+    ).run(_two_function_module())
 
     assert result.before_dump is None
     assert result.after_dump is None

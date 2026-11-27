@@ -35,8 +35,8 @@ def test_mla_evaluator_writes_both_cache_fields_at_the_original_position(past):
         block, offset = divmod(position, 8)
         for field, name in enumerate(("key", "value")):
             expected = trace[f"decode_mla_attention_{name}_heads"].squeeze(0)
-            torch.testing.assert_close(state.kv_caches[block, 0, field, offset].reshape_as(expected), expected, rtol=0,
-                                       atol=0)
+            torch.testing.assert_close(state.kv_caches[block, 0, field, offset].reshape_as(expected),
+                                       expected, rtol=0, atol=0)
         next_block, next_offset = divmod(position + 1, 8)
         assert (state.kv_caches[next_block, 0, :, next_offset] == .25).all()
 
@@ -49,8 +49,8 @@ def test_mla_device_advances_once_across_page_boundary(tmp_path, graph_mode):
     source = checkpoint(REDUCED)
     importer = Glm5MoeImporter(source, block_size=8, num_blocks=3)
     module = importer.import_module()
-    artifact = write_artifact(Compiler().compile(module).module, tmp_path / "artifact", target="nvidia-sm90",
-                              emit_executable=True, checkpoint=source)
+    artifact = write_artifact(Compiler().compile(module).module, tmp_path / "artifact",
+                              target="nvidia-sm90", emit_executable=True, checkpoint=source)
     evaluator = TorchEvaluator(CheckpointWeightResolver(source))
     reference_state = create_paged_attention_state(importer.paged_config)
     reference_state.kv_caches.fill_(.25)
@@ -74,9 +74,8 @@ def test_mla_device_advances_once_across_page_boundary(tmp_path, graph_mode):
         else:
             step = launch
         for index, value in enumerate((11, 17, 5)):
-            expected = evaluator.run(
-                module,
-                {"input_ids": torch.tensor([value], dtype=torch.int32), "paged_attention_state": reference_state})
+            expected = evaluator.run(module, {"input_ids": torch.tensor([value], dtype=torch.int32),
+                                             "paged_attention_state": reference_state})
             ids.fill_(value)
             step()
             torch.cuda.synchronize()

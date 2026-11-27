@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""RoPE over typed-vector physical layouts."""
+"""RoPE over nncase-compatible typed-vector physical layouts."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ class VectorizedRoPE(OpDefinition):
     The value carries one lane group on its final logical axis.  Cosine and
     sine carry ``(2, lane)`` on that same axis: the first lane selects the two
     rotary halves and the second is the target vector lane.  This is the
-    physical contract produced by reference ``VectorizeRoPEPropagation``.
+    physical contract produced by nncase ``VectorizeRoPEPropagation``.
     """
 
     input = input_parameter(is_tensor() & has_rank(3))
@@ -62,12 +62,20 @@ class VectorizedRoPE(OpDefinition):
         sin_type = tensor_of(sin_ir)
         input_vector = input_type.dtype
         if not isinstance(input_vector, VectorType) or len(input_vector.lanes) != 1:
-            raise IRSchemaError("VectorizedRoPE input requires one final-axis VectorType lane group.")
+            raise IRSchemaError(
+                "VectorizedRoPE input requires one final-axis VectorType lane group."
+            )
         expected_table_lanes = (2, input_vector.lanes[0])
-        if (not isinstance(cos_type.dtype, VectorType) or not isinstance(sin_type.dtype, VectorType)
-                or cos_type.dtype.lanes != expected_table_lanes or sin_type.dtype.lanes != expected_table_lanes):
-            raise IRSchemaError("VectorizedRoPE cos and sin require rotary pair and lane groups "
-                                f"{expected_table_lanes}.")
+        if (
+            not isinstance(cos_type.dtype, VectorType)
+            or not isinstance(sin_type.dtype, VectorType)
+            or cos_type.dtype.lanes != expected_table_lanes
+            or sin_type.dtype.lanes != expected_table_lanes
+        ):
+            raise IRSchemaError(
+                "VectorizedRoPE cos and sin require rotary pair and lane groups "
+                f"{expected_table_lanes}."
+            )
         if any(dtype not in {DType.BFLOAT16, DType.FLOAT32}
                for dtype in (cos_type.dtype.elem_type, sin_type.dtype.elem_type)):
             raise IRSchemaError("VectorizedRoPE cos and sin require BF16/FP32 elements; computation uses FP32.")
@@ -76,26 +84,38 @@ class VectorizedRoPE(OpDefinition):
         logical_input_extent = input_type.shape[-1] * input_vector.lanes[0]
         logical_table_extent = cos_type.shape[-1] * (2 * input_vector.lanes[0])
         if RoPE.rotary_extent(logical_input_extent, attrs) != logical_table_extent:
-            raise IRSchemaError("VectorizedRoPE rotary tables must match the scalar rotary dimension.")
+            raise IRSchemaError(
+                "VectorizedRoPE rotary tables must match the scalar rotary dimension."
+            )
         for source, target in zip(cos_type.shape[:-1], input_type.shape[:-1]):
             if source != target and source.value != 1:
-                raise IRSchemaError("VectorizedRoPE rotary tables are not broadcastable to the input.")
+                raise IRSchemaError(
+                    "VectorizedRoPE rotary tables are not broadcastable to the input."
+                )
 
         placement = placement_of(input_ir, cos_ir, sin_ir)
         if placement is None:
             return input_ir
-        if not all(isinstance(value, DistributedType) for value in (input_ir, cos_ir, sin_ir)):
-            raise IRSchemaError("Distributed VectorizedRoPE requires every operand to name a placement.")
+        if not all(
+            isinstance(value, DistributedType) for value in (input_ir, cos_ir, sin_ir)
+        ):
+            raise IRSchemaError(
+                "Distributed VectorizedRoPE requires every operand to name a placement."
+            )
         assert isinstance(input_ir, DistributedType)
         assert isinstance(cos_ir, DistributedType)
         assert isinstance(sin_ir, DistributedType)
         if any(value.partial is not None for value in (input_ir, cos_ir, sin_ir)):
             raise IRSchemaError("VectorizedRoPE requires materialized distributed operands.")
-        if (input_ir.axis_policies[0] != cos_ir.axis_policies[0]
-                or not isinstance(cos_ir.axis_policies[1], SBPBroadCast)
-                or not isinstance(cos_ir.axis_policies[2], SBPBroadCast)
-                or cos_ir.axis_policies != sin_ir.axis_policies):
-            raise IRSchemaError("VectorizedRoPE distributed operands have incompatible axis policies.")
+        if (
+            input_ir.axis_policies[0] != cos_ir.axis_policies[0]
+            or not isinstance(cos_ir.axis_policies[1], SBPBroadCast)
+            or not isinstance(cos_ir.axis_policies[2], SBPBroadCast)
+            or cos_ir.axis_policies != sin_ir.axis_policies
+        ):
+            raise IRSchemaError(
+                "VectorizedRoPE distributed operands have incompatible axis policies."
+            )
         if has_remote_rotary_pairs(input_ir, attrs.get("rotary_dim")):
             raise IRSchemaError("VectorizedRoPE requires owner-local rotary pairs; reshard before RoPE.")
         return input_ir
@@ -112,7 +132,9 @@ class VectorizedRoPE(OpDefinition):
         assert isinstance(cos_type.dtype, VectorType)
         assert isinstance(sin_type.dtype, VectorType)
         rotary_axis = input_type.rank - 1
-        scalar_value = unpack_physical(value, input_type.rank, input_type.dtype.lanes, (rotary_axis, ))
+        scalar_value = unpack_physical(
+            value, input_type.rank, input_type.dtype.lanes, (rotary_axis,)
+        )
         scalar_cos = unpack_physical(
             cosine,
             cos_type.rank,
@@ -125,12 +147,13 @@ class VectorizedRoPE(OpDefinition):
             sin_type.dtype.lanes,
             (rotary_axis, rotary_axis),
         )
-        result = RoPE.apply_rotary(scalar_value, scalar_cos, scalar_sin, node.attrs.get("rotary_dim"), context.torch)
+        result = RoPE.apply_rotary(scalar_value, scalar_cos, scalar_sin,
+                                  node.attrs.get("rotary_dim"), context.torch)
         return pack_physical(
             result,
             input_type.rank,
             input_type.dtype.lanes,
-            (rotary_axis, ),
+            (rotary_axis,),
         )
 
     @classmethod
@@ -150,7 +173,7 @@ class VectorizedRoPE(OpDefinition):
             flops=None if rotated_elements is None else rotated_elements * 3,
             bytes_read=None if size is None else size * 3,
             bytes_written=size,
-            notes=("vectorized-rope", ),
+            notes=("vectorized-rope",),
         )
 
 

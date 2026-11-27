@@ -11,7 +11,6 @@ from triton.flagmega.pattern_match.vargs_pattern import VArgsPattern
 
 
 class CallPattern(Pattern):
-
     def __init__(
         self,
         target: OpPattern,

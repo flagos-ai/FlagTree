@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: MIT
 
 from dataclasses import replace
+import inspect
+from pathlib import Path
 
 import pytest
 import torch
@@ -14,8 +16,10 @@ from triton.flagmega.passes.tir.canonicalize_packed_qkv_weights import (
     CanonicalizePackedQKVWeightsPass,
     canonicalize_packed_qkv_weights,
 )
+from triton.flagmega.passes.tir import canonicalize_packed_qkv_weights as canonicalize
 from triton.flagmega.passes.tir.bind_prim_function_buffers import (
-    bind_prim_function_buffers, )
+    bind_prim_function_buffers,
+)
 
 
 def _packed_type(k: int, n: int):
@@ -50,8 +54,8 @@ def _selected_module(*, independent_q_use=False, repeat_decode_call=False):
     value_type = fm.tensor_type("bfloat16", (2, 32))
     q_type = _packed_type(2, 8)
     kv_type = _packed_type(2, 4)
-    q_output = fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8, )), (2, 8))
-    kv_output = fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8, )), (2, 4))
+    q_output = fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8,)), (2, 8))
+    kv_output = fm.tensor_type(fm.VectorType(fm.DType.BFLOAT16, (8,)), (2, 4))
     result_type = fm.TupleType((q_output, kv_output, kv_output))
     none_type = fm.NoneType()
 
@@ -100,18 +104,20 @@ def _selected_module(*, independent_q_use=False, repeat_decode_call=False):
     )
     parameters = tuple(
         fm.PrimParameter(name, value_type, fm.PrimParameterRole.INPUT)
-        for name, value_type in zip(argument_names, argument_types)) + tuple(
-            fm.PrimParameter(name, value_type, fm.PrimParameterRole.OUTPUT)
-            for name, value_type in zip(output_names, result_type.fields))
+        for name, value_type in zip(argument_names, argument_types)
+    ) + tuple(
+        fm.PrimParameter(name, value_type, fm.PrimParameterRole.OUTPUT)
+        for name, value_type in zip(output_names, result_type.fields)
+    )
     kernel = fm.PrimFunction(
         "kernel_packed_qkv",
         "triton",
         parameters,
-        fm.Sequential((dispatch, )),
-        fm.Return(
-            tuple(
-                fm.ReturnBinding(fm.ValueRef(name, value_type), name)
-                for name, value_type in zip(output_names, result_type.fields))),
+        fm.Sequential((dispatch,)),
+        fm.Return(tuple(
+            fm.ReturnBinding(fm.ValueRef(name, value_type), name)
+            for name, value_type in zip(output_names, result_type.fields)
+        )),
     )
 
     kernel_call = fm.Node(
@@ -127,9 +133,9 @@ def _selected_module(*, independent_q_use=False, repeat_decode_call=False):
         result_type,
         attrs={"callee": kernel.name},
     )
-    decode_outputs = (kernel_call.id, )
+    decode_outputs = (kernel_call.id,)
     if independent_q_use:
-        decode_outputs += (decode_q.id, )
+        decode_outputs += (decode_q.id,)
     decode = fm.Function(
         "decode_layer",
         (decode_value.id, decode_q.id, decode_k.id, decode_v.id),
@@ -151,8 +157,12 @@ def _selected_module(*, independent_q_use=False, repeat_decode_call=False):
     repeated_call = replace(decode_call, id="decode_call_again")
     main = fm.Function(
         "main",
-        (main_value.id, ),
-        ((decode_call.id, repeated_call.id) if repeat_decode_call else (decode_call.id, )),
+        (main_value.id,),
+        (
+            (decode_call.id, repeated_call.id)
+            if repeat_decode_call
+            else (decode_call.id,)
+        ),
     )
     module = fm.IRModule(
         dialect="semantic_tir",
@@ -169,11 +179,11 @@ def _selected_module(*, independent_q_use=False, repeat_decode_call=False):
             k_weight,
             v_weight,
             decode_call,
-            *((repeated_call, ) if repeat_decode_call else ()),
+            *((repeated_call,) if repeat_decode_call else ()),
         ),
         functions=(main, decode),
         entry="main",
-        prim_functions=(kernel, ),
+        prim_functions=(kernel,),
     )
     return fm.verify_module(module)
 
@@ -181,8 +191,8 @@ def _selected_module(*, independent_q_use=False, repeat_decode_call=False):
 def _with_distributed_weights(module):
     placement = fm.Placement((2, 2), "yx", "bb")
     policies = (
-        fm.SBP.split_contiguous((0, )),
-        fm.SBP.split_contiguous((1, )),
+        fm.SBP.split_contiguous((0,)),
+        fm.SBP.split_contiguous((1,)),
     )
     replacements = {}
     for name in ("q_weight", "k_weight", "v_weight"):
@@ -200,11 +210,13 @@ def _with_distributed_weights(module):
         (1, 2, 3),
         ("q_weight", "k_weight", "v_weight"),
     ):
-        parameters[parameter_index] = replace(parameters[parameter_index], type=replacements[source_name].type)
+        parameters[parameter_index] = replace(
+            parameters[parameter_index], type=replacements[source_name].type
+        )
     return replace(
         module,
         nodes=tuple(replacements.get(node.id, node) for node in module.nodes),
-        prim_functions=(replace(kernel, parameters=tuple(parameters)), ),
+        prim_functions=(replace(kernel, parameters=tuple(parameters)),),
     )
 
 
@@ -225,7 +237,9 @@ def _with_selected_distribution_contract(module):
     )
     return replace(
         module,
-        prim_functions=(replace(kernel, body=fm.Sequential((selected, ))), ),
+        prim_functions=(
+            replace(kernel, body=fm.Sequential((selected,))),
+        ),
     )
 
 
@@ -246,7 +260,7 @@ def test_canonicalization_rewrites_reusable_graph_and_leaf_kernel_abis():
 
     kernel_call = result.node_map["decode_qkv"]
     assert kernel_call.inputs[:2] == ("decode_value", "decode_q.qkv_fused")
-    assert kernel_call.inputs[2:] == ("none", ) * 9
+    assert kernel_call.inputs[2:] == ("none",) * 9
     kernel = result.prim_function_map["kernel_packed_qkv"]
     assert tuple(value.name for value in kernel.runtime_parameters[:2]) == (
         "input",
@@ -267,10 +281,15 @@ def test_canonicalization_rejects_an_independent_weight_reference():
 
 
 def test_canonicalization_reuses_one_derived_weight_for_repeated_calls():
-    result = canonicalize_packed_qkv_weights(_selected_module(repeat_decode_call=True))
+    result = canonicalize_packed_qkv_weights(
+        _selected_module(repeat_decode_call=True)
+    )
 
-    fused = tuple(node for node in result.nodes
-                  if node.metadata.get("canonicalized_from") == ("q_weight", "k_weight", "v_weight"))
+    fused = tuple(
+        node for node in result.nodes
+        if node.metadata.get("canonicalized_from")
+        == ("q_weight", "k_weight", "v_weight")
+    )
     assert len(fused) == 1
     assert result.node_map["decode_call"].inputs[1] == fused[0].id
     assert result.node_map["decode_call_again"].inputs[1] == fused[0].id
@@ -292,14 +311,17 @@ def test_canonicalization_refreezes_one_editable_fused_constant_recipe(tmp_path)
     main_call = result.node_map["decode_call"]
     fused_asset = result.node_map[main_call.inputs[1]]
     assert fused_asset.op == "builtin.const_asset"
-    recipe = next(value for value in result.constant_recipes if value.id == fused_asset.attrs["recipe"])
+    recipe = next(
+        value for value in result.constant_recipes
+        if value.id == fused_asset.attrs["recipe"]
+    )
     fused_node = recipe.node_map[str(fused_asset.attrs["output"])]
     assert fused_node.op == "tensors.concat"
     assert fused_node.inputs == ("q_weight", "k_weight", "v_weight")
     assert not {
-        node.id
-        for node in result.nodes
-        if node.id in {"q_weight", "k_weight", "v_weight"} and node.op == "builtin.const_asset"
+        node.id for node in result.nodes
+        if node.id in {"q_weight", "k_weight", "v_weight"}
+        and node.op == "builtin.const_asset"
     }
 
     shape = (2, 8, 8, 2, 8)
@@ -317,7 +339,7 @@ def test_canonicalization_refreezes_one_editable_fused_constant_recipe(tmp_path)
     assert fm.load_module(checkpoint).semantic_hash == result.semantic_hash
 
 
-def test_pass_object_uses_reference_pass_name_and_contract():
+def test_pass_object_uses_nncase_pass_name_and_contract():
     transform = CanonicalizePackedQKVWeightsPass()
 
     assert transform.name == "CanonicalizePackedQKVWeights"
@@ -325,6 +347,18 @@ def test_pass_object_uses_reference_pass_name_and_contract():
         "main_value",
         "decode_call.qkv_fused",
     )
+
+
+def test_canonicalizer_uses_named_parameter_info_instead_of_abi_numbers():
+    source = Path(inspect.getsourcefile(canonicalize) or "").read_text(
+        encoding="utf-8"
+    )
+
+    assert "PackedQKVParallelLinear.q_weight" in source
+    assert "PackedQKVParallelLinear.k_weight" in source
+    assert "PackedQKVParallelLinear.v_weight" in source
+    assert "(1, 2, 3)" not in source
+    assert "!= 13" not in source
 
 
 def test_canonicalization_rejects_non_k_major_selected_kernel():
@@ -338,7 +372,7 @@ def test_canonicalization_rejects_non_k_major_selected_kernel():
     )
     module = replace(
         module,
-        prim_functions=(replace(kernel, body=fm.Sequential((incompatible, ))), ),
+        prim_functions=(replace(kernel, body=fm.Sequential((incompatible,))),),
     )
 
     with pytest.raises(IRVerificationError, match="requires K-major"):
@@ -368,7 +402,9 @@ def test_canonicalization_materializes_distributed_sources_owner_major():
         (4, 1, 8),
     )
     sources = tuple(result.node_map[value] for value in fused.inputs)
-    assert all(value.op == "distributed.materialize_local_shards" for value in sources)
+    assert all(
+        value.op == "distributed.materialize_local_shards" for value in sources
+    )
     assert tuple(value.inputs[0] for value in sources) == (
         "q_weight",
         "k_weight",
@@ -378,14 +414,18 @@ def test_canonicalization_materializes_distributed_sources_owner_major():
 
 
 def test_canonicalization_rewrites_the_selected_distributed_kernel_abi():
-    module = _with_selected_distribution_contract(_with_distributed_weights(_selected_module()))
+    module = _with_selected_distribution_contract(
+        _with_distributed_weights(_selected_module())
+    )
 
     result = canonicalize_packed_qkv_weights(module)
     kernel = result.prim_functions[0]
     dispatch = fm.kernel_dispatch_of(kernel)
     assert dispatch is not None
     distribution = dispatch.parameters["distribution"]
-    fused_index = tuple(value.name for value in kernel.runtime_parameters).index("q_weight_qkv_fused")
+    fused_index = tuple(
+        value.name for value in kernel.runtime_parameters
+    ).index("q_weight_qkv_fused")
 
     assert len(distribution["input_types"]) == len(kernel.runtime_parameters)
     assert distribution["input_types"] == kernel.runtime_parameter_types
@@ -398,14 +438,26 @@ def test_canonicalization_rewrites_the_selected_distributed_kernel_abi():
 
 
 def test_distributed_fused_rhs_is_a_real_frozen_materialization():
-    frozen = freeze_constant_islands(_with_distributed_weights(_selected_module()))
+    frozen = freeze_constant_islands(
+        _with_distributed_weights(_selected_module())
+    )
     result = canonicalize_packed_qkv_weights(frozen)
     fused_asset = result.node_map[result.node_map["decode_call"].inputs[1]]
-    recipe = next(value for value in result.constant_recipes if value.id == fused_asset.attrs["recipe"])
-    assert sum(node.op == "distributed.materialize_local_shards" for node in recipe.nodes) == 3
+    recipe = next(
+        value for value in result.constant_recipes
+        if value.id == fused_asset.attrs["recipe"]
+    )
+    assert sum(
+        node.op == "distributed.materialize_local_shards"
+        for node in recipe.nodes
+    ) == 3
 
-    q = torch.arange(2 * 8 * 8 * 2 * 8, dtype=torch.bfloat16).reshape(2, 8, 8, 2, 8)
-    k = torch.arange(2 * 4 * 8 * 2 * 8, dtype=torch.bfloat16).reshape(2, 4, 8, 2, 8)
+    q = torch.arange(2 * 8 * 8 * 2 * 8, dtype=torch.bfloat16).reshape(
+        2, 8, 8, 2, 8
+    )
+    k = torch.arange(2 * 4 * 8 * 2 * 8, dtype=torch.bfloat16).reshape(
+        2, 4, 8, 2, 8
+    )
     v = -k
     assets = materialize_constant_assets(
         result,
@@ -414,12 +466,11 @@ def test_distributed_fused_rhs_is_a_real_frozen_materialization():
     expected = []
     for row in range(2):
         for column in range(2):
-            expected.append(
-                torch.cat((
-                    q[row:row + 1, column * 4:(column + 1) * 4],
-                    k[row:row + 1, column * 2:(column + 1) * 2],
-                    v[row:row + 1, column * 2:(column + 1) * 2],
-                ), dim=1))
+            expected.append(torch.cat((
+                q[row:row + 1, column * 4:(column + 1) * 4],
+                k[row:row + 1, column * 2:(column + 1) * 2],
+                v[row:row + 1, column * 2:(column + 1) * 2],
+            ), dim=1))
     torch.testing.assert_close(
         assets[fused_asset.id],
         torch.stack(expected),

@@ -1,7 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
-import gzip
 import pytest
 import json
 from pathlib import Path
@@ -19,13 +18,11 @@ def test_cuda_block_update_retains_rounded_mma_operand_dtype():
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
-    path = Path(__file__).resolve().parents[4] / "data" / "native_block_update_mma_rounding.json.gz"
-    with gzip.open(path, "rt", encoding="utf-8") as fixture_file:
-        fixture = json.load(fixture_file)
-    operands = tuple(
-        torch.tensor(fixture[name], device="cuda", dtype=dtype)
-        for name, dtype in (("query", torch.bfloat16), ("key", torch.bfloat16), ("value", torch.bfloat16),
-                            ("coefficients", torch.bfloat16), ("log_prefix", torch.float32)))
+    fixture = json.loads((Path(__file__).resolve().parents[4] / "data" /
+                          "native_block_update_mma_rounding.json").read_text())
+    operands = tuple(torch.tensor(fixture[name], device="cuda", dtype=dtype) for name, dtype in (
+        ("query", torch.bfloat16), ("key", torch.bfloat16), ("value", torch.bfloat16),
+        ("coefficients", torch.bfloat16), ("log_prefix", torch.float32)))
     initial = torch.zeros((1, 128, 128), device="cuda")
     actual, _ = delta_rule_block_update(*operands, initial, torch=torch)
     expected = torch.tensor(fixture["output"], device="cuda", dtype=torch.bfloat16)

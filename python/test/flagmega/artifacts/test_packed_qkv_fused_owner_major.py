@@ -1,5 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
+
 """A fused packed-QKV weight is packed by its own bank field program.
 
 ``_fused_weight_type`` declares the fused buffer as ``(owners, local_n,
@@ -24,7 +25,6 @@ from triton.flagmega.errors import ArtifactError
 
 
 class _Checkpoint:
-
     def __init__(self, tensors):
         self._tensors = tensors
 
@@ -33,7 +33,6 @@ class _Checkpoint:
 
 
 class _Buffer:
-
     def __init__(self, keys, owners, local_n, local_k, *, group=None, row=0):
         self.id = "fused.test.buffer"
         self.weight_key = keys[0]
@@ -47,7 +46,7 @@ class _Buffer:
 
 def test_single_source_buffer_loads_its_checkpoint_tensor_directly():
     value = torch.arange(12, dtype=torch.float32).reshape(4, 3)
-    buffer = _Buffer(("q", ), 2, 2, 3)
+    buffer = _Buffer(("q",), 2, 2, 3)
     buffer.fused_weight_keys = ()
 
     loaded = _source_tensor(_Checkpoint({"q": value}), buffer, None)
@@ -59,7 +58,10 @@ def test_fused_buffer_is_not_packed_by_concatenating_its_sources():
     # The defect this guards: joining q/k/v on the logical N axis produces the
     # right elements in the wrong order, which no permutation-invariant check
     # rejects.  Packing must refuse rather than emit those bytes.
-    tensors = {name: torch.zeros((rows, 3), dtype=torch.float32) for name, rows in (("q", 8), ("k", 4), ("v", 4))}
+    tensors = {
+        name: torch.zeros((rows, 3), dtype=torch.float32)
+        for name, rows in (("q", 8), ("k", 4), ("v", 4))
+    }
     buffer = _Buffer(("q", "k", "v"), 4, 2, 4)
 
     with pytest.raises(ArtifactError) as error:
@@ -76,7 +78,10 @@ def test_fused_buffer_without_a_resolvable_bank_field_is_rejected():
         nodes = ()
         node_map: dict = {}
 
-    tensors = {name: torch.zeros((rows, 3), dtype=torch.float32) for name, rows in (("q", 8), ("k", 4), ("v", 4))}
+    tensors = {
+        name: torch.zeros((rows, 3), dtype=torch.float32)
+        for name, rows in (("q", 8), ("k", 4), ("v", 4))
+    }
     buffer = _Buffer(("q", "k", "v"), 4, 2, 4, group="absent.bank.field")
 
     with pytest.raises(ArtifactError) as error:

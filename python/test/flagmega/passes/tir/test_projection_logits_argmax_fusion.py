@@ -18,18 +18,23 @@ def _selected_output_vectorization(module):
             metadata={
                 **dict(node.metadata),
                 "selected_vectorization": (
-                    "vectorization.matmul.n" if node.id == "projection" else "vectorization.last_axis"),
-                "selected_vector_axes": (1, ),
-                "selected_vector_lanes": ((8, ) if node.id == "projection" else (4, )),
+                    "vectorization.matmul.n"
+                    if node.id == "projection"
+                    else "vectorization.last_axis"
+                ),
+                "selected_vector_axes": (1,),
+                "selected_vector_lanes": ((8,) if node.id == "projection" else (4,)),
             },
-        ) if node.id in {"projection", "logits"} else node for node in module.nodes)
+        )
+        if node.id in {"projection", "logits"}
+        else node
+        for node in module.nodes
+    )
     return replace(module, nodes=nodes)
 
 
 def _projection_boundary(*, extra_projection_user: bool = False, public_logits: bool = True):
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="distributed", entry="main")
 
@@ -53,16 +58,16 @@ def _projection_boundary(*, extra_projection_user: bool = False, public_logits: 
 
 
 def _packed_projection_boundary():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="distributed", entry="main")
 
         def forward(self):
             lhs = self.input("lhs", fm.tensor_type("bfloat16", (1, 512)), id="lhs")
-            weight = self.input("weight", fm.tensor_type("bfloat16", (32, 1024, 2, 64)), id="weight")
-            projection = fm.F.math.packed_dense_matmul(lhs, weight, name="projection")
+            weight = self.input(
+                "weight", fm.tensor_type("bfloat16", (32, 1024, 2, 64)), id="weight")
+            projection = fm.F.math.packed_dense_matmul(
+                lhs, weight, name="projection")
             logits = fm.F.tensors.cast(projection, fm.DType.FLOAT32, name="logits")
             token = fm.F.nn.greedy_sample(logits, name="token")
             self.function("main", (lhs, weight), (logits, token))
@@ -71,9 +76,7 @@ def _packed_projection_boundary():
 
 
 def _mesh_interleaved_packed_projection_boundary():
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="distributed", entry="main")
 
@@ -107,31 +110,53 @@ def test_projection_logits_argmax_match_does_not_fabricate_an_unimplemented_epil
     assert match.adapters == ()
 
     proposed = NvidiaSm90Target().propose_tir(module)
-    point = next(point for point in proposed.selection_points if point.id == "tir.projection")
+    point = next(
+        point for point in proposed.selection_points
+        if point.id == "tir.projection"
+    )
     selected = proposed.selection_map[point.id]
-    implementation = next(candidate for candidate in point.candidates if candidate.id == selected.candidate_id)
+    implementation = next(
+        candidate for candidate in point.candidates
+        if candidate.id == selected.candidate_id
+    )
     assert implementation.id == "tir.dense_matmul.gemv"
-    assert all(candidate.parameters.get("epilogue") != "cast_logits_argmax" for candidate in point.candidates)
+    assert all(
+        candidate.parameters.get("epilogue") != "cast_logits_argmax"
+        for candidate in point.candidates
+    )
 
 
 def test_projection_logits_argmax_match_rejects_another_projection_reader():
-    assert find_projection_logits_argmax_matches(_projection_boundary(extra_projection_user=True)) == {}
+    assert find_projection_logits_argmax_matches(
+        _projection_boundary(extra_projection_user=True)
+    ) == {}
 
 
 def test_projection_logits_argmax_match_requires_public_logits():
-    assert find_projection_logits_argmax_matches(_projection_boundary(public_logits=False)) == {}
+    assert find_projection_logits_argmax_matches(
+        _projection_boundary(public_logits=False)
+    ) == {}
 
 
 def test_scalar_agent_choice_on_cast_disables_vector_fused_epilogue():
     module = _projection_boundary()
     module = replace(
         module,
-        nodes=tuple(replace(node, metadata={}) if node.id == "logits" else node for node in module.nodes),
+        nodes=tuple(
+            replace(node, metadata={}) if node.id == "logits" else node
+            for node in module.nodes
+        ),
     )
 
     proposed = NvidiaSm90Target().propose_tir(module)
-    point = next(point for point in proposed.selection_points if point.id == "tir.projection")
-    assert all(candidate.parameters.get("epilogue") != "cast_logits_argmax" for candidate in point.candidates)
+    point = next(
+        point for point in proposed.selection_points
+        if point.id == "tir.projection"
+    )
+    assert all(
+        candidate.parameters.get("epilogue") != "cast_logits_argmax"
+        for candidate in point.candidates
+    )
 
 
 def test_packed_large_n_projection_separates_compute_tiles_from_packing():
@@ -142,7 +167,10 @@ def test_packed_large_n_projection_separates_compute_tiles_from_packing():
     proposed = NvidiaSm90Target().propose_tir(module)
     point = next(point for point in proposed.selection_points if point.id == "tir.projection")
     selected = proposed.selection_map[point.id]
-    implementation = next(candidate for candidate in point.candidates if candidate.id == selected.candidate_id)
+    implementation = next(
+        candidate for candidate in point.candidates
+        if candidate.id == selected.candidate_id
+    )
 
     assert implementation.id == "tir.dense_matmul.packed_k_major_gemv_tn64_bk256"
     assert implementation.parameters["tile_n"] == 64
@@ -156,9 +184,11 @@ def test_mesh_interleaved_projection_fails_instead_of_selecting_a_fake_kernel():
     target = NvidiaSm90Target()
     proposed = target.propose_tir(module)
 
-    assert "tir.projection" not in {point.id for point in proposed.selection_points}
+    assert "tir.projection" not in {
+        point.id for point in proposed.selection_points
+    }
     with pytest.raises(
-            IRVerificationError,
-            match="No reviewed Triton TIR candidate.*math.packed_dense_matmul",
+        IRVerificationError,
+        match="No reviewed Triton TIR candidate.*math.packed_dense_matmul",
     ):
         target.lower_to_tir(proposed)

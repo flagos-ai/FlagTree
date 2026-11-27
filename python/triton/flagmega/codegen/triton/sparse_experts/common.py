@@ -42,11 +42,10 @@ def stage_context(raw, definition, weight_parameter, *, partitioned=False):
         raise CodegenError("Sparse expert result ABI disagrees with its typed sharding and rounding contract.")
     if raw.get("variant") in {"wgmma", "cooperative_wgmma", "complete_k_wgmma"}:
         from triton.flagmega.codegen.triton.sparse_experts.mma import supports_block_fp8_wgmma
-        if (not supports_block_fp8_wgmma(
-                raw["semantic_op"],
-            {parameter.name: value.type
-             for parameter, value in zip(definition.input_parameters, inputs, strict=True)}, attrs)
-                or raw["parameters"]["block_n"] != 64 or raw["parameters"]["block_k"] != 128):
+        if (not supports_block_fp8_wgmma(raw["semantic_op"], {
+                parameter.name: value.type
+                for parameter, value in zip(definition.input_parameters, inputs, strict=True)
+        }, attrs) or raw["parameters"]["block_n"] != 64 or raw["parameters"]["block_k"] != 128):
             raise CodegenError("Expert WGMMA requires BF16/FP8, complete K, UE8M0 and 128x128 block scales.")
     activation = operands[definition.input_parameters[0].name]["abi"]
     weight = operands[weight_parameter]["abi"]
@@ -86,7 +85,8 @@ def stage_context(raw, definition, weight_parameter, *, partitioned=False):
             # Weights are compact owner slices; their scales are broadcast
             # global tables. Recover the logical weight coordinates before
             # selecting a scale block, including split-N and split-K owners.
-            coordinates = (("_fm_expert", "_fm_n[:, None]", "_fm_k[None, :]") if groups_per_tile > 1 else
+            coordinates = (("_fm_expert", "_fm_n[:, None]", "_fm_k[None, :]")
+                           if groups_per_tile > 1 else
                            ("_fm_expert", "_fm_n", "_fm_k_start"))
             if partitioned:
                 coordinates = (coordinates[0], "_fm_partition", *coordinates[1:])
@@ -101,9 +101,9 @@ def stage_context(raw, definition, weight_parameter, *, partitioned=False):
             scale_offset = emit_local_scalar_offset(binding["abi"], scale_coordinates)
             # Either form multiplies an (N, K) weight tile, so the per-tile
             # column keeps the trailing broadcast the per-lane form has already.
-            block_scale_loads[name] = (
-                f"tl.load({_pointer(binding)} + ({scale_offset}), mask={{group_mask}}, other=1)" if groups_per_tile > 1
-                else f"tl.load({_pointer(binding)} + ({scale_offset}), mask={{slot_active}}, other=1)[:, None]")
+            block_scale_loads[name] = (f"tl.load({_pointer(binding)} + ({scale_offset}), mask={{group_mask}}, other=1)"
+                                       if groups_per_tile > 1 else
+                                       f"tl.load({_pointer(binding)} + ({scale_offset}), mask={{slot_active}}, other=1)[:, None]")
         else:
             raise CodegenError(f"Sparse expert scale {name!r} must have rank 2 or 3.")
     context = {
@@ -135,13 +135,13 @@ def stage_context(raw, definition, weight_parameter, *, partitioned=False):
     if partitioned:
         context["partitions"] = int(output["local_capacity_shape"][0])
         context["token_active"] += f" & (_fm_partition < ({emit_active_extent(output, 0)}))"
-    context["slot_active"] = (context["token_active"]
-                              if full_routes else f"({context['token_active']}) & ({context['route_active']})")
+    context["slot_active"] = (context["token_active"] if full_routes else
+                              f"({context['token_active']}) & ({context['route_active']})")
     context["scale_loads"] = {
         name: (f"tl.full((), {binding['float32_splat']!r}, tl.float32)" if "float32_splat" in binding else
                (f"tl.load({_pointer(binding)} + ({context['scale_offsets'][name]}), "
-                f"mask={context['slot_active']}, other=1)"
-                if name in context["scale_offsets"] else "tl.full((), 1.0, tl.float32)"))
+                f"mask={context['slot_active']}, other=1)" if name in context["scale_offsets"] else
+                "tl.full((), 1.0, tl.float32)"))
         for name, binding in operands.items()
         if name.endswith("_scale")
     }
@@ -149,10 +149,8 @@ def stage_context(raw, definition, weight_parameter, *, partitioned=False):
     # predicate is the weight tile's, not the scalar slot's.
     group_mask = "_fm_n_mask[:, None] & _fm_k_mask[None, :]" if groups_per_tile > 1 else context["slot_active"]
     context["block_scale_loads"] = {
-        name:
-        expression.replace(
-            "{slot_active}", "_fm_n_mask" if raw.get("variant") in {"wgmma", "cooperative_wgmma", "complete_k_wgmma"}
-            else context["slot_active"]).replace("{group_mask}", group_mask)
+        name: expression.replace("{slot_active}", "_fm_n_mask" if raw.get("variant") in {"wgmma", "cooperative_wgmma", "complete_k_wgmma"}
+                                 else context["slot_active"]).replace("{group_mask}", group_mask)
         for name, expression in context["block_scale_loads"].items()
     }
     # div_rn is lowered as an explicit correctly-rounded operation, so even

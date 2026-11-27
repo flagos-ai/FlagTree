@@ -16,8 +16,8 @@ def _bufferized_module():
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
     value_type = fm.tensor_type("bfloat16", (1, 128))
     source = builder.var("source", value_type, id="source")
-    output = builder.call("test.unary", (source, ), value_type, id="output")
-    builder.function("main", (source, ), (output, ))
+    output = builder.call("test.unary", (source,), value_type, id="output")
+    builder.function("main", (source,), (output,))
     module = builder.build(entry="main")
     plan = fm.make_buffer_plan(module)
     return replace(

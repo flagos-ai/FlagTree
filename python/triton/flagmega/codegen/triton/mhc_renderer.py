@@ -59,15 +59,17 @@ def _replicated_abi(binding: Mapping[str, object], name: str, *, scalar: bool = 
     distributed = abi.get("distributed_type")
     if isinstance(distributed, Mapping):
         if distributed.get("partial") is not None:
-            raise CodegenError(f"mHC operand {name!r} is partial; the stage reads every element of it, "
-                               "so the partial must be reduced by an explicit Boxing first.")
-        if any(
-                isinstance(policy, Mapping) and str(policy.get("kind")) == "split"
-                for policy in distributed.get("axis_policies", ())):
-            raise CodegenError(f"mHC operand {name!r} is split; the stage reduces over the stream and "
-                               "hidden axes, so it requires a replicated operand.")
+            raise CodegenError(
+                f"mHC operand {name!r} is partial; the stage reads every element of it, "
+                "so the partial must be reduced by an explicit Boxing first.")
+        if any(isinstance(policy, Mapping) and str(policy.get("kind")) == "split"
+               for policy in distributed.get("axis_policies", ())):
+            raise CodegenError(
+                f"mHC operand {name!r} is split; the stage reduces over the stream and "
+                "hidden axes, so it requires a replicated operand.")
     if scalar and abi.get("scalar_lane_shape"):
-        raise CodegenError(f"mHC operand {name!r} carries vector lanes; the stages address scalars.")
+        raise CodegenError(
+            f"mHC operand {name!r} carries vector lanes; the stages address scalars.")
     return abi
 
 
@@ -81,12 +83,8 @@ def _capacity(abi: Mapping[str, object], name: str) -> tuple[int, ...]:
 def _bind(raw, groups: Mapping[str, Sequence[str]]) -> dict[str, Mapping[str, object]]:
     from triton.flagmega.codegen.triton.kernel_call_renderers import _buffer
 
-    return {
-        formal.split(":")[0]: _buffer(raw, group,
-                                      formal.split(":")[-1])
-        for group, formals in groups.items()
-        for formal in formals
-    }
+    return {formal.split(":")[0]: _buffer(raw, group, formal.split(":")[-1])
+            for group, formals in groups.items() for formal in formals}
 
 
 def _rounding_dtype(attrs, name, default=None):
@@ -113,12 +111,12 @@ def mhc_pre_call(raw):
         _pointer,
     )
 
-    bindings = _bind(
-        raw, {
-            "inputs": ("streams", "projection", "base", "scale"),
-            "outputs": ("post:result_0", "comb:result_1", "collapsed:result_2"),
-        })
-    abis = {name: _replicated_abi(binding, name, scalar=name != "collapsed") for name, binding in bindings.items()}
+    bindings = _bind(raw, {
+        "inputs": ("streams", "projection", "base", "scale"),
+        "outputs": ("post:result_0", "comb:result_1", "collapsed:result_2"),
+    })
+    abis = {name: _replicated_abi(binding, name, scalar=name != "collapsed")
+            for name, binding in bindings.items()}
 
     tokens, hc, hidden = _capacity(abis["streams"], "streams")
     lanes = tuple(raw["semantic_attrs"].get("output_lanes", ()))
@@ -129,9 +127,10 @@ def mhc_pre_call(raw):
     collapse_reduction = raw["semantic_attrs"].get("collapse_reduction", "sum")
     if not isinstance(collapse_reduction, str) or collapse_reduction not in {"sum", "sequential_fma"}:
         raise CodegenError("mHC collapse_reduction must be sum or sequential_fma.")
-    if (tuple(collapsed_abi.get("scalar_lane_shape",
-                                ())) != lanes or int(collapsed_abi.get("scalar_lane_count", 1)) != lane_count
-            or collapsed_abi["scalar_dtype"] != collapsed_dtype or lane_count <= 0 or hidden % lane_count):
+    if (tuple(collapsed_abi.get("scalar_lane_shape", ())) != lanes
+            or int(collapsed_abi.get("scalar_lane_count", 1)) != lane_count
+            or collapsed_abi["scalar_dtype"] != collapsed_dtype
+            or lane_count <= 0 or hidden % lane_count):
         raise CodegenError("mHC collapsed output ABI disagrees with output_lanes or collapsed dtype.")
     projection_reduction = raw["semantic_attrs"].get("projection_reduction", "parallel")
     splits = raw["semantic_attrs"].get("projection_splits", 1)
@@ -141,9 +140,8 @@ def mhc_pre_call(raw):
     if type(splits) is not int or splits <= 0 or splits & (splits - 1):
         raise CodegenError("mHC projection_splits must be a positive power of two.")
     variant = variants[projection_reduction]
-    cooperative_variants = {
-        "cooperative_stream_fma": "stream_fma_128", "cooperative_contiguous_tf32": "contiguous_tf32"
-    }
+    cooperative_variants = {"cooperative_stream_fma": "stream_fma_128",
+                            "cooperative_contiguous_tf32": "contiguous_tf32"}
     cooperative = raw.get("variant") in cooperative_variants
     independent_pre = raw["parameters"].get("independent_collapse_pre", False)
     if type(independent_pre) is not bool:
@@ -159,8 +157,9 @@ def mhc_pre_call(raw):
         raise CodegenError("mHC projection_splits disagrees with its algorithm or hidden capacity.")
     coefficients = (2 + hc) * hc
     if _capacity(abis["projection"], "projection") != (coefficients, hc * hidden):
-        raise CodegenError(f"mHC projection must be ({coefficients}, {hc * hidden}); the buffer is "
-                           f"{_capacity(abis['projection'], 'projection')}.")
+        raise CodegenError(
+            f"mHC projection must be ({coefficients}, {hc * hidden}); the buffer is "
+            f"{_capacity(abis['projection'], 'projection')}.")
     if _capacity(abis["base"], "base") != (coefficients, ):
         raise CodegenError(f"mHC base must carry {coefficients} entries.")
     if _capacity(abis["post"], "post") != (tokens, hc) \
@@ -171,105 +170,71 @@ def mhc_pre_call(raw):
     stream_lanes = _lanes(hc)
     requested = int(raw["parameters"]["elements_per_program"])
     return {
-        **(_cooperative_pre_workspace(raw, bindings, tokens, hc, coefficients, splits, independent_pre=independent_pre) if cooperative else {
-               "internal_grid_barriers": 0
-           }),
-        "independent_collapse_pre":
-        independent_pre,
-        "projection_reduction":
-        projection_reduction,
-        "projection_splits":
-        splits,
-        "projection_coefficient_lanes":
-        _lanes(coefficients),
-        "streams_fma_token_offset":
-        emit_local_scalar_offset(abis["streams"], ("_fm_token", "0", "0")),
-        "streams_fma_stream_stride":
-        int(abis["streams"]["scalar_storage_strides"][1]),
-        "streams_fma_hidden_stride":
-        int(abis["streams"]["scalar_storage_strides"][2]),
-        "projection_fma_base_offset":
-        emit_local_scalar_offset(abis["projection"], ("0", "0")),
-        "projection_fma_row_stride":
-        int(abis["projection"]["scalar_storage_strides"][0]),
-        "projection_fma_hidden_stride":
-        int(abis["projection"]["scalar_storage_strides"][1]),
-        "tokens":
-        tokens,
-        "hc":
-        hc,
-        "stream_lanes":
-        stream_lanes,
-        "hidden":
-        hidden,
-        "elements":
-        hc * hidden,
-        "coefficients":
-        coefficients,
+        **(_cooperative_pre_workspace(raw, bindings, tokens, hc, coefficients, splits, independent_pre=independent_pre) if cooperative else
+           {"internal_grid_barriers": 0}),
+        "independent_collapse_pre": independent_pre,
+        "projection_reduction": projection_reduction,
+        "projection_splits": splits,
+        "projection_coefficient_lanes": _lanes(coefficients),
+        "streams_fma_token_offset": emit_local_scalar_offset(abis["streams"], ("_fm_token", "0", "0")),
+        "streams_fma_stream_stride": int(abis["streams"]["scalar_storage_strides"][1]),
+        "streams_fma_hidden_stride": int(abis["streams"]["scalar_storage_strides"][2]),
+        "projection_fma_base_offset": emit_local_scalar_offset(abis["projection"], ("0", "0")),
+        "projection_fma_row_stride": int(abis["projection"]["scalar_storage_strides"][0]),
+        "projection_fma_hidden_stride": int(abis["projection"]["scalar_storage_strides"][1]),
+        "tokens": tokens,
+        "hc": hc,
+        "stream_lanes": stream_lanes,
+        "hidden": hidden,
+        "elements": hc * hidden,
+        "coefficients": coefficients,
         # Pass one stages the pre, post and comb weight rows of one tile at
         # once: (2 * lanes + lanes ** 2) rows, which is the whole projection.
-        "matvec_tile":
-        _tile(requested, 2 * stream_lanes + stream_lanes**2),
-        "collapse_tile":
-        _tile(requested, stream_lanes),
-        "epsilon":
-        repr(float(raw["semantic_attrs"]["epsilon"])),
-        "hc_epsilon":
-        repr(float(raw["semantic_attrs"]["sinkhorn_epsilon"])),
-        "post_multiplier":
-        repr(float(raw["semantic_attrs"]["post_multiplier"])),
-        "sinkhorn_iterations":
-        int(raw["semantic_attrs"]["sinkhorn_iterations"]),
-        **{name: _pointer(binding)
-           for name, binding in bindings.items()},
-        "token_active":
-        emit_active_extent(abis["streams"], 0),
-        "stream_active":
-        emit_active_extent(abis["streams"], 1),
-        "hidden_active":
-        emit_active_extent(abis["streams"], 2),
-        "streams_flat_offset":
-        emit_local_scalar_offset(abis["streams"], ("_fm_token", f"(_fm_flat // {hidden})", f"(_fm_flat % {hidden})")),
-        "streams_plane_offset":
-        emit_local_scalar_offset(abis["streams"], ("_fm_token", "_fm_i[:, None]", "_fm_hidden[None, :]")),
+        "matvec_tile": _tile(requested, 2 * stream_lanes + stream_lanes ** 2),
+        "collapse_tile": _tile(requested, stream_lanes),
+        "epsilon": repr(float(raw["semantic_attrs"]["epsilon"])),
+        "hc_epsilon": repr(float(raw["semantic_attrs"]["sinkhorn_epsilon"])),
+        "post_multiplier": repr(float(raw["semantic_attrs"]["post_multiplier"])),
+        "sinkhorn_iterations": int(raw["semantic_attrs"]["sinkhorn_iterations"]),
+        **{name: _pointer(binding) for name, binding in bindings.items()},
+        "token_active": emit_active_extent(abis["streams"], 0),
+        "stream_active": emit_active_extent(abis["streams"], 1),
+        "hidden_active": emit_active_extent(abis["streams"], 2),
+        "streams_flat_offset": emit_local_scalar_offset(
+            abis["streams"],
+            ("_fm_token", f"(_fm_flat // {hidden})", f"(_fm_flat % {hidden})")),
+        "streams_plane_offset": emit_local_scalar_offset(
+            abis["streams"], ("_fm_token", "_fm_i[:, None]", "_fm_hidden[None, :]")),
         # Each group indexes its own contiguous row range directly, so the
         # matvec accumulates straight into group-shaped registers instead of
         # producing one flat coefficient vector and gathering out of it.
-        "projection_pre_offset":
-        emit_local_scalar_offset(abis["projection"], ("_fm_i[:, None]", "_fm_flat[None, :]")),
-        "projection_post_offset":
-        emit_local_scalar_offset(abis["projection"], (f"(_fm_i[:, None] + {hc})", "_fm_flat[None, :]")),
-        "projection_comb_offset":
-        emit_local_scalar_offset(
+        "projection_pre_offset": emit_local_scalar_offset(
+            abis["projection"], ("_fm_i[:, None]", "_fm_flat[None, :]")),
+        "projection_post_offset": emit_local_scalar_offset(
+            abis["projection"], (f"(_fm_i[:, None] + {hc})", "_fm_flat[None, :]")),
+        "projection_comb_offset": emit_local_scalar_offset(
             abis["projection"],
-            (f"({2 * hc} + _fm_i[:, None, None] * {hc} + _fm_i[None, :, None])", "_fm_flat[None, None, :]")),
-        "base_pre_offset":
-        emit_local_scalar_offset(abis["base"], ("_fm_i", )),
-        "base_post_offset":
-        emit_local_scalar_offset(abis["base"], (f"(_fm_i + {hc})", )),
-        "base_comb_offset":
-        emit_local_scalar_offset(abis["base"], (f"({2 * hc} + _fm_i[:, None] * {hc} + _fm_i[None, :])", )),
-        "scale_offsets": [emit_local_scalar_offset(abis["scale"], (str(group), )) for group in range(3)],
-        "post_offset":
-        emit_local_scalar_offset(abis["post"], ("_fm_token", "_fm_i")),
-        "comb_offset":
-        emit_local_scalar_offset(abis["comb"], ("_fm_token", "_fm_i[:, None]", "_fm_i[None, :]")),
-        "collapsed_offset":
-        emit_local_scalar_offset(collapsed_abi,
-                                 ("_fm_token", f"(_fm_hidden // {lane_count})" if lane_count > 1 else "_fm_hidden"),
-                                 lane_coordinate=f"(_fm_hidden % {lane_count})" if lane_count > 1 else None),
-        "collapsed_type":
-        emit_triton_scalar_type(str(abis["collapsed"]["scalar_dtype"])),
-        "collapse_input_type":
-        emit_triton_scalar_type(collapse_input_dtype) if collapse_input_dtype is not None else None,
-        "collapse_sequential_fma":
-        collapse_reduction == "sequential_fma",
-        "post_writer_active":
-        _canonical_writer_active(abis["post"]),
-        "comb_writer_active":
-        _canonical_writer_active(abis["comb"]),
-        "collapsed_writer_active":
-        _canonical_writer_active(abis["collapsed"]),
+            (f"({2 * hc} + _fm_i[:, None, None] * {hc} + _fm_i[None, :, None])",
+             "_fm_flat[None, None, :]")),
+        "base_pre_offset": emit_local_scalar_offset(abis["base"], ("_fm_i", )),
+        "base_post_offset": emit_local_scalar_offset(abis["base"], (f"(_fm_i + {hc})", )),
+        "base_comb_offset": emit_local_scalar_offset(
+            abis["base"], (f"({2 * hc} + _fm_i[:, None] * {hc} + _fm_i[None, :])", )),
+        "scale_offsets": [emit_local_scalar_offset(abis["scale"], (str(group), ))
+                          for group in range(3)],
+        "post_offset": emit_local_scalar_offset(abis["post"], ("_fm_token", "_fm_i")),
+        "comb_offset": emit_local_scalar_offset(
+            abis["comb"], ("_fm_token", "_fm_i[:, None]", "_fm_i[None, :]")),
+        "collapsed_offset": emit_local_scalar_offset(
+            collapsed_abi,
+            ("_fm_token", f"(_fm_hidden // {lane_count})" if lane_count > 1 else "_fm_hidden"),
+            lane_coordinate=f"(_fm_hidden % {lane_count})" if lane_count > 1 else None),
+        "collapsed_type": emit_triton_scalar_type(str(abis["collapsed"]["scalar_dtype"])),
+        "collapse_input_type": emit_triton_scalar_type(collapse_input_dtype) if collapse_input_dtype is not None else None,
+        "collapse_sequential_fma": collapse_reduction == "sequential_fma",
+        "post_writer_active": _canonical_writer_active(abis["post"]),
+        "comb_writer_active": _canonical_writer_active(abis["comb"]),
+        "collapsed_writer_active": _canonical_writer_active(abis["collapsed"]),
     }
 
 
@@ -290,8 +255,10 @@ def _cooperative_pre_workspace(raw, bindings, tokens, hc, coefficients, splits, 
     workspace = _buffer(raw, "workspaces", "projection_partials")
     width = (coefficients + 1) * splits + hc
     abi = workspace["abi"]
-    if (_capacity(abi, "projection_partials") != (tokens, width) or abi.get("scalar_dtype") != "float32"
-            or abi.get("scalar_lane_shape") or tuple(abi.get("scalar_storage_strides", ())) != (width, 1)):
+    if (_capacity(abi, "projection_partials") != (tokens, width)
+            or abi.get("scalar_dtype") != "float32"
+            or abi.get("scalar_lane_shape")
+            or tuple(abi.get("scalar_storage_strides", ())) != (width, 1)):
         raise CodegenError("Cooperative mHC workspace must hold contiguous FP32 split partials and pre coefficients.")
     for name, binding in {**bindings, "projection_partials": workspace}.items():
         physical = binding["abi"]
@@ -299,25 +266,23 @@ def _cooperative_pre_workspace(raw, bindings, tokens, hc, coefficients, splits, 
         # Inputs may be identical complete block-private replicas. Only values
         # passed between phases need a physically chip-shared allocation.
         shared = name in {"post", "comb", "collapsed", "projection_partials"}
-        if ((shared and
-             (physical.get("coordinate_space") != "canonical_global" or physical.get("memory_sharing_scope") != "chip"))
-                or physical.get("distributed_backing_type") is not None or isinstance(distributed, Mapping) and
-            (distributed.get("partial") is not None or distributed.get("exclusive") is not None
-             or any(policy.get("kind") != "broadcast" for policy in distributed.get("axis_policies", ())))):
-            raise CodegenError(
-                f"Cooperative mHC requires complete replicated {name} storage and chip-shared phase outputs.")
+        if ((shared and (physical.get("coordinate_space") != "canonical_global"
+                         or physical.get("memory_sharing_scope") != "chip"))
+                or physical.get("distributed_backing_type") is not None
+                or isinstance(distributed, Mapping) and (
+                    distributed.get("partial") is not None
+                    or distributed.get("exclusive") is not None
+                    or any(policy.get("kind") != "broadcast"
+                           for policy in distributed.get("axis_policies", ())))):
+            raise CodegenError(f"Cooperative mHC requires complete replicated {name} storage and chip-shared phase outputs.")
     return {
-        "internal_grid_barriers":
-        barriers,
-        "projection_partials":
-        _pointer(workspace),
-        "projection_workspace_width":
-        width,
+        "internal_grid_barriers": barriers,
+        "projection_partials": _pointer(workspace),
+        "projection_workspace_width": width,
         "projection_pair_count": (coefficients + 1) // 2,
-        "projection_tasks_per_token": (splits if raw["variant"] == "cooperative_contiguous_tf32" else
-                                       ((coefficients + 1) // 2 + 1) * splits),
-        "projection_square_start":
-        coefficients * splits,
+        "projection_tasks_per_token": (splits if raw["variant"] == "cooperative_contiguous_tf32"
+                                       else ((coefficients + 1) // 2 + 1) * splits),
+        "projection_square_start": coefficients * splits,
         "projection_pre_start": (coefficients + 1) * splits,
     }
 
@@ -361,48 +326,33 @@ def mhc_post_call(raw):
 
     stream_lanes = _lanes(hc)
     return {
-        "internal_grid_barriers":
-        0,
-        "tokens":
-        tokens,
-        "hc":
-        hc,
-        "stream_lanes":
-        stream_lanes,
-        "hidden":
-        hidden,
+        "internal_grid_barriers": 0,
+        "tokens": tokens,
+        "hc": hc,
+        "stream_lanes": stream_lanes,
+        "hidden": hidden,
         # The product is staged as [stream, stream, tile], so the tile budget
         # divides by the square of the stream lane count.
-        "tile":
-        _tile(int(raw["parameters"]["elements_per_program"]), stream_lanes**2),
-        **{name: _pointer(binding)
-           for name, binding in bindings.items()},
-        "token_active":
-        emit_active_extent(abis["residual"], 0),
-        "stream_active":
-        emit_active_extent(abis["residual"], 1),
-        "hidden_active":
-        emit_active_extent(abis["residual"], 2),
-        "value_offset":
-        emit_local_scalar_offset(
+        "tile": _tile(int(raw["parameters"]["elements_per_program"]), stream_lanes ** 2),
+        **{name: _pointer(binding) for name, binding in bindings.items()},
+        "token_active": emit_active_extent(abis["residual"], 0),
+        "stream_active": emit_active_extent(abis["residual"], 1),
+        "hidden_active": emit_active_extent(abis["residual"], 2),
+        "value_offset": emit_local_scalar_offset(
             abis["value"], ("_fm_token", f"((_fm_hidden) // {value_lanes})" if value_lanes != 1 else "_fm_hidden"),
             lane_coordinate=f"((_fm_hidden) % {value_lanes})" if value_lanes != 1 else None),
-        "residual_offset":
-        emit_local_scalar_offset(abis["residual"], ("_fm_token", "_fm_i[:, None]", "_fm_hidden[None, :]")),
-        "post_offset":
-        emit_local_scalar_offset(abis["post"], ("_fm_token", "_fm_j")),
-        "comb_offset":
-        emit_local_scalar_offset(abis["comb"], ("_fm_token", "_fm_i[:, None]", "_fm_j[None, :]")),
-        "result_offset":
-        emit_local_scalar_offset(abis["result"], ("_fm_token", "_fm_j[:, None]", "_fm_hidden[None, :]")),
-        "result_type":
-        emit_triton_scalar_type(str(abis["result"]["scalar_dtype"])),
+        "residual_offset": emit_local_scalar_offset(
+            abis["residual"], ("_fm_token", "_fm_i[:, None]", "_fm_hidden[None, :]")),
+        "post_offset": emit_local_scalar_offset(abis["post"], ("_fm_token", "_fm_j")),
+        "comb_offset": emit_local_scalar_offset(
+            abis["comb"], ("_fm_token", "_fm_i[:, None]", "_fm_j[None, :]")),
+        "result_offset": emit_local_scalar_offset(
+            abis["result"], ("_fm_token", "_fm_j[:, None]", "_fm_hidden[None, :]")),
+        "result_type": emit_triton_scalar_type(str(abis["result"]["scalar_dtype"])),
         "residual_input_type": (emit_triton_scalar_type(_rounding_dtype(raw["semantic_attrs"], "residual_input_dtype"))
                                 if raw["semantic_attrs"].get("residual_input_dtype") is not None else None),
-        "value_first_fma":
-        mode == "value_fma_first",
-        "writer_active":
-        _canonical_writer_active(abis["result"]),
+        "value_first_fma": mode == "value_fma_first",
+        "writer_active": _canonical_writer_active(abis["result"]),
     }
 
 

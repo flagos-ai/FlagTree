@@ -25,8 +25,8 @@ def make_runtime(module, path):
 
 
 def bind(runtime, inputs, packed):
-    outputs = (torch.empty((1, 2, 16, 8) if packed else (1, 2, 128), dtype=torch.bfloat16,
-                           device="cuda"), torch.empty((1, 2, 128, 128), dtype=torch.float32, device="cuda"))
+    outputs = (torch.empty((1, 2, 16, 8) if packed else (1, 2, 128), dtype=torch.bfloat16, device="cuda"),
+               torch.empty((1, 2, 128, 128), dtype=torch.float32, device="cuda"))
     result_names = [argument["value"] for argument in runtime.external_arguments if argument["role"] == "result"]
     values = {**inputs, **dict(zip(result_names, outputs, strict=True))}
     return tuple(values[argument["value"]] for argument in runtime.external_arguments), outputs
@@ -36,10 +36,9 @@ def bind(runtime, inputs, packed):
 @pytest.mark.parametrize("packing", ["none", "explicit", "consumer"])
 def test_one_prepared_kernel_switches_phase_without_reinterpreting_state(tmp_path, packing):
     packed = packing != "none"
-    attrs = {
-        "heads": 2, "dim": 128, "query_scale": 128**-.5, "output_lanes": (8, ) if packing == "explicit" else (),
-        "consumer_lanes": (8, ) if packing == "consumer" else ()
-    }
+    attrs = {"heads": 2, "dim": 128, "query_scale": 128 ** -.5,
+             "output_lanes": (8,) if packing == "explicit" else (),
+             "consumer_lanes": (8,) if packing == "consumer" else ()}
     values = _values(torch, device="cuda", heads=2, dim=128)
     phase = True
     runtime = make_runtime(_module(request_phase=True, **attrs), tmp_path / "phase")
@@ -72,33 +71,24 @@ def nested_phase_module():
     placement = fm.Placement((2, 4), "yx", "bb")
     shape = {name: (1, 2, 128) for name in ("q", "k", "v", "gate", "decay_rate", "gate_bias")}
     shape.update(beta=(1, 2), state=(1, 2, 128, 128), prefill=())
-    types = {
-        name:
-        fm.tensor_type(
-            "bool" if name == "prefill" else "float32" if name in {"decay_rate", "gate_bias", "state"} else "bfloat16",
-            extents)
-        for name, extents in shape.items()
-    }
-    distributed = {
-        name: fm.DistributedType(kind, (fm.SBP.broadcast(), ) * kind.rank, placement)
-        for name, kind in types.items()
-    }
+    types = {name: fm.tensor_type("bool" if name == "prefill" else
+                                  "float32" if name in {"decay_rate", "gate_bias", "state"}
+                                  else "bfloat16", extents) for name, extents in shape.items()}
+    distributed = {name: fm.DistributedType(kind, (fm.SBP.broadcast(),) * kind.rank, placement)
+                   for name, kind in types.items()}
 
     class Graph(fm.Module):
-
         def forward(self):
             parameters = tuple(self.input(name, kind, id="step_" + name) for name, kind in distributed.items())
-            pair = fm.F.nn.kda_gated_step(*parameters, lower_bound=-5., query_scale=128**-.5)
+            pair = fm.F.nn.kda_gated_step(*parameters, lower_bound=-5., query_scale=128 ** -.5)
             self.function("step", parameters, fm.F.tensors.get_items(pair, 0, 1),
                           attrs={"reusable": True, "noinline": True})
             values = tuple(self.input(name, kind, id=name) for name, kind in types.items())
-            arguments = tuple(
-                fm.F.distributed.force_boxing(value, distributed[name])
-                for name, value in zip(types, values, strict=True))
+            arguments = tuple(fm.F.distributed.force_boxing(value, distributed[name])
+                              for name, value in zip(types, values, strict=True))
             result = fm.F.builtin.call(*arguments, callee="step", result_type=pair.type)
-            outputs = tuple(
-                fm.F.distributed.force_boxing(value, fm.logical_type(value.type))
-                for value in fm.F.tensors.get_items(result, 0, 1))
+            outputs = tuple(fm.F.distributed.force_boxing(value, fm.logical_type(value.type))
+                            for value in fm.F.tensors.get_items(result, 0, 1))
             self.function("main", values, outputs)
 
     return Graph(dialect="distributed", stage="frozen_constants", entry="main",
@@ -116,9 +106,9 @@ def test_materialized_phase_keeps_scalar_value_across_pooled_function_boundary(t
     try:
         GeneratedTirCallGraphModule.prepare(runtime, *args)
         for step, prefill in enumerate((True, False, True)):
-            reference = make_runtime(
-                _module(heads=2, dim=128, query_scale=128**-.5, arithmetic="chunk_bf16" if prefill else "recurrent"),
-                tmp_path / f"reference-{step}")
+            reference = make_runtime(_module(heads=2, dim=128, query_scale=128 ** -.5,
+                                              arithmetic="chunk_bf16" if prefill else "recurrent"),
+                                     tmp_path / f"reference-{step}")
             try:
                 reference_args, expected = bind(reference, values, False)
                 GeneratedTirCallGraphModule.prepare(reference, *reference_args)

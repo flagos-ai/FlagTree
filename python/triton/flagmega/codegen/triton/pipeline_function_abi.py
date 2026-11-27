@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Bind a formal pipeline resource interface to one physical function call.
 
-Mirrors the reference PipelineDeviceFunctionInterface: function bodies are shared,
+Mirrors nncase's PipelineDeviceFunctionInterface: function bodies are shared,
 but pipe identities, descriptors, and caller-owned MemSpans are not. No source
 body substitution or model-specific schedule reconstruction is performed here.
 """
@@ -19,11 +19,9 @@ def descriptor_requests(specs):
     if isinstance(specs, DescriptorResources):
         return specs.requests()
     return tuple({
-        **{key: value
-           for key, value in spec.items() if key != "name"},
+        **{key: value for key, value in spec.items() if key != "name"},
         "parameter": spec["name"],
-    }
-                 for spec in specs)
+    } for spec in specs)
 
 
 def instantiate_resources(schedule: Mapping, shared_by_name: Mapping, stem: str):
@@ -43,8 +41,7 @@ def instantiate_resources(schedule: Mapping, shared_by_name: Mapping, stem: str)
     # One deepcopy preserves shared workspace records referenced by channels
     # and consumer workspaces. Rebinding them independently risks stale spans.
     resources = deepcopy({
-        "stages": schedule["stages"],
-        "handoffs": schedule["handoffs"],
+        "stages": schedule["stages"], "handoffs": schedule["handoffs"],
     })
     for stage in resources["stages"]:
         for workspace in stage["workspaces"]:
@@ -56,9 +53,11 @@ def instantiate_resources(schedule: Mapping, shared_by_name: Mapping, stem: str)
             shape = tuple(dimension.fixed_value for dimension in actual.dimensions)
             if shape != tuple(workspace["shape"]):
                 raise CodegenError(f"Pipeline Shared binding {formal!r} changes its formal shape.")
-            if (actual.elem_type.value != workspace["element_type"]
-                    or tuple(value.fixed_value for value in actual.strides) != tuple(workspace["strides"])
-                    or actual.mem_span.buffer.memory_space != "shared"):
+            if (
+                actual.elem_type.value != workspace["element_type"]
+                or tuple(value.fixed_value for value in actual.strides) != tuple(workspace["strides"])
+                or actual.mem_span.buffer.memory_space != "shared"
+            ):
                 raise CodegenError(f"Pipeline Shared binding {formal!r} changes its formal payload ABI.")
             workspace.update({
                 "buffer_name": actual.name,

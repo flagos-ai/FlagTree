@@ -6,9 +6,11 @@ from dataclasses import replace
 from triton.flagmega import ir as fm
 from triton.flagmega.codegen.triton.call_abi import describe_function_call_abi
 from triton.flagmega.codegen.triton.function_call import (
-    emit_function_call_arguments, )
+    emit_function_call_arguments,
+)
 from triton.flagmega.codegen.triton.runtime_binding import (
-    describe_function_runtime_binding, )
+    describe_function_runtime_binding,
+)
 from triton.flagmega.passes.tir import (
     bind_prim_function_buffers,
     materialize_kernel_prim_functions,
@@ -27,7 +29,7 @@ def _attrs(candidate: str) -> dict[str, object]:
 
 def _module() -> fm.IRModule:
     builder = fm.IRBuilder(dialect="semantic_tir", stage="selected_tir")
-    value_type = fm.tensor_type("float32", (16, ))
+    value_type = fm.tensor_type("float32", (16,))
     lhs = builder.var("lhs", value_type, id="lhs")
     rhs = builder.weight(
         "rhs",
@@ -50,7 +52,7 @@ def _module() -> fm.IRModule:
         id="output",
         attrs=_attrs("tir.add.output"),
     )
-    builder.function("main", (lhs, ), (output, ))
+    builder.function("main", (lhs,), (output,))
     selected = materialize_kernel_prim_functions(builder.build(entry="main"))
     plan = fm.make_buffer_plan(selected)
     bound = bind_prim_function_buffers(selected)
@@ -67,7 +69,11 @@ def _module() -> fm.IRModule:
                 **dict(node.metadata),
                 "bufferized_from": "builtin.weight",
             },
-        ) if node.op == "builtin.weight" else node for node in bound.nodes)
+        )
+        if node.op == "builtin.weight"
+        else node
+        for node in bound.nodes
+    )
     return fm.verify_module(
         replace(
             bound,
@@ -75,12 +81,13 @@ def _module() -> fm.IRModule:
             stage="bufferized_tir",
             dialect="bufferized_tir",
             metadata={**bound.metadata, "buffer_plan": plan.to_data()},
-        ))
+        )
+    )
 
 
 def _nested_rdata_module() -> fm.IRModule:
     builder = fm.IRBuilder(dialect="semantic_tir", stage="selected_tir")
-    value_type = fm.tensor_type("float32", (16, ))
+    value_type = fm.tensor_type("float32", (16,))
     weight = builder.weight(
         "rhs",
         value_type,
@@ -102,7 +109,7 @@ def _nested_rdata_module() -> fm.IRModule:
     builder.function(
         "worker",
         (worker_input, worker_weight, worker_layer),
-        (worker_result, ),
+        (worker_result,),
         attrs={"noinline": True, "reusable": True},
     )
     source = builder.var("source", value_type, id="source")
@@ -127,7 +134,7 @@ def _nested_rdata_module() -> fm.IRModule:
         id="output",
         attrs={"callee": "worker"},
     )
-    builder.function("main", (source, ), (output, ))
+    builder.function("main", (source,), (output,))
     selected = materialize_kernel_prim_functions(builder.build(entry="main"))
     plan = fm.make_buffer_plan(selected)
     bound = bind_prim_function_buffers(selected)
@@ -144,7 +151,11 @@ def _nested_rdata_module() -> fm.IRModule:
                 **dict(node.metadata),
                 "bufferized_from": "builtin.weight",
             },
-        ) if node.op == "builtin.weight" else node for node in bound.nodes)
+        )
+        if node.op == "builtin.weight"
+        else node
+        for node in bound.nodes
+    )
     return fm.verify_module(
         replace(
             bound,
@@ -152,7 +163,8 @@ def _nested_rdata_module() -> fm.IRModule:
             stage="bufferized_tir",
             dialect="bufferized_tir",
             metadata={**bound.metadata, "buffer_plan": plan.to_data()},
-        ))
+        )
+    )
 
 
 def test_runtime_binding_uses_external_rdata_and_sat_workspace_roots():

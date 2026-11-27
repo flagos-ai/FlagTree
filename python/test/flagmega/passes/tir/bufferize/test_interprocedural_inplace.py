@@ -12,24 +12,23 @@ def _graph(*, retained=False, input_source=False, view=False, nested=False, seco
     ty = fm.tensor_type("bfloat16", (1, 128))
     param = builder.var("param", ty, id="param")
     result = builder.call("math.add", (param, param), ty, id="updated")
-    builder.function("worker", (param, ), (result, ))
+    builder.function("worker", (param,), (result,))
     callee = "worker"
     if nested:
         outer_param = builder.var("outer_param", ty, id="outer_param")
-        outer_result = builder.call("tir.call", (outer_param, ), ty, id="outer_result", attrs={"callee": "worker"})
-        builder.function("outer", (outer_param, ), (outer_result, ))
+        outer_result = builder.call("tir.call", (outer_param,), ty, id="outer_result", attrs={"callee": "worker"})
+        builder.function("outer", (outer_param,), (outer_result,))
         callee = "outer"
     value = builder.var("value", ty, id="value")
-    prepared = value if input_source else builder.call("test.unary", (value, ), ty, id="prepared")
-    argument = (builder.call("tir.buffer_view",
-                             (prepared, ), ty, id="view", attrs={"alias_kind": "reshape"}) if view else prepared)
-    first = builder.call("tir.call", (argument, ), ty, id="first", attrs={"callee": callee})
+    prepared = value if input_source else builder.call("test.unary", (value,), ty, id="prepared")
+    argument = (builder.call("tir.buffer_view", (prepared,), ty, id="view", attrs={"alias_kind": "reshape"}) if view else prepared)
+    first = builder.call("tir.call", (argument,), ty, id="first", attrs={"callee": callee})
     outputs = [first]
     if second_call:
-        outputs.append(builder.call("tir.call", (argument, ), ty, id="second", attrs={"callee": callee}))
+        outputs.append(builder.call("tir.call", (argument,), ty, id="second", attrs={"callee": callee}))
     if retained:
         outputs.append(prepared)
-    builder.function("main", (value, ), outputs)
+    builder.function("main", (value,), outputs)
     return builder.build(entry="main")
 
 
@@ -57,7 +56,7 @@ def test_one_reusable_callee_contract_accounts_for_every_call_site():
 @pytest.mark.parametrize("nested", [False, True])
 def test_dead_owned_inputs_still_allow_inplace_and_function_reuse(nested):
     plan = fm.make_buffer_plan(_graph(nested=nested))
-    assert plan.function_map["worker"].result_aliases == (("updated", "param"), )
+    assert plan.function_map["worker"].result_aliases == (("updated", "param"),)
     assert plan.buffer_map["param"].mem_span.must_alias(plan.buffer_map["updated"].mem_span)
 
 
@@ -66,16 +65,16 @@ def test_identity_call_alias_is_tracked_when_the_original_input_is_consumed():
     ty = fm.tensor_type("bfloat16", (1, 128))
     param = builder.var("param", ty, id="param")
     updated = builder.call("math.add", (param, param), ty, id="updated")
-    builder.function("worker", (param, ), (updated, ))
+    builder.function("worker", (param,), (updated,))
     identity_param = builder.var("identity_param", ty, id="identity_param")
-    builder.function("identity", (identity_param, ), (identity_param, ))
+    builder.function("identity", (identity_param,), (identity_param,))
     value = builder.var("value", ty, id="value")
-    prepared = builder.call("test.unary", (value, ), ty, id="prepared")
-    preserved = builder.call("tir.call", (prepared, ), ty, id="preserved", attrs={"callee": "identity"})
-    consumed = builder.call("tir.call", (prepared, ), ty, id="consumed", attrs={"callee": "worker"})
-    builder.function("main", (value, ), (preserved, consumed))
+    prepared = builder.call("test.unary", (value,), ty, id="prepared")
+    preserved = builder.call("tir.call", (prepared,), ty, id="preserved", attrs={"callee": "identity"})
+    consumed = builder.call("tir.call", (prepared,), ty, id="consumed", attrs={"callee": "worker"})
+    builder.function("main", (value,), (preserved, consumed))
     plan = fm.make_buffer_plan(builder.build(entry="main"))
-    assert plan.function_map["identity"].result_aliases == (("identity_param", "identity_param"), )
+    assert plan.function_map["identity"].result_aliases == (("identity_param", "identity_param"),)
     assert plan.function_map["worker"].result_aliases == ()
 
 
@@ -84,15 +83,15 @@ def test_unrelated_tuple_field_liveness_does_not_prevent_input_donation():
     ty = fm.tensor_type("bfloat16", (1, 128))
     param = builder.var("param", ty, id="param")
     updated = builder.call("math.add", (param, param), ty, id="updated")
-    builder.function("worker", (param, ), (updated, ))
+    builder.function("worker", (param,), (updated,))
     value = builder.var("value", ty, id="value")
-    pair = builder.call("test.pair", (value, ), fm.TupleType((ty, ty)), id="pair")
-    first = builder.call("builtin.get_item", (pair, ), ty, id="first", attrs={"index": 0})
-    consumed = builder.call("tir.call", (first, ), ty, id="consumed", attrs={"callee": "worker"})
-    second = builder.call("builtin.get_item", (pair, ), ty, id="second", attrs={"index": 1})
-    builder.function("main", (value, ), (consumed, second))
+    pair = builder.call("test.pair", (value,), fm.TupleType((ty, ty)), id="pair")
+    first = builder.call("builtin.get_item", (pair,), ty, id="first", attrs={"index": 0})
+    consumed = builder.call("tir.call", (first,), ty, id="consumed", attrs={"callee": "worker"})
+    second = builder.call("builtin.get_item", (pair,), ty, id="second", attrs={"index": 1})
+    builder.function("main", (value,), (consumed, second))
     plan = fm.make_buffer_plan(builder.build(entry="main"))
-    assert plan.function_map["worker"].result_aliases == (("updated", "param"), )
+    assert plan.function_map["worker"].result_aliases == (("updated", "param"),)
 
 
 @pytest.mark.parametrize("ordered", [False, True])
@@ -105,28 +104,26 @@ def test_program_dag_donation_requires_all_readers_to_precede_the_call(ordered, 
     ty = fm.tensor_type("bfloat16", (1, 128))
     param = builder.var("param", ty, id="param")
     updated = builder.call("math.add", (param, param), ty, id="updated")
-    builder.function("worker", (param, ), (updated, ))
+    builder.function("worker", (param,), (updated,))
     callee = "worker"
     if nested:
         outer_param = builder.var("outer_param", ty, id="outer_param")
-        outer = builder.call("tir.call", (outer_param, ), ty, id="outer", attrs={"callee": "worker"})
-        builder.function("wrapper", (outer_param, ), (outer, ))
+        outer = builder.call("tir.call", (outer_param,), ty, id="outer", attrs={"callee": "worker"})
+        builder.function("wrapper", (outer_param,), (outer,))
         callee = "wrapper"
     value = builder.var("value", ty, id="value")
-    prepared = builder.call("test.unary", (value, ), ty, id="prepared")
-    actual = (builder.call("tir.buffer_view",
-                           (prepared, ), ty, id="view", attrs={"alias_kind": "reshape"}) if view else prepared)
-    observed = builder.call("test.unary", (actual, ), ty, id="observed")
-    consumed = builder.call("tir.call", (actual, ), ty, id="consumed", attrs={"callee": callee})
-    builder.function("main", (value, ), (observed, consumed))
+    prepared = builder.call("test.unary", (value,), ty, id="prepared")
+    actual = (builder.call("tir.buffer_view", (prepared,), ty, id="view", attrs={"alias_kind": "reshape"})
+              if view else prepared)
+    observed = builder.call("test.unary", (actual,), ty, id="observed")
+    consumed = builder.call("tir.call", (actual,), ty, id="consumed", attrs={"callee": callee})
+    builder.function("main", (value,), (observed, consumed))
     module = builder.build(entry="main")
-    programs = tuple(
-        dict(symbol=name, calls=(name, ), num_warps=4, depends_on=parents)
-        for name, parents in (("prepared", ()), ("observed", ("prepared", )),
-                              ("consumed", ("prepared", "observed") if ordered else ("prepared", ))))
+    programs = tuple(dict(symbol=name, calls=(name,), num_warps=4, depends_on=parents)
+                     for name, parents in (("prepared", ()), ("observed", ("prepared",)),
+                                          ("consumed", ("prepared", "observed") if ordered else ("prepared",))))
     module = replace(module, metadata={"kernel_program_partition": programs})
     plan = fm.make_buffer_plan(module)
     assert bool(plan.function_map["worker"].result_aliases) is ordered
     values = dict(plan.function_map["main"].values)
-    assert plan.buffer_map[values["prepared"][0]].mem_span.may_alias(
-        plan.buffer_map[values["consumed"][0]].mem_span) is ordered
+    assert plan.buffer_map[values["prepared"][0]].mem_span.may_alias(plan.buffer_map[values["consumed"][0]].mem_span) is ordered

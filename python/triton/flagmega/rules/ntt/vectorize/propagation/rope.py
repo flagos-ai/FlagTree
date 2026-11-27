@@ -45,8 +45,11 @@ def _plan(node: Node, module: IRModule):
     if not isinstance(rope.type, TensorType):
         return None
     lanes = tuple(int(value) for value in node.attrs["lanes"])
-    raw_axes = (tuple(int(value) for value in node.attrs["axes"]) if "axes" in node.attrs else
-                (int(node.attrs["axis"]), ) * len(lanes))
+    raw_axes = (
+        tuple(int(value) for value in node.attrs["axes"])
+        if "axes" in node.attrs
+        else (int(node.attrs["axis"]),) * len(lanes)
+    )
     axes = normalize_axes(raw_axes, rope.type.rank)
     if len(axes) != 1 or len(lanes) != 1 or axes[0] != rope.type.rank - 1:
         return None
@@ -83,7 +86,7 @@ def _rewrite(node: Node, module: IRModule) -> RewriteResult:
     input_pack = _make(
         f"{node.id}.propagated.input_pack",
         "tensors.pack",
-        (input_value, ),
+        (input_value,),
         {"lanes": lanes, "axes": axes},
         propagation_helper_metadata(node, node.id, "propagated-pack"),
     )
@@ -96,7 +99,7 @@ def _rewrite(node: Node, module: IRModule) -> RewriteResult:
         packed = _make(
             f"{node.id}.propagated.{name}_pack",
             "tensors.pack",
-            (table, ),
+            (table,),
             {"lanes": (2, lane), "axes": (table_axis, table_axis)},
             propagation_helper_metadata(node, node.id, "propagated-pack"),
         )
@@ -120,7 +123,7 @@ def _rewrite(node: Node, module: IRModule) -> RewriteResult:
 
 
 def rope_propagation_rules() -> tuple[RewriteRule, ...]:
-    return (RewriteRule("VectorizeRoPEPropagation", _matches, _rewrite, root_ops=("tensors.pack", )), )
+    return (RewriteRule("VectorizeRoPEPropagation", _matches, _rewrite, root_ops=("tensors.pack",)),)
 
 
 __all__ = ["rope_propagation_rules"]

@@ -10,14 +10,18 @@ def test_block_scoped_workspace_allocates_one_compact_local_component_per_scope(
     placement = fm.Placement((2, 4), "yx", "bb")
     value_type = fm.DistributedType(
         fm.tensor_type("bfloat16", (8, 16)),
-        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, ), 8)),
+        (fm.SBP.broadcast(), fm.SBP.split_contiguous((0,), 8)),
         placement,
     )
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
     source = builder.var("source", value_type, id="source")
-    temporary = builder.call("test.unary", (source, ), value_type, id="temporary")
-    output = builder.call("test.unary", (temporary, ), value_type, id="output")
-    builder.function("main", (source, ), (output, ))
+    temporary = builder.call(
+        "test.unary", (source,), value_type, id="temporary"
+    )
+    output = builder.call(
+        "test.unary", (temporary,), value_type, id="output"
+    )
+    builder.function("main", (source,), (output,))
 
     plan = fm.make_buffer_plan(
         builder.build(entry="main"),
@@ -36,14 +40,20 @@ def test_block_scoped_workspace_allocates_one_compact_local_component_per_scope(
 def test_workspace_pool_identity_is_target_declared_not_hard_coded():
     generic = BufferizationOptions.generic()
     spaces = tuple(
-        replace(space, name="data") if space.name == "workspace" else space for space in generic.memory_spaces)
+        replace(space, name="data") if space.name == "workspace" else space
+        for space in generic.memory_spaces
+    )
     options = BufferizationOptions(spaces, workspace="data")
-    value_type = fm.tensor_type("float32", (16, ))
+    value_type = fm.tensor_type("float32", (16,))
     builder = fm.IRBuilder(dialect="tir", stage="selected_tir")
     source = builder.var("source", value_type, id="source")
-    temporary = builder.call("test.unary", (source, ), value_type, id="temporary")
-    output = builder.call("test.unary", (temporary, ), value_type, id="output")
-    builder.function("main", (source, ), (output, ))
+    temporary = builder.call(
+        "test.unary", (source,), value_type, id="temporary"
+    )
+    output = builder.call(
+        "test.unary", (temporary,), value_type, id="output"
+    )
+    builder.function("main", (source,), (output,))
 
     module = builder.build(entry="main")
     plan = fm.make_buffer_plan(module, options=options)

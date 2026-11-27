@@ -29,16 +29,16 @@ def private_stage(family, *, private=True, placement=None):
     from math import prod
 
     mesh = placement or fm.Placement((8, 16), "yx", "bb")
-    rows = 4096 if prod(size for size, level in zip(mesh.hierarchy, mesh.hierarchy_levels)
-                        if level != "b") > 1 else 1024
+    rows = 4096 if prod(size for size, level in zip(mesh.hierarchy, mesh.hierarchy_levels) if level != "b") > 1 else 1024
     if family == "block_fp8":
-        graph = projection_graph(n=rows, k=256, lanes=(8, ), placement=mesh, readonly=True, private_result=private)
+        graph = projection_graph(n=rows, k=256, lanes=(8,), placement=mesh, readonly=True,
+                                 private_result=private)
         return graph, compile_projection(graph, mesh)
     if family == "matmul_glu":
         graph = glu_graph(n=rows, k=256, placement=mesh, readonly=True, private_result=private)
         return graph, compile_glu(graph, mesh)
-    graph = stage_graph(tokens=1, routes=8, rows=512, reduction=256, experts=11, packed=True, placement=mesh,
-                        readonly=True, private_result=private)
+    graph = stage_graph(tokens=1, routes=8, rows=512, reduction=256, experts=11, packed=True,
+                        placement=mesh, readonly=True, private_result=private)
     return graph, compile_stage(graph, mesh, True)
 
 
@@ -46,10 +46,9 @@ def private_stage(family, *, private=True, placement=None):
 def test_normal_codegen_keeps_owner_local_cooperative_results_private(tmp_path, family):
     _, module = private_stage(family)
     plan = fm.verify_buffer_plan(module)
-    calls = [
-        n for n in module.nodes if n.op == "tir.call" and (
-            d := fm.kernel_dispatch_for_call(module, n)) is not None and d.microkernel.family == family
-    ]
+    calls = [n for n in module.nodes if n.op == "tir.call"
+             and (d := fm.kernel_dispatch_for_call(module, n)) is not None
+             and d.microkernel.family == family]
     assert len(calls) == 1
     result = plan.buffer_map[calls[0].id]
     assert result.storage == "block_local_data"
@@ -72,8 +71,8 @@ def test_private_merge_matches_shared_stage_and_preserves_guards(tmp_path, famil
 
     graph, private_module = private_stage(family)
     _, shared_module = private_stage(family, private=False)
-    data = {"block_fp8": projection_values, "matmul_glu": glu_values, "sparse_experts_gate_up":
-            stage_values}[family](torch, graph)
+    data = {"block_fp8": projection_values, "matmul_glu": glu_values,
+            "sparse_experts_gate_up": stage_values}[family](torch, graph)
     device_data = {name: value.cuda() for name, value in data.items() if not name.endswith("weight")}
     runtimes, outputs, guards, arguments = [], [], [], []
     try:
@@ -91,7 +90,7 @@ def test_private_merge_matches_shared_stage_and_preserves_guards(tmp_path, famil
                 lanes = dtype.lanes if isinstance(dtype, fm.VectorType) else ()
                 scalar = dtype.elem_type if lanes else dtype
                 shape = (*descriptor.component_shape, *lanes)
-                storage = torch.full((prod(shape) + 64, ), 123., dtype=getattr(torch, scalar.value), device="cuda")
+                storage = torch.full((prod(shape) + 64,), 123., dtype=getattr(torch, scalar.value), device="cuda")
                 current[spec["value"]] = storage[:-64].reshape(shape)
                 guards.append(storage[-64:])
             outputs.append(tuple(current.values()))

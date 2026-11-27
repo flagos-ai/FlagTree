@@ -28,24 +28,21 @@ def program_use_ends(module, function, nodes):
     for program in programs:
         calls = program.get("calls")
         if not isinstance(calls, (tuple, list)) or not calls:
-            raise IRVerificationError("Concurrent program lifetimes require non-empty call partitions.",
-                                      stage=module.stage)
+            raise IRVerificationError("Concurrent program lifetimes require non-empty call partitions.", stage=module.stage)
         for call in calls:
             if call not in indexes or call in by_call:
                 raise IRVerificationError(
-                    "Concurrent program lifetimes require unique actual entry call ids before allocation.",
-                    stage=module.stage)
+                    "Concurrent program lifetimes require unique actual entry call ids before allocation.", stage=module.stage)
             by_call[call] = program["symbol"]
             flat.append(indexes[call])
         ends[program["symbol"]] = max(indexes[call] for call in calls)
-    if flat != sorted(flat) or any(node.op in {"tir.call", "builtin.call", "tir.kernel"} and node.id not in by_call
-                                   for node in nodes):
+    if flat != sorted(flat) or any(node.op in {"tir.call", "builtin.call", "tir.kernel"}
+                                  and node.id not in by_call for node in nodes):
         raise IRVerificationError(
             "Concurrent program lifetimes must cover all actual entry calls in original order before allocation.",
             stage=module.stage)
     unordered_ends = {
-        symbol: max((end
-                     for other, end in ends.items()
+        symbol: max((end for other, end in ends.items()
                      if other != symbol and symbol not in ancestors[other]), default=-1)
         for symbol in ancestors
     }

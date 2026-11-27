@@ -48,14 +48,17 @@ def _compiler_for(target_name, *, supplied_model):
         from triton.flagmega.targets.amd_gfx1100 import AmdGfx1100Target
         from triton.flagmega.targets.amd_gfx1201 import AmdGfx1201Target
         from triton.flagmega.targets.portable_triton_implementations import (
-            portable_triton_implementation_model, )
+            portable_triton_implementation_model,
+        )
 
         target_cls = {"amd-gfx1100": AmdGfx1100Target, "amd-gfx1201": AmdGfx1201Target}[target_name]
         compiler.target = target_cls(triton_implementation_model=portable_triton_implementation_model())
     return compiler
 
 
-@pytest.mark.parametrize("supplied_model", [False, True], ids=["default-distribution", "recipe-supplied-model"])
+@pytest.mark.parametrize(
+    "supplied_model", [False, True], ids=["default-distribution", "recipe-supplied-model"]
+)
 def test_two_layer_qwen3_runs_on_amd_rdna(tmp_path, supplied_model):
     target = _amd_rdna_target()
     if target is None:

@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Conservative SM120 profile for RTX 5060 Ti native quantized kernels."""
+"""SM120 profile for RTX 5060 Ti native quantized kernels."""
 
 from dataclasses import dataclass, replace
 from typing import ClassVar
@@ -19,8 +19,9 @@ class Sm120Capability(Sm90Capability):
     compute_capability: tuple[int, int] = (12, 0)
     max_threads_per_sm: int = 1536
     max_shared_memory_bytes: int = 101376
-    supports_tma: bool = False
-    supports_warp_specialize: bool = False
+    supports_tma: bool = True
+    supports_warp_specialize: bool = True
+    # WGMMA is sm_90a-only; sm_120 has no Hopper MMA v3.
     supports_mma_v3: bool = False
 
 
@@ -71,7 +72,7 @@ class NvidiaSm120Target(PyNttTarget):
             raise TypeError("placement must be a Placement")
         return type(self)(
             self.machine.capability,
-            options=replace(self.options, placements=(placement, )),
+            options=replace(self.options, placements=(placement,)),
             vectorization_policy=self.vectorization_policy,
             selection_policy=self.selection_policy,
             bufferization_policy=self.bufferization_policy,

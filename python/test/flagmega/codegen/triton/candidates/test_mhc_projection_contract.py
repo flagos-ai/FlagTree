@@ -18,11 +18,12 @@ def test_projection_selection_is_explicit_and_does_not_change_other_backends(red
     graph = module(reduction=reduction, splits=1)
     node, = [value for value in graph.nodes if value.op == "nn.mhc_pre"]
     target = target_type()
-    context = TritonCandidateContext(graph, target, {}, {}, {}, frozenset(), True, target.triton_implementation_model)
+    context = TritonCandidateContext(graph, target, {}, {}, {}, frozenset(), True,
+                                     target.triton_implementation_model)
     if target_type is IluvatarBiV150Target and reduction == "stream_fma_128":
         with pytest.raises(CodegenError, match="CUDA 32-lane"):
             MhcCandidateProvider().propose(node, context)
     else:
         result = MhcCandidateProvider().propose(node, context)
-        assert result.default_candidate == ("tir.mhc_pre.local"
-                                            if reduction == "parallel" else "tir.mhc_pre.stream_fma")
+        assert result.default_candidate == ("tir.mhc_pre.local" if reduction == "parallel"
+                                             else "tir.mhc_pre.stream_fma")

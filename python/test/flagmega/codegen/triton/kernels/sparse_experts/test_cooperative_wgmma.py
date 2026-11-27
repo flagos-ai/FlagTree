@@ -26,11 +26,12 @@ def cooperative_target(warps=8):
     base = target.triton_implementation_model
     implementations = tuple(
         replace(value, parameters={**value.parameters, "compute_num_warps": warps})
-        for value in sparse_experts_cooperative_implementations())
+        for value in sparse_experts_cooperative_implementations()
+    )
     target.triton_implementation_model = replace(
         base,
         implementations=(*base.implementations, *implementations),
-        preferences={**base.preferences, "sparse_experts_gate_up": (IDENTITY, )},
+        preferences={**base.preferences, "sparse_experts_gate_up": (IDENTITY,)},
     )
     return target
 
@@ -43,9 +44,11 @@ def compile_cooperative(graph, warps=8):
 
 def test_cooperative_workspace_and_effect_contract(tmp_path):
     compiled = compile_cooperative(expert_module("sparse_experts_gate_up"))
-    (dispatch, ) = (value.dispatch
-                    for value in compiled.kernel_definitions
-                    if value.dispatch.semantic_op == "nn.sparse_experts_gate_up")
+    (dispatch,) = (
+        value.dispatch
+        for value in compiled.kernel_definitions
+        if value.dispatch.semantic_op == "nn.sparse_experts_gate_up"
+    )
     assert dispatch.microkernel.implementation == IDENTITY
     assert dispatch.microkernel.facts["internal_grid_barriers"] == 1
     assert dispatch.microkernel.facts["source_memory_scope"] == "chip"
@@ -53,8 +56,9 @@ def test_cooperative_workspace_and_effect_contract(tmp_path):
     partials, scales = dispatch.workspaces
     assert partials.type == fm.tensor_type("float32", (1, 2, 2, 2, 2, 64))
     assert scales.type == fm.tensor_type("float32", (1, 2, 2))
-    assert all(value.memory_space == "workspace" and value.lifetime.value == "invocation"
-               for value in dispatch.workspaces)
+    assert all(
+        value.memory_space == "workspace" and value.lifetime.value == "invocation" for value in dispatch.workspaces
+    )
     assert all(effect.scope.value == "chip" for name, effect in dispatch.memory_effects if name in dispatch.arguments)
     resumed = fm.load_module(fm.emit_module(compiled, tmp_path / "selected.py"))
     assert resumed.semantic_hash == compiled.semantic_hash
@@ -69,19 +73,10 @@ def test_cooperative_codegen_roundtrip(tmp_path):
 
 
 def stage_graph(
-    *,
-    tokens=1,
-    routes=8,
-    rows=512,
-    reduction=4096,
-    experts=11,
-    packed=False,
-    placement=None,
-    readonly=False,
-    private_result=False,
-    publish_result=False,
+    *, tokens=1, routes=8, rows=512, reduction=4096, experts=11, packed=False, placement=None, readonly=False,
+    private_result=False, publish_result=False,
 ):
-    lanes = (8, ) if packed else ()
+    lanes = (8,) if packed else ()
     activation_dtype = fm.vector_type("bfloat16", lanes) if packed else "bfloat16"
     lane_count = prod(lanes)
     types = {
@@ -90,13 +85,20 @@ def stage_graph(
     }
     broadcast = fm.SBP.broadcast()
     block_axes = tuple(i for i, level in enumerate(placement.hierarchy_levels) if level == "b") if placement else ()
-    row_axes = (tuple(i for i, level in enumerate(placement.hierarchy_levels) if level != "b") +
-                block_axes[-1:] if placement else ())
+    row_axes = (
+        tuple(i for i, level in enumerate(placement.hierarchy_levels) if level != "b") + block_axes[-1:]
+        if placement
+        else ()
+    )
     route_axes = block_axes[:-1]
-    route = (fm.SBP.split_contiguous(route_axes, -(-routes // prod(placement.hierarchy[i]
-                                                                   for i in route_axes))) if placement else broadcast)
-    row_capacity = (-(-rows // (prod(placement.hierarchy[i]
-                                     for i in row_axes) * lane_count)) * lane_count if placement else rows)
+    route = (
+        fm.SBP.split_contiguous(route_axes, -(-routes // prod(placement.hierarchy[i] for i in route_axes)))
+        if placement
+        else broadcast
+    )
+    row_capacity = (
+        -(-rows // (prod(placement.hierarchy[i] for i in row_axes) * lane_count)) * lane_count if placement else rows
+    )
     row = fm.SBP.split_contiguous(row_axes, row_capacity) if placement else broadcast
     for field in ("gate", "up"):
         types[field + "_weight"] = fm.tensor_type("float8_e4m3fn", (experts, rows, reduction))
@@ -110,12 +112,11 @@ def stage_graph(
             "up_weight": (broadcast, row, broadcast),
         }
         types = {
-            name: fm.DistributedType(t, policies.get(name, (broadcast, ) * t.rank), placement)
+            name: fm.DistributedType(t, policies.get(name, (broadcast,) * t.rank), placement)
             for name, t in types.items()
         }
 
     class Graph(fm.Module):
-
         def forward(self):
             parameters, operands = [], []
             for parameter in SparseExpertsGateUp.input_parameters:
@@ -143,12 +144,11 @@ def stage_graph(
                 value = fm.F.tensors.cast(value, dtype, name="widened")
             if publish_result:
                 value = fm.F.distributed.force_boxing(value, fm.logical_type(value.type), name="published_gate_up")
-            sentinel = self.input("sentinel", fm.tensor_type("float32", (128, )), id="sentinel")
+            sentinel = self.input("sentinel", fm.tensor_type("float32", (128,)), id="sentinel")
             copied = fm.F.math.add(sentinel, sentinel)
             if placement:
                 sentinel_granularity = -(-128 // prod(placement.hierarchy[i] for i in block_axes))
-                split = fm.DistributedType(sentinel.type, (fm.SBP.split_contiguous(block_axes, sentinel_granularity), ),
-                                           placement)
+                split = fm.DistributedType(sentinel.type, (fm.SBP.split_contiguous(block_axes, sentinel_granularity),), placement)
                 local = fm.F.distributed.force_boxing(sentinel, split)
                 copied = fm.F.distributed.force_boxing(fm.F.math.add(local, local), sentinel.type)
             self.function("main", (*parameters, sentinel), (value, copied))
@@ -171,16 +171,18 @@ def compile_stage(graph, placement, cooperative, warps=8):
         target.triton_implementation_model = replace(
             base,
             implementations=tuple(
-                replace(value, parameters={**value.parameters, "compute_num_warps": warps}) if value.id ==
-                "tir.sparse_experts_gate_up.wgmma" else value for value in base.implementations),
-            preferences={**base.preferences, "sparse_experts_gate_up": ("tir.sparse_experts_gate_up.wgmma", )},
+                replace(value, parameters={**value.parameters, "compute_num_warps": warps})
+                if value.id == "tir.sparse_experts_gate_up.wgmma"
+                else value
+                for value in base.implementations
+            ),
+            preferences={**base.preferences, "sparse_experts_gate_up": ("tir.sparse_experts_gate_up.wgmma",)},
         )
     compiler.target = target
     return compiler.compile(graph).module
 
 
 class TensorCheckpoint:
-
     def __init__(self, values):
         self.values = values
 
@@ -203,13 +205,15 @@ def stage_values(torch, graph):
         elif name == "sentinel":
             values[name] = torch.arange(128, dtype=torch.float32)
         elif name.endswith("_scale"):
-            values[name] = (torch.rand(shape, generator=rng) +
-                            0.25) * (2.0**-12 if name.endswith("proj_scale") else 1.0)
+            values[name] = (torch.rand(shape, generator=rng) + 0.25) * (
+                2.0**-12 if name.endswith("proj_scale") else 1.0
+            )
         else:
             lanes = kind.dtype.lanes if isinstance(kind.dtype, fm.VectorType) else ()
             dtype = kind.dtype.elem_type if lanes else kind.dtype
-            values[name] = (torch.randint(-16, 17,
-                                          (*shape, *lanes), generator=rng).float() / 16).to(getattr(torch, dtype.value))
+            values[name] = (torch.randint(-16, 17, (*shape, *lanes), generator=rng).float() / 16).to(
+                getattr(torch, dtype.value)
+            )
     return values
 
 
@@ -244,8 +248,9 @@ def test_cooperative_complete_stage_bitwise(tmp_path, tokens, routes, rows, redu
     runtimes, outputs, guards = [], [], []
     for cooperative in (False, True):
         compiled = compile_stage(graph, placement, cooperative, warps)
-        artifact = write_artifact(compiled, tmp_path / str(cooperative), target="nvidia-sm90", emit_executable=True,
-                                  checkpoint=checkpoint)
+        artifact = write_artifact(
+            compiled, tmp_path / str(cooperative), target="nvidia-sm90", emit_executable=True, checkpoint=checkpoint
+        )
         runtime = load(artifact, device="cuda:0")
         runtimes.append(runtime)
         current = {}
@@ -256,10 +261,10 @@ def test_cooperative_complete_stage_bitwise(tmp_path, tokens, routes, rows, redu
             shape = (tokens, routes, rows // 8, 8) if packed else (tokens, routes, rows)
             dtype = torch.bfloat16
             if name != compiled.function_map[compiled.entry].outputs[0]:
-                shape, dtype = (128, ), torch.float32
-            storage = torch.full((prod(shape) + 64, ), 123.0, dtype=dtype, device="cuda")
-            current[name] = storage[:prod(shape)].reshape(shape)
-            guards.append(storage[prod(shape):])
+                shape, dtype = (128,), torch.float32
+            storage = torch.full((prod(shape) + 64,), 123.0, dtype=dtype, device="cuda")
+            current[name] = storage[: prod(shape)].reshape(shape)
+            guards.append(storage[prod(shape) :])
         outputs.append(current)
     try:
         device_values = {name: value.cuda() for name, value in values.items() if not name.endswith("_weight")}
@@ -311,7 +316,6 @@ def test_chip_peer_addresses_match_compact_component_abi(cooperative_raw, chip):
     local_rows, k = weight["local_capacity_shape"][-2:]
 
     class Pointer(int):
-
         def to(self, dtype):
             return self
 
@@ -339,8 +343,13 @@ def test_chip_peer_addresses_match_compact_component_abi(cooperative_raw, chip):
                 for binding in arg["buffers"]:
                     env[binding["runtime_argument"]] = Pointer(0)
         actual = eval(call["gate_peer_pointer"], {}, env) + eval(call["gate_peer_offset"], {}, env)
-        expected = (weight["pool_byte_offset"] + n[:, None] // local_rows * weight["component_stride_scalar_elements"] +
-                    10 * local_rows * k + (n[:, None] % local_rows) * k + ks[None, :])
+        expected = (
+            weight["pool_byte_offset"]
+            + n[:, None] // local_rows * weight["component_stride_scalar_elements"]
+            + 10 * local_rows * k
+            + (n[:, None] % local_rows) * k
+            + ks[None, :]
+        )
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
         scale = eval(call["gate_peer_scale_offset"], {}, env)
         torch.testing.assert_close(scale, 10 * 16 * 32 + (chip * 512 + n) // 128 * 32 + 31, rtol=0, atol=0)
@@ -372,7 +381,7 @@ def test_cooperative_rejects_unproved_physical_access(cooperative_raw, group, fo
 
 def test_optional_implementation_does_not_change_generic_target():
     assert NvidiaSm90Target().triton_implementation_model.implementation(IDENTITY) is None
-    (implementation, ) = sparse_experts_cooperative_implementations()
+    (implementation,) = sparse_experts_cooperative_implementations()
     from triton.flagmega.targets.nvidia_sm120 import NvidiaSm120Target
 
     assert "mma_v3" in NvidiaSm120Target().capability.missing(implementation.requires)

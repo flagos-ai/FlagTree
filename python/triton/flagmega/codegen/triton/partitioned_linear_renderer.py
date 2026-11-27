@@ -13,10 +13,8 @@ from triton.flagmega.ir import DistributedType, SBPSplit
 def partitioned_linear_call(raw):
     from triton.flagmega.codegen.triton.kernel_call_renderers import _buffer, _pointer, _static_shape
 
-    bindings = {
-        name: _buffer(raw, section, name)
-        for section, name in (("inputs", "value"), ("inputs", "weight"), ("outputs", "result"))
-    }
+    bindings = {name: _buffer(raw, section, name) for section, name in
+                (("inputs", "value"), ("inputs", "weight"), ("outputs", "result"))}
     shapes, strides, origins, physical_shapes = {}, {}, {}, {}
     for name, binding in bindings.items():
         require_chip_shared(binding, name, owner="PartitionedLinear")
@@ -34,14 +32,12 @@ def partitioned_linear_call(raw):
         origins[name] = emit_local_scalar_offset(abi, ("0", "0"))
     x, w, out = (bindings[name] for name in ("value", "weight", "result"))
     if out["abi"].get("storage_kind") == "compact_per_owner":
-        raise CodegenError(
-            "PartitionedLinear cooperates on one chip result; materialize public partials through Boxing.")
+        raise CodegenError("PartitionedLinear cooperates on one chip result; materialize public partials through Boxing.")
     reduction, rows = shapes["weight"][1], shapes["weight"][0]
     if shapes["value"] != (1, reduction) or shapes["result"] != (1, rows):
         raise CodegenError("PartitionedLinear physical input, weight and result extents disagree.")
     kind = _tensor_type(w["abi"])
-    parts = 1 if isinstance(kind, DistributedType) and isinstance(kind.axis_policies[1],
-                                                                  SBPSplit) else raw["semantic_attrs"]["partitions"]
+    parts = 1 if isinstance(kind, DistributedType) and isinstance(kind.axis_policies[1], SBPSplit) else raw["semantic_attrs"]["partitions"]
     span, block_k = reduction // parts, int(raw["parameters"]["block_k"])
     splits = int(raw["semantic_attrs"].get("accumulation_splits", 1))
     if splits <= 0 or span % splits:
@@ -58,15 +54,9 @@ def partitioned_linear_call(raw):
             if recipe.work_size != rows or recipe.tile_size != tile_n:
                 raise CodegenError('PartitionedLinear task domain must cover exactly its local scalar output rows.')
     context = {
-        "rows": rows,
-        "reduction": reduction,
-        "parts": parts,
-        "part_k": span,
-        "tasks": (rows + tile_n - 1) // tile_n,
-        'tile_n': tile_n,
-        "block_k": block_k,
-        "accumulation_splits": splits,
-        "accumulation_k": span // splits,
+        "rows": rows, "reduction": reduction, "parts": parts, "part_k": span,
+        "tasks": (rows + tile_n - 1) // tile_n, 'tile_n': tile_n, "block_k": block_k,
+        "accumulation_splits": splits, "accumulation_k": span // splits,
         "source": f"({_pointer(x)} + ({origins['value']}))",
         "weight": f"({_pointer(w)} + ({origins['weight']}))",
         "result": f"({_pointer(out)} + ({origins['result']}))",
@@ -99,27 +89,19 @@ def partitioned_linear_call(raw):
         shape = physical_shapes[name]
         if max(shape) >= 2**31:
             raise CodegenError("PartitionedLinear TMA coordinates must fit signed int32.")
-        requests.append(
-            device_descriptor_request(
-                {
-                    "parameter": f"{name}_descriptor",
-                    "source": str(binding["runtime_argument"]),
-                    "kind": "single",
-                    "offset_bytes": int(binding["abi"].get("pool_byte_offset", 0)),
-                    "dtype": "bfloat16",
-                    "shape": shape,
-                    "strides": (shape[1], 1),
-                    "block_shape": (tile, block_k),
-                    "source_shape_axes": ((), ()),
-                    "padding": "zero",
-                }, workspaces))
-    return {
-        **context, "local_shared_bytes": cursor, "local_shared_alignment":
-        max(value["alignment_bytes"] for value in workspaces), "local_weight_offset": offsets["weight_tiles"],
-        "local_activation_offset": offsets["activation_tiles"], "source_k_origin": origins["value"],
-        "weight_row_origin": f"(({origins['weight']}) // {physical_shapes['weight'][1]})", "weight_k_origin":
-        f"(({origins['weight']}) % {physical_shapes['weight'][1]})", "host_tensor_descriptor_requests": tuple(requests)
-    }
+        requests.append(device_descriptor_request({
+            "parameter": f"{name}_descriptor", "source": str(binding["runtime_argument"]),
+            "kind": "single", "offset_bytes": int(binding["abi"].get("pool_byte_offset", 0)),
+            "dtype": "bfloat16", "shape": shape, "strides": (shape[1], 1),
+            "block_shape": (tile, block_k), "source_shape_axes": ((), ()), "padding": "zero",
+        }, workspaces))
+    return {**context, "local_shared_bytes": cursor,
+            "local_shared_alignment": max(value["alignment_bytes"] for value in workspaces),
+            "local_weight_offset": offsets["weight_tiles"], "local_activation_offset": offsets["activation_tiles"],
+            "source_k_origin": origins["value"],
+            "weight_row_origin": f"(({origins['weight']}) // {physical_shapes['weight'][1]})",
+            "weight_k_origin": f"(({origins['weight']}) % {physical_shapes['weight'][1]})",
+            "host_tensor_descriptor_requests": tuple(requests)}
 
 
 __all__ = ["partitioned_linear_call"]

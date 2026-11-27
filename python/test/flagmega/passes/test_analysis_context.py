@@ -1,5 +1,3 @@
-# Copyright 2026 FlagOS Contributors
-# SPDX-License-Identifier: MIT
 from dataclasses import replace
 
 import pytest
@@ -45,9 +43,13 @@ def test_run_pass_context_lazily_memoizes_and_promotes_preserved_analysis():
         assert current_pass_context().require_analysis("node_count") == 1
         return module
 
-    result = (PassManager("analysis").register_analysis(provider).add(
-        FunctionalPass("first", first, preserves=frozenset({"node_count"}))).add(
-            FunctionalPass("second", second, preserves=frozenset({"node_count"}))).run(_module()))
+    result = (
+        PassManager("analysis")
+        .register_analysis(provider)
+        .add(FunctionalPass("first", first, preserves=frozenset({"node_count"})))
+        .add(FunctionalPass("second", second, preserves=frozenset({"node_count"})))
+        .run(_module())
+    )
 
     assert provider.calls == [(result.executions[0].input_semantic_hash, None)]
     assert seen == [("analysis", "first", 0)]
@@ -61,9 +63,14 @@ def test_nonpreserving_pass_invalidates_real_cached_analysis():
         current_pass_context().require_analysis("node_count")
         return module
 
-    result = (PassManager("analysis").register_analysis(provider).add(FunctionalPass("query", query)).run(_module()))
+    result = (
+        PassManager("analysis")
+        .register_analysis(provider)
+        .add(FunctionalPass("query", query))
+        .run(_module())
+    )
 
-    assert result.invalidated_analyses == ("node_count", )
+    assert result.invalidated_analyses == ("node_count",)
 
 
 def test_pass_context_is_not_visible_outside_execution():

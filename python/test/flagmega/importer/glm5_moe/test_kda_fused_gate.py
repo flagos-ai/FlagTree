@@ -28,7 +28,8 @@ LOWER_BOUND = -5.0
 
 def _imported(*, with_values=False):
     scale = dict(REDUCED)
-    source = checkpoint(scale, with_values=with_values, full_model=True, expert_layout="separate")
+    source = checkpoint(scale, with_values=with_values, full_model=True,
+                        expert_layout="separate")
     importer = Glm5MoeModelImporter(source, block_size=8, num_blocks=3)
     return source, importer, importer.import_module(), configuration(scale)["text_config"]
 
@@ -38,17 +39,16 @@ def _region_nodes(module, prefix=PREFIX):
 
 
 def _trace(source, importer, module, text):
-    inputs = {
-        "input_ids": torch.tensor([11], dtype=torch.int32), "paged_attention_state":
-        create_paged_attention_state(importer.paged_config)
-    }
+    inputs = {"input_ids": torch.tensor([11], dtype=torch.int32),
+              "paged_attention_state": create_paged_attention_state(importer.paged_config)}
     heads, dim = text["kda_num_heads"], text["kda_head_dim"]
     generator = torch.Generator().manual_seed(23)
     for layer in importer.kda_layers:
-        inputs[f"kda_conv_state_{layer}"] = torch.zeros((3, heads, dim, text["kda_conv_kernel_size"] - 1),
-                                                        dtype=torch.bfloat16)
+        inputs[f"kda_conv_state_{layer}"] = torch.zeros(
+            (3, heads, dim, text["kda_conv_kernel_size"] - 1), dtype=torch.bfloat16)
         # A non-zero incoming state so the decay actually scales something.
-        inputs[f"kda_recurrent_state_{layer}"] = torch.randn((1, heads, dim, dim), generator=generator)
+        inputs[f"kda_recurrent_state_{layer}"] = torch.randn(
+            (1, heads, dim, dim), generator=generator)
     return TorchEvaluator(CheckpointWeightResolver(source)).run_with_trace(module, inputs)[1]
 
 
@@ -91,11 +91,11 @@ def test_no_materialized_gate_intermediate_remains():
     _, _, module, text = _imported()
     heads, dim = text["kda_num_heads"], text["kda_head_dim"]
     wide_activations = [
-        node.id
-        for node in _region_nodes(module)
+        node.id for node in _region_nodes(module)
         if node.op in {"math.add", "math.mul", "math.sigmoid", "tensors.cast"}
-        and getattr(node.type, "shape", None) is not None and tuple(
-            getattr(extent, "fixed_value", None) for extent in node.type.shape) == (1, heads, dim)
+        and getattr(node.type, "shape", None) is not None
+        and tuple(getattr(extent, "fixed_value", None) for extent in node.type.shape)
+           == (1, heads, dim)
     ]
 
     assert wide_activations == []
@@ -118,8 +118,9 @@ def test_the_fused_gate_matches_the_published_forget_gate_bit_for_bit():
     # KDA recurrence with L2-normalized q/k.
     gate = LOWER_BOUND * torch.sigmoid(decay_rate * (gate_raw.float() + dt_bias))
     beta = torch.sigmoid(beta_raw.float())
-    normalized = tuple(tensor.float() / torch.sqrt((tensor.float()**2).sum(-1, keepdim=True) + 1e-6)
-                       for tensor in (query, key))
+    normalized = tuple(
+        tensor.float() / torch.sqrt((tensor.float() ** 2).sum(-1, keepdim=True) + 1e-6)
+        for tensor in (query, key))
     expected_state = state * gate.exp().unsqueeze(-1)
     delta = (value.float() - (expected_state * normalized[1].unsqueeze(-1)).sum(-2)) \
         * beta.unsqueeze(-1)
@@ -127,7 +128,7 @@ def test_the_fused_gate_matches_the_published_forget_gate_bit_for_bit():
     # The native fused_recurrent_kda default still scales the query after L2
     # normalization. Omitting 1/sqrt(head_dim) changes the attention readout,
     # while the recurrent-state update itself remains independent of queries.
-    scaled_query = normalized[0] * query.shape[-1]**-0.5
+    scaled_query = normalized[0] * query.shape[-1] ** -0.5
     expected = (expected_state * scaled_query.unsqueeze(-1)).sum(-2).to(torch.bfloat16)
 
     torch.testing.assert_close(observed, expected, rtol=0, atol=0)
@@ -136,10 +137,11 @@ def test_the_fused_gate_matches_the_published_forget_gate_bit_for_bit():
     # The rejected expansion, which had to publish each step's dtype: prove the
     # fixture separates the two policies so the assertions above are not vacuous.
     rounded_gate = (gate_raw.float() + dt_bias).to(torch.bfloat16).float()
-    rounded = LOWER_BOUND * torch.sigmoid((decay_rate * rounded_gate).to(torch.bfloat16).float())
-    assert torch.count_nonzero(
-        gate != rounded), ("This fixture no longer distinguishes the FP32 in-kernel gate from the "
-                           "graph expansion, so the bit-exact assertions above are vacuous.")
+    rounded = LOWER_BOUND * torch.sigmoid(
+        (decay_rate * rounded_gate).to(torch.bfloat16).float())
+    assert torch.count_nonzero(gate != rounded), (
+        "This fixture no longer distinguishes the FP32 in-kernel gate from the "
+        "graph expansion, so the bit-exact assertions above are vacuous.")
 
 
 @pytest.mark.parametrize("heads", [2, 8])
@@ -150,4 +152,5 @@ def test_the_gate_view_keeps_the_head_axis(heads):
     text = configuration(scale)["text_config"]
     view = next(node for node in module.nodes if node.id == f"{PREFIX}_gate_heads")
 
-    assert tuple(extent.fixed_value for extent in view.type.shape) == (1, text["kda_num_heads"], text["kda_head_dim"])
+    assert tuple(extent.fixed_value for extent in view.type.shape) == (
+        1, text["kda_num_heads"], text["kda_head_dim"])

@@ -11,10 +11,10 @@ from triton.flagmega.errors import CodegenError
 from python.test.flagmega.codegen.triton.kernels.mhc.test_mhc_packed_abi import _raw
 
 
-@pytest.mark.parametrize(
-    "attrs", [{"collapsed_dtype": "int32"}, {"collapse_input_dtype": "int32"}, {"collapse_reduction": "unknown"},
-              {"collapse_reduction": []}, {"projection_reduction": "unknown"}, {"projection_splits": True},
-              {"projection_reduction": "stream_fma_128", "projection_splits": 8}])
+@pytest.mark.parametrize("attrs", [{"collapsed_dtype": "int32"}, {"collapse_input_dtype": "int32"},
+                                    {"collapse_reduction": "unknown"}, {"collapse_reduction": []},
+                                    {"projection_reduction": "unknown"}, {"projection_splits": True},
+                                    {"projection_reduction": "stream_fma_128", "projection_splits": 8}])
 def test_pre_renderer_rejects_unsupported_precision_attrs(attrs):
     raw = _raw()
     raw["semantic_attrs"].update(attrs)
@@ -29,7 +29,8 @@ def _post_raw():
     result["formal"] = "result"
     for value, name in zip(values, ("value", "residual", "post", "comb"), strict=True):
         value["formal"] = name
-    return {"inputs": values, "outputs": [result], "semantic_attrs": {}, "parameters": {"elements_per_program": 256}}
+    return {"inputs": values, "outputs": [result], "semantic_attrs": {},
+            "parameters": {"elements_per_program": 256}}
 
 
 def test_post_renderer_verifies_the_requested_store_dtype():
@@ -42,8 +43,8 @@ def test_post_renderer_verifies_the_requested_store_dtype():
     assert mhc_post_call(raw)["result_type"] == "tl.float32"
 
 
-@pytest.mark.parametrize("attrs",
-                         [{"output_dtype": "int32"}, {"accumulation_mode": "unknown"}, {"accumulation_mode": []}])
+@pytest.mark.parametrize("attrs", [{"output_dtype": "int32"}, {"accumulation_mode": "unknown"},
+                                    {"accumulation_mode": []}])
 def test_post_renderer_rejects_unsupported_precision_attrs(attrs):
     raw = _post_raw()
     raw["semantic_attrs"].update(attrs)

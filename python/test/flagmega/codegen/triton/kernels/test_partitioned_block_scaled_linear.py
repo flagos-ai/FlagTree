@@ -23,12 +23,12 @@ from python.test.flagmega.ir.ops.nn.test_partitioned_block_scaled_linear import 
     (1, 259, 1024, (), (), "dynamic_fp8_sm90", 64),
     (1, 80, 1024, (2, 4), (2, 4), "dynamic_fp8_sm90", 64),
     (2, 80, 1024, (), (), "dynamic_fp8", 64),
-    (1, 4096, 2048, (), (8, ), "dynamic_fp8_sm90", 64),
+    (1, 4096, 2048, (), (8,), "dynamic_fp8_sm90", 64),
     pytest.param(1, 1024, 2048, (), (), "dynamic_fp8_sm90", 32, id="native-task32"),
     pytest.param(1, 1024, 2048, (), (), "dynamic_fp8_sm90", 16, id="native-task16"),
 ])
-def test_device_matches_explicit_parts_with_mutations_and_guards(tmp_path, tokens, n, k, input_lanes, output_lanes,
-                                                                 quantization, task_tile_n):
+def test_device_matches_explicit_parts_with_mutations_and_guards(tmp_path, tokens, n, k,
+                                                                 input_lanes, output_lanes, quantization, task_tile_n):
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("requires SM90")
     placement = fm.Placement((8, 16), "yx", "bb")
@@ -46,10 +46,9 @@ def test_device_matches_explicit_parts_with_mutations_and_guards(tmp_path, token
                                if quantization == "dynamic_fp8_sm90" else NvidiaSm90Target())
             if not explicit:
                 base = compiler.target.triton_implementation_model
-                compiler.target.triton_implementation_model = replace(
-                    base, implementations=tuple(
-                        replace(impl, parameters={**impl.parameters, "tile_n": task_tile_n}) if impl.family ==
-                        "partitioned_block_scaled_linear" else impl for impl in base.implementations))
+                compiler.target.triton_implementation_model = replace(base, implementations=tuple(
+                    replace(impl, parameters={**impl.parameters, "tile_n": task_tile_n})
+                    if impl.family == "partitioned_block_scaled_linear" else impl for impl in base.implementations))
             graph = Graph(tokens=tokens, n=n, k=k, explicit=explicit, input_lanes=input_lanes,
                           output_lanes=output_lanes, quantization=quantization).build()
             module = compiler.compile(graph).module
@@ -63,14 +62,12 @@ def test_device_matches_explicit_parts_with_mutations_and_guards(tmp_path, token
             artifact = write_artifact(module, tmp_path / str(explicit), target="nvidia-sm90", emit_executable=True)
             runtime = load(artifact, device="cuda:0")
             runtimes.append(runtime)
-            storage = torch.full((4 * tokens * n + 128, ), -123, dtype=torch.bfloat16, device="cuda")
+            storage = torch.full((4 * tokens * n + 128,), -123, dtype=torch.bfloat16, device="cuda")
             output = storage[64:-64].reshape(4, tokens, n // prod(output_lanes), *output_lanes)
             values = {"x": x, "weight": weight, "scales": scales}
             args = tuple(output if spec["role"] == "result" else values[spec["value"]]
                          for spec in runtime.external_arguments)
-            arguments.append(args)
-            stores.append(storage)
-            outputs.append(output)
+            arguments.append(args); stores.append(storage); outputs.append(output)
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
             for runtime, args in zip(runtimes, arguments):

@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% macro state_layer(call) %}
+{% macro state_layer(call) %}
     logical_layer = {{ call.layer_id }}
     layer = tl.full((), -1, tl.int32)
 {% for logical_id in call.state_layer_ids %}

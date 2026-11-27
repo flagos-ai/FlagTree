@@ -19,26 +19,19 @@ from python.test.flagmega.passes.functions.test_outline_stages import STAGES, re
 
 
 def compile_repeated_stages(*, outline=True, packed=False):
-
     class Target(NvidiaSm90Target):
-
         def propose_tir(self, module):
             if outline:
                 module = outline_function_stages(module, "worker", STAGES)
             module = super().propose_tir(module)
-            dependencies = ((), (0, ), (1, ), (0, ), (3, ), (2, 4))
+            dependencies = ((), (0,), (1,), (0,), (3,), (2, 4))
             programs = tuple({
-                "symbol":
-                f"program_{call}_{stage}",
-                "calls": (f"call{call}.stage{stage}" if outline else STAGES[stage].nodes[0], ),
-                "num_warps":
-                4,
-                "depends_on":
-                tuple(f"program_{call}_{parent}"
-                      for parent in parents) or ((f"program_{call - 1}_5", ) if call else ()),
-            }
-                             for call in range(2)
-                             for stage, parents in enumerate(dependencies))
+                "symbol": f"program_{call}_{stage}",
+                "calls": (f"call{call}.stage{stage}" if outline else STAGES[stage].nodes[0],),
+                "num_warps": 4,
+                "depends_on": tuple(f"program_{call}_{parent}" for parent in parents) or
+                              ((f"program_{call - 1}_5",) if call else ()),
+            } for call in range(2) for stage, parents in enumerate(dependencies))
             return replace(module, metadata={**module.metadata, "kernel_program_partition": programs})
 
     compiler = Compiler()
@@ -49,8 +42,7 @@ def compile_repeated_stages(*, outline=True, packed=False):
 def test_nested_function_operations_are_not_executable_entry_cuts(tmp_path):
     # An explicit valid graph reproduces the missing boundary: v2 cuts address
     # entry calls, so a nested op id cannot name a kernel launch boundary.
-    with pytest.raises((CodegenError, IRVerificationError),
-                       match="straight-line call|exactly partition|actual entry call"):
+    with pytest.raises((CodegenError, IRVerificationError), match="straight-line call|exactly partition|actual entry call"):
         render_triton_package(compile_repeated_stages(outline=False), tmp_path)
 
 
@@ -63,8 +55,8 @@ def test_outlined_calls_use_normal_typed_allocation_codegen_and_resume(tmp_path,
     assert len(package["kernels"]) == 12
     assert len(package["device_functions"]) == 6
     from triton.flagmega.passes.functions import function_nodes
-    assert sum(n.op == "tir.call" and n.attrs["callee"] in module.kernel_callable_map for f in module.functions
-               if f.name != module.entry for n in function_nodes(module, f)) == 6
+    assert sum(n.op == "tir.call" and n.attrs["callee"] in module.kernel_callable_map
+               for f in module.functions if f.name != module.entry for n in function_nodes(module, f)) == 6
     streams = {p["symbol"]: p["stream_index"] for p in package["kernels"]}
     assert streams["program_0_1"] != streams["program_0_3"]
     assert package["kernels"][6]["depends_on"] == ["program_0_5"]
@@ -85,24 +77,24 @@ def test_device_repeated_stages_preserve_distinct_actuals_rebinding_and_graph(tm
         shape = (*tuple(d.fixed_value for d in kind.shape), *getattr(kind.dtype, "lanes", ()))
         feeds[value] = torch.empty(shape, dtype=torch.bfloat16, device="cuda")
     output_shape = (1, 16, 8) if packed else (1, 32)
-    guards = [torch.full((160 if packed else 64, ), -123.0, dtype=torch.bfloat16, device="cuda") for _ in range(6)]
+    guards = [torch.full((160 if packed else 64,), -123.0, dtype=torch.bfloat16, device="cuda") for _ in range(6)]
     outputs = [value[16:-16].reshape(output_shape) for value in guards]
     stream = torch.cuda.Stream()
 
     def arguments():
         results = iter(outputs)
-        return tuple(
-            next(results) if spec["role"] == "result" else feeds[spec["value"]] for spec in runtime.external_arguments)
+        return tuple(next(results) if spec["role"] == "result" else feeds[spec["value"]]
+                     for spec in runtime.external_arguments)
 
     try:
         Runtime.prepare(runtime, *arguments())
         assert all(report["spill_bytes"] == 0 for report in runtime.resource_report)
         assert len({p.compiled_kernel.hash for p in runtime._prepared}) == 6
-        assert all(runtime._prepared[i].compiled_kernel is runtime._prepared[i + 6].compiled_kernel for i in range(6))
+        assert all(runtime._prepared[i].compiled_kernel is runtime._prepared[i + 6].compiled_kernel
+                   for i in range(6))
         for mutation in range(6):
             for value in feeds.values():
-                value.copy_(
-                    (torch.randint(-4, 5, value.shape, generator=generator, device="cuda").float() / 16).bfloat16())
+                value.copy_((torch.randint(-4, 5, value.shape, generator=generator, device="cuda").float() / 16).bfloat16())
             if mutation == 5:
                 feeds["x0"].zero_()
             for value in outputs:
@@ -117,10 +109,8 @@ def test_device_repeated_stages_preserve_distinct_actuals_rebinding_and_graph(tm
                     left = ((prefix.float() + feeds["a"].float()).bfloat16().float() * feeds["b"].float()).bfloat16()
                     right = ((prefix.float() + feeds["c"].float()).bfloat16().float() * feeds["d"].float()).bfloat16()
                 else:
-                    left = ((prefix.double() @ feeds["a"].double().T).bfloat16().double()
-                            @ feeds["b"].double().T).bfloat16()
-                    right = ((prefix.double() @ feeds["c"].double().T).bfloat16().double()
-                             @ feeds["d"].double().T).bfloat16()
+                    left = ((prefix.double() @ feeds["a"].double().T).bfloat16().double() @ feeds["b"].double().T).bfloat16()
+                    right = ((prefix.double() @ feeds["c"].double().T).bfloat16().double() @ feeds["d"].double().T).bfloat16()
                 expected.extend((left, right, (left.float() + right.float()).bfloat16()))
             assert all(torch.equal(actual, gold) for actual, gold in zip(outputs, expected, strict=True))
             assert all(bool((v[:16] == -123).all() & (v[-16:] == -123).all()) for v in guards)

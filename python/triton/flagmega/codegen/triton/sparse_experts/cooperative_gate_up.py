@@ -31,7 +31,7 @@ def _peer_coordinates(geometry, *, route="0", row="0"):
     result = [f"shard_coord{i}" if level != "b" else "0" for i, level in enumerate(geometry.levels)]
     for axes, index in ((geometry.route_axes, route), (geometry.row_axes, row)):
         for position, axis in enumerate(axes):
-            stride = prod(geometry.hierarchy[i] for i in axes[position + 1:])
+            stride = prod(geometry.hierarchy[i] for i in axes[position + 1 :])
             result[axis] = f"((({index}) // {stride}) % {geometry.hierarchy[axis]})"
     return tuple(result)
 
@@ -55,13 +55,16 @@ def cooperative_gate_up_context(raw, context, operands, result):
         _pointer,
     )
 
-    geometry = cooperative_gate_geometry({name: _tensor_type(value["abi"])
-                                          for name, value in operands.items()}, _tensor_type(result["abi"]))
+    geometry = cooperative_gate_geometry(
+        {name: _tensor_type(value["abi"]) for name, value in operands.items()}, _tensor_type(result["abi"])
+    )
     if geometry is None:
         raise CodegenError("Cooperative FP8 experts require a complete contiguous chip owner domain.")
-    if (raw.get("facts", {}).get("internal_grid_barriers") != 1
-            or raw.get("facts", {}).get("source_memory_scope") != "chip"
-            or _exclusive_participation_active(raw) != "True"):
+    if (
+        raw.get("facts", {}).get("internal_grid_barriers") != 1
+        or raw.get("facts", {}).get("source_memory_scope") != "chip"
+        or _exclusive_participation_active(raw) != "True"
+    ):
         raise CodegenError("Cooperative FP8 experts require all CTAs, chip read effects and one internal barrier.")
     merge_n = raw["parameters"].get("merge_n")
     if type(merge_n) is not int or merge_n != 32:
@@ -106,45 +109,30 @@ def gate_up_peer_context(geometry, context, operands):
         shard_coordinates=row_coordinates,
     )
     additions = {
-        "chip_routes":
-        geometry.chip_routes,
-        "chip_rows":
-        geometry.chip_rows,
-        "local_routes":
-        geometry.local_routes,
-        "local_rows":
-        geometry.local_rows,
-        "row_owners":
-        prod(geometry.hierarchy[i] for i in geometry.row_axes),
-        "row_tiles":
-        geometry.row_tiles,
-        "k_blocks":
-        geometry.k_blocks,
-        "k_block_lanes":
-        1 << (geometry.k_blocks - 1).bit_length(),
-        "raw_tasks":
-        geometry.tokens * geometry.chip_routes * geometry.row_tiles * geometry.k_blocks,
-        "route_owner_index":
-        _linear(geometry, geometry.route_axes),
-        "row_owner_index":
-        _linear(geometry, geometry.row_axes),
-        "peer_input":
-        _peer_pointer(operands["dispatched"], route_coordinates),
-        "peer_input_offset":
-        input_offset,
-        "peer_expert_ids":
-        _peer_pointer(operands["router_expert_ids"], route_coordinates),
-        "peer_expert_offset":
-        emit_local_scalar_offset(
+        "chip_routes": geometry.chip_routes,
+        "chip_rows": geometry.chip_rows,
+        "local_routes": geometry.local_routes,
+        "local_rows": geometry.local_rows,
+        "row_owners": prod(geometry.hierarchy[i] for i in geometry.row_axes),
+        "row_tiles": geometry.row_tiles,
+        "k_blocks": geometry.k_blocks,
+        "k_block_lanes": 1 << (geometry.k_blocks - 1).bit_length(),
+        "raw_tasks": geometry.tokens * geometry.chip_routes * geometry.row_tiles * geometry.k_blocks,
+        "route_owner_index": _linear(geometry, geometry.route_axes),
+        "row_owner_index": _linear(geometry, geometry.row_axes),
+        "peer_input": _peer_pointer(operands["dispatched"], route_coordinates),
+        "peer_input_offset": input_offset,
+        "peer_expert_ids": _peer_pointer(operands["router_expert_ids"], route_coordinates),
+        "peer_expert_offset": emit_local_scalar_offset(
             ids,
             ("_fm_token", "_fm_local_route"),
             shard_coordinates=route_coordinates,
         ),
-        "peer_slot_active":
-        (f"(_fm_token < ({emit_active_extent(ids, 0, shard_coordinates=route_coordinates)})) & "
-         f"(_fm_local_route < ({emit_active_extent(ids, 1, shard_coordinates=route_coordinates)}))"),
-        "peer_n_active":
-        emit_active_extent(weight, 1, shard_coordinates=row_coordinates),
+        "peer_slot_active": (
+            f"(_fm_token < ({emit_active_extent(ids, 0, shard_coordinates=route_coordinates)})) & "
+            f"(_fm_local_route < ({emit_active_extent(ids, 1, shard_coordinates=route_coordinates)}))"
+        ),
+        "peer_n_active": emit_active_extent(weight, 1, shard_coordinates=row_coordinates),
     }
     for field in ("gate", "up"):
         binding = operands[field + "_weight"]

@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Compact diagnostic printers for FlagMega IR and TIR."""
+"""Compact nncase-style diagnostic printers for FlagMega IR and TIR."""
 
 from __future__ import annotations
 
@@ -75,8 +75,13 @@ def il_source(module: IRModule, *, weight_analysis: WeightPrintAnalysis | None =
     for function in module.functions:
         symbols = GraphPrintSymbols(scopes[function.name], _il_node, weight_analysis.values)
         parameters = ", ".join(
-            f"%{node_id}: {_type_text(module.node_map[node_id].type)}" for node_id in function.parameters)
-        parameter_types = ", ".join(_type_text(module.node_map[node_id].type) for node_id in function.parameters)
+            f"%{node_id}: {_type_text(module.node_map[node_id].type)}"
+            for node_id in function.parameters
+        )
+        parameter_types = ", ".join(
+            _type_text(module.node_map[node_id].type)
+            for node_id in function.parameters
+        )
         outputs = ", ".join(_type_text(module.node_map[node_id].type) for node_id in function.outputs)
         lines.append(f"%{function.name} = fn({parameters}): // ({parameter_types}) -> ({outputs})")
         lines.append("{")
@@ -111,12 +116,15 @@ def script_source(module: IRModule, *, weight_analysis: WeightPrintAnalysis | No
     for function in module.functions:
         symbols = GraphPrintSymbols(scopes[function.name], _script_node, weight_analysis.values)
         parameters = ", ".join(
-            f"%{node_id}: {_script_type_text(module.node_map[node_id].type)}" for node_id in function.parameters)
+            f"%{node_id}: {_script_type_text(module.node_map[node_id].type)}"
+            for node_id in function.parameters
+        )
         lines.append(f'T.PrimFunc("{function.name}", {parameters}).Body(')
         _append_weights_section(lines, symbols, weight_analysis.recipes[function.name], tir=True)
         for node in symbols.body:
-            lines.append(f"  {symbols.lhs(node)} = {_script_node(node, symbols.reference)} // "
-                         f"{_script_type_text(node.type)}{_effect_text(node)} name={node.id!r}")
+            lines.append(
+                f"  {symbols.lhs(node)} = {_script_node(node, symbols.reference)} // "
+                f"{_script_type_text(node.type)}{_effect_text(node)} name={node.id!r}")
         returned = ", ".join(symbols.reference(node_id) for node_id in function.outputs)
         lines.append(f"  T.Return({returned})")
         lines.append(")")
@@ -125,8 +133,9 @@ def script_source(module: IRModule, *, weight_analysis: WeightPrintAnalysis | No
         lines.append("")
         lines.append("// selections")
         for record in module.selections:
-            lines.append(f"T.Select({record.point_id!r}, {record.candidate_id!r}, "
-                         f"origin={record.origin!r}, policy={record.policy!r})")
+            lines.append(
+                f"T.Select({record.point_id!r}, {record.candidate_id!r}, "
+                f"origin={record.origin!r}, policy={record.policy!r})")
     lines.append("")
     return "\n".join(lines)
 
@@ -147,61 +156,104 @@ def _append_buffer_plan(lines: list[str], module: IRModule) -> None:
     lines.extend(("", f"// buffer allocation: {plan.optimization_level} ({plan.allocator})"))
     for record in plan.allocation_records:
         objectives = ", ".join(
-            f"{name}={value} [{status}, bound={bound}]" for name, status, value, bound in record.objectives)
-        lines.append(f"// @{record.function}/{record.memory_space}: {record.status}" +
-                     (f"; {objectives}" if objectives else ""))
+            f"{name}={value} [{status}, bound={bound}]"
+            for name, status, value, bound in record.objectives
+        )
+        lines.append(f"// @{record.function}/{record.memory_space}: {record.status}"
+                     + (f"; {objectives}" if objectives else ""))
     lines.extend(("", "// physical buffers"))
     for physical in plan.physical_buffers:
-        lifetime = ("" if physical.live_start is None else f", Lifetime: [{physical.live_start}, {physical.live_end}]")
+        lifetime = (
+            ""
+            if physical.live_start is None
+            else f", Lifetime: [{physical.live_start}, {physical.live_end}]"
+        )
         owner = "" if physical.function is None else f", Function: @{physical.function}"
-        lines.append(f"T.PhysicalBuffer({physical.id!r}, Location: {physical.memory_space}, "
-                     f"Start: {physical.start}, Size: {physical.size}, Alignment: {physical.alignment}"
-                     f"{owner}{lifetime}, Role: {physical.role})")
+        lines.append(
+            f"T.PhysicalBuffer({physical.id!r}, Location: {physical.memory_space}, "
+            f"Start: {physical.start}, Size: {physical.size}, Alignment: {physical.alignment}"
+            f"{owner}{lifetime}, Role: {physical.role})"
+        )
     lines.extend(("", "// logical buffer views"))
     for buffer in plan.buffers:
         dimensions = ",".join(str(value) for value in buffer.shape)
-        logical_type = (_script_type_text(buffer.distributed_type)
-                        if buffer.distributed_type is not None else f"{_data_type_text(buffer.dtype)}[{dimensions}]")
+        logical_type = (
+            _script_type_text(buffer.distributed_type)
+            if buffer.distributed_type is not None
+            else f"{_data_type_text(buffer.dtype)}[{dimensions}]"
+        )
         strides = ",".join(str(value) for value in buffer.strides)
-        alias = ("" if buffer.alias is None else f", Alias: {buffer.alias.kind.value}(%{buffer.alias.source})")
+        alias = (
+            ""
+            if buffer.alias is None
+            else f", Alias: {buffer.alias.kind.value}(%{buffer.alias.source})"
+        )
         owner = "" if buffer.function is None else f", Function: @{buffer.function}"
-        distributed_storage = ("" if buffer.distributed_storage_kind.value == "compact_local" else
-                               (", DistributedStorage: "
-                                f"{buffer.distributed_storage_kind.value}"))
-        distributed_backing = ("" if buffer.distributed_backing_type is None else
-                               (", DistributedBacking: "
-                                f"{_script_type_text(buffer.distributed_backing_type)}"))
-        lines.append(f"T.Buffer({logical_type}, "
-                     f"MemSpan: T.MemSpan({buffer.mem_span.buffer.id!r}, "
-                     f"Start: {buffer.mem_span.start}, Size: {buffer.mem_span.size}), "
-                     f"Strides: [{strides}], Storage: {buffer.storage}, Alignment: {buffer.alignment}"
-                     f"{distributed_storage}{distributed_backing}{owner}{alias}, Role: {buffer.role}) // %{buffer.id}")
-    kernel_calls = tuple(value for function in plan.functions for value in function.kernel_calls if value.workspaces)
+        distributed_storage = (
+            ""
+            if buffer.distributed_storage_kind.value == "compact_local"
+            else (
+                ", DistributedStorage: "
+                f"{buffer.distributed_storage_kind.value}"
+            )
+        )
+        distributed_backing = (
+            ""
+            if buffer.distributed_backing_type is None
+            else (
+                ", DistributedBacking: "
+                f"{_script_type_text(buffer.distributed_backing_type)}"
+            )
+        )
+        lines.append(
+            f"T.Buffer({logical_type}, "
+            f"MemSpan: T.MemSpan({buffer.mem_span.buffer.id!r}, "
+            f"Start: {buffer.mem_span.start}, Size: {buffer.mem_span.size}), "
+            f"Strides: [{strides}], Storage: {buffer.storage}, Alignment: {buffer.alignment}"
+            f"{distributed_storage}{distributed_backing}{owner}{alias}, Role: {buffer.role}) // %{buffer.id}"
+        )
+    kernel_calls = tuple(
+        value
+        for function in plan.functions
+        for value in function.kernel_calls
+        if value.workspaces
+    )
     if kernel_calls:
         lines.extend(("", "// selected-kernel workspace call ABI"))
         for call in kernel_calls:
-            bindings = ", ".join(f"%{formal} -> %{actual}" for formal, actual in call.workspaces)
-            lines.append(f"T.KernelCallWorkspace({call.call!r}, Caller: @{call.caller}, "
-                         f"Callee: @{call.callee}, Bindings: [{bindings}])")
+            bindings = ", ".join(
+                f"%{formal} -> %{actual}" for formal, actual in call.workspaces
+            )
+            lines.append(
+                f"T.KernelCallWorkspace({call.call!r}, Caller: @{call.caller}, "
+                f"Callee: @{call.callee}, Bindings: [{bindings}])"
+            )
 
 
 def _append_prim_functions(lines: list[str], module: IRModule) -> None:
     for kernel in module.kernel_definitions:
         parameters = ", ".join(
-            f"%{value.name}: {_script_type_text(value.type)} [{value.role.value}]" for value in kernel.parameters)
+            f"%{value.name}: {_script_type_text(value.type)} [{value.role.value}]"
+            for value in kernel.parameters
+        )
         lines.extend(("", f'T.KernelDef("{kernel.name}", kind={kernel.module_kind!r}, {parameters}) {{'))
         _print_tir_stmt(lines, kernel.dispatch, 2)
         lines.append("}")
     if not module.prim_functions:
         return
     for function in module.prim_functions:
-        parameters = ", ".join(f"%{value.name}: {_script_type_text(value.type)} "
-                               f"[{value.role.value}"
-                               f"{'' if value.memory_space is None else ', ' + value.memory_space}]"
-                               for value in function.parameters)
+        parameters = ", ".join(
+            f"%{value.name}: {_script_type_text(value.type)} "
+            f"[{value.role.value}"
+            f"{'' if value.memory_space is None else ', ' + value.memory_space}]"
+            for value in function.parameters
+        )
         lines.extend(("", f'T.PrimFunc("{function.name}", kind={function.module_kind!r}, {parameters}) {{'))
         _print_tir_stmt(lines, function.body, 2)
-        bindings = ", ".join(f"{_tir_value_text(value.value)} -> %{value.storage}" for value in function.results.values)
+        bindings = ", ".join(
+            f"{_tir_value_text(value.value)} -> %{value.storage}"
+            for value in function.results.values
+        )
         lines.append(f"  T.Return({bindings})")
         lines.append("}")
 
@@ -245,23 +297,36 @@ def _print_tir_stmt(lines: list[str], statement, indent: int) -> None:
     if isinstance(statement, KernelDispatch):
         arguments = ", ".join(f"%{value}" for value in statement.arguments)
         outputs = ", ".join(f"%{value}" for value in statement.outputs)
-        microkernel = (None if statement.microkernel is None else statement.microkernel.implementation)
+        microkernel = (
+            None
+            if statement.microkernel is None
+            else statement.microkernel.implementation
+        )
         workspaces = ", ".join(
-            f"%{value.name}: {_script_type_text(value.type)}@{value.memory_space}" for value in statement.workspaces)
+            f"%{value.name}: {_script_type_text(value.type)}@{value.memory_space}"
+            for value in statement.workspaces
+        )
         shared_workspaces = ", ".join(
-            f"%{value.name}: {_script_type_text(value.type)}@shared" for value in statement.shared_workspace_buffers)
+            f"%{value.name}: {_script_type_text(value.type)}@shared"
+            for value in statement.shared_workspace_buffers
+        )
         alias_text = ""
         if statement.inplace_alias_candidates is not None:
-            aliases = ", ".join(f"%{value.output} <- %{value.input}" for value in statement.inplace_alias_candidates)
+            aliases = ", ".join(
+                f"%{value.output} <- %{value.input}"
+                for value in statement.inplace_alias_candidates
+            )
             alias_text = f"InplaceAliases: [{aliases}], "
-        lines.append(f"{prefix}T.Kernel(SemanticOp: {statement.semantic_op!r}, "
-                     f"SemanticCandidate: {statement.semantic_candidate!r}, "
-                     f"MicroKernel: {microkernel!r}, "
-                     f"Parameters: {_value_text(statement.resolved_parameters, script=True)}, Inputs: [{arguments}], "
-                     f"Workspaces: [{workspaces}], SharedWorkspaces: [{shared_workspaces}], "
-                     f"{alias_text}"
-                     f"Reads: {list(statement.reads)!r}, "
-                     f"Writes: {list(statement.writes)!r}) -> ({outputs})")
+        lines.append(
+            f"{prefix}T.Kernel(SemanticOp: {statement.semantic_op!r}, "
+            f"SemanticCandidate: {statement.semantic_candidate!r}, "
+            f"MicroKernel: {microkernel!r}, "
+            f"Parameters: {_value_text(statement.resolved_parameters, script=True)}, Inputs: [{arguments}], "
+            f"Workspaces: [{workspaces}], SharedWorkspaces: [{shared_workspaces}], "
+            f"{alias_text}"
+            f"Reads: {list(statement.reads)!r}, "
+            f"Writes: {list(statement.writes)!r}) -> ({outputs})"
+        )
         return
     if isinstance(statement, ProducerConsumerRegion):
         lines.append(f"{prefix}T.ProducerConsumerRegion {{")
@@ -272,14 +337,21 @@ def _print_tir_stmt(lines: list[str], statement, indent: int) -> None:
         lines.append(f"{prefix}}}")
         return
     if isinstance(statement, (PrimFunctionCall, KernelInvoke)):
-
         def bindings(values):
-            return ", ".join(f"%{value.formal} -> %{value.actual}" for value in values)
+            return ", ".join(
+                f"%{value.formal} -> %{value.actual}" for value in values
+            )
 
-        shared = ", ".join(f"%{value.name}@{value.mem_span.absolute_start}:"
-                           f"{value.mem_span.absolute_end}" for value in statement.shared_workspace_buffers)
-        pools = ", ".join(f"{value.memory_space}=%{value.allocation}"
-                          f"[{value.offset}:{value.offset + value.nbytes}]" for value in statement.memory_pools)
+        shared = ", ".join(
+            f"%{value.name}@{value.mem_span.absolute_start}:"
+            f"{value.mem_span.absolute_end}"
+            for value in statement.shared_workspace_buffers
+        )
+        pools = ", ".join(
+            f"{value.memory_space}=%{value.allocation}"
+            f"[{value.offset}:{value.offset + value.nbytes}]"
+            for value in statement.memory_pools
+        )
         lines.append(
             f"{prefix}T.{'Invoke' if isinstance(statement, KernelInvoke) else 'Call'}({statement.call_id!r}, @{statement.callee}, "
             f"Args: [{bindings(statement.arguments)}], "
@@ -288,15 +360,21 @@ def _print_tir_stmt(lines: list[str], statement, indent: int) -> None:
             f"MemoryPools: [{pools}], "
             f"DependsOn: {list(statement.dependencies)!r}, "
             f"Shared: [{shared}], TransferSources: "
-            f"{list(statement.transfer_sources)!r})")
+            f"{list(statement.transfer_sources)!r})"
+        )
         return
     if isinstance(statement, Barrier):
-        ranges = ", ".join(f"{value.storage}:{value.physical_id}[{value.offset}:"
-                           f"{value.offset + value.nbytes}]/{value.mode}" for value in statement.ranges)
-        lines.append(f"{prefix}T.Barrier({statement.scope.value.title()}, "
-                     f"After: {list(statement.after)!r}, Before: "
-                     f"{statement.before!r}, Hazards: {list(statement.hazards)!r}, "
-                     f"Ranges: [{ranges}])")
+        ranges = ", ".join(
+            f"{value.storage}:{value.physical_id}[{value.offset}:"
+            f"{value.offset + value.nbytes}]/{value.mode}"
+            for value in statement.ranges
+        )
+        lines.append(
+            f"{prefix}T.Barrier({statement.scope.value.title()}, "
+            f"After: {list(statement.after)!r}, Before: "
+            f"{statement.before!r}, Hazards: {list(statement.hazards)!r}, "
+            f"Ranges: [{ranges}])"
+        )
         return
     if isinstance(statement, PipelineStage):
         lines.append(f"{prefix}T.PipelineStage({statement.stage_id!r}) {{")
@@ -318,9 +396,11 @@ def _print_tir_stmt(lines: list[str], statement, indent: int) -> None:
         lines.append(f"{prefix}T.Evaluate({_tir_value_text(statement.value)})")
         return
     if isinstance(statement, For):
-        lines.append(f"{prefix}for {statement.loop_var} in T.Range({statement.domain.start}, "
-                     f"{statement.domain.stop}, {statement.domain.step}) [{statement.mode.value}, "
-                     f"{statement.partition.value}]:")
+        lines.append(
+            f"{prefix}for {statement.loop_var} in T.Range({statement.domain.start}, "
+            f"{statement.domain.stop}, {statement.domain.step}) [{statement.mode.value}, "
+            f"{statement.partition.value}]:"
+        )
         _print_tir_stmt(lines, statement.body, indent + 2)
         return
     if isinstance(statement, Let):
@@ -348,9 +428,11 @@ def _tir_value_text(value) -> str:
     from triton.flagmega.ir.tir import Binary, Buffer, BufferLoad, BufferTuple, Immediate, ScalarVar, ValueRef
 
     if isinstance(value, Buffer):
-        return (f"T.Buffer({value.name!r}, {_data_type_text(value.elem_type)}"
-                f"[{','.join(str(item) for item in value.dimensions)}], "
-                f"T.MemSpan({value.mem_span.buffer.id!r}, {value.mem_span.start}, {value.mem_span.size}))")
+        return (
+            f"T.Buffer({value.name!r}, {_data_type_text(value.elem_type)}"
+            f"[{','.join(str(item) for item in value.dimensions)}], "
+            f"T.MemSpan({value.mem_span.buffer.id!r}, {value.mem_span.start}, {value.mem_span.size}))"
+        )
     if isinstance(value, BufferLoad):
         return f"{value.buffer.name}[{', '.join(str(item) for item in value.indices)}]"
     if isinstance(value, BufferTuple):
@@ -372,9 +454,8 @@ def _tir_region_text(value) -> str:
 
 
 def _leaf_text(node: Node, *, script: bool = False) -> str | None:
-    if node.op not in {
-            "builtin.weight", "builtin.const_asset", "builtin.scalar_const", "builtin.splat_const", "tir.scalar_const"
-    }:
+    if node.op not in {"builtin.weight", "builtin.const_asset", "builtin.scalar_const",
+                       "builtin.splat_const", "tir.scalar_const"}:
         return None
     prefix = "T." if script else ""
     type_text = _script_type_text(node.type) if script else _type_text(node.type)
@@ -415,12 +496,15 @@ def _script_node(node: Node, reference: Callable[[str], str] | None = None) -> s
         return leaf
     inputs = ", ".join(reference(value) if reference else f"%{value}" for value in node.inputs)
     if node.op == "tir.buffer":
-        return (f"T.Buffer({_script_type_text(node.type)}, Name: {node.id!r}, storage={node.attrs.get('storage')!r}, "
-                f"alignment={node.attrs.get('alignment')}, key={node.attrs.get('key')!r})")
+        return (
+            f"T.Buffer({_script_type_text(node.type)}, Name: {node.id!r}, storage={node.attrs.get('storage')!r}, "
+            f"alignment={node.attrs.get('alignment')}, key={node.attrs.get('key')!r})")
     if node.op == "tir.kernel":
-        attributes = (f"SemanticOp: {node.attrs.get('semantic_op')!r}, "
-                      f"Candidate: {node.attrs.get('candidate')!r}, "
-                      f"Parameters: {_value_text(node.attrs.get('parameters', {}), script=True)}")
+        attributes = (
+            f"SemanticOp: {node.attrs.get('semantic_op')!r}, "
+            f"Candidate: {node.attrs.get('candidate')!r}, "
+            f"Parameters: {_value_text(node.attrs.get('parameters', {}), script=True)}"
+        )
         arguments = ", ".join(value for value in (attributes, inputs) if value)
         return f"T.Kernel({arguments})"
     if node.op == "builtin.call":
@@ -459,8 +543,7 @@ def _append_constant_recipes(lines: list[str], recipes, *, tir: bool, indent: st
         for node in symbols.nodes:
             rendered = render(node, symbols.reference)
             type_text = _script_type_text(node.type) if tir else _type_text(node.type)
-            lines.append(
-                f"{indent}  {symbols.lhs(node)} = {rendered}: // {type_text}{_effect_text(node)} name={node.id!r}")
+            lines.append(f"{indent}  {symbols.lhs(node)} = {rendered}: // {type_text}{_effect_text(node)} name={node.id!r}")
         lines.append(f"{indent}  yield (" + ", ".join(symbols.reference(value) for value in recipe.outputs) + ")")
         lines.append(f"{indent}}}")
 
@@ -526,8 +609,11 @@ def _layout_suffix(value: TensorLayout) -> str:
     if value.order:
         properties.append("order=[" + ",".join(str(axis) for axis in value.order) + "]")
     if value.strides:
-        properties.append("strides=[" + ",".join("?" if stride is None else str(stride)
-                                                 for stride in value.strides) + "]")
+        properties.append(
+            "strides=["
+            + ",".join("?" if stride is None else str(stride) for stride in value.strides)
+            + "]"
+        )
     if value.vector_lanes:
         properties.append("vector_lanes=[" + ",".join(str(lane) for lane in value.vector_lanes) + "]")
     return "{" + ", ".join(properties) + "}"
@@ -599,7 +685,10 @@ def _split_distribution_text(value: SplitDistribution) -> str:
 
 
 def _attributes(values: Mapping[str, Any], *, script: bool = False) -> str:
-    return ", ".join(f"{_title(key)}: {_value_text(value, script=script)}" for key, value in sorted(values.items()))
+    return ", ".join(
+        f"{_title(key)}: {_value_text(value, script=script)}"
+        for key, value in sorted(values.items())
+    )
 
 
 def _title(value: str) -> str:
@@ -636,8 +725,14 @@ def _value_text(value: Any, *, script: bool = False) -> str:
         suffix = _layout_suffix(value)
         return "dense" if not suffix else suffix[1:-1]
     if isinstance(value, Mapping):
-        return ("{" + ", ".join(f"{key}: {_value_text(item, script=script)}" for key, item in sorted(value.items())) +
-                "}")
+        return (
+            "{"
+            + ", ".join(
+                f"{key}: {_value_text(item, script=script)}"
+                for key, item in sorted(value.items())
+            )
+            + "}"
+        )
     if isinstance(value, (tuple, list)):
         return "[" + ", ".join(_value_text(item, script=script) for item in value) + "]"
     if isinstance(value, Enum):

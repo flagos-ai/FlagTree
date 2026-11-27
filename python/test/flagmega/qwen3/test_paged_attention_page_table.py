@@ -11,7 +11,8 @@ torch = pytest.importorskip("torch")
 
 
 def make_state():
-    return create_paged_attention_state(PagedAttentionStateConfig(1, 1, 8, block_size=2, num_blocks=3))
+    return create_paged_attention_state(
+        PagedAttentionStateConfig(1, 1, 8, block_size=2, num_blocks=3))
 
 
 def test_permuted_pages_append_and_gather_across_boundary():

@@ -8,14 +8,22 @@ from triton.flagmega.codegen.triton import (
 )
 
 
-def test_packed_descriptor_pipeline_survives_bufferization_and_package_render(packed_descriptor_pipeline_module, ):
+def test_packed_descriptor_pipeline_survives_bufferization_and_package_render(
+    packed_descriptor_pipeline_module,
+):
     module = packed_descriptor_pipeline_module
     package = describe_tir_package(module)
-    call = next(value for value in package["render_calls"] if value["call"] == "projection.vectorized.compute")
+    call = next(
+        value
+        for value in package["render_calls"]
+        if value["call"] == "projection.vectorized.compute"
+    )
 
     assert call["semantic_op"] == "ntt.packed_matmul"
     assert call["family"] == "dense_matmul"
-    assert call["variant"] == ("packed_tensor_descriptor_smem_pipeline_gemv")
+    assert call["variant"] == (
+        "packed_tensor_descriptor_smem_pipeline_gemv"
+    )
     assert call["host_tensor_descriptor_requests"] == ({
         "parameter": "weight_descriptor",
         "rebase_axis": -1,
@@ -31,7 +39,7 @@ def test_packed_descriptor_pipeline_survives_bufferization_and_package_render(pa
         "block_shape": (64, 2, 2, 64),
         "source_shape_axes": ((), (), (), ()),
         "padding": "zero",
-    }, )
+    },)
     assert call["shared_workspaces"] == ({
         "name": "weight_stage",
         "dtype": "bfloat16",
@@ -42,10 +50,9 @@ def test_packed_descriptor_pipeline_survives_bufferization_and_package_render(pa
         "alignment_bytes": 1024,
         "matrix_compatible": True,
         "physical_buffer": call["shared_workspaces"][0]["physical_buffer"],
-    }, )
+    },)
     assert call["transfer_pipeline"] == {
-        "capacity":
-        4,
+        "capacity": 4,
         "channels": [{
             "name": "weight",
             "source_argument_indices": [1],
@@ -54,8 +61,7 @@ def test_packed_descriptor_pipeline_survives_bufferization_and_package_render(pa
         }],
         "consumer_shared_workspace_indices": [],
         "producer_read_argument_indices": [],
-        "auxiliary_consumer":
-        None,
+        "auxiliary_consumer": None,
     }
 
     source = render_tir_package(package, "unit")
@@ -72,9 +78,15 @@ def test_packed_descriptor_pipeline_survives_bufferization_and_package_render(pa
     assert "qwen" not in source.lower()
 
 
-def test_packed_dense_consumer_stage_has_only_value_dependencies(packed_descriptor_pipeline_module, ):
+def test_packed_dense_consumer_stage_has_only_value_dependencies(
+    packed_descriptor_pipeline_module,
+):
     package = describe_tir_package(packed_descriptor_pipeline_module)
-    call = next(value for value in package["render_calls"] if value["call"] == "projection.vectorized.compute")
+    call = next(
+        value
+        for value in package["render_calls"]
+        if value["call"] == "projection.vectorized.compute"
+    )
     source = render_tir_package(package, "unit")
 
     symbol = call["symbol"]
@@ -82,24 +94,35 @@ def test_packed_dense_consumer_stage_has_only_value_dependencies(packed_descript
     end = source.index("\n\n@triton.jit", start)
     stage = source[start:end]
     header_end = stage.index("):") + 2
-    assert stage[:header_end] == (f"def {symbol}__consumer_stage(\n"
-                                  "    weight_stage,\n"
-                                  "    dense_local_k_start,\n"
-                                  "    dense_source,\n"
-                                  "    dense_source_owner_active,\n"
-                                  "    dense_source_active_extent,\n"
-                                  "):")
+    assert stage[:header_end] == (
+        f"def {symbol}__consumer_stage(\n"
+        "    weight_stage,\n"
+        "    dense_local_k_start,\n"
+        "    dense_source,\n"
+        "    dense_source_owner_active,\n"
+        "    dense_source_active_extent,\n"
+        "):"
+    )
     assert "shard_coord" not in stage
     assert "shard_index" not in stage
     assert "_descriptor" not in stage[:header_end]
 
 
-def test_packed_descriptor_table_has_one_local_tensor_map_per_mesh_owner(packed_descriptor_table_pipeline_module, ):
+def test_packed_descriptor_table_has_one_local_tensor_map_per_mesh_owner(
+    packed_descriptor_table_pipeline_module,
+):
     package = describe_tir_package(packed_descriptor_table_pipeline_module)
-    call = next(value for value in package["render_calls"] if value["call"] == "projection.vectorized.compute")
+    call = next(
+        value
+        for value in package["render_calls"]
+        if value["call"] == "projection.vectorized.compute"
+    )
     request = call["host_tensor_descriptor_requests"][0]
-    spec = next(value for value in package["host_tensor_descriptor_specs"]
-                if value["name"].endswith("weight_descriptor_descriptor"))
+    spec = next(
+        value
+        for value in package["host_tensor_descriptor_specs"]
+        if value["name"].endswith("weight_descriptor_descriptor")
+    )
 
     assert request["kind"] == "table"
     assert spec["kind"] == "table"

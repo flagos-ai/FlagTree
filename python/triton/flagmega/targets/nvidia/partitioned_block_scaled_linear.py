@@ -7,16 +7,12 @@ from triton.flagmega.codegen.triton.implementation import TritonImplementation
 
 def partitioned_block_scaled_linear_implementations():
     return (TritonImplementation(
-        "tir.partitioned_block_scaled_linear.local",
-        "partitioned_block_scaled_linear",
-        "local",
-        {
-            "tile_n": 64, "block_k": 128, "compute_num_warps": 8, "accumulator_layout": "vector", "mma_columns": 16,
-            "activation_layout": "auto"
-        },
+        "tir.partitioned_block_scaled_linear.local", "partitioned_block_scaled_linear", "local",
+        {"tile_n": 64, "block_k": 128, "compute_num_warps": 8,
+         "accumulator_layout": "vector", "mma_columns": 16, "activation_layout": "auto"},
         requires=("cooperative_grid", "mma_v3", "fp8"),
         facts={"portable_triton": False, "source_memory_scope": "chip", "result_memory_scope": "chip"},
-    ), )
+    ),)
 
 
 class PartitionedBlockScaledLinearCandidateProvider:
@@ -44,18 +40,13 @@ class PartitionedBlockScaledLinearCandidateProvider:
             tasks = parts * tokens * ((rows + tile - 1) // tile)
             # A task is a complete (P, T, N tile), including a masked N tail.
             # Flattening unpadded scalar rows would merge tails across P/T.
-            return {
-                'task_mapping':
-                TaskLaunchRecipe(
-                    tasks, 1,
-                    node.metadata.get('kernel_program_kind',
-                                      context.module.metadata.get('kernel_program_kind', 'ordinary')),
-                    node.metadata.get('kernel_max_ctas'), node.metadata.get('kernel_ctas_per_sm', 1)).to_data()
-            }
+            return {'task_mapping': TaskLaunchRecipe(tasks, 1,
+                node.metadata.get('kernel_program_kind', context.module.metadata.get('kernel_program_kind', 'ordinary')),
+                node.metadata.get('kernel_max_ctas'), node.metadata.get('kernel_ctas_per_sm', 1)).to_data()}
 
-        choices = tuple(
-            context.configure_implementation(value, semantic_parameters=mapping(value) if dynamic else {})
-            for value in context.implementations("partitioned_block_scaled_linear"))
+        choices = tuple(context.configure_implementation(value,
+                        semantic_parameters=mapping(value) if dynamic else {})
+                        for value in context.implementations("partitioned_block_scaled_linear"))
         return TritonCandidateProposal(choices, choices[0].id) if choices else None
 
 

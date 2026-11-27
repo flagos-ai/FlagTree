@@ -27,11 +27,8 @@ def shape_only_replacements(module, source, replacement, boundary_id):
         if user.id == boundary_id or source.id not in user.inputs:
             continue
         definition = get_definition(user.op)
-        positions = {
-            parameter.input_index
-            for parameter in definition.input_parameters
-            if not parameter.variadic and parameter.memory_effect == MemoryEffect.NONE
-        }
+        positions = {parameter.input_index for parameter in definition.input_parameters
+                     if not parameter.variadic and parameter.memory_effect == MemoryEffect.NONE}
         if any(index not in positions for index, value in enumerate(user.inputs) if value == source.id):
             return None
         inputs = tuple(replacement if value == source.id else module.node_map[value] for value in user.inputs)
@@ -52,7 +49,8 @@ def post_ops_through_view_rules(op_names, supported, *, views=("distributed.shar
         _rule(op, view, cast, supported)
         for op in sorted(op_names)
         for view in views
-        for cast in ("tensors.cast", "ntt.vectorized_cast"))
+        for cast in ("tensors.cast", "ntt.vectorized_cast")
+    )
 
 
 def _rule(op, view_op, cast_op, supported):
@@ -67,12 +65,16 @@ def _rule(op, view_op, cast_op, supported):
         if producer.id in public or view.id in public:
             return root
         other_users = tuple(node for node in module.nodes if view.id in node.inputs and node.id != root.id)
-        if any(not n.effect.is_pure or getattr(n.type, "partial", None) is not None
-               or getattr(n.type, "exclusive", None) is not None for n in (root, view, producer)):
+        if any(
+            not n.effect.is_pure
+            or getattr(n.type, "partial", None) is not None
+            or getattr(n.type, "exclusive", None) is not None
+            for n in (root, view, producer)
+        ):
             return root
         try:
             if view_op == "distributed.sharded_view":
-                lifted = make_node(root.op, root.id, (producer, ), root.attrs, {})
+                lifted = make_node(root.op, root.id, (producer,), root.attrs, {})
                 view_attrs = {"new_type": root.type}
             else:
                 source_dtype = tensor_of(producer.type).dtype
@@ -86,9 +88,12 @@ def _rule(op, view_op, cast_op, supported):
                 # with conversion. Reinterpreting scalar bits does not.
                 if element(source_dtype) != element(view_dtype):
                     return root
-                dtype = (VectorType(element(output_dtype), source_dtype.lanes)
-                         if isinstance(source_dtype, VectorType) else element(output_dtype))
-                lifted = make_node("tensors.cast", root.id, (producer, ), {"dtype": dtype}, {})
+                dtype = (
+                    VectorType(element(output_dtype), source_dtype.lanes)
+                    if isinstance(source_dtype, VectorType)
+                    else element(output_dtype)
+                )
+                lifted = make_node("tensors.cast", root.id, (producer,), {"dtype": dtype}, {})
                 view_attrs = {"dtype": output_dtype}
             body = Fusion.from_call(lifted, producer)
             post = producer.attrs.get("post_ops", ())
@@ -101,10 +106,10 @@ def _rule(op, view_op, cast_op, supported):
                 producer.op,
                 producer.id,
                 tuple(module.node_map[i] for i in producer.inputs),
-                {**producer.attrs, "post_ops": (body, )},
+                {**producer.attrs, "post_ops": (body,)},
                 producer.metadata,
             )
-            replacement = make_node(view.op, root.id, (candidate, ), view_attrs, view.metadata)
+            replacement = make_node(view.op, root.id, (candidate,), view_attrs, view.metadata)
         except IRSchemaError:
             return root
         if replacement.type != root.type or not supported(candidate, module):
@@ -118,7 +123,7 @@ def _rule(op, view_op, cast_op, supported):
             shadow_id = root.id + ".shape_reference"
             if shadow_id in module.node_map:
                 return root
-            shadow = make_node(view.op, shadow_id, (candidate, ), view_attrs, view.metadata)
+            shadow = make_node(view.op, shadow_id, (candidate,), view_attrs, view.metadata)
             proof = shape_only_replacements(module, view, shadow, root.id)
             if proof is None:
                 return root
@@ -127,7 +132,7 @@ def _rule(op, view_op, cast_op, supported):
                                  removed_ids=(producer.id, view.id), insertion_before=anchor)
         if candidate.type == root.type:
             return RewriteResult(replace(candidate, id=root.id), removed_ids=(producer.id, view.id))
-        return RewriteResult(replacement, (candidate, ), removed_ids=(producer.id, view.id))
+        return RewriteResult(replacement, (candidate,), removed_ids=(producer.id, view.id))
 
     return RewriteRule(f"FusePostOpsThroughView.{op}.{view_op}.{cast_op}", pattern, rewrite, supports_fusion=True)
 

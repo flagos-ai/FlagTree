@@ -10,9 +10,7 @@ from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 
 
 def _dynamic_add_module():
-
     class DynamicAdd(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 

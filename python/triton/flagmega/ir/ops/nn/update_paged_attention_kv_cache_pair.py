@@ -31,16 +31,14 @@ from triton.flagmega.ir.types import VectorType
 
 
 @op_definition(
-    "nn.update_paged_attention_kv_cache_pair",
-    namespace="nn",
+    "nn.update_paged_attention_kv_cache_pair", namespace="nn",
     functional_name="update_paged_attention_kv_cache_pair",
     display_name="NN.UpdatePagedAttentionKVCachePair",
 )
 class UpdatePagedAttentionKVCachePair(OpDefinition):
     slots = input_parameter(is_tensor() & has_rank(3))
     state = input_parameter(
-        is_ref(),
-        parameter_kind=ParameterKind.ATTRIBUTE,
+        is_ref(), parameter_kind=ParameterKind.ATTRIBUTE,
         memory_effect=MemoryEffect.CHIP_READ_WRITE.partitioned_by_argument(2),
     )
     layer_id = input_parameter(is_tensor() & has_rank(0) & has_dtype(DType.INT32),
@@ -78,20 +76,18 @@ class UpdatePagedAttentionKVCachePair(OpDefinition):
                 or slots.shape[layout.index("head")].fixed_value != config.num_kv_heads
                 or slots.shape[layout.index("dim")].fixed_value * lanes != fields * config.head_dim):
             width = "D" if fields == 1 else "2D"
-            raise IRSchemaError(
-                f"UpdatePagedAttentionKVCachePair slots must have scalar shape [T, H, {width}] matching the cache.")
+            raise IRSchemaError(f"UpdatePagedAttentionKVCachePair slots must have scalar shape [T, H, {width}] matching the cache.")
         if isinstance(slots_type, DistributedType):
             if slots_type.partial is not None:
                 raise IRSchemaError("UpdatePagedAttentionKVCachePair requires materialized slots.")
             # Every CHIP-scoped cache allocation must receive the whole chunk.
             # Block owners may partition any input axis; a chip partition
             # requires publication/Boxing before this stateful consumer.
-            split_axes = {
-                axis
-                for policy in slots_type.axis_policies if isinstance(policy, SBPSplit) for axis in policy.hierarchy_axes
-            }
+            split_axes = {axis for policy in slots_type.axis_policies if isinstance(policy, SBPSplit)
+                          for axis in policy.hierarchy_axes}
             exclusive_axes = () if slots_type.exclusive is None else slots_type.exclusive.axes
-            if any(slots_type.placement.hierarchy_levels[axis] == "c" for axis in (*split_axes, *exclusive_axes)):
+            if any(slots_type.placement.hierarchy_levels[axis] == "c"
+                   for axis in (*split_axes, *exclusive_axes)):
                 raise IRSchemaError("UpdatePagedAttentionKVCachePair requires complete slots on every chip.")
         return cls.state.type_of(inputs)
 
@@ -106,20 +102,21 @@ class UpdatePagedAttentionKVCachePair(OpDefinition):
         layout = tuple(node.attrs["layout"])
         if isinstance(slots_type.dtype, VectorType):
             slots = unpack_physical(slots, slots_type.rank, slots_type.dtype.lanes,
-                                    (layout.index("dim"), ) * len(slots_type.dtype.lanes))
+                                    (layout.index("dim"),) * len(slots_type.dtype.lanes))
         slots = to_seq_head_dim(slots, layout)
         state = cls.state.read(arguments)
         if not isinstance(state, PagedAttentionState):
             raise EvaluationError("UpdatePagedAttentionKVCachePair state must evaluate to PagedAttentionState.")
         dim = state.config.head_dim
         key, value = (slots, slots) if node.attrs.get("shared_kv", False) else (slots[..., :dim], slots[..., dim:])
-        state.append(key, value, layer_id=_scalar_int(cls.layer_id.read(arguments)),
+        state.append(key, value,
+                     layer_id=_scalar_int(cls.layer_id.read(arguments)),
                      advance_sequence=_scalar_bool(cls.advance_sequence.read(arguments)))
         return state
 
     @classmethod
     def cost(cls, node):
-        return OpCost(notes=("paged-cache-pair-direct-write", ))
+        return OpCost(notes=("paged-cache-pair-direct-write",))
 
     @classmethod
     def cost_factors(cls, inputs, attrs, return_type):

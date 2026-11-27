@@ -19,12 +19,11 @@ def empty_chain(*, nested, distributed=False):
     metadata = {}
     if distributed:
         placement = fm.Placement((2, 2), "yx", "bb")
-        ty, scalar_ty, output_ty = (fm.DistributedType(t, (fm.SBP.broadcast(), ) * 2, placement)
-                                    for t in (ty, scalar_ty, output_ty))
+        ty, scalar_ty, output_ty = (fm.DistributedType(t, (fm.SBP.broadcast(),) * 2, placement)
+                                  for t in (ty, scalar_ty, output_ty))
         metadata = {"auto_distribution": {"placement": placement.to_data()}}
 
     class Graph(fm.Module):
-
         def forward(self):
             x = self.input("x", ty, id="x")
             scale = self.input("scale", scalar_ty, id="scale")
@@ -32,13 +31,13 @@ def empty_chain(*, nested, distributed=False):
             product = fm.F.math.mul(prepared, x, name="product")
             wide = fm.F.tensors.cast(product, "float32", name="wide")
             result = fm.F.math.add(wide, wide, name="result")
-            self.function("worker", (x, scale), (result, ), attrs={"noinline": True, "reusable": True})
+            self.function("worker", (x, scale), (result,), attrs={"noinline": True, "reusable": True})
             callee = "worker"
             if nested:
                 outer = self.input("outer", ty, id="outer")
                 outer_scale = self.input("outer_scale", scalar_ty, id="outer_scale")
                 output = fm.F.builtin.call(outer, outer_scale, result_type=output_ty, callee=callee, name="outer_call")
-                self.function("wrapper", (outer, outer_scale), (output, ), attrs={"noinline": True, "reusable": True})
+                self.function("wrapper", (outer, outer_scale), (output,), attrs={"noinline": True, "reusable": True})
                 callee = "wrapper"
             inputs, outputs = [], []
             for index in range(2):
@@ -62,7 +61,7 @@ def test_empty_pool_is_bound_through_reusable_calls(tmp_path, level, nested, dis
     assert [f["function"] for f in package["device_functions"]] == (["worker", "wrapper"] if nested else ["worker"])
     plan = fm.verify_buffer_plan(module)
     storage = "block_local_data" if distributed else "workspace"
-    for name in ("main", "worker", *(("wrapper", ) if nested else ())):
+    for name in ("main", "worker", *(("wrapper",) if nested else ())):
         binding = describe_function_runtime_binding(module, function_name=name)
         pool, = (p for p in binding["pools"] if p["storage"] == storage)
         assert pool["nbytes"] == 0
@@ -75,6 +74,7 @@ def test_empty_pool_is_bound_through_reusable_calls(tmp_path, level, nested, dis
     # The existence rule is enforced by the verifier, not just codegen.
     entry = plan.function_map["main"]
     damaged_entry = replace(entry, calls=tuple(replace(c, memory_pools=()) for c in entry.calls))
-    damaged_plan = replace(plan, functions=tuple(damaged_entry if f.name == "main" else f for f in plan.functions))
+    damaged_plan = replace(plan, functions=tuple(
+        damaged_entry if f.name == "main" else f for f in plan.functions))
     with pytest.raises(IRVerificationError, match="memory-pool frame set"):
         fm.verify_buffer_plan(replace(module, metadata={**module.metadata, "buffer_plan": damaged_plan.to_data()}))

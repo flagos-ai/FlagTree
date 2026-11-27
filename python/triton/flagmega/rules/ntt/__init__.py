@@ -4,13 +4,15 @@
 
 from triton.flagmega.rules.ntt.vectorize import VectorizeRuleRegistry
 from triton.flagmega.rules.ntt.lower_add_norm_stats import (
-    lower_add_norm_stats_rule, )
+    lower_add_norm_stats_rule,
+)
 from triton.flagmega.rules.ntt.packed_qkv_parallel_linear_combine import (
     fold_materialized_packed_qkv_parallel_linear_combine_rule,
     lower_packed_qkv_parallel_linear_combine_rule,
 )
 from triton.flagmega.rules.ntt.decompose_paged_attention import (
-    decompose_paged_attention_rule, )
+    decompose_paged_attention_rule,
+)
 
 __all__ = [
     "VectorizeRuleRegistry",

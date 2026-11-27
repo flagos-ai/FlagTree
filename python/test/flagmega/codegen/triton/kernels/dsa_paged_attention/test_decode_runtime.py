@@ -13,21 +13,19 @@ from python.test.flagmega.devices import requires_nvidia_sm90
 
 
 def attention_module(config, width, *, probability_rounding=None, index_traversal=None):
-
     class Graph(fm.Module):
-
         def forward(self):
-            query_type = fm.tensor_type(fm.vector_type("bfloat16", (8, )), (1, 2, 2))
+            query_type = fm.tensor_type(fm.vector_type("bfloat16", (8,)), (1, 2, 2))
             query = self.input("query", query_type, id="query")
             topk = self.input("topk", fm.tensor_type("int32", (1, width)), id="topk")
             state = self.input("state", config.ref_type, id="state")
             layer = fm.F.builtin.scalar_const(fm.tensor_type("int32", ()), 0)
             result = fm.F.nn.dsa_paged_attention(
-                query, topk, state, layer, scale=16**-.5, layout=("seq", "head", "dim"), hidden_size=32,
-                name="attention",
+                query, topk, state, layer, scale=16 ** -.5,
+                layout=("seq", "head", "dim"), hidden_size=32, name="attention",
                 **({} if probability_rounding is None else {"probability_rounding": probability_rounding}),
                 **({} if index_traversal is None else {"index_traversal": index_traversal}))
-            self.function("main", (query, topk, state), (result, ))
+            self.function("main", (query, topk, state), (result,))
 
     return Graph(dialect="high_level", stage="imported", entry="main").build()
 
@@ -40,10 +38,8 @@ def prepare(module, directory, inputs, state, output):
     values = {}
     for value, buffers in binding.parameters:
         if isinstance(module.node_map[value].type, fm.RefType):
-            values.update(
-                zip(buffers,
-                    (state.kv_caches, state.query_start_loc, state.seq_lens, state.slot_mapping, state.block_table),
-                    strict=True))
+            values.update(zip(buffers, (state.kv_caches, state.query_start_loc, state.seq_lens,
+                                      state.slot_mapping, state.block_table), strict=True))
         else:
             values[buffers[0]] = inputs[module.node_map[value].attrs["name"]]
     for _, buffers in binding.outputs:
@@ -67,8 +63,8 @@ def test_visible_key_survives_leading_and_trailing_empty_tiles(tmp_path, slot):
     state.kv_caches[0, 0, 0, 0].fill_(-3)
     state.kv_caches[0, 0, 1, 0].copy_(expected.reshape(1, 2, 8))
     output = torch.empty_like(query)
-    runtime, arguments = prepare(attention_module(config, 130), tmp_path / "attention", {"query": query, "topk": topk},
-                                 state, output)
+    runtime, arguments = prepare(attention_module(config, 130), tmp_path / "attention",
+                                 {"query": query, "topk": topk}, state, output)
     try:
         for _ in range(3):
             output.fill_(float("nan"))
@@ -91,8 +87,8 @@ def test_indices_after_current_query_are_not_visible(tmp_path):
     state.kv_caches[0, 0, 1, 0].fill_(1)
     state.kv_caches[0, 0, 1, 7].fill_(99)
     output = torch.empty_like(query)
-    runtime, arguments = prepare(attention_module(config, 2), tmp_path / "attention", {"query": query, "topk": topk},
-                                 state, output)
+    runtime, arguments = prepare(attention_module(config, 2), tmp_path / "attention",
+                                 {"query": query, "topk": topk}, state, output)
     try:
         runtime.run_into(*arguments)
         torch.testing.assert_close(output, torch.ones_like(output), rtol=0, atol=0)
@@ -111,8 +107,8 @@ def test_probabilities_round_before_value_product(tmp_path):
     for position, value in enumerate((1, 2, 4)):
         state.kv_caches[0, 0, 1, position].fill_(value)
     output = torch.empty_like(query)
-    runtime, arguments = prepare(attention_module(config, 3), tmp_path / "attention", {"query": query, "topk": topk},
-                                 state, output)
+    runtime, arguments = prepare(attention_module(config, 3), tmp_path / "attention",
+                                 {"query": query, "topk": topk}, state, output)
     try:
         runtime.run_into(*arguments)
         # The semantic op casts softmax probabilities to the query dtype

@@ -50,12 +50,12 @@ def test_prepared_kernel_binds_static_and_dynamic_arguments():
         _FakeCompiled(),
         ("dynamic-0", "static", "dynamic-1"),
         (0, 2),
-        grid=(8, ),
+        grid=(8,),
         contract=ResourceContract(4, 1),
     )
 
     assert prepared.dynamic_argument_count == 2
-    assert prepared.static_argument_indices == (1, )
+    assert prepared.static_argument_indices == (1,)
     assert prepared.grid == (8, 1, 1)
     with pytest.raises(RuntimeContractError, match="expects 2"):
         prepared.launch("only-one")
@@ -80,7 +80,6 @@ def test_prepared_kernel_owns_and_scopes_compiler_global_scratch(monkeypatch):
 
         @property
         def run(self):
-
             def launch(*args):
                 self.seen_buffer = _allocation._allocator.get()(32, 16, None)
 
@@ -104,7 +103,7 @@ def test_prepared_kernel_owns_and_scopes_compiler_global_scratch(monkeypatch):
         compiled,
         (),
         (),
-        grid=(4, ),
+        grid=(4,),
         contract=ResourceContract(4, 1),
     )
     previous_allocator = lambda size, alignment, stream: "previous"
@@ -123,9 +122,7 @@ def test_prepared_kernel_owns_and_scopes_compiler_global_scratch(monkeypatch):
 
 
 def test_prepare_rejects_launch_options_outside_resource_contract():
-
     class Kernel:
-
         def run(self, *args, **kwargs):
             raise AssertionError("resource contract should reject before compilation")
 
@@ -134,16 +131,14 @@ def test_prepare_rejects_launch_options_outside_resource_contract():
             Kernel(),
             (),
             (),
-            grid=(1, ),
+            grid=(1,),
             contract=ResourceContract(4, 1),
             num_warps=8,
         )
 
 
 def test_prepare_rejects_requested_residency_that_exceeds_register_file():
-
     class Kernel:
-
         def run(self, *args, **kwargs):
             return _FakeCompiled()
 
@@ -152,7 +147,7 @@ def test_prepare_rejects_requested_residency_that_exceeds_register_file():
             Kernel(),
             (),
             (),
-            grid=(1, ),
+            grid=(1,),
             contract=ResourceContract(4, 3, register_file_capacity_per_sm=8192),
             num_warps=4,
         )
@@ -171,14 +166,14 @@ def test_prepared_direct_c_launcher_executes_without_second_jit():
         mask = offsets < size
         tl.store(output + offsets, tl.load(lhs + offsets, mask=mask) + tl.load(rhs + offsets, mask=mask), mask=mask)
 
-    lhs = torch.randn((257, ), device="cuda", dtype=torch.float32)
-    rhs = torch.randn((257, ), device="cuda", dtype=torch.float32)
+    lhs = torch.randn((257,), device="cuda", dtype=torch.float32)
+    rhs = torch.randn((257,), device="cuda", dtype=torch.float32)
     output = torch.empty_like(lhs)
     prepared = prepare_jit_kernel(
         add_kernel,
         (lhs, rhs, output, lhs.numel()),
         (0, 1, 2),
-        grid=(triton.cdiv(lhs.numel(), 128), ),
+        grid=(triton.cdiv(lhs.numel(), 128),),
         contract=ResourceContract(1, 1),
         num_warps=1,
     )
@@ -216,8 +211,8 @@ def test_executable_artifact_load_prepare_run_into_on_h800(tmp_path):
 
     manifest, _ = load_artifact(artifact)
     runtime = load(artifact, device="cuda:0")
-    lhs = torch.full((257, ), 2.0, dtype=torch.float32, device="cuda:0")
-    rhs = torch.full((257, ), 3.0, dtype=torch.float32, device="cuda:0")
+    lhs = torch.full((257,), 2.0, dtype=torch.float32, device="cuda:0")
+    rhs = torch.full((257,), 3.0, dtype=torch.float32, device="cuda:0")
     output = torch.empty_like(lhs)
     runtime.prepare(lhs, rhs, output=output)
     runtime.run_into(output, lhs, rhs)
@@ -247,13 +242,15 @@ def test_executable_codegen_uses_selected_mul_kernel_template(tmp_path):
     source = (artifact / manifest["codegen"]["source"]).read_text("utf-8")
 
     assert manifest["codegen"]["kind"] == "tir_call_graph/v1"
-    call = next(value for value in manifest["codegen"]["runtime_binding"]["call_abi"]["kernel_calls"]
-                if value["semantic_op"] == "math.mul")
+    call = next(
+        value
+        for value in manifest["codegen"]["runtime_binding"]["call_abi"]["kernel_calls"]
+        if value["semantic_op"] == "math.mul"
+    )
     assert call["variant"] == "mul"
-    assert {tuple(value.items())
-            for value in manifest["codegen"]["kernel_template_specs"]} == {
-                (("kernel", "distributed_boxing"), ("variant", "tensor_load")),
-                (("kernel", "elementwise"), ("variant", "mul")),
-            }
+    assert {tuple(value.items()) for value in manifest["codegen"]["kernel_template_specs"]} == {
+        (("kernel", "distributed_boxing"), ("variant", "tensor_load")),
+        (("kernel", "elementwise"), ("variant", "mul")),
+    }
     assert "# flagmega-kernel: elementwise/mul platform=generic" in source
     assert "_flagmega_elementwise_mul(" in source

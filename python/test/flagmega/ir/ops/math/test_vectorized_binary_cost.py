@@ -1,6 +1,7 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: MIT
 """Cost scalar counts are independent of packet width and logical ownership."""
+from dataclasses import replace
 
 import pytest
 from triton.flagmega import ir as fm
@@ -8,7 +9,7 @@ from triton.flagmega import ir as fm
 
 def make(lanes, distributed=False, dynamic=False):
     n = 2048 if distributed else 16
-    ty = fm.tensor_type(fm.vector_type("float32", (lanes, )), ("rows" if dynamic else 1, n // lanes))
+    ty = fm.tensor_type(fm.vector_type("float32", (lanes,)), ("rows" if dynamic else 1, n // lanes))
     if distributed:
         ty = fm.DistributedType(ty, (fm.SBP.broadcast(), fm.SBP.split_contiguous((0, 1), 16 // lanes)),
                                 fm.Placement((8, 16), "yx", "bb"))
@@ -27,8 +28,7 @@ def test_each_scalar_counted_once(lanes, distributed):
     n = 2048 if distributed else 16
     assert (cost.flops, cost.bytes_read, cost.bytes_written) == (n, n * 8, n * 4)
     local = definition.cost_factors(inputs, node.attrs, node.type)
-    assert (local.cpu_cycles, local.block_local_memory_load_bytes, local.block_local_memory_store_bytes) == (16, 128,
-                                                                                                             64)
+    assert (local.cpu_cycles, local.block_local_memory_load_bytes, local.block_local_memory_store_bytes) == (16, 128, 64)
 
 
 @pytest.mark.parametrize("lanes", [1, 4, 8])

@@ -9,6 +9,7 @@ import pytest
 
 from triton.flagmega.codegen.triton.templates import TritonTemplateRegistry
 
+
 _COPY_KERNEL = '''
 @triton.jit(noinline=True)
 def _copy_scope(pool, output):
@@ -32,30 +33,19 @@ def _load_scope_module(tmp_path):
     source = TritonTemplateRegistry().render(
         "module.py.jinja",
         {
-            "renderer_version":
-            "scope-abi-unit-test",
-            "entry_template":
-            "entrypoints/call_graph.py.jinja",
-            "use_tle":
-            True,
-            "grid_mesh":
-            False,
-            "distributed_entry":
-            False,
-            "mesh_rank":
-            0,
+            "renderer_version": "scope-abi-unit-test",
+            "entry_template": "entrypoints/call_graph.py.jinja",
+            "use_tle": True,
+            "grid_mesh": False,
+            "distributed_entry": False,
+            "mesh_rank": 0,
             "mesh_hierarchy": (),
-            "shared_silu":
-            False,
+            "shared_silu": False,
             "kernel_templates": (),
-            "replicated_block_runtime_pool":
-            True,
-            "symbol":
-            "scope_copy",
-            "signature":
-            "pool, output, SCOPE_NBYTES: tl.constexpr",
-            "pipeline_schedule":
-            None,
+            "replicated_block_runtime_pool": True,
+            "symbol": "scope_copy",
+            "signature": "pool, output, SCOPE_NBYTES: tl.constexpr",
+            "pipeline_schedule": None,
             "entry_events": ({
                 "kind": "tir.kernel_call",
                 "call": "copy",
@@ -65,7 +55,7 @@ def _load_scope_module(tmp_path):
                 "symbol": "_copy_scope",
                 "arguments": "_flagmega_block_scope_base(pool, SCOPE_NBYTES), output",
                 "barrier_before": False,
-            }, ),
+            },),
         },
     ) + _COPY_KERNEL
     path = tmp_path / "scope_abi.py"
@@ -99,7 +89,7 @@ def test_scoped_pool_keeps_alignment_across_noinline_boundary(tmp_path, scope_nb
     for scope in range(2):
         pool[scope * scope_nbytes:scope * scope_nbytes + 512].view(torch.bfloat16).copy_(expected[scope])
     output = torch.empty_like(expected)
-    compiled = module.scope_copy[(2, )](pool, output, scope_nbytes, num_warps=8)
+    compiled = module.scope_copy[(2,)](pool, output, scope_nbytes, num_warps=8)
     torch.testing.assert_close(output, expected, atol=0, rtol=0)
     assert "cp.async" in compiled.asm["ptx"]
     assert "tle.required_async_copy" in compiled.asm["ttgir"]
@@ -114,4 +104,4 @@ def test_scope_stride_does_not_invent_pointer_alignment(tmp_path):
     pool = torch.empty(2 * 4098, dtype=torch.uint8, device="cuda")
     output = torch.empty((2, 256), dtype=torch.bfloat16, device="cuda")
     with pytest.raises(RuntimeError, match="PassManager::run failed"):
-        module.scope_copy.warmup(pool, output, 4098, grid=(2, ), num_warps=8)
+        module.scope_copy.warmup(pool, output, 4098, grid=(2,), num_warps=8)

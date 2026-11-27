@@ -7,6 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+
 SYNCHRONIZATION_SCHEMA = "flagmega.memory-synchronization/v1"
 
 
@@ -30,11 +31,8 @@ class MemoryRange:
     @classmethod
     def from_data(cls, data: Mapping[str, Any]) -> MemoryRange:
         return cls(
-            str(data["storage"]),
-            str(data["physical_id"]),
-            int(data["offset"]),
-            int(data["nbytes"]),
-            str(data["access"]),
+            str(data["storage"]), str(data["physical_id"]), int(data["offset"]),
+            int(data["nbytes"]), str(data["access"]),
         )
 
 
@@ -70,11 +68,8 @@ class SynchronizationEvent:
     @classmethod
     def from_data(cls, data: Mapping[str, Any]) -> SynchronizationEvent:
         return cls(
-            str(data["function"]),
-            str(data["after"]),
-            str(data["before"]),
-            str(data["scope"]),
-            tuple(str(value) for value in data.get("hazards", ())),
+            str(data["function"]), str(data["after"]), str(data["before"]),
+            str(data["scope"]), tuple(str(value) for value in data.get("hazards", ())),
             tuple(MemoryRange.from_data(value) for value in data.get("ranges", ())),
             tuple(int(value) for value in data.get("axis_group_axes", ())),
         )
@@ -92,7 +87,9 @@ class MemorySynchronizationPlan:
 
     @classmethod
     def from_data(cls, data: Mapping[str, Any]) -> MemorySynchronizationPlan:
-        return cls(tuple(SynchronizationEvent.from_data(value) for value in data.get("events", ())))
+        return cls(tuple(
+            SynchronizationEvent.from_data(value) for value in data.get("events", ())
+        ))
 
 
 __all__ = [

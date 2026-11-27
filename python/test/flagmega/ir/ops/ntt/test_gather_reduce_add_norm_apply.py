@@ -8,7 +8,8 @@ from triton.flagmega import ir as fm
 from triton.flagmega.errors import IRSchemaError
 from triton.flagmega.evaluator import DictWeightResolver, TorchEvaluator
 from triton.flagmega.ir.ops.ntt.gather_reduce_add_norm_apply import (
-    GatherReduceAddNormApply, )
+    GatherReduceAddNormApply,
+)
 
 
 def _types(*, reduce_op=fm.ReduceOp.SUM):
@@ -25,7 +26,9 @@ def _types(*, reduce_op=fm.ReduceOp.SUM):
         placement,
         fm.SBP.partial((0, 1), reduce_op),
     )
-    parameter = fm.DistributedType(fm.tensor_type("bfloat16", (8, )), (broadcast, ), placement)
+    parameter = fm.DistributedType(
+        fm.tensor_type("bfloat16", (8,)), (broadcast,), placement
+    )
     return partial, value, parameter
 
 
@@ -50,13 +53,15 @@ def test_type_is_value_and_normalized_tuple_with_named_alias_contract():
         GatherReduceAddNormApply.addend,
         None,
     )
-    assert (GatherReduceAddNormApply.input.memory_effect.owner_access.value == "partial_group")
+    assert (
+        GatherReduceAddNormApply.input.memory_effect.owner_access.value
+        == "partial_group"
+    )
 
 
 def test_collective_materialization_declares_chip_visible_results_and_operands():
     assert GatherReduceAddNormApply.result_memory_effects == (
-        fm.MemoryEffect.CHIP_WRITE,
-        fm.MemoryEffect.CHIP_WRITE,
+        fm.MemoryEffect.CHIP_WRITE, fm.MemoryEffect.CHIP_WRITE,
     )
     for parameter in (GatherReduceAddNormApply.addend, GatherReduceAddNormApply.scale, GatherReduceAddNormApply.bias):
         assert parameter.memory_effect == fm.MemoryEffect.CHIP_READ
@@ -82,7 +87,6 @@ def test_evaluator_preserves_rounded_residual_and_applies_private_stats(use_mean
     partial_type, value_type, parameter_type = _types()
 
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="ntt", stage="distributed", entry="main")
 
@@ -101,14 +105,18 @@ def test_evaluator_preserves_rounded_residual_and_applies_private_stats(use_mean
                 use_mean=use_mean,
                 name="result",
             )
-            value, normalized = fm.F.tensors.get_items(result, 0, 1, name_prefix="result")
-            self.function("main", (partial, addend, scale, bias), (value, normalized))
+            value, normalized = fm.F.tensors.get_items(
+                result, 0, 1, name_prefix="result"
+            )
+            self.function(
+                "main", (partial, addend, scale, bias), (value, normalized)
+            )
 
     torch.manual_seed(23)
     partial = torch.randn((1, 8), dtype=torch.bfloat16)
     addend = torch.randn((1, 8), dtype=torch.bfloat16)
-    scale = torch.randn((8, ), dtype=torch.bfloat16)
-    bias = torch.randn((8, ), dtype=torch.bfloat16)
+    scale = torch.randn((8,), dtype=torch.bfloat16)
+    bias = torch.randn((8,), dtype=torch.bfloat16)
     actual_value, actual_norm = TorchEvaluator(DictWeightResolver({})).run(
         Graph().build(),
         {"partial": partial, "addend": addend, "scale": scale, "bias": bias},
@@ -121,7 +129,9 @@ def test_evaluator_preserves_rounded_residual_and_applies_private_stats(use_mean
     else:
         variance = expected_value.float().square().mean(-1, keepdim=True)
         centered = expected_value.float()
-    expected_norm = (centered * torch.rsqrt(variance.clamp_min(0) + 1e-6) * scale.float() + bias.float()).to(
-        torch.bfloat16)
+    expected_norm = (
+        centered * torch.rsqrt(variance.clamp_min(0) + 1e-6)
+        * scale.float() + bias.float()
+    ).to(torch.bfloat16)
     torch.testing.assert_close(actual_value, expected_value)
     torch.testing.assert_close(actual_norm, expected_norm)

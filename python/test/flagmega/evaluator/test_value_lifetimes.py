@@ -1,5 +1,3 @@
-# Copyright 2026 FlagOS Contributors
-# SPDX-License-Identifier: MIT
 """Ordinary eager execution releases consumed intermediates; traces retain them."""
 
 import weakref
@@ -15,17 +13,15 @@ def test_consumed_weights_do_not_accumulate_during_untraced_run(trace):
     torch = pytest.importorskip("torch")
 
     class Graph(fm.Module):
-
         def forward(self):
-            first = self.weight("first", fm.tensor_type("float32", (32, )), id="first", source="unit", key="first")
-            second = self.weight("second", fm.tensor_type("float32", (32, )), id="second", source="unit", key="second")
-            a = fm.F.math.reduce_sum(first, axes=(0, ), keep_dims=True)
-            b = fm.F.math.reduce_sum(second, axes=(0, ), keep_dims=True)
+            first = self.weight("first", fm.tensor_type("float32", (32,)), id="first", source="unit", key="first")
+            second = self.weight("second", fm.tensor_type("float32", (32,)), id="second", source="unit", key="second")
+            a = fm.F.math.reduce_sum(first, axes=(0,), keep_dims=True)
+            b = fm.F.math.reduce_sum(second, axes=(0,), keep_dims=True)
             output = fm.F.math.add(a, b)
-            self.function("main", (), (output, ))
+            self.function("main", (), (output,))
 
     class Resolver:
-
         def resolve(self, node):
             if node.attrs["key"] == "second":
                 assert (self.first() is not None) is trace

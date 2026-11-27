@@ -14,12 +14,12 @@ def _view_result_module():
     source = builder.call("math.add", (lhs, rhs), tensor, id="source")
     result = builder.call(
         "tir.buffer_view",
-        (source, ),
+        (source,),
         tensor,
         id="result",
         attrs={"alias_kind": "reshape"},
     )
-    builder.function("main", (lhs, rhs), (result, ))
+    builder.function("main", (lhs, rhs), (result,))
     return builder.build(entry="main")
 
 
@@ -37,7 +37,8 @@ def test_entry_result_view_promotes_the_complete_alias_group_to_external_storage
 
 def test_runtime_binding_exposes_a_view_result_as_an_output_argument():
     from triton.flagmega.codegen.triton.runtime_binding import (
-        describe_function_runtime_binding, )
+        describe_function_runtime_binding,
+    )
     module = _view_result_module()
     plan = fm.make_buffer_plan(module)
     module = replace(

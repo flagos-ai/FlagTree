@@ -48,15 +48,17 @@ _VECTORIZABLE_SEMANTIC_OPS = frozenset({
 
 
 class TritonTirLoweringPolicy:
-
     def lower(self, module: IRModule, target) -> IRModule:
         selection_points = {point.id: point for point in module.selection_points}
         selections = module.selection_map
         nodes: list[Node] = []
         aliases: dict[str, str] = {}
         distribution_metadata = module.metadata.get("auto_distribution")
-        placement_data = (dict(distribution_metadata["placement"]) if isinstance(distribution_metadata, Mapping)
-                          and "placement" in distribution_metadata else None)
+        placement_data = (
+            dict(distribution_metadata["placement"])
+            if isinstance(distribution_metadata, Mapping) and "placement" in distribution_metadata
+            else None
+        )
         distribution_adapters: list[dict[str, object]] = []
 
         def resolve(node_id: str) -> str:
@@ -100,31 +102,28 @@ class TritonTirLoweringPolicy:
                     nodes.append(replace(node, inputs=inputs))
                     continue
             if node.op == "builtin.call":
-                nodes.append(
-                    replace(
-                        node,
-                        op="tir.call",
-                        inputs=inputs,
-                        metadata={**dict(node.metadata), "lowered_from": "builtin.call"},
-                    ))
+                nodes.append(replace(
+                    node,
+                    op="tir.call",
+                    inputs=inputs,
+                    metadata={**dict(node.metadata), "lowered_from": "builtin.call"},
+                ))
                 continue
             if node.op == "control.for":
                 # Structured graph control is lowered after distribution and
                 # preserved as a region marker.  Its body is represented by a
                 # reusable function; bufferization/codegen consume the same
                 # marker rather than unrolling it into per-iteration calls.
-                nodes.append(
-                    replace(node, inputs=inputs, metadata={**dict(node.metadata), "lowered_from": "control.for"}))
+                nodes.append(replace(node, inputs=inputs,
+                                     metadata={**dict(node.metadata), "lowered_from": "control.for"}))
                 continue
             if node.op == "control.bank_get":
-                nodes.append(
-                    replace(node, op="tir.bank_get", inputs=inputs,
-                            metadata={**dict(node.metadata), "lowered_from": "control.bank_get"}))
+                nodes.append(replace(node, op="tir.bank_get", inputs=inputs,
+                                     metadata={**dict(node.metadata), "lowered_from": "control.bank_get"}))
                 continue
             if node.op == "builtin.parameter_bank":
-                nodes.append(
-                    replace(node, op="tir.parameter_bank", inputs=inputs,
-                            metadata={**dict(node.metadata), "lowered_from": "builtin.parameter_bank"}))
+                nodes.append(replace(node, op="tir.parameter_bank", inputs=inputs,
+                                     metadata={**dict(node.metadata), "lowered_from": "builtin.parameter_bank"}))
                 continue
             if node.op == "shapes.dim_as_tensor":
                 # A dimension expression stays an expression through TIR; the
@@ -132,71 +131,67 @@ class TritonTirLoweringPolicy:
                 nodes.append(replace(node, inputs=inputs))
                 continue
             if node.op == "builtin.scalar_const":
-                nodes.append(
-                    replace(
-                        node,
-                        op="tir.scalar_const",
-                        inputs=inputs,
-                        metadata={
-                            **dict(node.metadata),
-                            "lowered_from": "builtin.scalar_const",
-                        },
-                    ))
+                nodes.append(replace(
+                    node,
+                    op="tir.scalar_const",
+                    inputs=inputs,
+                    metadata={
+                        **dict(node.metadata),
+                        "lowered_from": "builtin.scalar_const",
+                    },
+                ))
                 continue
             if node.op == "tensors.bitcast":
                 # Bitcast is defined as a byte-preserving storage view.  It
                 # must share the source MemSpan; proposing a compute kernel
-                # here would contradict both its IR semantics and the reference # UnpackToBitcast canonicalization.
-                nodes.append(
-                    replace(
-                        node,
-                        op="tir.buffer_view",
-                        inputs=inputs,
-                        attrs={"alias_kind": "vector_reinterpret"},
-                        metadata={
-                            **dict(node.metadata),
-                            "lowered_from": "tensors.bitcast",
-                        },
-                    ))
+                # here would contradict both its IR semantics and nncase's
+                # UnpackToBitcast canonicalization.
+                nodes.append(replace(
+                    node,
+                    op="tir.buffer_view",
+                    inputs=inputs,
+                    attrs={"alias_kind": "vector_reinterpret"},
+                    metadata={
+                        **dict(node.metadata),
+                        "lowered_from": "tensors.bitcast",
+                    },
+                ))
                 continue
             if node.op == "tensors.unpack" and _is_zero_copy_unpack(node, module):
-                nodes.append(
-                    replace(
-                        node,
-                        op="tir.buffer_view",
-                        inputs=inputs,
-                        attrs={"alias_kind": "vector_reinterpret"},
-                        metadata={
-                            **dict(node.metadata),
-                            "lowered_from": "tensors.unpack",
-                        },
-                    ))
+                nodes.append(replace(
+                    node,
+                    op="tir.buffer_view",
+                    inputs=inputs,
+                    attrs={"alias_kind": "vector_reinterpret"},
+                    metadata={
+                        **dict(node.metadata),
+                        "lowered_from": "tensors.unpack",
+                    },
+                ))
                 continue
             if node.op == "tensors.pack" and _is_zero_copy_pack(node, module):
-                nodes.append(
-                    replace(
-                        node,
-                        op="tir.buffer_view",
-                        inputs=inputs,
-                        attrs={"alias_kind": "vector_reinterpret"},
-                        metadata={
-                            **dict(node.metadata),
-                            "lowered_from": "tensors.pack",
-                        },
-                    ))
+                nodes.append(replace(
+                    node,
+                    op="tir.buffer_view",
+                    inputs=inputs,
+                    attrs={"alias_kind": "vector_reinterpret"},
+                    metadata={
+                        **dict(node.metadata),
+                        "lowered_from": "tensors.pack",
+                    },
+                ))
                 continue
             if node.op == "tensors.reshape" and _is_zero_copy_reshape(node, module):
-                nodes.append(
-                    replace(
-                        node,
-                        op="tir.buffer_view",
-                        inputs=inputs,
-                        attrs={"alias_kind": "reshape"},
-                        metadata={
-                            **dict(node.metadata),
-                            "lowered_from": "tensors.reshape",
-                        },
-                    ))
+                nodes.append(replace(
+                    node,
+                    op="tir.buffer_view",
+                    inputs=inputs,
+                    attrs={"alias_kind": "reshape"},
+                    metadata={
+                        **dict(node.metadata),
+                        "lowered_from": "tensors.reshape",
+                    },
+                ))
                 continue
             if node.op.startswith("builtin."):
                 nodes.append(replace(node, inputs=inputs))
@@ -217,11 +212,13 @@ class TritonTirLoweringPolicy:
                         stage=module.stage,
                         node_id=node.id,
                     ) from error
-                candidate = next(candidate for candidate in selection_points[point_id].candidates
-                                 if candidate.id == candidate_id)
+                candidate = next(
+                    candidate for candidate in selection_points[point_id].candidates if candidate.id == candidate_id)
                 parameters = dict(candidate.parameters)
                 facts = dict(candidate.facts)
-                semantic_tir_candidate = (selection_points[point_id].kind == "semantic_tir")
+                semantic_tir_candidate = (
+                    selection_points[point_id].kind == "semantic_tir"
+                )
             else:
                 raise IRVerificationError(
                     f"No reviewed Triton TIR candidate was proposed for op {semantic_op!r}; "
@@ -234,11 +231,13 @@ class TritonTirLoweringPolicy:
             if placement_data is not None:
                 from triton.flagmega.ir.execution_mesh import effective_execution_mesh, placement_for_execution_mesh
                 from triton.flagmega.ir.distributed_type import placement_from_data
-                node_placement = placement_for_execution_mesh(placement_from_data(placement_data),
-                                                              effective_execution_mesh(module, node))
+                node_placement = placement_for_execution_mesh(
+                    placement_from_data(placement_data), effective_execution_mesh(module, node))
                 parameters["distribution"] = {
                     "placement": node_placement.to_data(),
-                    "input_types": tuple(module.node_map[input_id].type for input_id in node.inputs),
+                    "input_types": tuple(
+                        module.node_map[input_id].type for input_id in node.inputs
+                    ),
                     "output_type": node.type,
                 }
             dispatch_attrs = {
@@ -257,32 +256,37 @@ class TritonTirLoweringPolicy:
                     "parameters": parameters,
                     "facts": facts,
                 })
-            nodes.append(
-                replace(
-                    node,
-                    op="tir.kernel",
-                    inputs=semantic_inputs,
-                    attrs=dispatch_attrs,
-                    metadata={**dict(node.metadata), "lowered_from": semantic_op},
-                ))
+            nodes.append(replace(
+                node,
+                op="tir.kernel",
+                inputs=semantic_inputs,
+                attrs=dispatch_attrs,
+                metadata={**dict(node.metadata), "lowered_from": semantic_op},
+            ))
         # Logical broadcast does not imply one CTA: an implementation can
         # partition a complete chip tensor internally and publish chip writes.
         # Keep that selected execution requirement separate from SBP ownership.
         cooperative_grid = requires_distributed_grid(module) or any(
             "cooperative_grid" in node.attrs.get("facts", node.attrs.get("semantic_facts", {})).get("requires", ())
-            for node in nodes
-            if node.op == "tir.kernel")
-        launch_parameters = target.plan_launch(module, tuple(node for node in nodes if node.op == "tir.kernel"))
+            for node in nodes if node.op == "tir.kernel"
+        )
+        launch_parameters = target.plan_launch(
+            module, tuple(node for node in nodes if node.op == "tir.kernel")
+        )
         metadata = {
             **dict(module.metadata),
             "target": target.name,
             "target_backend": getattr(target, "backend_name", target.name),
             "target_machine": getattr(target, "machine_name", target.name),
-            "target_machine_policy": getattr(target, "machine_policy_version", target.policy_version),
+            "target_machine_policy": getattr(
+                target, "machine_policy_version", target.policy_version
+            ),
             "target_policy": target.policy_version,
             "target_capability": target.capability.to_data(),
             "target_options": target.options.to_data(),
-            "target_implementation_model": dict(target.triton_implementation_model.snapshot()),
+            "target_implementation_model": dict(
+                target.triton_implementation_model.snapshot()
+            ),
             "codegen_template_target": {
                 "platform": target.codegen_platform,
                 "architecture": target.codegen_architecture,
@@ -302,29 +306,29 @@ class TritonTirLoweringPolicy:
             },
         }
         functions = tuple(
-            replace(function, outputs=tuple(resolve(output_id)
-                                            for output_id in function.outputs))
-            for function in module.functions)
+            replace(function, outputs=tuple(resolve(output_id) for output_id in function.outputs))
+            for function in module.functions
+        )
         # Alias resolution renames entry outputs, so a published entry ABI must
         # follow them.  The check turns a missed redirect into a codegen-time
         # failure rather than an artifact that only fails at runtime load.
         entry = next(function for function in functions if function.name == module.entry)
-        metadata = dict(
-            redirect_entry_abi(
-                metadata,
-                {
-                    output_id: resolve(output_id)
-                    for function in module.functions if function.name == module.entry
-                    for output_id in function.outputs if resolve(output_id) != output_id
-                },
-                known_values={*(str(value) for value in entry.parameters), *(str(value) for value in entry.outputs)},
-                stage=module.stage,
-            ))
+        metadata = dict(redirect_entry_abi(
+            metadata,
+            {output_id: resolve(output_id)
+             for function in module.functions if function.name == module.entry
+             for output_id in function.outputs if resolve(output_id) != output_id},
+            known_values={*(str(value) for value in entry.parameters), *(str(value) for value in entry.outputs)},
+            stage=module.stage,
+        ))
         selected = replace(module, nodes=tuple(nodes), functions=functions, metadata=metadata)
         selected = materialize_kernel_definitions(selected)
         selected = _materialize_direct_implementation_resources(selected, target)
-        dispatches = tuple(dispatch for function in selected.kernel_callable_map.values()
-                           if (dispatch := kernel_dispatch_of(function)) is not None)
+        dispatches = tuple(
+            dispatch
+            for function in selected.kernel_callable_map.values()
+            if (dispatch := kernel_dispatch_of(function)) is not None
+        )
         if not all(dispatch.microkernel is not None for dispatch in dispatches):
             return selected
         package_plan = target.plan_codegen_package(selected, selected_kernel_nodes(selected))
@@ -356,14 +360,27 @@ def _materialize_direct_implementation_resources(module: IRModule, target) -> IR
     for function in module.kernel_callable_map.values():
         dispatch = kernel_dispatch_of(function)
         selection = None if dispatch is None else dispatch.microkernel
-        implementation = (None if selection is None else model.implementation(selection.implementation))
-        if (dispatch is None or selection is None or implementation is None
-                or (not implementation.shared_workspaces and implementation.transfer_pipeline is None)):
+        implementation = (
+            None
+            if selection is None
+            else model.implementation(selection.implementation)
+        )
+        if (
+            dispatch is None
+            or selection is None
+            or implementation is None
+            or (
+                not implementation.shared_workspaces
+                and implementation.transfer_pipeline is None
+            )
+        ):
             functions.append(function)
             continue
         if selection.shared_workspaces or selection.transfer_pipeline is not None:
-            if (selection.shared_workspaces != implementation.shared_workspaces
-                    or selection.transfer_pipeline != implementation.transfer_pipeline):
+            if (
+                selection.shared_workspaces != implementation.shared_workspaces
+                or selection.transfer_pipeline != implementation.transfer_pipeline
+            ):
                 raise IRVerificationError(
                     f"PrimFunction @{function.name} direct microkernel resources "
                     "differ from the active implementation catalog.",
@@ -390,11 +407,14 @@ def _materialize_direct_implementation_resources(module: IRModule, target) -> IR
         rewritten = replace(
             dispatch,
             microkernel=materialized,
-            shared_workspace_buffers=materialize_shared_workspace_buffers(function, materialized),
+            shared_workspace_buffers=materialize_shared_workspace_buffers(
+                function, materialized
+            ),
         )
         functions.append(replace_kernel_dispatch(function, rewritten))
         changed = True
     return module if not changed else replace_kernel_callables(module, functions)
+
 
 
 def _is_zero_copy_unpack(node: Node, module: IRModule) -> bool:
@@ -414,15 +434,19 @@ def _is_zero_copy_unpack(node: Node, module: IRModule) -> bool:
     if "axes" in node.attrs:
         raw_axes = tuple(int(value) for value in node.attrs["axes"])
     elif "axis" in node.attrs:
-        raw_axes = (int(node.attrs["axis"]), ) * len(source.dtype.lanes)
+        raw_axes = (int(node.attrs["axis"]),) * len(source.dtype.lanes)
     else:
         return False
     try:
         axes = normalize_axes(raw_axes, source.rank)
-        inferred = Unpack.infer_type((source_node, ), node.attrs)
+        inferred = Unpack.infer_type((source_node,), node.attrs)
     except Exception:
         return False
-    return (bool(axes) and all(axis == source.rank - 1 for axis in axes) and inferred == node.type)
+    return (
+        bool(axes)
+        and all(axis == source.rank - 1 for axis in axes)
+        and inferred == node.type
+    )
 
 
 def _is_zero_copy_pack(node: Node, module: IRModule) -> bool:
@@ -439,21 +463,23 @@ def _is_zero_copy_pack(node: Node, module: IRModule) -> bool:
         raw_axis = node.attrs.get("axis")
         if raw_axis is None:
             return False
-        raw_axes = (int(raw_axis), ) * len(target.dtype.lanes)
+        raw_axes = (int(raw_axis),) * len(target.dtype.lanes)
     try:
         axes = normalize_axes(tuple(int(value) for value in raw_axes), source.rank)
     except Exception:
         return False
-    return (bool(axes) and all(axis == source.rank - 1 for axis in axes) and source.dtype == target.dtype.elem_type)
+    return (
+        bool(axes)
+        and all(axis == source.rank - 1 for axis in axes)
+        and source.dtype == target.dtype.elem_type
+    )
 
 
 def _is_zero_copy_reshape(node: Node, module: IRModule) -> bool:
     from triton.flagmega.ir.ops.tensors.reshape import Reshape
 
     return Reshape.zero_copy_input_index(
-        tuple(module.node_map[value] for value in node.inputs),
-        node.attrs,
-        node.type,
+        tuple(module.node_map[value] for value in node.inputs), node.attrs, node.type,
     ) == 0
 
 

@@ -7,13 +7,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from triton.flagmega.errors import ImporterError
 from triton.flagmega.importer.checkpoint import Checkpoint, checkpoint_from_path, TensorInfo
 from triton.flagmega.importer.source import attach_import_source_locations
 from triton.flagmega.ir import (
     DType,
+    F,
     IRBuilder,
     IRModule,
     TupleType,
@@ -22,6 +23,7 @@ from triton.flagmega.ir import (
     tensor_type,
     verify_module,
 )
+from triton.flagmega.ir.functional import construction_scope
 from triton.flagmega.ir.ops.nn._gdn_state import gdn_state_config
 
 
@@ -282,19 +284,18 @@ class Qwen35Layer0Importer:
             [mlp_input, gate_weight, up_weight, gate_scale, up_scale],
             intermediate_type,
             id="mlp_gate_up",
-            attrs=get_definition("nn.matmul_glu").ir_attrs(
-                get_definition("nn.matmul_glu").normalize_attrs({
-                    "activation":
-                    "silu",
-                    "weight_block_n":
-                    config.weight_block_n,
-                    "weight_block_k":
-                    config.weight_block_k,
-                    **encoding_attrs(
-                        gate_weight_encoding=f"{self.layer_prefix}mlp.gate_proj.weight",
-                        up_weight_encoding=f"{self.layer_prefix}mlp.up_proj.weight",
-                    ),
-                })),
+            attrs=get_definition("nn.matmul_glu").ir_attrs(get_definition("nn.matmul_glu").normalize_attrs({
+                "activation":
+                "silu",
+                "weight_block_n":
+                config.weight_block_n,
+                "weight_block_k":
+                config.weight_block_k,
+                **encoding_attrs(
+                    gate_weight_encoding=f"{self.layer_prefix}mlp.gate_proj.weight",
+                    up_weight_encoding=f"{self.layer_prefix}mlp.up_proj.weight",
+                ),
+            })),
         )
         down_weight = weight("mlp.down_proj.weight", (config.hidden_size, config.intermediate_size),
                              expected_dtype=(DType.FLOAT8_E4M3FN, DType.BFLOAT16, DType.UINT8))
@@ -332,8 +333,13 @@ class Qwen35Layer0Importer:
         info = self.checkpoint.tensor_info(key)
         if info.shape != expected_shape:
             raise ImporterError(f"Tensor {key!r} must have shape {expected_shape}, got {info.shape}.")
-        expected_dtypes = (() if expected_dtype is None else expected_dtype if isinstance(expected_dtype, tuple) else
-                           (expected_dtype, ))
+        expected_dtypes = (
+            ()
+            if expected_dtype is None
+            else expected_dtype
+            if isinstance(expected_dtype, tuple)
+            else (expected_dtype, )
+        )
         if expected_dtypes and info.dtype not in expected_dtypes:
             names = ", ".join(dtype.value for dtype in expected_dtypes)
             raise ImporterError(f"Tensor {key!r} must use one of [{names}], got {info.dtype.value}.")
@@ -356,8 +362,9 @@ class Qwen35Layer0Importer:
             if all(prefix + relative_name in key_set for relative_name in required):
                 qualified.append(prefix)
         if len(qualified) != 1:
-            raise ImporterError(f"Expected exactly one Qwen linear-attention layer-0 namespace ending in {suffix!r}; "
-                                f"input-norm matches={matches}, qualified prefixes={qualified}.")
+            raise ImporterError(
+                f"Expected exactly one Qwen linear-attention layer-0 namespace ending in {suffix!r}; "
+                f"input-norm matches={matches}, qualified prefixes={qualified}.")
         return qualified[0]
 
     @staticmethod

@@ -30,87 +30,70 @@ from .helpers import module, pipeline_dispatch, prim_function
 
 def _stage(index, *, shared_start, source, output):
     """A pipelined dispatch transferring ``source`` and writing ``output``."""
-    tensor = fm.tensor_type("float32", (16, ))
+    tensor = fm.tensor_type("float32", (16,))
     name = f"shared_{index}"
     descriptor = fm.T.shared_workspace_descriptor(name, tensor, 16)
     physical = fm.T.physical_buffer(
-        f"kernel.{name}",
-        "shared",
-        64,
-        16,
-        start=shared_start,
-        function="kernel",
-        role="microkernel_shared_workspace",
+        f"kernel.{name}", "shared", 64, 16, start=shared_start,
+        function="kernel", role="microkernel_shared_workspace",
     )
-    buffer = fm.T.buffer(name, "float32", fm.T.mem_span(physical), (16, ), (1, ))
-    contract = fm.T.transfer_pipeline_contract((fm.T.transfer_pipeline_channel(
-        "rhs",
-        source_argument_indices=(0, ),
-        shared_workspace_indices=(0, ),
-        source_alignment_bytes=16,
-    ), ))
+    buffer = fm.T.buffer(name, "float32", fm.T.mem_span(physical), (16,), (1,))
+    contract = fm.T.transfer_pipeline_contract((
+        fm.T.transfer_pipeline_channel(
+            "rhs", source_argument_indices=(0,),
+            shared_workspace_indices=(0,), source_alignment_bytes=16,
+        ),
+    ))
     selection = fm.T.microkernel_selection(
-        implementation=f"test.kernel.{index}",
-        family="test_kernel",
-        variant=f"v{index}",
-        shared_workspaces=(descriptor, ),
+        implementation=f"test.kernel.{index}", family="test_kernel",
+        variant=f"v{index}", shared_workspaces=(descriptor,),
         transfer_pipeline=contract,
     )
     return fm.T.kernel_dispatch(
-        semantic_op="test.kernel",
-        arguments=(source, ),
-        outputs=(output, ),
-        microkernel=selection,
-        shared_workspace_buffers=(buffer, ),
-        reads=(source, ),
-        writes=(output, ),
+        semantic_op="test.kernel", arguments=(source,), outputs=(output,),
+        microkernel=selection, shared_workspace_buffers=(buffer,),
+        reads=(source,), writes=(output,),
     )
 
 
 def _two_source_consumer(index, *, shared_start, channel_source, producer_read):
     """A stage whose read-argument set spans a channel and a producer read."""
-    tensor = fm.tensor_type("float32", (16, ))
+    tensor = fm.tensor_type("float32", (16,))
     name = f"shared_{index}"
     descriptor = fm.T.shared_workspace_descriptor(name, tensor, 16)
     physical = fm.T.physical_buffer(
-        f"kernel.{name}",
-        "shared",
-        64,
-        16,
-        start=shared_start,
-        function="kernel",
-        role="microkernel_shared_workspace",
+        f"kernel.{name}", "shared", 64, 16, start=shared_start,
+        function="kernel", role="microkernel_shared_workspace",
     )
-    buffer = fm.T.buffer(name, "float32", fm.T.mem_span(physical), (16, ), (1, ))
+    buffer = fm.T.buffer(name, "float32", fm.T.mem_span(physical), (16,), (1,))
     contract = fm.T.transfer_pipeline_contract(
-        (fm.T.transfer_pipeline_channel(
-            "rhs",
-            source_argument_indices=(0, ),
-            shared_workspace_indices=(0, ),
-            source_alignment_bytes=16,
-        ), ),
-        producer_read_argument_indices=(1, ),
+        (
+            fm.T.transfer_pipeline_channel(
+                "rhs", source_argument_indices=(0,),
+                shared_workspace_indices=(0,), source_alignment_bytes=16,
+            ),
+        ),
+        producer_read_argument_indices=(1,),
     )
     selection = fm.T.microkernel_selection(
-        implementation=f"test.kernel.{index}",
-        family="test_kernel",
-        variant=f"v{index}",
-        shared_workspaces=(descriptor, ),
+        implementation=f"test.kernel.{index}", family="test_kernel",
+        variant=f"v{index}", shared_workspaces=(descriptor,),
         transfer_pipeline=contract,
     )
     return fm.T.kernel_dispatch(
         semantic_op="test.kernel",
         arguments=(channel_source, producer_read),
-        outputs=("output", ),
-        microkernel=selection,
-        shared_workspace_buffers=(buffer, ),
-        reads=(channel_source, producer_read),
-        writes=("output", ),
+        outputs=("output",), microkernel=selection,
+        shared_workspace_buffers=(buffer,),
+        reads=(channel_source, producer_read), writes=("output",),
     )
 
 
 def _handoffs(region):
-    return [value.handoff_id for value in region.produce_body.fields if isinstance(value, fm.PipelineHandoff)]
+    return [
+        value.handoff_id for value in region.produce_body.fields
+        if isinstance(value, fm.PipelineHandoff)
+    ]
 
 
 def test_nearer_stage_write_does_not_hide_an_ordinary_write_to_another_source():
@@ -125,22 +108,18 @@ def test_nearer_stage_write_does_not_hide_an_ordinary_write_to_another_source():
     staged second source must not make that violation unreportable.
     """
     ordinary = pipeline_dispatch(
-        "kernel",
-        0,
-        shared_start=128,
-        pipelined=False,
+        "kernel", 0, shared_start=128, pipelined=False,
         writes=("source", "output"),
     )
     staged_other = _stage(1, shared_start=64, source="source2", output="other")
     consumer = _two_source_consumer(
-        2,
-        shared_start=0,
-        channel_source="source",
-        producer_read="other",
+        2, shared_start=0, channel_source="source", producer_read="other",
     )
 
     with pytest.raises(IRVerificationError, match="first-class block barrier"):
-        lower_transfer_pipeline_regions(module(prim_function("kernel", (ordinary, staged_other, consumer))))
+        lower_transfer_pipeline_regions(
+            module(prim_function("kernel", (ordinary, staged_other, consumer)))
+        )
 
 
 def test_distinct_stage_predecessors_share_one_ordering_edge():
@@ -154,13 +133,12 @@ def test_distinct_stage_predecessors_share_one_ordering_edge():
     first = _stage(0, shared_start=128, source="source2", output="source")
     second = _stage(1, shared_start=64, source="source3", output="other")
     consumer = _two_source_consumer(
-        2,
-        shared_start=0,
-        channel_source="source",
-        producer_read="other",
+        2, shared_start=0, channel_source="source", producer_read="other",
     )
 
-    lowered = lower_transfer_pipeline_regions(module(prim_function("kernel", (first, second, consumer))))
+    lowered = lower_transfer_pipeline_regions(
+        module(prim_function("kernel", (first, second, consumer)))
+    )
     region = lowered.prim_function_map["kernel"].body.fields[0]
     handoffs = _handoffs(region)
     assert len(handoffs) == 1, handoffs
@@ -168,9 +146,15 @@ def test_distinct_stage_predecessors_share_one_ordering_edge():
     # The single commit must sit after the LATER predecessor; committing after
     # the earlier one would release the producer before `other` was written.
     consume = region.consume_body.fields
-    stage_ids = [value.stage_id if isinstance(value, fm.PipelineStage) else None for value in consume]
-    commit = next(index for index, value in enumerate(consume)
-                  if isinstance(value, fm.PipelineHandoff) and value.handoff_id == handoffs[0])
+    stage_ids = [
+        value.stage_id if isinstance(value, fm.PipelineStage) else None
+        for value in consume
+    ]
+    commit = next(
+        index for index, value in enumerate(consume)
+        if isinstance(value, fm.PipelineHandoff)
+        and value.handoff_id == handoffs[0]
+    )
     later = stage_ids.index("kernel_transfer_stage_1")
     assert commit > later, (commit, later, stage_ids)
 
@@ -180,7 +164,9 @@ def test_single_staged_source_keeps_exactly_one_handoff():
     writer = _stage(0, shared_start=64, source="source2", output="source")
     consumer = pipeline_dispatch("kernel", 1, shared_start=0)
 
-    lowered = lower_transfer_pipeline_regions(module(prim_function("kernel", (writer, consumer))))
+    lowered = lower_transfer_pipeline_regions(
+        module(prim_function("kernel", (writer, consumer)))
+    )
     region = lowered.prim_function_map["kernel"].body.fields[0]
     assert len(_handoffs(region)) == 1
 
@@ -195,16 +181,15 @@ def test_staged_overwrite_discharges_an_earlier_ordinary_write():
     every historical writer.
     """
     ordinary = pipeline_dispatch(
-        "kernel",
-        0,
-        shared_start=128,
-        pipelined=False,
+        "kernel", 0, shared_start=128, pipelined=False,
         writes=("source", "output"),
     )
     restage = _stage(1, shared_start=64, source="source2", output="source")
     consumer = pipeline_dispatch("kernel", 2, shared_start=0)
 
-    lowered = lower_transfer_pipeline_regions(module(prim_function("kernel", (ordinary, restage, consumer))))
+    lowered = lower_transfer_pipeline_regions(
+        module(prim_function("kernel", (ordinary, restage, consumer)))
+    )
     region = lowered.prim_function_map["kernel"].body.fields[0]
     assert len(_handoffs(region)) == 1
 
@@ -213,16 +198,15 @@ def test_ordinary_overwrite_after_a_stage_is_still_rejected():
     """The mirror case: a later ordinary write is not excused by an earlier stage."""
     staged = _stage(0, shared_start=64, source="source2", output="source")
     ordinary = pipeline_dispatch(
-        "kernel",
-        1,
-        shared_start=128,
-        pipelined=False,
+        "kernel", 1, shared_start=128, pipelined=False,
         writes=("source", "output"),
     )
     consumer = pipeline_dispatch("kernel", 2, shared_start=0)
 
     with pytest.raises(IRVerificationError, match="first-class block barrier"):
-        lower_transfer_pipeline_regions(module(prim_function("kernel", (staged, ordinary, consumer))))
+        lower_transfer_pipeline_regions(
+            module(prim_function("kernel", (staged, ordinary, consumer)))
+        )
 
 
 def test_unrelated_writes_emit_no_source_handoff():
@@ -230,6 +214,8 @@ def test_unrelated_writes_emit_no_source_handoff():
     unrelated = _stage(0, shared_start=64, source="source2", output="elsewhere")
     consumer = pipeline_dispatch("kernel", 1, shared_start=0)
 
-    lowered = lower_transfer_pipeline_regions(module(prim_function("kernel", (unrelated, consumer))))
+    lowered = lower_transfer_pipeline_regions(
+        module(prim_function("kernel", (unrelated, consumer)))
+    )
     region = lowered.prim_function_map["kernel"].body.fields[0]
     assert _handoffs(region) == []

@@ -27,18 +27,21 @@ def test_packed_qkv_exact_basis_coordinates(tmp_path, request, module_fixture):
     module = request.getfixturevalue(module_fixture)
     names = ("q_weight", "k_weight", "v_weight")
     weights = {
-        name: ((torch.arange(2048)[:, None] // 16 * 3 + torch.arange(2048)[:, None] % 16 +
-                torch.arange(n)[None, :] * 5 + index * 7) % 61 - 30).to(torch.bfloat16)
+        name: ((torch.arange(2048)[:, None] // 16 * 3
+                + torch.arange(2048)[:, None] % 16
+                + torch.arange(n)[None, :] * 5 + index * 7) % 61 - 30).to(torch.bfloat16)
         for index, (name, n) in enumerate(zip(names, (2048, 1024, 1024)))
     }
-    checkpoint = MemoryCheckpoint(
-        {}, {name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
-             for name, value in weights.items()}, weights)
-    artifact = write_artifact(module, tmp_path / "qkv", target="nvidia-sm90", checkpoint=checkpoint,
-                              emit_executable=True)
+    checkpoint = MemoryCheckpoint({}, {
+        name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
+        for name, value in weights.items()
+    }, weights)
+    artifact = write_artifact(module, tmp_path / "qkv", target="nvidia-sm90",
+                              checkpoint=checkpoint, emit_executable=True)
     runtime = load(artifact, device="cuda:0")
     value = torch.zeros((1, 2048), device="cuda", dtype=torch.bfloat16)
-    outputs = tuple(torch.empty((1, weights[name].shape[1]), device="cuda", dtype=torch.bfloat16) for name in names)
+    outputs = tuple(torch.empty((1, weights[name].shape[1]), device="cuda", dtype=torch.bfloat16)
+                    for name in names)
     runtime.prepare(value, *outputs)
     # Packed atom, MMA K tile, split-K owner and final logical reduction edges.
     for k in (0, 15, 16, 63, 64, 255, 256, 2047):

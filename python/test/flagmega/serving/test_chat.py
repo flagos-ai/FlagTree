@@ -1,5 +1,3 @@
-# Copyright 2026 FlagOS Contributors
-# SPDX-License-Identifier: MIT
 import pytest
 
 from triton.flagmega.serving.chat import ChatSession, TextStream
@@ -7,7 +5,6 @@ from triton.flagmega.serving.engine import TextGenerationEngine
 
 
 class Tokenizer:
-
     def apply_chat_template(self, messages, **kwargs):
         self.messages = messages
         self.kwargs = kwargs
@@ -35,12 +32,9 @@ def test_chat_uses_template_and_commits_only_completed_turns(backend):
 
 
 def test_stream_holds_partial_bytes_and_flushes_tail():
-
     class ByteTokenizer:
-
         def decode(self, tokens, **kwargs):
             return {1: "\ufffd", 2: "é", 3: "é ", 4: "é hi"}[len(tokens)]
-
     output = []
     stream = TextStream(ByteTokenizer(), output.append)
     stream.put(1)

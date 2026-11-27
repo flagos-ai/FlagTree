@@ -48,7 +48,7 @@ def test_call_graph_emits_each_boxing_leaf_and_partial_owner_reduction():
     source = TritonTemplateRegistry().render(
         "kernels/distributed_boxing/gather_reduce_scatter.py.jinja",
         {
-            "render_calls": (call, ),
+            "render_calls": (call,),
             "distributed_entry": True,
             "mesh_axis_names": ("y", "x"),
             "mesh_hierarchy": (8, 16),

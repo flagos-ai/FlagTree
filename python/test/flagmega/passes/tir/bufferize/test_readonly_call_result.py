@@ -11,28 +11,25 @@ from triton.flagmega.ir.bufferization import BufferPlan
 
 
 def graph(*, nested=False):
-
     class Graph(fm.Module):
-
         def forward(self):
-            kind = fm.tensor_type("float32", (128, ))
+            kind = fm.tensor_type("float32", (128,))
             source = self.input("source", kind, id="source")
             parameter = self.input("parameter", kind, id="parameter")
             one = fm.F.builtin.splat_const(kind, 1., name="one")
             doubled = fm.F.math.add(parameter, parameter, name="doubled")
-            self.function("worker", (parameter, ), (doubled, one), attrs={"reusable": True})
+            self.function("worker", (parameter,), (doubled, one), attrs={"reusable": True})
             callee = "worker"
             if nested:
                 outer = self.input("outer", kind, id="outer")
                 inner = fm.F.builtin.call(outer, callee="worker", result_type=fm.TupleType((kind, kind)), name="inner")
                 inner_value, inner_constant = fm.F.tensors.get_items(inner, 0, 1)
-                self.function("outer_worker", (outer, ), (inner_value, inner_constant), attrs={"reusable": True})
+                self.function("outer_worker", (outer,), (inner_value, inner_constant), attrs={"reusable": True})
                 callee = "outer_worker"
             call = fm.F.builtin.call(source, callee=callee, result_type=fm.TupleType((kind, kind)), name="call")
             value, constant = fm.F.tensors.get_items(call, 0, 1)
             output = fm.F.math.add(value, constant, name="result")
-            self.function("main", (source, ), (output, ))
-
+            self.function("main", (source,), (output,))
     return Graph(dialect="high_level", stage="imported", entry="main").build()
 
 
@@ -41,11 +38,8 @@ def graph(*, nested=False):
 def test_readonly_result_is_bound_to_rdata(level, nested):
     compiled = Compiler(CompileOptions(bufferize_opt_level=level)).compile(graph(nested=nested)).module
     plan = BufferPlan.from_data(compiled.metadata["buffer_plan"])
-    readonly_results = [(formal, actual)
-                        for function in plan.functions
-                        for call in function.calls
-                        for formal, actual in call.results
-                        if plan.buffer_map[formal].storage == "rdata"]
+    readonly_results = [(formal, actual) for function in plan.functions for call in function.calls
+                        for formal, actual in call.results if plan.buffer_map[formal].storage == "rdata"]
     assert readonly_results, "Exercise the immutable function result."
     for formal, actual in readonly_results:
         assert plan.buffer_map[actual].storage == "rdata"
@@ -61,15 +55,11 @@ def test_readonly_result_executes_with_real_constant_bytes(tmp_path, level, nest
     from triton.flagmega.runtime import load
     from triton.flagmega.runtime.module import GeneratedTirCallGraphModule as Runtime
     compiled = Compiler(CompileOptions(bufferize_opt_level=level)).compile(graph(nested=nested)).module
-
     class Checkpoint:
-
         def load_tensor(self, key, *, device="cpu"):
             raise AssertionError(f"A literal result requires no checkpoint weight: {key}")
-
-    runtime = load(
-        write_artifact(compiled, tmp_path / "artifact", checkpoint=Checkpoint(), target="nvidia-sm90",
-                       emit_executable=True), device="cuda:0")
+    runtime = load(write_artifact(compiled, tmp_path / "artifact", checkpoint=Checkpoint(),
+                                 target="nvidia-sm90", emit_executable=True), device="cuda:0")
     try:
         values = {spec["buffer"]: torch.zeros(128, device="cuda") for spec in runtime.external_arguments}
         args = tuple(values[spec["buffer"]] for spec in runtime.external_arguments)

@@ -11,9 +11,33 @@ from triton.flagmega.errors import ImporterError
 from triton.flagmega.importer.checkpoint import checkpoint_from_path
 from triton.flagmega.importer.qwen3_5 import Qwen35Layer0Importer, Qwen35LayerConfig, _positive_int
 from triton.flagmega.importer.source import attach_import_source_locations
-from triton.flagmega.ir import F, Module, TupleType, effect, tensor_type, verify_module
+from triton.flagmega.ir import DType, F, Module, TupleType, VectorType, dim, effect, tensor_type, verify_module
 from triton.flagmega.ir.ops.nn._gdn_state import GatedDeltaNetStateConfig
 from triton.flagmega.ir.ops.nn._paged_attention_state import PagedAttentionStateConfig
+from triton.flagmega.passes.shape_bucket import DECLARATION_SCHEMA
+
+
+def token_extent(num_tokens):
+    """Return ``(extent, range)`` for a static count or a bucketed range.
+
+    A positive integer is a static specialization.  A ``(minimum, maximum)``
+    pair becomes the symbolic ``tokens`` dimension declared to the compiler;
+    the shape-bucket pass substitutes the selected segment before codegen.
+    """
+
+    if isinstance(num_tokens, bool):
+        raise ImporterError('Dense Qwen3.5 token extent must be an integer or a (minimum, maximum) range.')
+    if isinstance(num_tokens, int):
+        if num_tokens <= 0:
+            raise ImporterError('Dense Qwen3.5 token extent must be positive.')
+        return num_tokens, None
+    if (isinstance(num_tokens, (tuple, list)) and len(num_tokens) == 2
+            and all(type(value) is int for value in num_tokens)):
+        minimum, maximum = num_tokens
+        if not 1 <= minimum <= maximum:
+            raise ImporterError('Dense Qwen3.5 token range requires 1 <= minimum <= maximum.')
+        return dim('tokens', minimum, maximum), (minimum, maximum)
+    raise ImporterError('Dense Qwen3.5 token extent must be an integer or a (minimum, maximum) range.')
 
 
 def rms_norm(value, weight, epsilon, *, name):
@@ -92,17 +116,50 @@ class Qwen35DenseConfig(Qwen35LayerConfig):
 
 class Qwen35DenseImporter:
 
-    def __init__(self, checkpoint, *, revision=None, layers=None, block_size=256, num_blocks=16):
+    def __init__(self, checkpoint, *, revision=None, layers=None, block_size=256, num_blocks=16,
+                 num_tokens=1, shape_bucket_segments_count=2, shape_bucket_segment=None,
+                 _mtp=False, _mtp_hidden_lanes=1, _expose_hidden=False):
         self.checkpoint = checkpoint_from_path(checkpoint) if isinstance(checkpoint, (str, Path)) else checkpoint
         self.config = Qwen35DenseConfig.parse(self.checkpoint.config)
         quant = self.checkpoint.config.get("quantization_config", {})
         if quant.get("quant_method") != "gguf":
             raise ImporterError("Complete dense Qwen3.5 decode currently requires a native GGUF checkpoint.")
         self.revision = revision
+        self.num_tokens, self.token_range = token_extent(num_tokens)
+        if (isinstance(shape_bucket_segments_count, bool)
+                or not isinstance(shape_bucket_segments_count, int)
+                or shape_bucket_segments_count < 1):
+            raise ImporterError('Shape-bucket segments_count must be a positive integer.')
+        if shape_bucket_segment is not None and (
+                isinstance(shape_bucket_segment, bool) or not isinstance(shape_bucket_segment, int)
+                or shape_bucket_segment < 0):
+            raise ImporterError('Shape-bucket segment must be a non-negative integer.')
+        if self.token_range is None and (shape_bucket_segments_count != 2 or shape_bucket_segment is not None):
+            raise ImporterError('Shape-bucket options require a (minimum, maximum) token range.')
+        if self.token_range is not None and shape_bucket_segments_count < 2:
+            raise ImporterError('Shape-bucket segments_count must be at least two when enabled.')
+        self.shape_bucket_segments_count = shape_bucket_segments_count
+        self.shape_bucket_segment = shape_bucket_segment
+        # Reshape keeps one inferred axis while the token extent is symbolic;
+        # a static token count is spelled literally so T=1 stays byte-identical.
+        self.token_leading = (self.num_tokens if isinstance(self.num_tokens, int) else -1)
         c = self.config
+        self.mtp = _mtp
+        self.mtp_hidden_lanes = _mtp_hidden_lanes
+        self.expose_hidden = _expose_hidden and not _mtp
+        if type(_mtp_hidden_lanes) is not int or _mtp_hidden_lanes not in (1, 8) or c.hidden_size % _mtp_hidden_lanes:
+            raise ImporterError('MTP hidden input lanes must be one or eight and divide hidden_size.')
+        if _mtp:
+            from dataclasses import replace
+            if self.checkpoint.config.get('gguf', {}).get('architecture') != 'qwen35':
+                raise ImporterError('MTP currently requires qwen35 GGUF.')
+            if self.checkpoint.config.get('gguf', {}).get('nextn_predict_layers') != 1:
+                raise ImporterError('Qwen3.5 MTP requires exactly one nextn prediction layer.')
+            self.config = c = replace(c, layer_types=(*c.layer_types, 'full_attention'))
+            layers = (c.num_hidden_layers,)
         self.layers = tuple(range(c.num_hidden_layers)) if layers is None else tuple(layers)
         if not self.layers or len(set(self.layers)) != len(self.layers) or any(
-                type(i) is not int or not 0 <= i < c.num_hidden_layers for i in self.layers):
+                type(i) is not int or not 0 <= i < c.num_hidden_layers + int(_mtp) for i in self.layers):
             raise ImporterError('Dense Qwen3.5 requested layer indices are invalid.')
         prefixes = [p for p in ('model.language_model.', 'model.') if p + 'embed_tokens.weight' in self.checkpoint.keys]
         if len(prefixes) != 1:
@@ -125,6 +182,7 @@ class Qwen35DenseImporter:
 
     def import_module(self):
         importer, c = self, self.config
+        tokens, leading = self.num_tokens, self.token_leading
 
         class Graph(Module):
 
@@ -169,10 +227,11 @@ class Qwen35DenseImporter:
                                              + key)
                 # Qwen stores [query, gate] rows interleaved per head. Split the
                 # projected activations, leaving the original packed weights intact.
-                qg = F.tensors.reshape(p('q'), (1, c.num_attention_heads, 2, c.head_dim))
+                qg = F.tensors.reshape(p('q'), (leading, c.num_attention_heads, 2, c.head_dim))
                 query, gate = (F.tensors.reshape(F.tensors.slice(qg, starts=(i, ), ends=(i + 1, ), axes=(2, )),
-                                                 (1, c.num_attention_heads, c.head_dim)) for i in (0, 1))
-                key, val = (F.tensors.reshape(p(part), (1, c.num_key_value_heads, c.head_dim)) for part in ('k', 'v'))
+                                                 (leading, c.num_attention_heads, c.head_dim)) for i in (0, 1))
+                key, val = (F.tensors.reshape(p(part), (leading, c.num_key_value_heads, c.head_dim))
+                            for part in ('k', 'v'))
                 query = rms_norm(query, weights['self_attn.q_norm.weight'], c.epsilon, name=name + '_q_norm')
                 key = rms_norm(key, weights['self_attn.k_norm.weight'], c.epsilon, name=name + '_k_norm')
                 query, key = (F.nn.rope(x, cosine, sine, rotary_dim=c.rotary_dim, name=name + '_' + part + '_rope')
@@ -187,7 +246,7 @@ class Qwen35DenseImporter:
                 attended = F.nn.paged_attention(packed_q, state, layer_id, scale=c.head_dim**-0.5, layout=layout,
                                                 hidden_size=c.query_size)
                 gated = F.math.mul(F.tensors.unpack(attended, axis=-1), F.math.sigmoid(gate))
-                output = self.project(F.tensors.reshape(gated, (1, c.query_size)), weights, infos,
+                output = self.project(F.tensors.reshape(gated, (leading, c.query_size)), weights, infos,
                                       'self_attn.o_proj.weight', name=name + '_attention_output')
                 return output, state
 
@@ -201,7 +260,7 @@ class Qwen35DenseImporter:
                     params.append(node)
                     return node
 
-                hidden = parameter('hidden', tensor_type('bfloat16', (1, c.hidden_size)))
+                hidden = parameter('hidden', tensor_type('bfloat16', (tokens, c.hidden_size)))
                 state = parameter('state', state_type)
                 layer_id = parameter('layer_id', tensor_type('int32', ()))
                 if kind == 'full_attention':
@@ -236,15 +295,43 @@ class Qwen35DenseImporter:
                 return name, tuple(infos)
 
             def forward(self):
-                ids = self.input('input_ids', tensor_type('int32', (1, )), id='input_ids')
+                ids = self.input('input_ids', tensor_type('int32', (tokens, )), id='input_ids')
                 entry_gdn = gdn = self.input('gated_delta_net_state', importer.gdn_config.ref_type, id='gdn_state')
                 entry_paged = paged = self.input('paged_attention_state', importer.paged_config.ref_type,
                                                  id='paged_state')
                 emb_key = importer.model_prefix + 'embed_tokens.weight'
+                mtp_prefix = f'{importer.model_prefix}layers.{c.num_hidden_layers}.nextn.'
+                if importer.mtp and mtp_prefix + 'embed_tokens.weight' in importer.checkpoint.keys:
+                    emb_key = mtp_prefix + 'embed_tokens.weight'
                 emb_info = importer.info(emb_key, (c.vocab_size, c.hidden_size))
                 embedding = self.weight_at(emb_key, emb_info.shape)
                 attrs = {} if emb_info.quant_type is None else {'weight_encoding': emb_info.quant_type}
                 hidden = F.nn.embedding(ids, embedding, padding_idx=c.padding_idx, **attrs, name='token_embedding')
+                if importer.mtp:
+                    lanes = importer.mtp_hidden_lanes
+                    h_type = (tensor_type('bfloat16', (tokens, c.hidden_size)) if lanes == 1 else
+                              tensor_type(VectorType(DType.BFLOAT16, (lanes,)), (tokens, c.hidden_size // lanes)))
+                    h_input = self.input('hidden_input', h_type, id='hidden_input')
+                    h_value = h_input if lanes == 1 else F.tensors.unpack(h_input, axis=-1)
+                    e_norm = rms_norm(hidden, self.weight_at(mtp_prefix + 'enorm.weight', (c.hidden_size,)),
+                                      c.epsilon, name='mtp_enorm')
+                    h_norm = rms_norm(h_value, self.weight_at(mtp_prefix + 'hnorm.weight', (c.hidden_size,)),
+                                      c.epsilon, name='mtp_hnorm')
+                    split_keys = tuple(mtp_prefix + 'eh_' + role + '.weight' for role in ('e', 'h'))
+                    if all(key in importer.checkpoint.keys for key in split_keys):
+                        parts = []
+                        for value, key in zip((e_norm, h_norm), split_keys, strict=True):
+                            info = importer.info(key, (c.hidden_size, c.hidden_size))
+                            parts.append(self.project(value, {key: self.weight_at(key, info.shape)},
+                                                      {key: info}, key, name='mtp_' + key.rsplit('.', 2)[1],
+                                                      output_dtype='float32'))
+                        hidden = F.tensors.cast(F.math.add(*parts), 'bfloat16', name='mtp_eh_proj')
+                    else:
+                        concat = F.tensors.concat(e_norm, h_norm, axis=-1, name='mtp_concat')
+                        proj_key = mtp_prefix + 'eh_proj.weight'
+                        proj_info = importer.info(proj_key, (c.hidden_size, 2 * c.hidden_size))
+                        hidden = self.project(concat, {proj_key: self.weight_at(proj_key, proj_info.shape)},
+                                              {proj_key: proj_info}, proj_key, name='mtp_eh_proj')
                 positions = F.nn.rotary_embedding(hidden, paged, head_dim=c.rotary_dim, theta=c.rope_theta,
                                                   name='position_embeddings')
                 cosine, sine = F.tensors.get_items(positions, 0, 1, name_prefix='main_rotary')
@@ -279,24 +366,57 @@ class Qwen35DenseImporter:
                         gdn = updated
                     else:
                         paged = updated
-                norm = self.weight_at(importer.model_prefix + 'norm.weight', (c.hidden_size, ))
+                norm_key = importer.model_prefix + 'norm.weight'
+                if importer.mtp and mtp_prefix + 'shared_head_norm.weight' in importer.checkpoint.keys:
+                    norm_key = mtp_prefix + 'shared_head_norm.weight'
+                norm = self.weight_at(norm_key, (c.hidden_size, ))
                 hidden = rms_norm(hidden, norm, c.epsilon, name='final_norm')
-                lm_key = 'lm_head.weight' if 'lm_head.weight' in importer.checkpoint.keys else emb_key
+                lm_key = ('lm_head.weight' if 'lm_head.weight' in importer.checkpoint.keys else
+                          importer.model_prefix + 'embed_tokens.weight')
+                if importer.mtp and mtp_prefix + 'shared_head_head.weight' in importer.checkpoint.keys:
+                    lm_key = mtp_prefix + 'shared_head_head.weight'
                 lm_info = importer.info(lm_key, (c.vocab_size, c.hidden_size))
                 head = embedding if lm_key == emb_key else self.weight_at(lm_key, lm_info.shape)
                 logits = self.project(hidden, {lm_key: head}, {lm_key: lm_info}, lm_key, name='logits',
                                       output_dtype='float32')
                 token = F.nn.greedy_sample(logits, name='next_token')
-                self.function('main', (ids, entry_gdn, entry_paged), (logits, token, gdn, paged))
+                if importer.mtp:
+                    self.function('main', (ids, h_input, entry_paged), (logits, token, hidden, paged))
+                elif importer.expose_hidden:
+                    self.function('main', (ids, entry_gdn, entry_paged), (logits, token, hidden, gdn, paged))
+                else:
+                    self.function('main', (ids, entry_gdn, entry_paged), (logits, token, gdn, paged))
 
+        tokens_per_call = (self.token_range[1] if self.token_range is not None
+                           else int(self.num_tokens))
         metadata = {
             'architecture': 'Qwen3_5ForConditionalGeneration', 'model_type': 'qwen3_5', 'mode': 'decode-1',
-            'execution_phase': 'decode', 'tokens_per_call': 1, 'scope': 'text-decoder', 'revision': self.revision,
+            'execution_phase': 'decode', 'tokens_per_call': tokens_per_call,
+            'scope': 'text-decoder', 'revision': self.revision,
             'model_prefix': self.model_prefix, 'num_hidden_layers': len(self.layers), 'source_num_hidden_layers':
             c.num_hidden_layers, 'imported_layer_indices': self.layers, 'layer_types': tuple(c.layer_types[i]
                                                                                              for i in self.layers),
-            'hidden_size': c.hidden_size, 'vocab_size': c.vocab_size, 'numerical_contract': 'default'
+            'hidden_size': c.hidden_size, 'vocab_size': c.vocab_size, 'numerical_contract': 'nncase'
         }
+        if self.mtp:
+            metadata.update(scope='mtp-draft', mode='mtp-1', execution_phase='mtp',
+                            numerical_contract='nncase', hidden_output='post-shared-head-norm',
+                            hidden_input_lanes=self.mtp_hidden_lanes)
+        if self.expose_hidden:
+            metadata.update(hidden_output='post-final-norm')
+        if self.token_range is not None:
+            shape_bucket = {
+                'schema': DECLARATION_SCHEMA,
+                'enable': True,
+                'range_info': {'tokens': list(self.token_range)},
+                'segments_count': self.shape_bucket_segments_count,
+                'fix_var_map': {},
+            }
+            if self.shape_bucket_segment is not None:
+                shape_bucket['segment'] = self.shape_bucket_segment
+            metadata.update(shape_bucket=shape_bucket)
+            if not self.mtp:
+                metadata['mode'] = 'decode-bucket'
         graph = Graph(dialect='high_level', stage='imported', entry='main', metadata=metadata).build()
         return verify_module(
             attach_import_source_locations(graph, architecture=metadata['architecture'], revision=self.revision))

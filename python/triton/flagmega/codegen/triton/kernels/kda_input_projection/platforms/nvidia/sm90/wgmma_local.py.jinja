@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: kda_input_projection/wgmma_local platform=nvidia architecture=sm90
+# flagmega-kernel: kda_input_projection/wgmma_local platform=nvidia architecture=sm90
 {% import "entrypoints/_common.py.jinja" as entry with context %}
 {% for call in render_calls | default(()) %}
 {% if call.family == "kda_input_projection" and call.variant == "wgmma_local" %}

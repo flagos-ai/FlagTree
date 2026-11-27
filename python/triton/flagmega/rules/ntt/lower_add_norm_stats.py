@@ -27,7 +27,7 @@ def lower_add_norm_stats_rule() -> RewriteRule:
         addend = result["addend"]
         assert all(isinstance(value, Node) for value in (source, projection, addend))
         producer, adapters = _projection_producer(projection, module)
-        # Match the reference LowerMaterializedPackedMatMulNormStatsCombine rule.
+        # Match nncase's LowerMaterializedPackedMatMulNormStatsCombine rule.
         # This direct multi-result op is the packed-matmul microkernel form;
         # ordinary dense matmul remains paired with the target-neutral combine
         # and is selected as two independently implementable TIR roles.
@@ -39,24 +39,38 @@ def lower_add_norm_stats_rule() -> RewriteRule:
         # collective boundary and makes this graph rule target dependent.
         if isinstance(producer.type, DistributedType) and producer.type.partial is not None:
             return source
-        if (not isinstance(source.type, TupleType) or len(source.type.fields) != 2
-                # An adapter may publish Split storage as Broadcast. Folding it
-                # into a local matmul epilogue would consume remote owners before
-                # their publication boundary and compute the wrong statistics.
-                or promoted_projection_type(producer.type, source.type.fields[0]) != source.type.fields[0] or
-                projection.type != source.type.fields[0] or addend.type != source.type.fields[0]):
+        if (
+            not isinstance(source.type, TupleType)
+            or len(source.type.fields) != 2
+            # An adapter may publish Split storage as Broadcast. Folding it
+            # into a local matmul epilogue would consume remote owners before
+            # their publication boundary and compute the wrong statistics.
+            or promoted_projection_type(producer.type, source.type.fields[0]) != source.type.fields[0]
+            or projection.type != source.type.fields[0]
+            or addend.type != source.type.fields[0]
+        ):
             return source
         chain = (producer.id, *adapters)
         expected_users = (*adapters, source.id)
-        if any(_users(module, node_id) != (expected, ) for node_id, expected in zip(chain, expected_users)):
+        if any(
+            _users(module, node_id) != (expected,)
+            for node_id, expected in zip(chain, expected_users)
+        ):
             return source
-        exported = any(node_id in function.outputs for function in module.functions for node_id in chain)
+        exported = any(
+            node_id in function.outputs
+            for function in module.functions
+            for node_id in chain
+        )
         if exported:
             return source
-        if (len(producer.inputs) != 4 or bool(producer.attrs["fused_reduce"])
-                or DType(producer.attrs["output_data_type"]) not in {DType.BFLOAT16, DType.FLOAT32}
-                or not isinstance(module.node_map[producer.inputs[2]].type, NoneType)
-                or not isinstance(module.node_map[producer.inputs[3]].type, NoneType)):
+        if (
+            len(producer.inputs) != 4
+            or bool(producer.attrs["fused_reduce"])
+            or DType(producer.attrs["output_data_type"]) not in {DType.BFLOAT16, DType.FLOAT32}
+            or not isinstance(module.node_map[producer.inputs[2]].type, NoneType)
+            or not isinstance(module.node_map[producer.inputs[3]].type, NoneType)
+        ):
             return source
         addend, addend_casts = _private_addend_casts(addend, source.id, module)
         inputs = (
@@ -143,7 +157,8 @@ def _private_addend_casts(addend: Node, consumer_id: str, module: IRModule):
     casts = []
     outputs = {value for function in module.functions for value in function.outputs}
     while current.op in {"tensors.cast", "ntt.vectorized_cast"}:
-        if (not current.effect.is_pure or current.id in outputs or _users(module, current.id) != (consumer_id, )
+        if (not current.effect.is_pure or current.id in outputs
+                or _users(module, current.id) != (consumer_id,)
                 or isinstance(current.type, DistributedType) and current.type.partial is not None):
             break
         dtype = tensor_of(current.type).dtype

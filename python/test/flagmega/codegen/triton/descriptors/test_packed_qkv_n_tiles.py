@@ -20,8 +20,8 @@ def implementation_id(kind, descriptor):
 
 @lru_cache(maxsize=None)
 def tiled_module(kind, descriptor, widths, kv_heads):
-    return _packed_qkv_mma_pipeline_module(implementation_id(kind, descriptor), projection_widths=widths,
-                                           num_kv_heads=kv_heads)
+    return _packed_qkv_mma_pipeline_module(implementation_id(kind, descriptor),
+                                         projection_widths=widths, num_kv_heads=kv_heads)
 
 
 @pytest.mark.parametrize("kind", ("gemv", "mma"))
@@ -39,14 +39,13 @@ def test_n_tiled_candidate_is_declared_without_changing_default(kind, descriptor
 
 
 @pytest.mark.parametrize("kind,descriptor", (("gemv", "single"), ("mma", "table")))
-@pytest.mark.parametrize("widths,kv_heads,capacities",
-                         (((4096, 512, 512), 2, (256, 32, 32)), ((2048, 256, 256), 2, (128, 16, 16)),
-                          ((2048, 384, 384), 3, (128, 32, 32))))
+@pytest.mark.parametrize("widths,kv_heads,capacities", (((4096, 512, 512), 2, (256, 32, 32)),
+                                                      ((2048, 256, 256), 2, (128, 16, 16)),
+                                                      ((2048, 384, 384), 3, (128, 32, 32))))
 def test_n_tiles_describe_real_weight_rows_and_projection_slices(kind, descriptor, widths, kv_heads, capacities):
     module = tiled_module(kind, descriptor, widths, kv_heads)
     package = describe_tir_package(module)
-    call, = (value for value in package["render_calls"]
-             if value["implementation"] == implementation_id(kind, descriptor))
+    call, = (value for value in package["render_calls"] if value["implementation"] == implementation_id(kind, descriptor))
     local_n = sum(capacities)
     assert call["num_n_tiles"] == (local_n + call["block_n"] - 1) // call["block_n"]
     assert tuple(value["local_n_capacity"] for value in call["outputs"]) == capacities
@@ -69,13 +68,11 @@ def test_n_tiling_does_not_weaken_input_or_partial_contract(violation):
     if violation in {"rows", "reduction"}:
         changed = replace(original, tensor=fm.tensor_type("bfloat16", (2, 2048) if violation == "rows" else (1, 1536)))
     elif violation == "output_dtype":
-        changed = replace(original, tensor=replace(original.tensor, dtype=fm.VectorType(fm.DType.FLOAT16, (8, ))))
+        changed = replace(original, tensor=replace(original.tensor, dtype=fm.VectorType(fm.DType.FLOAT16, (8,))))
     else:
-        changed = replace(original, partial=None if violation == "missing_partial" else fm.SBP.partial(
-            (1, ), fm.ReduceOp.SUM))
+        changed = replace(original, partial=None if violation == "missing_partial" else fm.SBP.partial((1,), fm.ReduceOp.SUM))
     ids = _candidate_ids(_context(module, parameter_types={name: changed}))
-    assert not {implementation_id(kind, descriptor)
-                for kind in ("gemv", "mma")
+    assert not {implementation_id(kind, descriptor) for kind in ("gemv", "mma")
                 for descriptor in ("single", "table")}.intersection(ids)
 
 
@@ -89,13 +86,14 @@ def test_n_tiling_accepts_uniform_fp32_accumulators_and_rejects_mixed_fields():
     assert implementation_id('mma', 'table') in _candidate_ids(context)
     name = context.dispatch.outputs[1]
     original = output_types[name]
-    changed = replace(original, tensor=replace(original.tensor, dtype=fm.VectorType(fm.DType.BFLOAT16, (8, ))))
+    changed = replace(original, tensor=replace(original.tensor, dtype=fm.VectorType(fm.DType.BFLOAT16, (8,))))
     assert implementation_id('mma', 'table') not in _candidate_ids(_context(module, parameter_types={name: changed}))
 
 
 @pytest.mark.parametrize("kind", ("gemv", "mma"))
 @pytest.mark.parametrize("descriptor", ("single", "table"))
-@pytest.mark.parametrize("widths,kv_heads", (((4096, 512, 512), 2), ((2048, 256, 256), 2), ((2048, 384, 384), 3)))
+@pytest.mark.parametrize("widths,kv_heads", (((4096, 512, 512), 2), ((2048, 256, 256), 2),
+                                           ((2048, 384, 384), 3)))
 def test_n_tiles_exact_coordinates_and_partial_boundary(kind, descriptor, widths, kv_heads, tmp_path):
     module = tiled_module(kind, descriptor, widths, kv_heads)
     check_exact_coordinates_and_partials(module, implementation_id(kind, descriptor), widths, 2048, tmp_path)
@@ -112,16 +110,14 @@ def check_exact_coordinates_and_partials(module, identity, widths, input_extent,
     from triton.flagmega.runtime import load
 
     names = ("q_weight", "k_weight", "v_weight")
-    weights = {
-        name: ((torch.arange(input_extent)[:, None] // 16 * 3 + torch.arange(input_extent)[:, None] % 16 +
-                torch.arange(n)[None, :] * 5 + index * 7) % 61 - 30).to(torch.bfloat16)
-        for index, (name, n) in enumerate(zip(names, widths))
-    }
-    checkpoint = MemoryCheckpoint(
-        {}, {name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory")
-             for name, value in weights.items()}, weights)
-    artifact = write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", checkpoint=checkpoint,
-                              emit_executable=True)
+    weights = {name: ((torch.arange(input_extent)[:, None] // 16 * 3 + torch.arange(input_extent)[:, None] % 16
+                      + torch.arange(n)[None, :] * 5 + index * 7) % 61 - 30).to(torch.bfloat16)
+               for index, (name, n) in enumerate(zip(names, widths))}
+    checkpoint = MemoryCheckpoint({}, {
+        name: TensorInfo(name, DType.BFLOAT16, tuple(value.shape), "memory") for name, value in weights.items()
+    }, weights)
+    artifact = write_artifact(module, tmp_path / "artifact", target="nvidia-sm90",
+                              checkpoint=checkpoint, emit_executable=True)
     if identity.endswith("_direct_pipeline"):
         source = (tmp_path / "artifact" / "generated_kernels.py").read_text()
         assert source.count("for qkv_k_tile in tl.range(") == 2
@@ -130,10 +126,8 @@ def check_exact_coordinates_and_partials(module, identity, widths, input_extent,
     value = torch.zeros((1, input_extent), device="cuda", dtype=torch.bfloat16)
     outputs = tuple(torch.empty((1, n), device="cuda", dtype=torch.bfloat16) for n in widths)
     runtime.prepare(value, *outputs)
-    for k in sorted(
-        {k
-         for k in (0, 15, 16, 63, 64, 127, 128, 191, 192, 255, 256, input_extent - 1)
-         if k < input_extent}):
+    for k in sorted({k for k in (0, 15, 16, 63, 64, 127, 128, 191, 192, 255, 256, input_extent - 1)
+                     if k < input_extent}):
         value.zero_()
         value[0, k] = 1
         for output in outputs:

@@ -36,9 +36,7 @@ from triton.flagmega.passes.functions.graph import function_nodes
 
 # Placement adapters have an offline evaluator even after TIR lowering.
 _OFFLINE_ADAPTER_OPS = frozenset({
-    "distributed.sharded_view",
-    "distributed.materialize_local_shards",
-    "tir.buffer_view",
+    "distributed.sharded_view", "distributed.materialize_local_shards", "tir.buffer_view",
 })
 
 # Ops that read their operand's placement rather than only its logical shape.
@@ -50,11 +48,14 @@ _DISTRIBUTION_AWARE_OPS = frozenset({
 
 
 def _is_offline(node):
-    return node.effect.is_pure and (node.op in _OFFLINE_ADAPTER_OPS or get_definition(node.op).const_evaluable)
+    return node.effect.is_pure and (
+        node.op in _OFFLINE_ADAPTER_OPS or get_definition(node.op).const_evaluable
+    )
 
 
 def fuse_bank_qkv_weights(module: IRModule) -> IRModule:
-    banks = {node.id: node for node in module.nodes if node.op in {"builtin.parameter_bank", "tir.parameter_bank"}}
+    banks = {node.id: node for node in module.nodes
+             if node.op in {"builtin.parameter_bank", "tir.parameter_bank"}}
     if not banks:
         return module
     region_names = {function.name for function in module.functions if is_region(function)}
@@ -76,11 +77,8 @@ def fuse_bank_qkv_weights(module: IRModule) -> IRModule:
     # Row projections are the storage boundary; resolve every value that
     # denotes a bank, including the loop's captured body parameter.
     bank_of_value = _bank_by_value(module, banks, region_names)
-    rows = {
-        node.id: bank_of_value[node.inputs[0]]
-        for node in module.nodes
-        if node.op in {"control.bank_get", "tir.bank_get"} and node.inputs[0] in bank_of_value
-    }
+    rows = {node.id: bank_of_value[node.inputs[0]] for node in module.nodes
+            if node.op in {"control.bank_get", "tir.bank_get"} and node.inputs[0] in bank_of_value}
     fields: dict[str, tuple[str, int]] = {}
     for node in module.nodes:
         if node.op == "builtin.get_item" and node.inputs and node.inputs[0] in rows:
@@ -219,24 +217,31 @@ def _absorbed_field(schema, indices, leaves, nodes, root, stage) -> BankField:
         if field.program is None:
             continue
         for value in field.program.nodes:
-            body.append(
-                replace(value, id=f"{field.name}.{value.id}",
-                        inputs=tuple(f"{field.name}.{item}" for item in value.inputs)))
+            body.append(replace(
+                value, id=f"{field.name}.{value.id}",
+                inputs=tuple(f"{field.name}.{item}" for item in value.inputs)))
     # A distribution-aware op reads its operand's placement to pick the shard
     # it materializes, so the nodes feeding one keep their DistributedType.
     # Reducing them to logical types leaves the absorbed program unable to
     # run, and anything reconstructing the owner layout downstream has no
     # contract left to follow.
-    distributed_operands = {item for value in nodes if value.op in _DISTRIBUTION_AWARE_OPS for item in value.inputs}
+    distributed_operands = {
+        item
+        for value in nodes
+        if value.op in _DISTRIBUTION_AWARE_OPS
+        for item in value.inputs
+    }
     for value in nodes:
-        body.append(
-            replace(value, id=names[value.id],
-                    type=(value.type if value.id in distributed_operands else logical_type(value.type)),
-                    inputs=tuple(names[item] for item in value.inputs)))
+        body.append(replace(
+            value, id=names[value.id],
+            type=(value.type if value.id in distributed_operands
+                  else logical_type(value.type)),
+            inputs=tuple(names[item] for item in value.inputs)))
     program = BankFieldProgram(tuple(sources), tuple(body), names[root.id])
     produced = program.node_map[program.output].type
     if produced != logical_type(root.type):
-        raise IRVerificationError(f"Absorbed bank program for {root.id!r} changed its result type.", stage=stage)
+        raise IRVerificationError(
+            f"Absorbed bank program for {root.id!r} changed its result type.", stage=stage)
     transform = schema.fields[indices[0]].transform
     return BankField(f"{root.id}.bank_field", produced, transform, program, None, tuple(stored))
 
@@ -287,7 +292,8 @@ def _rebuild(module, banks, schemas, appended, redirects, removed, rows, fields)
                     if parameter == value.inputs[0] and actual in schemas:
                         bank = actual
         if bank is not None:
-            bank_row_types[bank] = _row_type(value.type, schemas[bank], appended.get(bank, ()))
+            bank_row_types[bank] = _row_type(
+                value.type, schemas[bank], appended.get(bank, ()))
     nodes: list[Node] = []
     for node in module.nodes:
         if node.id in removed:
@@ -297,12 +303,11 @@ def _rebuild(module, banks, schemas, appended, redirects, removed, rows, fields)
             # A row access infers its type from the bank value, so the bank's
             # RefType must carry each field's chosen distribution; the schema
             # itself stays logical because it describes stored layout.
-            nodes.append(
-                replace(
-                    node,
-                    type=_bank_ref_type(schema, bank_row_types.get(node.id)),
-                    attrs={**dict(node.attrs), "schema": schema, "rows": _extended_rows(node, appended[node.id])},
-                ))
+            nodes.append(replace(
+                node, type=_bank_ref_type(schema, bank_row_types.get(node.id)),
+                attrs={**dict(node.attrs), "schema": schema,
+                       "rows": _extended_rows(node, appended[node.id])},
+            ))
             continue
         nodes.append(node)
 
@@ -315,9 +320,9 @@ def _rebuild(module, banks, schemas, appended, redirects, removed, rows, fields)
             # The schema field is the logical layout; the projection keeps the
             # distribution the absorbed root already had, so consumers and the
             # callee ABI see exactly the type they saw before.
-            projections.setdefault(row_id, []).append(
-                Node(field.name, "builtin.get_item", (row_id, ), root_type, attrs={"index": index},
-                     metadata={"absorbed_into_parameter_bank": True}))
+            projections.setdefault(row_id, []).append(Node(
+                field.name, "builtin.get_item", (row_id,), root_type, attrs={"index": index},
+                metadata={"absorbed_into_parameter_bank": True}))
 
     # A loop captures its bank, so the body parameter carries the bank's type
     # too. Re-type it with the extended schema or the row access, which reads
@@ -330,14 +335,16 @@ def _rebuild(module, banks, schemas, appended, redirects, removed, rows, fields)
             # The captured bank parameter mirrors the bank value's type,
             # including the per-field distribution its rows expose.
             owner = captured[node.id]
-            result.append(replace(node, type=_bank_ref_type(schemas[owner], bank_row_types.get(owner))))
+            result.append(replace(
+                node, type=_bank_ref_type(schemas[owner], bank_row_types.get(owner))))
             continue
         if node.op in {"control.bank_get", "tir.bank_get"}:
             bank_id = node.inputs[0] if node.inputs[0] in schemas else rows.get(node.id)
             schema = schemas.get(bank_id)
             if schema is not None:
                 row_schemas[node.id] = schema
-                result.append(replace(node, type=_row_type(node.type, schema, appended.get(bank_id, ()))))
+                result.append(replace(
+                    node, type=_row_type(node.type, schema, appended.get(bank_id, ()))))
                 for value in projections.get(node.id, ()):
                     result.append(value)
                 continue
@@ -359,17 +366,20 @@ def _rebuild(module, banks, schemas, appended, redirects, removed, rows, fields)
     # produces a fragment whose row access is missing. Drop them here.
     # An absorbed node's selection point describes a choice the bank program
     # now owns, so retire it rather than leaving a dangling owner.
-    points = tuple(point for point in module.selection_points if point.owner is None or point.owner not in removed)
+    points = tuple(
+        point for point in module.selection_points
+        if point.owner is None or point.owner not in removed
+    )
     point_ids = {point.id for point in points}
     return replace(
         module,
         nodes=_without_orphans(tuple(result), module, set(fields)),
-        functions=tuple(
-            replace(function, outputs=tuple(redirects.get(value, value)
-                                            for value in function.outputs))
-            for function in module.functions),
+        functions=tuple(replace(function, outputs=tuple(redirects.get(value, value) for value in function.outputs))
+                        for function in module.functions),
         selection_points=points,
-        selections=tuple(record for record in module.selections if record.point_id in point_ids),
+        selections=tuple(
+            record for record in module.selections if record.point_id in point_ids
+        ),
     )
 
 
@@ -391,7 +401,7 @@ def _extended_rows(bank, entries):
             keys: list = []
             for index in indices:
                 value = row[index]
-                keys.extend(value if isinstance(value, tuple) else (value, ))
+                keys.extend(value if isinstance(value, tuple) else (value,))
             values.append(tuple(keys) if len(keys) != 1 else keys[0])
         rows.append(tuple(values))
     return tuple(rows)
@@ -403,7 +413,7 @@ def _bank_ref_type(schema, element_type):
 
     if element_type is None:
         return schema.type
-    return RefType("parameter_bank", (("element", element_type), ))
+    return RefType("parameter_bank", (("element", element_type),))
 
 
 def _row_type(previous, schema, appended=()):

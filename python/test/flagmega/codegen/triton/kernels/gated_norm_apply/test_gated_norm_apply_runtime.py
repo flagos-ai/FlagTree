@@ -20,31 +20,22 @@ EPS = 1e-5
 
 
 def _module(*, activation="sigmoid"):
-
     class Graph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 
         def forward(self):
             value = self.input("value", fm.tensor_type("bfloat16", (TOKENS, HEADS, DIM)))
             gate = self.input("gate", fm.tensor_type("bfloat16", (TOKENS, HEADS, DIM)))
-            scale = self.input("scale", fm.tensor_type("bfloat16", (DIM, )))
-            bias = self.input("bias", fm.tensor_type("bfloat16", (DIM, )))
+            scale = self.input("scale", fm.tensor_type("bfloat16", (DIM,)))
+            bias = self.input("bias", fm.tensor_type("bfloat16", (DIM,)))
             stats = fm.F.nn.norm_stats(value, axis=-1, use_mean=False, name="stats")
             output = fm.F.nn.gated_norm_apply(
-                value,
-                stats,
-                scale,
-                bias,
-                gate,
-                axis=-1,
-                epsilon=EPS,
-                use_mean=False,
-                activation=activation,
+                value, stats, scale, bias, gate,
+                axis=-1, epsilon=EPS, use_mean=False, activation=activation,
                 name="output",
             )
-            self.function("main", (value, gate, scale, bias), (output, ))
+            self.function("main", (value, gate, scale, bias), (output,))
 
     return Graph().build()
 
@@ -66,7 +57,9 @@ def _reference(value, gate, scale, bias, activation):
 
 def test_generated_source_keeps_one_rounding_boundary(tmp_path):
     module = Compiler().compile(_module()).module
-    artifact = write_artifact(module, tmp_path / "gated-norm-apply", target="nvidia-sm90", emit_executable=True)
+    artifact = write_artifact(
+        module, tmp_path / "gated-norm-apply", target="nvidia-sm90", emit_executable=True
+    )
     source = (artifact / "generated_kernels.py").read_text("utf-8")
 
     assert "# flagmega-kernel: gated_norm_apply/local platform=generic" in source
@@ -83,12 +76,14 @@ def test_generated_kernel_is_bit_exact_against_the_reference(tmp_path, activatio
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
     module = Compiler().compile(_module(activation=activation)).module
-    artifact = write_artifact(module, tmp_path / f"gated-{activation}", target="nvidia-sm90", emit_executable=True)
+    artifact = write_artifact(
+        module, tmp_path / f"gated-{activation}", target="nvidia-sm90", emit_executable=True
+    )
     runtime = load(artifact, device="cuda:0")
     generator = torch.Generator().manual_seed(7)
     value = torch.randn((TOKENS, HEADS, DIM), generator=generator).to("cuda", torch.bfloat16)
     gate = torch.randn((TOKENS, HEADS, DIM), generator=generator).to("cuda", torch.bfloat16)
-    scale = torch.randn((DIM, ), generator=generator).to("cuda", torch.bfloat16)
+    scale = torch.randn((DIM,), generator=generator).to("cuda", torch.bfloat16)
     bias = torch.zeros_like(scale)
     expected = _reference(value, gate, scale, bias, activation)
     output = torch.empty_like(value)
@@ -106,14 +101,18 @@ def test_rounding_the_gate_activation_would_be_observable(tmp_path):
     generator = torch.Generator().manual_seed(7)
     value = torch.randn((TOKENS, HEADS, DIM), generator=generator).to(torch.bfloat16)
     gate = torch.randn((TOKENS, HEADS, DIM), generator=generator).to(torch.bfloat16)
-    scale = torch.randn((DIM, ), generator=generator).to(torch.bfloat16)
+    scale = torch.randn((DIM,), generator=generator).to(torch.bfloat16)
     bias = torch.zeros_like(scale)
     wide = value.float()
-    normalized = (wide * torch.rsqrt(wide.pow(2).mean(dim=-1, keepdim=True) + EPS) * scale.float() + bias.float())
+    normalized = (
+        wide * torch.rsqrt(wide.pow(2).mean(dim=-1, keepdim=True) + EPS) * scale.float()
+        + bias.float()
+    )
     fused = (normalized * torch.sigmoid(gate.float())).to(torch.bfloat16)
     rounded_gate = torch.sigmoid(gate.float()).to(torch.bfloat16).float()
     rounded_norm = normalized.to(torch.bfloat16).float()
     expanded = (rounded_norm * rounded_gate).to(torch.bfloat16)
-    assert torch.count_nonzero(
-        fused != expanded), ("This fixture no longer separates the rounding policies, so the bit-exact "
-                             "runtime assertion above would pass on a doubly-rounded kernel.")
+    assert torch.count_nonzero(fused != expanded), (
+        "This fixture no longer separates the rounding policies, so the bit-exact "
+        "runtime assertion above would pass on a doubly-rounded kernel."
+    )

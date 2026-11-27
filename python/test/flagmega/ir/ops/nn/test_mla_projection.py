@@ -25,7 +25,6 @@ def graph(direction="absorb_query", lanes=(), *, input_lanes=(), fp8=False, toke
     attrs.update(changes)
 
     class Graph(fm.Module):
-
         def forward(self):
             input_dtype = "float32" if private_input else "bfloat16"
             kind = fm.vector_type(input_dtype, input_lanes) if input_lanes else input_dtype
@@ -38,7 +37,7 @@ def graph(direction="absorb_query", lanes=(), *, input_lanes=(), fp8=False, toke
             value = x
             if private_input:
                 if placement is not None:
-                    full = fm.DistributedType(x.type, (fm.SBP.broadcast(), ) * x.type.rank, placement)
+                    full = fm.DistributedType(x.type, (fm.SBP.broadcast(),) * x.type.rank, placement)
                     value = fm.F.distributed.sharded_view(x, full)
                 dtype = fm.vector_type("bfloat16", input_lanes) if input_lanes else "bfloat16"
                 value = fm.F.tensors.cast(value, dtype, name="private_value")
@@ -46,12 +45,12 @@ def graph(direction="absorb_query", lanes=(), *, input_lanes=(), fp8=False, toke
             if consume_output:
                 dtype = fm.vector_type("float32", lanes) if lanes else "float32"
                 result = fm.F.tensors.cast(result, dtype)
-            parameters = [x, w, *((scale, ) if fp8 else ())]
+            parameters = [x, w, *((scale,) if fp8 else ())]
             outputs = [result]
             if placement is not None:
-                kind = fm.tensor_type("float32", (128, ))
+                kind = fm.tensor_type("float32", (128,))
                 sentinel = self.input("sentinel", kind, id="sentinel")
-                split = fm.DistributedType(kind, (fm.SBP.split_contiguous((0, 1), 1), ), placement)
+                split = fm.DistributedType(kind, (fm.SBP.split_contiguous((0, 1), 1),), placement)
                 local = fm.F.distributed.force_boxing(sentinel, split)
                 computed = fm.F.math.add(local, local)
                 outputs.append(fm.F.distributed.force_boxing(computed, kind))
@@ -67,7 +66,7 @@ def graph(direction="absorb_query", lanes=(), *, input_lanes=(), fp8=False, toke
 
 
 @pytest.mark.parametrize("direction", ["absorb_query", "expand_value"])
-@pytest.mark.parametrize("lanes", [(), (8, ), (2, 4)])
+@pytest.mark.parametrize("lanes", [(), (8,), (2, 4)])
 @pytest.mark.parametrize("fp8", [False, True])
 def test_projection_scalar_order_and_resume(tmp_path, direction, lanes, fp8):
     module = graph(direction, lanes, input_lanes=(2, 4), fp8=fp8)
@@ -83,7 +82,7 @@ def test_projection_scalar_order_and_resume(tmp_path, direction, lanes, fp8):
     selected = w.reshape(2, 24, 32)
     selected = selected[:, :16] if direction == "absorb_query" else selected[:, 16:].transpose(1, 2)
     expected = torch.bmm(x.transpose(0, 1).float(), selected.float()).bfloat16().transpose(0, 1)
-    (actual, ) = TorchEvaluator(DictWeightResolver({})).run(restored, values)
+    (actual,) = TorchEvaluator(DictWeightResolver({})).run(restored, values)
     torch.testing.assert_close(actual.reshape(expected.shape), expected, rtol=0, atol=0)
 
 
@@ -91,11 +90,11 @@ def test_projection_scalar_order_and_resume(tmp_path, direction, lanes, fp8):
     "kwargs",
     [
         {"direction": "wrong"},
-        {"lanes": (3, )},
+        {"lanes": (3,)},
         {"latent_dim": 16},
         {"qk_head_dim": 8},
         {"weight_block_n": 0},
-        {"lanes": (True, )},
+        {"lanes": (True,)},
     ],
 )
 def test_invalid_projection_geometry_is_rejected(kwargs):

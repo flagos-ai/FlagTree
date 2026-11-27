@@ -1,6 +1,6 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Fused LayerNorm semantic op, decomposed before optimization like reference."""
+"""Fused LayerNorm semantic op, decomposed before optimization like nncase."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class LayerNorm(OpDefinition):
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
-        stats_type = NormStats.infer_type((cls.value.read(inputs), ), {
+        stats_type = NormStats.infer_type((cls.value.read(inputs),), {
             "axis": attrs["axis"],
             "use_mean": attrs["use_mean"],
         })
@@ -74,7 +74,7 @@ class LayerNorm(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         del node
-        return OpCost(notes=("decompose-to-norm-stats-apply", ))
+        return OpCost(notes=("decompose-to-norm-stats-apply",))
 
 
 __all__ = ["LayerNorm"]

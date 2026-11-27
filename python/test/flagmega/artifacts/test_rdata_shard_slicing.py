@@ -28,13 +28,16 @@ def _sharded_module(placement, tensor, policies):
     distributed = fm.DistributedType(tensor, policies, placement)
     weight = builder.weight("weight", distributed, source="memory", key="weight", id="weight")
     builder.function("main", (), (weight, ))
-    module = replace(builder.build(entry="main"), metadata={"launch_contract": {"grid_mesh": placement.to_data()}})
-    return NttBufferizationPolicy(replace(BufferizationOptions.generic(alignment=4),
-                                          rdata_chip_sharding=True)).bufferize(module)
+    module = replace(builder.build(entry="main"),
+                     metadata={"launch_contract": {"grid_mesh": placement.to_data()}})
+    return NttBufferizationPolicy(
+        replace(BufferizationOptions.generic(alignment=4), rdata_chip_sharding=True)
+    ).bufferize(module)
 
 
 def _pack(module, source, dtype, shape, tmp_path):
-    checkpoint = MemoryCheckpoint({}, {"weight": TensorInfo("weight", dtype, shape, "memory")}, {"weight": source})
+    checkpoint = MemoryCheckpoint({}, {"weight": TensorInfo("weight", dtype, shape, "memory")},
+                                  {"weight": source})
     return pack_rdata(module, checkpoint, tmp_path)
 
 
@@ -49,7 +52,8 @@ def counted_take(monkeypatch):
         calls.append(len(indices) if hasattr(indices, "__len__") else 1)
         return original(array, indices, axis=axis, **kwargs)
 
-    monkeypatch.setattr(rdata_module.numpy if hasattr(rdata_module, "numpy") else np, "take", counting, raising=False)
+    monkeypatch.setattr(rdata_module.numpy if hasattr(rdata_module, "numpy") else np,
+                        "take", counting, raising=False)
     monkeypatch.setattr(np, "take", counting)
     return calls
 
@@ -58,8 +62,8 @@ def test_an_affine_shard_never_builds_an_index_list(tmp_path, counted_take):
     """A contiguous split plus an unsplit axis must pack purely through views."""
 
     placement = fm.Placement((2, 4), "cx", "cb")
-    module = _sharded_module(placement, fm.tensor_type("float32", (8, 6)), (fm.SBP.split_contiguous(
-        (0, )), fm.SBP.broadcast()))
+    module = _sharded_module(placement, fm.tensor_type("float32", (8, 6)),
+                            (fm.SBP.split_contiguous((0, )), fm.SBP.broadcast()))
     source = torch.arange(48, dtype=torch.float32).reshape(8, 6)
     index = _pack(module, source, fm.DType.FLOAT32, (8, 6), tmp_path)
 
@@ -75,8 +79,9 @@ def test_block_cyclic_shards_match_the_per_element_map(tmp_path):
     """A cyclic axis is affine with stride > 1; the bytes must not move."""
 
     placement = fm.Placement((2, 4), "cx", "cb")
-    module = _sharded_module(placement, fm.tensor_type("float32", (8, 4)), (fm.SBP.split_contiguous(
-        (0, )), fm.SBP.split_block_cyclic((1, ), 1)))
+    module = _sharded_module(placement, fm.tensor_type("float32", (8, 4)),
+                            (fm.SBP.split_contiguous((0, )),
+                             fm.SBP.split_block_cyclic((1, ), 1)))
     source = torch.arange(32, dtype=torch.float32).reshape(8, 4)
     index = _pack(module, source, fm.DType.FLOAT32, (8, 4), tmp_path)
 
@@ -84,5 +89,6 @@ def test_block_cyclic_shards_match_the_per_element_map(tmp_path):
     image = image[:index["nbytes"] // 4].reshape(2, 4, 4, 1)
     for chip in range(2):
         for block in range(4):
-            np.testing.assert_array_equal(image[chip, block, :, 0], source[chip * 4:(chip + 1) * 4, block].numpy())
+            np.testing.assert_array_equal(image[chip, block, :, 0],
+                                          source[chip * 4:(chip + 1) * 4, block].numpy())
     assert verify_rdata(tmp_path, module=module)["chip_count"] == 2

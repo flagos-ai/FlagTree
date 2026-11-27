@@ -64,9 +64,8 @@ def _recurrent_output_type(query, head_v, attrs, opname):
     lanes = tuple(attrs.get("output_lanes", ()))
     if head_v % prod(lanes):
         raise IRSchemaError(f"{opname} head_v must be divisible by output_lanes.")
-    return tensor_type(
-        VectorType(DType.BFLOAT16, lanes) if lanes else DType.BFLOAT16,
-        (1, query.shape[1].fixed_value, head_v // prod(lanes)))
+    return tensor_type(VectorType(DType.BFLOAT16, lanes) if lanes else DType.BFLOAT16,
+                       (1, query.shape[1].fixed_value, head_v // prod(lanes)))
 
 
 def _head_placement(types, opname):
@@ -93,13 +92,14 @@ def _head_placement(types, opname):
         raise IRSchemaError(f"{opname} operands must carry the head count on tensor axis {HEAD_AXIS}.")
     if any(not isinstance(policy, SBPBroadCast)
            for value in distributed
-           for axis, policy in enumerate(value.axis_policies)
-           if axis != HEAD_AXIS):
-        raise IRSchemaError(f"{opname} may split the head axis only; every other axis must stay broadcast.")
+           for axis, policy in enumerate(value.axis_policies) if axis != HEAD_AXIS):
+        raise IRSchemaError(
+            f"{opname} may split the head axis only; every other axis must stay broadcast.")
     heads = {value.axis_policies[HEAD_AXIS] for value in distributed}
     if len(heads) != 1:
-        raise IRSchemaError(f"{opname} operands must agree on head ownership; a head's state, gate and "
-                            "projections cannot be split across owners.")
+        raise IRSchemaError(
+            f"{opname} operands must agree on head ownership; a head's state, gate and "
+            "projections cannot be split across owners.")
     return placement, heads.pop()
 
 
@@ -129,8 +129,8 @@ def _head_choices(choices, opname):
 
     if not choices or any(not values for values in choices):
         return
-    plain = tuple(
-        next((value for value in values if not isinstance(value, DistributedType)), None) for values in choices)
+    plain = tuple(next((value for value in values if not isinstance(value, DistributedType)), None)
+                  for values in choices)
     if all(value is not None for value in plain):
         yield plain
     keys: dict[tuple[object, object], None] = {}
@@ -140,13 +140,12 @@ def _head_choices(choices, opname):
                 keys[(value.placement, value.axis_policies[HEAD_AXIS])] = None
     for placement, head in keys:
         candidate = tuple(
-            next((value
-                  for value in values
+            next((value for value in values
                   if isinstance(value, DistributedType) and value.placement == placement
-                  and value.axis_policies[HEAD_AXIS] == head and all(
-                      isinstance(policy, SBPBroadCast)
-                      for axis, policy in enumerate(value.axis_policies)
-                      if axis != HEAD_AXIS) and value.partial is None and value.exclusive is None), None)
+                  and value.axis_policies[HEAD_AXIS] == head
+                  and all(isinstance(policy, SBPBroadCast)
+                          for axis, policy in enumerate(value.axis_policies) if axis != HEAD_AXIS)
+                  and value.partial is None and value.exclusive is None), None)
             for values in choices)
         if any(value is None for value in candidate):
             continue
@@ -173,15 +172,13 @@ def _head_output_candidates(choices, output_type):
     for values in choices:
         for value in values:
             if (isinstance(value, DistributedType) and value.tensor.rank > HEAD_AXIS
-                    and isinstance(value.axis_policies[HEAD_AXIS], SBPSplit) and value.partial is None
-                    and value.exclusive is None and all(
-                        isinstance(policy, SBPBroadCast)
-                        for axis, policy in enumerate(value.axis_policies)
-                        if axis != HEAD_AXIS)):
+                    and isinstance(value.axis_policies[HEAD_AXIS], SBPSplit)
+                    and value.partial is None and value.exclusive is None
+                    and all(isinstance(policy, SBPBroadCast)
+                            for axis, policy in enumerate(value.axis_policies) if axis != HEAD_AXIS)):
                 keys[(value.placement, value.axis_policies[HEAD_AXIS])] = None
-    fields = tuple(
-        tensor_of(field)
-        for field in output_type.fields) if isinstance(output_type, TupleType) else (tensor_of(output_type), )
+    fields = tuple(tensor_of(field) for field in output_type.fields) if isinstance(
+        output_type, TupleType) else (tensor_of(output_type), )
     results = []
     for placement, head in keys:
         try:
@@ -200,10 +197,9 @@ def _head_input_relation(output_type, logical_input_types, opname):
     """
 
     del opname
-    fields = output_type.fields if isinstance(output_type, TupleType) else (output_type, )
-    if not fields or any(
-            not isinstance(field, DistributedType) or field.partial is not None or field.exclusive is not None
-            for field in fields):
+    fields = output_type.fields if isinstance(output_type, TupleType) else (output_type,)
+    if not fields or any(not isinstance(field, DistributedType) or field.partial is not None
+                         or field.exclusive is not None for field in fields):
         return ()
     placement = fields[0].placement
     heads = {field.axis_policies[HEAD_AXIS] for field in fields}
@@ -211,11 +207,11 @@ def _head_input_relation(output_type, logical_input_types, opname):
         return ()
     if any(not isinstance(policy, SBPBroadCast)
            for field in fields
-           for axis, policy in enumerate(field.axis_policies)
-           if axis != HEAD_AXIS):
+           for axis, policy in enumerate(field.axis_policies) if axis != HEAD_AXIS):
         return ()
     head = heads.pop()
-    if any(not isinstance(value, TensorType) or value.rank <= HEAD_AXIS for value in logical_input_types):
+    if any(not isinstance(value, TensorType) or value.rank <= HEAD_AXIS
+           for value in logical_input_types):
         return ()
     try:
         inputs = tuple(_head_typed(value, placement, head) for value in logical_input_types)
@@ -251,8 +247,7 @@ class KdaConvolution(OpDefinition):
     @classmethod
     def normalize_attrs(cls, attributes):
         attrs = super().normalize_attrs(attributes)
-        if isinstance(attrs["kernel_size"],
-                      bool) or not isinstance(attrs["kernel_size"], int) or attrs["kernel_size"] < 2:
+        if isinstance(attrs["kernel_size"], bool) or not isinstance(attrs["kernel_size"], int) or attrs["kernel_size"] < 2:
             raise IRSchemaError("KdaConvolution kernel_size must be an integer >= 2.")
         if attrs["activation"] not in {"silu"}:
             raise IRSchemaError("KdaConvolution activation must be silu.")
@@ -260,31 +255,37 @@ class KdaConvolution(OpDefinition):
 
     @classmethod
     def infer_type(cls, inputs, attrs):
-        parts = tuple(tensor_of(parameter.type_of(inputs)) for parameter in (cls.query, cls.key, cls.value))
+        parts = tuple(tensor_of(parameter.type_of(inputs))
+                      for parameter in (cls.query, cls.key, cls.value))
         state = tensor_of(cls.conv_state.type_of(inputs))
         weight = tensor_of(cls.conv_weight.type_of(inputs))
         if any(tensor.dtype != DType.BFLOAT16 for tensor in (*parts, state, weight)):
             raise IRSchemaError("KdaConvolution requires BF16 q/k/v, state and weight.")
         kernel = int(attrs["kernel_size"])
         if any(tensor.rank != 3 for tensor in parts) or state.rank != 4 or weight.rank != 4:
-            raise IRSchemaError("KdaConvolution expects rank-3 [1, heads, head_dim] q/k/v and rank-4 state/weight.")
+            raise IRSchemaError(
+                "KdaConvolution expects rank-3 [1, heads, head_dim] q/k/v and rank-4 state/weight.")
         if any(not dimension.is_fixed for tensor in (*parts, state, weight) for dimension in tensor.shape):
             raise IRSchemaError("KdaConvolution decode requires fixed head and state extents.")
         extents = tuple(dimension.fixed_value for dimension in parts[0].shape)
         if extents[0] != 1:
             raise IRSchemaError("KdaConvolution decode requires exactly one token.")
-        if any(tuple(dimension.fixed_value for dimension in tensor.shape) != extents for tensor in parts[1:]):
+        if any(tuple(dimension.fixed_value for dimension in tensor.shape) != extents
+               for tensor in parts[1:]):
             raise IRSchemaError("KdaConvolution q/k/v must share one [1, heads, head_dim] shape.")
         heads, head_dim = extents[1], extents[2]
         if tuple(dimension.fixed_value for dimension in weight.shape) != (3, heads, head_dim, kernel):
-            raise IRSchemaError("KdaConvolution weight must be [3, heads, head_dim, kernel_size] in part-major order.")
+            raise IRSchemaError(
+                "KdaConvolution weight must be [3, heads, head_dim, kernel_size] in part-major order.")
         if tuple(dimension.fixed_value for dimension in state.shape) != (3, heads, head_dim, kernel - 1):
-            raise IRSchemaError("KdaConvolution conv state must be [3, heads, head_dim, kernel_size - 1].")
+            raise IRSchemaError(
+                "KdaConvolution conv state must be [3, heads, head_dim, kernel_size - 1].")
         new_state = tensor_type(DType.BFLOAT16, (3, heads, head_dim, kernel - 1))
         out = tensor_type(DType.BFLOAT16, (1, heads, head_dim))
-        contract = _head_placement(tuple(parameter.type_of(inputs) for parameter in cls.input_parameters),
-                                   "KdaConvolution")
+        contract = _head_placement(
+            tuple(parameter.type_of(inputs) for parameter in cls.input_parameters), "KdaConvolution")
         return _head_results((out, out, out, new_state), contract)
+
 
     @classmethod
     def _input_relation(cls, choices):
@@ -314,19 +315,21 @@ class KdaConvolution(OpDefinition):
     def evaluate(cls, node, arguments, context):
         torch = context.torch
         # [3, heads, head_dim]: the published part order is q, k, v.
-        current = torch.stack(
-            [parameter.read(arguments).float().squeeze(0) for parameter in (cls.query, cls.key, cls.value)])
-        state = cls.conv_state.read(arguments).float()  # [3, heads, head_dim, kernel-1]
-        weight = cls.conv_weight.read(arguments).float()  # [3, heads, head_dim, kernel]
+        current = torch.stack([parameter.read(arguments).float().squeeze(0)
+                               for parameter in (cls.query, cls.key, cls.value)])
+        state = cls.conv_state.read(arguments).float()                 # [3, heads, head_dim, kernel-1]
+        weight = cls.conv_weight.read(arguments).float()               # [3, heads, head_dim, kernel]
         kernel = int(node.attrs["kernel_size"])
-        convolved = torch.nn.functional.silu((state * weight[..., :kernel - 1]).sum(dim=-1) +
-                                             weight[..., kernel - 1] * current).to(torch.bfloat16)
+        convolved = torch.nn.functional.silu(
+            (state * weight[..., : kernel - 1]).sum(dim=-1) + weight[..., kernel - 1] * current
+        ).to(torch.bfloat16)
         shifted = torch.cat([state[..., 1:], current.unsqueeze(-1)], dim=-1).to(torch.bfloat16)
         return (*(convolved[part].unsqueeze(0) for part in range(3)), shifted)
 
     @classmethod
     def cost(cls, node):
-        return OpCost(bytes_written=sum(tensor_nbytes(field) for field in node.type.fields), notes=("kda-short-conv", ))
+        return OpCost(bytes_written=sum(tensor_nbytes(field) for field in node.type.fields),
+                      notes=("kda-short-conv", ))
 
 
 @op_definition("nn.kda_recurrent_core", namespace="nn", functional_name="kda_recurrent_core",
@@ -364,15 +367,11 @@ class KdaRecurrentCore(OpDefinition):
 
     @classmethod
     def ir_attrs(cls, attrs):
-        return {
-            key: value
-            for key, value in attrs.items()
-            if (key != "output_lanes" or value) and (key != "query_scale" or value != 1.0)
-        }
+        return {key: value for key, value in attrs.items()
+                if (key != "output_lanes" or value) and (key != "query_scale" or value != 1.0)}
 
     @classmethod
     def infer_type(cls, inputs, attrs):
-
         def extents(value_type):
             return tuple(dim.fixed_value if dim.is_fixed else None for dim in value_type.shape)
 

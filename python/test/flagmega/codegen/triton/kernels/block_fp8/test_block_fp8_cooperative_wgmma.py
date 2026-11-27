@@ -48,7 +48,6 @@ def projection_graph(
         }
 
     class Graph(fm.Module):
-
         def forward(self):
             operands, parameters = {}, []
             for name, kind in types.items():
@@ -75,10 +74,10 @@ def projection_graph(
             if private_result:
                 dtype = fm.vector_type("float32", lanes) if lanes else fm.DType.FLOAT32
                 output = fm.F.tensors.cast(output, dtype, name="widened")
-            sentinel = self.input("sentinel", fm.tensor_type("float32", (128, )), id="sentinel")
+            sentinel = self.input("sentinel", fm.tensor_type("float32", (128,)), id="sentinel")
             copied = fm.F.math.add(sentinel, sentinel)
             if placement:
-                kind = fm.DistributedType(sentinel.type, (fm.SBP.split_contiguous(axes, 1), ), placement)
+                kind = fm.DistributedType(sentinel.type, (fm.SBP.split_contiguous(axes, 1),), placement)
                 local = fm.F.distributed.force_boxing(sentinel, kind)
                 copied = fm.F.distributed.force_boxing(fm.F.math.add(local, local), sentinel.type)
             self.function("main", (*parameters, sentinel), (output, copied))
@@ -95,18 +94,22 @@ def projection_target(cooperative=True, warps=8):
     target = NvidiaSm90Target()
     base = target.triton_implementation_model
     implementations = tuple(
-        replace(value, parameters={**value.parameters, "compute_num_warps": warps, "scaled_accumulation": "fma"}
-                ) if value.id == "tir.block_fp8.mma" else value for value in base.implementations)
+        replace(value, parameters={**value.parameters, "compute_num_warps": warps, "scaled_accumulation": "fma"})
+        if value.id == "tir.block_fp8.mma"
+        else value
+        for value in base.implementations
+    )
     if cooperative:
         implementations += tuple(
             replace(value, parameters={**value.parameters, "compute_num_warps": warps})
-            for value in block_fp8_cooperative_implementations())
+            for value in block_fp8_cooperative_implementations()
+        )
     target.triton_implementation_model = replace(
         base,
         implementations=implementations,
         preferences={
             **base.preferences,
-            "block_fp8": ((IDENTITY, ) if cooperative else ()) + ("tir.block_fp8.mma", "tir.block_fp8.simt"),
+            "block_fp8": ((IDENTITY,) if cooperative else ()) + ("tir.block_fp8.mma", "tir.block_fp8.simt"),
         },
     )
     return target
@@ -124,13 +127,13 @@ def compile_projection(graph, placement=None, cooperative=True, warps=8):
 
 def test_projection_workspace_and_effect_contract(tmp_path):
     module = compile_projection(projection_graph())
-    (dispatch, ) = (d.dispatch for d in module.kernel_definitions if d.dispatch.microkernel.family == "block_fp8")
+    (dispatch,) = (d.dispatch for d in module.kernel_definitions if d.dispatch.microkernel.family == "block_fp8")
     assert dispatch.microkernel.implementation == IDENTITY
     assert dispatch.microkernel.facts["source_memory_scope"] == "chip"
     assert dispatch.microkernel.facts["internal_grid_barriers"] == 1
     assert [w.type for w in dispatch.workspaces] == [
         fm.tensor_type("float32", (2, 72)),
-        fm.tensor_type("float32", (2, )),
+        fm.tensor_type("float32", (2,)),
     ]
     assert all(w.lifetime.value == "invocation" and w.memory_space == "workspace" for w in dispatch.workspaces)
     assert all(effect.scope.value == "chip" for name, effect in dispatch.memory_effects if name in dispatch.arguments)
@@ -147,7 +150,6 @@ def test_projection_ordinary_codegen(tmp_path):
 
 
 class TensorCheckpoint:
-
     def __init__(self, values):
         self.values = values
 
@@ -169,7 +171,8 @@ def projection_values(torch, graph):
             values[node.id] = (torch.rand(shape, generator=rng) + 0.125) * 2.0**-12
         else:
             values[node.id] = (torch.randint(-16, 17, (*shape, *lanes), generator=rng).float() / 16).to(
-                getattr(torch, dtype.value))
+                getattr(torch, dtype.value)
+            )
     return values
 
 
@@ -177,7 +180,7 @@ def projection_values(torch, graph):
     "n,k,lanes,warps,distributed",
     [
         (72, 256, (), 8, False),
-        (1024, 4096, (8, ), 8, True),
+        (1024, 4096, (8,), 8, True),
         (5120, 1536, (2, 4), 16, True),
     ],
 )
@@ -206,11 +209,12 @@ def test_projection_complete_stage_bitwise(tmp_path, n, k, lanes, warps, distrib
         for spec in runtime.external_arguments:
             if spec["role"] == "result":
                 is_projection = spec["value"] == module.function_map[module.entry].outputs[0]
-                shape, dtype = (((1, n // prod(lanes), *lanes), torch.bfloat16) if is_projection else
-                                ((128, ), torch.float32))
-                storage = torch.full((prod(shape) + 64, ), 123.0, dtype=dtype, device="cuda")
-                current[spec["value"]] = storage[:prod(shape)].reshape(shape)
-                guards.append(storage[prod(shape):])
+                shape, dtype = (
+                    ((1, n // prod(lanes), *lanes), torch.bfloat16) if is_projection else ((128,), torch.float32)
+                )
+                storage = torch.full((prod(shape) + 64,), 123.0, dtype=dtype, device="cuda")
+                current[spec["value"]] = storage[: prod(shape)].reshape(shape)
+                guards.append(storage[prod(shape) :])
         runtimes.append(runtime)
         results.append(current)
     device_values = {name: value.cuda() for name, value in values.items() if name != "weight"}
@@ -257,9 +261,10 @@ def test_projection_candidate_keeps_its_numerical_contract(quantization, block_k
 def projection_raw(request):
     from triton.flagmega.codegen.triton.call_abi import describe_kernel_call_abis
 
-    placement = (fm.Placement((4, 8, 16), "cyx", "cbb") if request.param == "cbb" else fm.Placement(
-        (8, 4, 16), "ycx", "bcb"))
-    graph = projection_graph(n=4096, k=4096, lanes=(8, ), placement=placement, readonly=True)
+    placement = (
+        fm.Placement((4, 8, 16), "cyx", "cbb") if request.param == "cbb" else fm.Placement((8, 4, 16), "ycx", "bcb")
+    )
+    graph = projection_graph(n=4096, k=4096, lanes=(8,), placement=placement, readonly=True)
     module = compile_projection(graph, placement)
     raw = next(call for call in describe_kernel_call_abis(module) if call["family"] == "block_fp8")
     for group in ("inputs", "outputs", "workspaces"):
@@ -283,12 +288,12 @@ def test_projection_chip_addresses_follow_the_actual_compact_abi(projection_raw,
     assert local_n == 8 and k == 4096
 
     class Pointer(int):
-
         def to(self, dtype):
             return self
 
-    tl = SimpleNamespace(pointer_type=lambda dtype: None, float8e4nv=None, bfloat16=None, float32=None, int64=None,
-                         uint8=None)
+    tl = SimpleNamespace(
+        pointer_type=lambda dtype: None, float8e4nv=None, bfloat16=None, float32=None, int64=None, uint8=None
+    )
     for tile in (0, 15):
         rows = tile * 64 + torch.arange(64)
         ks = 31 * 128 + torch.arange(128)
@@ -306,19 +311,26 @@ def test_projection_chip_addresses_follow_the_actual_compact_abi(projection_raw,
                 for binding in argument["buffers"]:
                     env[binding["runtime_argument"]] = Pointer(0)
         actual = eval(call["weight_peer_pointer"], {}, env) + eval(call["weight_peer_offset"], {}, env)
-        expected = (weight["pool_byte_offset"] +
-                    (rows[:, None] // local_n) * weight["component_stride_scalar_elements"] +
-                    (rows[:, None] % local_n) * k + ks[None, :])
+        expected = (
+            weight["pool_byte_offset"]
+            + (rows[:, None] // local_n) * weight["component_stride_scalar_elements"]
+            + (rows[:, None] % local_n) * k
+            + ks[None, :]
+        )
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
         env["local_n_offsets"] = torch.arange(16)
         env["_fm_global_n"] = eval(call["global_n"], {}, env)
-        expected_n = ((chip * 128 + 7 * 16 + 9) * local_n + torch.arange(16) if levels == "cbb" else
-                      ((7 * 4 + chip) * 16 + 9) * local_n + torch.arange(16))
+        expected_n = (
+            (chip * 128 + 7 * 16 + 9) * local_n + torch.arange(16)
+            if levels == "cbb"
+            else ((7 * 4 + chip) * 16 + 9) * local_n + torch.arange(16)
+        )
         torch.testing.assert_close(env["_fm_global_n"], expected_n, rtol=0, atol=0)
         env["_fm_merge_k"] = torch.arange(32)
         actual_scale = eval(call["merge_scale_offset"], {}, env)
-        torch.testing.assert_close(actual_scale, expected_n[None, :] // 128 * 32 + torch.arange(32)[:, None], rtol=0,
-                                   atol=0)
+        torch.testing.assert_close(
+            actual_scale, expected_n[None, :] // 128 * 32 + torch.arange(32)[:, None], rtol=0, atol=0
+        )
 
 
 @pytest.mark.parametrize(
@@ -352,14 +364,14 @@ def test_projection_keeps_combined_scale_fma_cancellation(tmp_path):
     from python.test.flagmega.codegen.triton.kernels.block_fp8.test_dequantized_runtime import _run
 
     class Cancellation(fm.Module):
-
         def forward(self):
             x = self.input("x", fm.tensor_type("bfloat16", (1, 256)), id="x")
             w = self.input("w", fm.tensor_type("float8_e4m3fn", (16, 256)), id="w")
             s = self.input("s", fm.tensor_type("float32", (1, 2)), id="s")
-            output = fm.F.math.block_scaled_matmul(x, w, s, weight_block_n=16, weight_block_k=128,
-                                                   activation_quantization="dynamic_fp8_sm90")
-            self.function("main", (x, w, s), (output, ))
+            output = fm.F.math.block_scaled_matmul(
+                x, w, s, weight_block_n=16, weight_block_k=128, activation_quantization="dynamic_fp8_sm90"
+            )
+            self.function("main", (x, w, s), (output,))
 
     module = compile_projection(Cancellation(dialect="nn", stage="frozen_constants", entry="main").build())
     path = write_artifact(module, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True)

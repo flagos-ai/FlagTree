@@ -62,13 +62,21 @@ from triton.flagmega.ir.tir import TIRNode
 from triton.flagmega.ir.types import DType, MaskVectorType, PointerType, VectorType
 from triton.flagmega.ir.verify import verify_module
 
-_FUSION_NAMES: ContextVar[Mapping[int, str]] = ContextVar("flagmega_python_fusions", default=MappingProxyType({}))
+_FUSION_NAMES: ContextVar[Mapping[int, str]] = ContextVar(
+    "flagmega_python_fusions", default=MappingProxyType({})
+)
 _FUSION_SIGNATURE: ContextVar[tuple] = ContextVar("flagmega_python_fusion_signature", default=())
 
-_TYPE_ALIASES: ContextVar[Mapping[IRType, str]] = ContextVar("flagmega_python_ir_aliases", default=MappingProxyType({}))
-_TYPE_ALIAS_SIGNATURE: ContextVar[tuple[tuple[int, str], ...]] = ContextVar("flagmega_python_ir_type_alias_signature",
-                                                                            default=())
-_TYPE_COUNT_FRAGMENTS: dict[int, tuple[ReferenceType[object], tuple[tuple[IRType, int], ...]]] = {}
+
+_TYPE_ALIASES: ContextVar[Mapping[IRType, str]] = ContextVar(
+    "flagmega_python_ir_aliases", default=MappingProxyType({})
+)
+_TYPE_ALIAS_SIGNATURE: ContextVar[tuple[tuple[int, str], ...]] = ContextVar(
+    "flagmega_python_ir_type_alias_signature", default=()
+)
+_TYPE_COUNT_FRAGMENTS: dict[
+    int, tuple[ReferenceType[object], tuple[tuple[IRType, int], ...]]
+] = {}
 _PYTHON_EXPR_FRAGMENTS: dict[
     tuple[str, int, tuple[tuple[int, str], ...]],
     tuple[ReferenceType[object], str],
@@ -165,13 +173,11 @@ def module_source(
 
     aliases = _collect_type_aliases(module)
     fusions = {}
-
     def collect_fusion(body):
         if id(body) not in fusions:
             for nested in iter_fusions(body.nodes):
                 collect_fusion(nested)
             fusions[id(body)] = body
-
     for body in iter_fusions(module):
         collect_fusion(body)
     fusion_names = {key: f"fusion_{index}" for index, key in enumerate(fusions)}
@@ -179,7 +185,8 @@ def module_source(
     fusion_signature = _FUSION_SIGNATURE.set(_expression_signature(tuple(fusion_names.items())))
     alias_token = _TYPE_ALIASES.set(aliases)
     signature_token = _TYPE_ALIAS_SIGNATURE.set(
-        _expression_signature(tuple((id(value), name) for value, name in aliases.items())))
+        _expression_signature(tuple((id(value), name) for value, name in aliases.items()))
+    )
     try:
         return _module_source(module, dump_info=dump_info, _verify=_verify, fusions=tuple(fusions.values()))
     finally:
@@ -190,11 +197,11 @@ def module_source(
 
 
 def _module_source(
-        module: IRModule,
-        *,
-        dump_info: FunctionDumpInfo | None = None,
-        _verify: bool = True,
-        fusions: tuple[Fusion, ...] = (),
+    module: IRModule,
+    *,
+    dump_info: FunctionDumpInfo | None = None,
+    _verify: bool = True,
+    fusions: tuple[Fusion, ...] = (),
 ) -> str:
     """Emit a real Python graph definition, never a data-dictionary decoder."""
 
@@ -211,8 +218,10 @@ def _module_source(
         f"FLAGMEGA_IR_VERSION = {IR_VERSION}",
         f"DIALECT = {module.dialect!r}",
         f"STAGE = {module.stage!r}",
-        ("PARENT_SEMANTIC_HASH = "
-         f"{(module.provenance[-1].parent_semantic_hash if module.provenance else None)!r}"),
+        (
+            "PARENT_SEMANTIC_HASH = "
+            f"{(module.provenance[-1].parent_semantic_hash if module.provenance else None)!r}"
+        ),
     ]
     if dump_info is not None:
         if len(module.functions) != 1 or module.functions[0].name != dump_info.function_name:
@@ -259,18 +268,18 @@ def _module_source(
     lines.extend(_indent(init_expr, 8).splitlines())
     lines.extend(("", "    def forward(self) -> None:"))
     for kernel in module.kernel_definitions:
-        expression = _call_expr("self.kernel_definition", positional=(_tir_expr(kernel), ))
+        expression = _call_expr("self.kernel_definition", positional=(_tir_expr(kernel),))
         lines.extend(_indent(expression, 8).splitlines())
     for function in module.prim_functions:
         expression = _call_expr(
             "self.prim_function",
-            positional=(_tir_expr(function), ),
+            positional=(_tir_expr(function),),
         )
         lines.extend(_indent(expression, 8).splitlines())
     for function in module.execution_functions:
         expression = _call_expr(
             "self.execution_function",
-            positional=(_tir_expr(function), ),
+            positional=(_tir_expr(function),),
         )
         lines.extend(_indent(expression, 8).splitlines())
     for node in module.nodes:
@@ -285,7 +294,7 @@ def _module_source(
                 _sequence_expr([names[value] for value in function.parameters], "[", "]"),
                 _sequence_expr([names[value] for value in function.outputs], "[", "]"),
             ),
-            keywords=(("attrs", _literal_expr(function.attrs)), ) if function.attrs else (),
+            keywords=(("attrs", _literal_expr(function.attrs)),) if function.attrs else (),
         )
         lines.extend(_indent(expression, 8).splitlines())
     build_expr = _call_expr(
@@ -314,7 +323,11 @@ def _node_expr(node: Node, names: Mapping[str, str]) -> str:
             keywords=keywords,
         )
     weight_keys = {"name", "source", "key", "source_hash"}
-    if (node.op == "builtin.weight" and {"name", "source", "key"}.issubset(attrs) and set(attrs).issubset(weight_keys)):
+    if (
+        node.op == "builtin.weight"
+        and {"name", "source", "key"}.issubset(attrs)
+        and set(attrs).issubset(weight_keys)
+    ):
         keywords = [
             ("source", repr(str(attrs["source"]))),
             ("key", repr(str(attrs["key"]))),
@@ -343,9 +356,11 @@ def _functional_node_expr(node: Node, names: Mapping[str, str]) -> str:
         keywords.update({key: node.attrs[key] for key in ("pre_ops", "post_ops") if key in node.attrs})
     return _call_expr(
         "F.with_ops" if fused else call.function,
-        positional=((call.function, ) if fused else
-                    ()) + tuple(_python_value_expr(value, names) for value in call.positional),
-        keywords=[(name, _python_value_expr(value, names)) for name, value in keywords.items()],
+        positional=((call.function,) if fused else ()) + tuple(_python_value_expr(value, names) for value in call.positional),
+        keywords=[
+            (name, _python_value_expr(value, names))
+            for name, value in keywords.items()
+        ],
     )
 
 
@@ -355,7 +370,8 @@ def _fusion_source(body: Fusion) -> list[str]:
         keywords.append(("parameter_name", repr(body.parameter.attrs["name"])))
     if body.parameter.metadata:
         keywords.append(("parameter_metadata", _literal_expr(body.parameter.metadata)))
-    decorator = _call_expr("fm.fusion", positional=(_type_expr(body.input_type), ), keywords=keywords)
+    decorator = _call_expr("fm.fusion", positional=(_type_expr(body.input_type),),
+                           keywords=keywords)
     lines = ("@" + decorator).splitlines()
     names = _node_variable_names_for(body.nodes)
     lines.append(f"def {_FUSION_NAMES.get()[id(body)]}({names[body.parameter.id]}):")
@@ -385,8 +401,7 @@ def _python_value_expr(value: object, names: Mapping[str, str]) -> str:
 
 
 def _mapping_python_value_expr(value: Mapping[object, object], names: Mapping[str, str]) -> str:
-    items = [(repr(str(key)), _python_value_expr(item, names))
-             for key, item in sorted(value.items(), key=lambda item: str(item[0]))]
+    items = [(repr(str(key)), _python_value_expr(item, names)) for key, item in sorted(value.items(), key=lambda item: str(item[0]))]
     return "{" + ", ".join(f"{key}: {item}" for key, item in items) + "}"
 
 
@@ -421,24 +436,28 @@ def _type_expr(value: IRType, *, expand_alias: bool = False) -> str:
     if isinstance(value, AnyType):
         return "fm.AnyType()"
     if isinstance(value, InvalidType):
-        return _call_expr("fm.InvalidType", positional=(repr(value.reason), ))
+        return _call_expr("fm.InvalidType", positional=(repr(value.reason),))
     if isinstance(value, NoneType):
         return "fm.NoneType()"
     if isinstance(value, TensorType):
         keywords = ()
         if value.layout != TensorLayout():
-            keywords = (("layout", _layout_expr(value.layout)), )
+            keywords = (("layout", _layout_expr(value.layout)),)
         return _call_expr(
             "fm.tensor_type",
-            positional=(_data_type_expr(value.dtype),
-                        _sequence_expr([_dimension_expr(item) for item in value.shape], "[", "]")),
+            positional=(_data_type_expr(value.dtype), _sequence_expr([_dimension_expr(item) for item in value.shape], "[", "]")),
             keywords=keywords,
         )
     if isinstance(value, TupleType):
-        keywords = () if not value.is_variadic else (("is_variadic", "True"), )
+        keywords = () if not value.is_variadic else (("is_variadic", "True"),)
         return _call_expr(
             "fm.TupleType",
-            positional=(_tuple_expr([_type_expr(item, expand_alias=expand_alias) for item in value.fields]), ),
+            positional=(
+                _tuple_expr([
+                    _type_expr(item, expand_alias=expand_alias)
+                    for item in value.fields
+                ]),
+            ),
             keywords=keywords,
         )
     if isinstance(value, CallableType):
@@ -446,15 +465,20 @@ def _type_expr(value: IRType, *, expand_alias: bool = False) -> str:
             "fm.CallableType",
             positional=(
                 _type_expr(value.return_type, expand_alias=expand_alias),
-                _tuple_expr([_type_expr(item, expand_alias=expand_alias) for item in value.parameters]),
+                _tuple_expr([
+                    _type_expr(item, expand_alias=expand_alias)
+                    for item in value.parameters
+                ]),
             ),
         )
     if isinstance(value, RefType):
-        fields = _tuple_expr(
-            [_tuple_expr((
+        fields = _tuple_expr([
+            _tuple_expr((
                 repr(name),
                 _type_expr(field, expand_alias=expand_alias),
-            )) for name, field in value.fields])
+            ))
+            for name, field in value.fields
+        ])
         return _call_expr("fm.RefType", positional=(repr(value.name), fields))
     if isinstance(value, DistributedType):
         keywords = []
@@ -487,7 +511,9 @@ def _collect_type_aliases(module: IRModule) -> dict[IRType, str]:
         counts[value] = counts.get(value, 0) + count
     return _TypeAliases({
         value: f"TYPE_{index:04d}"
-        for index, value in enumerate(value for value, count in counts.items() if count >= 2)
+        for index, value in enumerate(
+            value for value, count in counts.items() if count >= 2
+        )
     })
 
 
@@ -504,8 +530,10 @@ def _type_count_fragment(value: object) -> tuple[tuple[IRType, int], ...]:
     if value is None or type(value) in (str, int, float, bool):
         return ()
     if isinstance(value, IRType):
-        return ((value, 1), )
-    cacheable = isinstance(value, Mapping) or (is_dataclass(value) and not isinstance(value, type))
+        return ((value, 1),)
+    cacheable = isinstance(value, Mapping) or (
+        is_dataclass(value) and not isinstance(value, type)
+    )
     identity = id(value)
     if cacheable:
         cached = _TYPE_COUNT_FRAGMENTS.get(identity)
@@ -534,8 +562,9 @@ def _type_count_fragment(value: object) -> tuple[tuple[IRType, int], ...]:
             merge(_type_count_fragment(getattr(value, field.name)))
     result = tuple(counts.values())
     if cacheable:
-
-        def discard(reference: ReferenceType[object], *, key: int = identity) -> None:
+        def discard(
+            reference: ReferenceType[object], *, key: int = identity
+        ) -> None:
             current = _TYPE_COUNT_FRAGMENTS.get(key)
             if current is not None and current[0] is reference:
                 _TYPE_COUNT_FRAGMENTS.pop(key, None)
@@ -563,8 +592,7 @@ def _sbp_expr(value: SBP) -> str:
     if isinstance(value, SBPBroadCast):
         return "fm.SBP.broadcast()"
     if isinstance(value, SBPExclusive):
-        owner = "None" if value.owner_coordinates is None else _tuple_expr(
-            [repr(item) for item in value.owner_coordinates])
+        owner = "None" if value.owner_coordinates is None else _tuple_expr([repr(item) for item in value.owner_coordinates])
         return _call_expr(
             "fm.SBP.exclusive",
             positional=(_tuple_expr([repr(item) for item in value.axes]), owner),
@@ -605,7 +633,7 @@ def _dimension_expr(value: Dimension) -> str:
             keywords.append(("minimum", repr(value.minimum)))
         if value.maximum is not None:
             keywords.append(("maximum", repr(value.maximum)))
-        return _call_expr("fm.dim", positional=(repr(value.name), ), keywords=keywords)
+        return _call_expr("fm.dim", positional=(repr(value.name),), keywords=keywords)
     if isinstance(value, UnknownDim):
         return "fm.unknown_dim()"
     if isinstance(value, DimExpr):
@@ -620,7 +648,7 @@ def _data_type_expr(value) -> str:
     if isinstance(value, DType):
         return repr(value.value)
     if isinstance(value, PointerType):
-        return _call_expr("fm.PointerType", positional=(_data_type_expr(value.elem_type), ))
+        return _call_expr("fm.PointerType", positional=(_data_type_expr(value.elem_type),))
     if isinstance(value, MaskVectorType):
         return _call_expr(
             "fm.MaskVectorType",
@@ -662,7 +690,7 @@ def _tir_expr(value: object) -> str:
     if isinstance(value, MemSpan):
         return _call_expr(
             "T.mem_span",
-            positional=(_tir_expr(value.buffer), ),
+            positional=(_tir_expr(value.buffer),),
             keywords=(
                 ("start", _dimension_expr(value.start)),
                 ("size", _dimension_expr(value.size)),
@@ -702,19 +730,20 @@ def _tir_node_expr(value: TIRNode) -> str:
     constructor = "return_" if value.kind == "return" else value.kind
     return _call_expr(
         f"T.{constructor}",
-        keywords=tuple((field.name, _tir_expr(getattr(value, field.name))) for field in fields(value)),
+        keywords=tuple(
+            (field.name, _tir_expr(getattr(value, field.name)))
+            for field in fields(value)
+        ),
     )
 
 
 def _memory_effect_expr(value: MemoryEffect) -> str:
     if value.field_effects:
-        return _call_expr(
-            "fm.MemoryEffect", keywords=(
-                ("mode", f"fm.MemoryAccessMode.{value.mode.name}"),
-                ("field_effects",
-                 _tuple_expr(
-                     [_tuple_expr((repr(name), _memory_effect_expr(effect))) for name, effect in value.field_effects])),
-            ))
+        return _call_expr("fm.MemoryEffect", keywords=(
+            ("mode", f"fm.MemoryAccessMode.{value.mode.name}"),
+            ("field_effects", _tuple_expr([_tuple_expr((repr(name), _memory_effect_expr(effect)))
+                                          for name, effect in value.field_effects])),
+        ))
     return _call_expr(
         "fm.MemoryEffect",
         keywords=(
@@ -752,7 +781,7 @@ def _candidate_expr(value: Candidate) -> str:
         value,
         lambda: _call_expr(
             "fm.Candidate",
-            positional=(repr(value.id), ),
+            positional=(repr(value.id),),
             keywords=(
                 ("parameters", _literal_expr(value.parameters)),
                 ("facts", _literal_expr(value.facts)),
@@ -829,9 +858,9 @@ def _dump_info_expr(value: FunctionDumpInfo) -> str:
 
 
 def _call_expr(
-        function: str,
-        positional: tuple[str, ...] | list[str] = (),
-        keywords: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+    function: str,
+    positional: tuple[str, ...] | list[str] = (),
+    keywords: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
 ) -> str:
     arguments = list(positional) + [f"{name}={expression}" for name, expression in keywords]
     if not arguments:
@@ -880,7 +909,7 @@ def _sequence_expr(
 def _bank_field_program_expr(value: Any) -> str:
     # A program is replayed from its plain data form so an edited checkpoint
     # keeps one spelling of the transform instead of two.
-    return _call_expr("fm.BankFieldProgram.from_data", positional=(repr(value.to_data()), ))
+    return _call_expr("fm.BankFieldProgram.from_data", positional=(repr(value.to_data()),))
 
 
 def _bank_field_expr(value: Any) -> str:
@@ -890,7 +919,8 @@ def _bank_field_expr(value: Any) -> str:
     if value.program is not None:
         keywords.append(("program", _bank_field_program_expr(value.program)))
         keywords.append(("source_types", _tuple_expr([_type_expr(item) for item in value.source_types])))
-    return _call_expr("fm.BankField", positional=(repr(value.name), _type_expr(value.type)), keywords=tuple(keywords))
+    return _call_expr("fm.BankField", positional=(repr(value.name), _type_expr(value.type)),
+                      keywords=tuple(keywords))
 
 
 def _literal_expr(value: Any) -> str:
@@ -905,10 +935,10 @@ def _literal_expr(value: Any) -> str:
     from triton.flagmega.ir.parameter_bank import BankField, BankFieldProgram, ParameterBankSchema
     if isinstance(value, LogicalExpr):
         # Replay from plain data so one predicate has a single spelling.
-        return _call_expr("fm.logical_from_data", positional=(repr(value.to_data()), ))
+        return _call_expr("fm.logical_from_data", positional=(repr(value.to_data()),))
     if isinstance(value, Dimension):
         # Replay from plain data so one expression has a single spelling.
-        return _call_expr("fm.dimension_from_data", positional=(repr(value.to_data()), ))
+        return _call_expr("fm.dimension_from_data", positional=(repr(value.to_data()),))
     if isinstance(value, ParameterBankSchema):
         return _call_expr(
             "fm.ParameterBankSchema",
@@ -1074,8 +1104,9 @@ def _load_dump_directory(directory: Path) -> IRModule:
         module, namespace = _execute_checkpoint(checkpoint)
         info = namespace.get("DUMP_INFO")
         if not isinstance(info, FunctionDumpInfo):
-            raise CheckpointError(f"Function checkpoint {checkpoint} must define DUMP_INFO: fm.FunctionDumpInfo "
-                                  "when loaded as a directory.")
+            raise CheckpointError(
+                f"Function checkpoint {checkpoint} must define DUMP_INFO: fm.FunctionDumpInfo "
+                "when loaded as a directory.")
         if len(module.functions) != 1 or module.functions[0].name != info.function_name:
             raise CheckpointError(
                 f"Function checkpoint {checkpoint} does not match DUMP_INFO function {info.function_name!r}.")
@@ -1083,8 +1114,9 @@ def _load_dump_directory(directory: Path) -> IRModule:
 
     first_info, first_module, _ = loaded[0]
     if first_info.function_count != len(loaded):
-        raise CheckpointError(f"IR dump directory {directory} expected {first_info.function_count} function files, "
-                              f"found {len(loaded)}.")
+        raise CheckpointError(
+            f"IR dump directory {directory} expected {first_info.function_count} function files, "
+            f"found {len(loaded)}.")
     common_info = (
         first_info.module_entry,
         first_info.function_count,
@@ -1108,24 +1140,24 @@ def _load_dump_directory(directory: Path) -> IRModule:
     names: set[str] = set()
     for info, module, checkpoint in loaded:
         if (
-                info.module_entry,
-                info.function_count,
-                info.module_semantic_hash,
-                info.node_order,
-                info.selection_point_order,
-                info.selection_order,
+            info.module_entry,
+            info.function_count,
+            info.module_semantic_hash,
+            info.node_order,
+            info.selection_point_order,
+            info.selection_order,
         ) != common_info:
             raise CheckpointError(f"Function checkpoint {checkpoint} has conflicting dump identity/order metadata.")
         if (
-                module.ir_version,
-                module.dialect,
-                module.stage,
-                module.metadata,
-                module.constant_recipes,
-                module.provenance,
-                module.prim_functions,
-                module.kernel_definitions,
-                module.execution_functions,
+            module.ir_version,
+            module.dialect,
+            module.stage,
+            module.metadata,
+            module.constant_recipes,
+            module.provenance,
+            module.prim_functions,
+            module.kernel_definitions,
+            module.execution_functions,
         ) != common_module:
             raise CheckpointError(f"Function checkpoint {checkpoint} has conflicting module metadata.")
         if info.function_index in indices or info.function_name in names:
@@ -1161,7 +1193,8 @@ def _load_dump_directory(directory: Path) -> IRModule:
             checkpoint,
         )
     if first_info.module_entry not in {function.name for function in functions}:
-        raise CheckpointError(f"IR dump directory {directory} entry function {first_info.module_entry!r} is missing.")
+        raise CheckpointError(
+            f"IR dump directory {directory} entry function {first_info.module_entry!r} is missing.")
 
     merged_metadata = dict(first_module.metadata)
     merged_metadata.pop("_dump_function_fragment", None)
@@ -1180,9 +1213,12 @@ def _load_dump_directory(directory: Path) -> IRModule:
         constant_recipes=first_module.constant_recipes,
         selection_points=tuple(
             points_by_id[key]
-            for key in _stable_order(points_by_id, first_info.selection_point_order, observed_points)),
-        selections=tuple(selections_by_id[key]
-                         for key in _stable_order(selections_by_id, first_info.selection_order, observed_selections)),
+            for key in _stable_order(points_by_id, first_info.selection_point_order, observed_points)
+        ),
+        selections=tuple(
+            selections_by_id[key]
+            for key in _stable_order(selections_by_id, first_info.selection_order, observed_selections)
+        ),
         provenance=first_module.provenance,
         ir_version=first_module.ir_version,
     )

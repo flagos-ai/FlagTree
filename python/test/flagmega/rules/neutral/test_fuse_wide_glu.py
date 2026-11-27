@@ -10,7 +10,6 @@ from triton.flagmega.passes.target_independent import decompose_complex_ops
 
 
 class WideGlu(fm.Module):
-
     def __init__(self, *, reverse=False, rounded=False, different_input=False, reduction_order="relaxed"):
         super().__init__(dialect="high_level", stage="imported", entry="main")
         self.reverse, self.rounded, self.different_input = reverse, rounded, different_input
@@ -22,15 +21,14 @@ class WideGlu(fm.Module):
         gate = self.input("gate", fm.tensor_type("bfloat16", (32, 16)))
         up = self.input("up", gate.type)
         g = fm.F.math.matmul(x, gate, transpose_b=True, reduction_order=self.reduction_order)
-        u = fm.F.math.matmul(y if self.different_input else x, up, transpose_b=True,
-                             reduction_order=self.reduction_order)
+        u = fm.F.math.matmul(y if self.different_input else x, up, transpose_b=True, reduction_order=self.reduction_order)
         g = fm.F.math.silu(fm.F.tensors.cast(g, dtype="float32"))
         if self.rounded:
             g = fm.F.tensors.cast(fm.F.tensors.cast(g, dtype="bfloat16"), dtype="float32")
         u = fm.F.tensors.cast(u, dtype="float32")
         product = fm.F.math.mul(u, g) if self.reverse else fm.F.math.mul(g, u)
         output = fm.F.tensors.cast(product, dtype="bfloat16", name="output")
-        self.function("main", (x, y, gate, up), (output, ))
+        self.function("main", (x, y, gate, up), (output,))
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -40,12 +38,9 @@ def test_normal_pipeline_fuses_wide_glu_without_changing_rounding(reverse, tmp_p
     assert result.node_map["output"].op == "nn.dense_matmul_glu"
     assert result.node_map["output"].attrs["round_activation"] is False
     generator = torch.Generator().manual_seed(71)
-    inputs = {
-        source.node_map[name].attrs["name"]:
-        torch.randn(tuple(dim.fixed_value
-                          for dim in source.node_map[name].type.shape), generator=generator).bfloat16()
-        for name in source.functions[0].parameters
-    }
+    inputs = {source.node_map[name].attrs["name"]:
+              torch.randn(tuple(dim.fixed_value for dim in source.node_map[name].type.shape), generator=generator).bfloat16()
+              for name in source.functions[0].parameters}
     evaluator = TorchEvaluator(DictWeightResolver({}))
     torch.testing.assert_close(evaluator.run(result, inputs)[0], evaluator.run(source, inputs)[0], rtol=0, atol=0)
     assert fm.load_module(fm.emit_module(result, tmp_path / "glu.py")) == result

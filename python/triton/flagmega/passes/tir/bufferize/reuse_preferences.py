@@ -50,8 +50,13 @@ def _reallocatable_reuse_pair(plan, previous, current):
     left = plan.buffer_map[previous.buffer].mem_span.buffer
     right = plan.buffer_map[current.buffer].mem_span.buffer
     space = plan.memory_space_map[left.memory_space]
-    if (left.id == right.id or left.function != right.function or left.memory_space != right.memory_space
-            or not space.supports_lifetime_reuse or space.sharing_scope is not MemorySharingScope.CHIP):
+    if (
+        left.id == right.id
+        or left.function != right.function
+        or left.memory_space != right.memory_space
+        or not space.supports_lifetime_reuse
+        or space.sharing_scope is not MemorySharingScope.CHIP
+    ):
         # Semantic aliases, references and producer/consumer owner changes
         # remain governed by the original effects and synchronization analysis.
         return None
@@ -96,8 +101,8 @@ def dominates_memory_schedule(module, candidate, baseline, *, bytes_budget: int 
             # all CTAs, rendezvous through the chip leader, then acquire on
             # all CTAs. These are operations, not fitted latency weights.
             device_grids = 2 if protocol is None else protocol.device_grid_barriers
-            primitives = ((("grid", ()), ) * device_grids + (("device", ()), ) if event.scope == "device" else
-                          ((event.scope, event.axis_group_axes), ))
+            primitives = ((("grid", ()),) * device_grids + (("device", ()),)
+                          if event.scope == "device" else ((event.scope, event.axis_group_axes),))
             for scope, axes in primitives:
                 count[0] += scope == "device"
                 count[1] += scope == "device" or scope == "grid" and not axes
@@ -110,11 +115,8 @@ def dominates_memory_schedule(module, candidate, baseline, *, bytes_budget: int 
         return result
 
     before, after = counts(baseline), counts(candidate)
-    deltas = {
-        name: tuple(new - old
-                    for old, new in zip(before[name], after[name]))
-        for name in before.keys() | after.keys()
-    }
+    deltas = {name: tuple(new - old for old, new in zip(before[name], after[name]))
+              for name in before.keys() | after.keys()}
     bounds = entry_synchronization_delta_bounds(module, deltas)
     return all(upper <= 0 for _, upper in bounds) and any(lower < 0 for lower, _ in bounds)
 

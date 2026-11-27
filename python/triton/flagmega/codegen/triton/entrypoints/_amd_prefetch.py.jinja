@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% macro prefetch_event(event) %}
+{% macro prefetch_event(event) %}
     # prefetch the next invocation's {{ event.call }} weight slab
     if {{ event.guard }}:
         _flagmega_amd_prefetch_slab({{ event.base }} + shard_index * {{ event.slab_bytes }}, {{ event.chunks }})

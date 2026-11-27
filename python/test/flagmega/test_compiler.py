@@ -77,8 +77,12 @@ def test_compiler_completes_without_agent_and_records_defaults(tmp_path):
     freeze = tmp_path / "04_TIRPass" / "03_FreezeConstantIslands"
     tuple_boxing = tmp_path / "04_TIRPass" / "05_LowerTupleBoxing"
     lower = tmp_path / "04_TIRPass" / "07_LowerSelectedTIR"
-    canonicalize_qkv = (tmp_path / "04_TIRPass" / "08_CanonicalizePackedQKVWeights")
-    select_microkernels = (tmp_path / "04_TIRPass" / "10_SelectTIRMicroKernels")
+    canonicalize_qkv = (
+        tmp_path / "04_TIRPass" / "08_CanonicalizePackedQKVWeights"
+    )
+    select_microkernels = (
+        tmp_path / "04_TIRPass" / "10_SelectTIRMicroKernels"
+    )
     assert (lift / "Before" / "main.py").is_file()
     assert (lift / "After" / "main.py").is_file()
     assert (freeze / "After" / "main.il").is_file()
@@ -87,14 +91,18 @@ def test_compiler_completes_without_agent_and_records_defaults(tmp_path):
     assert (lower / "After" / "main.script").is_file()
     assert (canonicalize_qkv / "After" / "main.script").is_file()
     assert (select_microkernels / "After" / "main.script").is_file()
-    dump_entries = json.loads((tmp_path / "dumps.json").read_text(encoding="utf-8"))
+    dump_entries = json.loads(
+        (tmp_path / "dumps.json").read_text(encoding="utf-8")
+    )
     # Count the outer pipeline separately from the nested fixed-point manager;
     # producer packing may require more than one Construct/Rules/Extract cycle.
-    outer_entries = [
-        entry for entry in dump_entries if "03_PostFunctionBoundaryPackPropagation" not in entry["relative_path"]
-    ]
-    assert len(outer_entries) == (2 * sum(len(report.pass_executions)
-                                          for report in result.reports) + 4 * len(result.reports) - 2)
+    outer_entries = [entry for entry in dump_entries
+                     if "03_PostFunctionBoundaryPackPropagation" not in entry["relative_path"]]
+    assert len(outer_entries) == (
+        2 * sum(len(report.pass_executions) for report in result.reports)
+        + 4 * len(result.reports)
+        - 2
+    )
     first_pass = result.reports[0].pass_executions[0]
     assert first_pass.name == "DecomposeComplexOps"
     assert first_pass.before_dump is not None
@@ -105,8 +113,9 @@ def test_compiler_completes_without_agent_and_records_defaults(tmp_path):
 def test_pipeline_contains_only_implemented_pass_boundaries():
     target = Compiler().target
     groups = {
-        group.name: tuple(item.name
-                          for item in expand_pipeline_passes(group, target))
+        group.name: tuple(
+            item.name for item in expand_pipeline_passes(group, target)
+        )
         for group in PIPELINE_GROUPS
     }
 
@@ -119,12 +128,13 @@ def test_pipeline_contains_only_implemented_pass_boundaries():
     )
     assert groups == {
         "TargetIndependentPass": (
+            "BindShapeBuckets",
             "DecomposeComplexOps",
             "HoistCallInvariantExpressions",
         ),
         "AutoVectorizePass": ("AutoVectorize", "ApplyVectorization"),
-        "AutoPackingPass": (
-            "AutoPacking",
+            "AutoPackingPass": (
+                "AutoPacking",
             "ApplyPacking",
             "FunctionBoundaryLayoutPropagation",
             "PostFunctionBoundaryPackPropagation",
@@ -183,13 +193,20 @@ def test_compiler_can_stop_after_sat_bufferize_and_resume_synchronization():
     assert allocated.stage == "allocated_tir"
     assert allocated.metadata["buffer_plan"]["schema"] == "flagmega.buffer-plan/v6"
     assert "physical_buffers" in allocated.metadata["buffer_plan"]
-    assert all("mem_span" in buffer and "physical_id" not in buffer and "byte_offset" not in buffer
-               and "alias_of" not in buffer for buffer in allocated.metadata["buffer_plan"]["buffers"])
+    assert all(
+        "mem_span" in buffer
+        and "physical_id" not in buffer
+        and "byte_offset" not in buffer
+        and "alias_of" not in buffer
+        for buffer in allocated.metadata["buffer_plan"]["buffers"]
+    )
     assert "memory_synchronization" not in allocated.metadata
 
     resumed = Compiler().compile(allocated).module
     assert resumed.stage == "bufferized_tir"
-    assert resumed.metadata["memory_synchronization"]["schema"] == ("flagmega.memory-synchronization/v1")
+    assert resumed.metadata["memory_synchronization"]["schema"] == (
+        "flagmega.memory-synchronization/v1"
+    )
 
 
 def test_emit_every_stage_remains_compile_dump_alias(tmp_path):
@@ -197,8 +214,10 @@ def test_emit_every_stage_remains_compile_dump_alias(tmp_path):
 
     assert (tmp_path / "Compile" / "00_TargetIndependentPass" / "Before" / "main.py").is_file()
     assert (tmp_path / "Compile" / "00_TargetIndependentPass" / "After" / "main.py").is_file()
-    assert result.reports[0].checkpoint == str(tmp_path / "Compile" / "00_TargetIndependentPass" / "After")
-    assert result.reports[0].before_checkpoint == str(tmp_path / "Compile" / "00_TargetIndependentPass" / "Before")
+    assert result.reports[0].checkpoint == str(
+        tmp_path / "Compile" / "00_TargetIndependentPass" / "After")
+    assert result.reports[0].before_checkpoint == str(
+        tmp_path / "Compile" / "00_TargetIndependentPass" / "Before")
     assert result.reports[0].pass_executions[0].before_dump is None
 
 
@@ -234,9 +253,8 @@ def test_whole_compile_matches_explicit_stage_replay():
 
 
 def test_grouped_pipeline_can_stop_after_one_small_pass(tmp_path):
-    result = Compiler(CompileOptions(work_dir=tmp_path,
-                                     dump_flags=DumpFlags.PASS_IR)).compile(make_fp8_module(),
-                                                                            stop_after="propose-packing")
+    result = Compiler(CompileOptions(work_dir=tmp_path, dump_flags=DumpFlags.PASS_IR)).compile(
+        make_fp8_module(), stop_after="propose-packing")
 
     assert result.module.stage == "packing_candidates"
     assert [report.stage for report in result.reports] == [
@@ -259,7 +277,9 @@ def test_grouped_pipeline_require_review_stops_inside_manager(tmp_path):
         compiler.compile(make_fp8_module())
 
     assert raised.value.stage == "vectorization_candidates"
-    assert (tmp_path / "01_AutoVectorizePass" / "00_AutoVectorize" / "After" / "main.il").is_file()
+    assert (
+        tmp_path / "01_AutoVectorizePass" / "00_AutoVectorize" / "After" / "main.il"
+    ).is_file()
     assert not (tmp_path / "01_AutoVectorizePass" / "01_ApplyVectorization").exists()
 
 
@@ -267,16 +287,16 @@ def test_agent_override_is_hash_bound_and_replaces_default():
     compiler = Compiler()
     current = make_fp8_module()
     for stage_name in (
-            "decompose-gdn",
-            "propose-vectorization",
-            "apply-vectorization",
+        "decompose-gdn",
+        "propose-vectorization",
+        "apply-vectorization",
             "propose-packing",
             "apply-packing",
             "propagate-function-boundary-layouts",
             "post-function-boundary-pack-propagation",
             "thread-norm-stats",
-            "form-add-norm-stats",
-            "auto-distributed",
+        "form-add-norm-stats",
+        "auto-distributed",
     ):
         current = compiler.run_stage(current, stage_name).module
     point = next(point for point in current.selection_points if point.kind == "distribution")
@@ -345,16 +365,16 @@ def test_cli_can_write_selection_override(tmp_path, capsys):
     compiler = Compiler()
     current = make_fp8_module()
     for stage_name in (
-            "decompose-gdn",
-            "propose-vectorization",
-            "apply-vectorization",
+        "decompose-gdn",
+        "propose-vectorization",
+        "apply-vectorization",
             "propose-packing",
             "apply-packing",
             "propagate-function-boundary-layouts",
             "post-function-boundary-pack-propagation",
             "thread-norm-stats",
-            "form-add-norm-stats",
-            "auto-distributed",
+        "form-add-norm-stats",
+        "auto-distributed",
     ):
         current = compiler.run_stage(current, stage_name).module
     point = next(point for point in current.selection_points if point.kind == "distribution")

@@ -11,7 +11,6 @@ from triton.flagmega.rules.neutral._utility import make_node
 
 
 class TypedCastGraph(fm.Module):
-
     def __init__(self, shape=(1, 4), lanes=(2, 2), source="float32", target="bfloat16"):
         super().__init__(dialect="high_level", stage="imported", entry="main")
         self.shape, self.lanes, self.source, self.target = shape, lanes, source, target
@@ -19,7 +18,7 @@ class TypedCastGraph(fm.Module):
     def forward(self):
         value = self.input("value", fm.tensor_type(fm.vector_type(self.source, self.lanes), self.shape), id="value")
         result = fm.F.tensors.cast(value, fm.vector_type(self.target, self.lanes), name="cast")
-        self.function("main", (value, ), (result, ))
+        self.function("main", (value,), (result,))
 
 
 @pytest.mark.parametrize("shape", ((), (1, 4), (2, 1, 3)))
@@ -31,13 +30,13 @@ def test_plain_typed_cast_has_an_element_lane_contract_without_agent_metadata(sh
     assert contract["lanes"] == (2, 2) and contract["lane_count"] == 4
 
 
-@pytest.mark.parametrize("source_lanes,target_lanes", (((), (4, )), ((4, ), ()), ((2, 2), (4, ))))
+@pytest.mark.parametrize("source_lanes,target_lanes", (((), (4,)), ((4,), ()), ((2, 2), (4,))))
 def test_numeric_cast_cannot_silently_repack_vector_elements(source_lanes, target_lanes):
     source = fm.vector_type("float32", source_lanes) if source_lanes else fm.DType.FLOAT32
     target = fm.vector_type("bfloat16", target_lanes) if target_lanes else fm.DType.BFLOAT16
-    value = fm.Node("value", "builtin.var", (), fm.tensor_type(source, (4, )))
+    value = fm.Node("value", "builtin.var", (), fm.tensor_type(source, (4,)))
     with pytest.raises(IRSchemaError, match="lanes"):
-        make_node("tensors.cast", "cast", (value, ), {"dtype": target}, {})
+        make_node("tensors.cast", "cast", (value,), {"dtype": target}, {})
 
 
 @pytest.mark.parametrize("shape", ((), (1, 4), (2, 1, 3)))

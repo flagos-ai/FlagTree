@@ -9,13 +9,13 @@ from triton.flagmega.passes.constants import ConstnessAnalysis, freeze_constant_
 
 
 class _SplatModule(fm.Module):
-
     def __init__(self):
         super().__init__(dialect="nn", stage="imported", entry="main")
 
     def forward(self):
-        value = fm.F.builtin.splat_const(fm.tensor_type("bfloat16", [2, 8]), 0.25, name="value")
-        self.function("main", (), (value, ))
+        value = fm.F.builtin.splat_const(
+            fm.tensor_type("bfloat16", [2, 8]), 0.25, name="value")
+        self.function("main", (), (value,))
 
 
 def test_splat_const_is_editable_compressed_constant_and_freezes_to_asset(tmp_path):

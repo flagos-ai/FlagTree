@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}{% import "kernels/qkv_rope_with_cache/_cache_position.py.jinja" as cache %}
+{% import "kernels/qkv_rope_with_cache/_cache_position.py.jinja" as cache %}
 {% macro load_partial(partial, prefix, mask, indent) %}
 {{ indent }}{{ prefix }}_partial_lanes = tl.arange(0, {{ partial.member_width }})[:, None]
 {{ indent }}{{ partial.member }} = tl.minimum(

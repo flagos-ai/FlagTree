@@ -29,7 +29,7 @@ def test_candidate_objective_has_model_and_evidence():
 
     assert candidate.objective_kind == "heuristic"
     assert candidate.objective_model == "flagmega.distributed-work/v1"
-    assert candidate.objective_evidence == ("candidate-reason:unit-test", )
+    assert candidate.objective_evidence == ("candidate-reason:unit-test",)
 
 
 def test_materialized_selection_preserves_objective_provenance():

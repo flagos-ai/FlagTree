@@ -60,8 +60,11 @@ def find_norm_consumer_matches(module: IRModule) -> dict[str, NormConsumerMatch]
         if len(current_users) != 1:
             continue
         consumer, input_index = current_users[0]
-        if (consumer.op not in _SUPPORTED_CONSUMERS or input_index != 0
-                or logical_type(module.node_map[consumer.inputs[0]].type) != norm_type):
+        if (
+            consumer.op not in _SUPPORTED_CONSUMERS
+            or input_index != 0
+            or logical_type(module.node_map[consumer.inputs[0]].type) != norm_type
+        ):
             continue
         matches[consumer.id] = NormConsumerMatch(
             producer=norm.id,
@@ -77,6 +80,8 @@ def find_norm_consumer_matches(module: IRModule) -> dict[str, NormConsumerMatch]
 
 
 def _rms_contract(norm: Node, module: IRModule) -> dict[str, object] | None:
+    if norm.attrs.get("compute_profile", "default") != "default":
+        return None
     if norm.op == "nn.rms_norm" and len(norm.inputs) == 2:
         return {
             "weight": norm.inputs[1],
@@ -84,8 +89,12 @@ def _rms_contract(norm: Node, module: IRModule) -> dict[str, object] | None:
             "weight_bias": float(norm.attrs["weight_bias"]),
             "stats": None,
         }
-    if (norm.op != "nn.norm_apply" or len(norm.inputs) != 4 or bool(norm.attrs["use_mean"])
-            or _constant_splat_value(module.node_map[norm.inputs[3]], module) != 0.0):
+    if (
+        norm.op != "nn.norm_apply"
+        or len(norm.inputs) != 4
+        or bool(norm.attrs["use_mean"])
+        or _constant_splat_value(module.node_map[norm.inputs[3]], module) != 0.0
+    ):
         return None
     input_dtype = norm.attrs.get("input_dtype")
     source_dtype = logical_type(module.node_map[norm.inputs[0]].type).dtype
@@ -104,7 +113,6 @@ def _rms_contract(norm: Node, module: IRModule) -> dict[str, object] | None:
 
 
 def _constant_splat_value(node: Node, module: IRModule) -> float | None:
-
     def view(value, nodes):
         if value.op in _TRANSPARENT_ADAPTERS and len(value.inputs) == 1:
             return True
@@ -131,10 +139,18 @@ def _constant_splat_value(node: Node, module: IRModule) -> float | None:
     nodes = {value.id: value for value in recipe.nodes}
     source = nodes.get(str(node.attrs["output"]))
     observed: set[str] = set()
-    while (source is not None and view(source, nodes) and source.id not in observed):
+    while (
+        source is not None
+        and view(source, nodes)
+        and source.id not in observed
+    ):
         observed.add(source.id)
         source = nodes.get(source.inputs[0])
-    return (float(source.attrs["value"]) if source is not None and source.op == "builtin.splat_const" else None)
+    return (
+        float(source.attrs["value"])
+        if source is not None and source.op == "builtin.splat_const"
+        else None
+    )
 
 
 __all__ = ["NormConsumerMatch", "find_norm_consumer_matches"]

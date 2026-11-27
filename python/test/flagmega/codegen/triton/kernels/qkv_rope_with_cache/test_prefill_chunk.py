@@ -18,16 +18,13 @@ def test_fused_prefill_preserves_all_chunk_slots(tmp_path, independent_v):
         pytest.skip("SM90 CUDA required")
     module, config = _graph(8, False, 64, False, False, independent_v, tokens=3)
     compiled = Compiler().compile(module).module
-    runtime = load(write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True),
-                   device="cuda:0")
+    runtime = load(write_artifact(compiled, tmp_path / "artifact", target="nvidia-sm90", emit_executable=True), device="cuda:0")
     try:
-        values = {
-            "q": torch.ones((3, 5, 16, 8), dtype=torch.bfloat16, device="cuda"), "k": torch.ones(
-                (3, 3, 16, 8), dtype=torch.bfloat16, device="cuda"), "v":
-            (torch.arange(3 * 3 * 128, device="cuda").reshape(3, 3, 16, 8) / 8).bfloat16(), "scale":
-            torch.ones(128, device="cuda",
-                       dtype=torch.bfloat16), "bias": torch.zeros(128, device="cuda", dtype=torch.bfloat16)
-        }
+        values = {"q": torch.ones((3, 5, 16, 8), dtype=torch.bfloat16, device="cuda"),
+                  "k": torch.ones((3, 3, 16, 8), dtype=torch.bfloat16, device="cuda"),
+                  "v": (torch.arange(3 * 3 * 128, device="cuda").reshape(3, 3, 16, 8) / 8).bfloat16(),
+                  "scale": torch.ones(128, device="cuda", dtype=torch.bfloat16),
+                  "bias": torch.zeros(128, device="cuda", dtype=torch.bfloat16)}
         values["cos"] = torch.tensor([1., 0., -1.], device="cuda").reshape(3, 1, 1).expand(3, 1, 64).contiguous()
         values["sin"] = torch.tensor([0., 1., 0.], device="cuda").reshape(3, 1, 1).expand(3, 1, 64).contiguous()
         state = create_paged_attention_state(config, device="cuda")
@@ -37,8 +34,7 @@ def test_fused_prefill_preserves_all_chunk_slots(tmp_path, independent_v):
         for identity, buffers in runtime.buffer_plan.function_map[compiled.entry].parameters:
             node = compiled.node_map[identity]
             if isinstance(node.type, fm.RefType):
-                bound.update((buffer, getattr(state, field))
-                             for buffer, (field, _) in zip(buffers, node.type.fields, strict=True))
+                bound.update((buffer, getattr(state, field)) for buffer, (field, _) in zip(buffers, node.type.fields, strict=True))
             else:
                 bound[buffers[0]] = values[node.attrs["name"]]
         for spec in runtime.external_arguments:

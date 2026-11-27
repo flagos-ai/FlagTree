@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Composable type predicates used by op parameters and graph patterns.
 
-This is the Python counterpart of reference ``TypePattern``.  A pattern owns both
+This is the Python counterpart of nncase ``TypePattern``.  A pattern owns both
 the predicate and a stable human-readable reason, so construction, verifier,
 pattern matching and diagnostics share one type contract.
 """
@@ -26,6 +26,7 @@ from triton.flagmega.ir.model import (
 )
 from triton.flagmega.ir.types import MaskVectorType, PointerType, VectorType, DataType, data_type
 
+
 TypeCondition = Callable[[IRType], bool]
 
 
@@ -41,8 +42,10 @@ class TypePattern:
 
     def check(self, value_type: IRType, field_name: str) -> IRType:
         if not self.match_leaf(value_type):
-            raise IRSchemaError(f"Parameter {field_name!r} requires <{self.reason}>, "
-                                f"but got {type(value_type).__name__}: {value_type!r}.")
+            raise IRSchemaError(
+                f"Parameter {field_name!r} requires <{self.reason}>, "
+                f"but got {type(value_type).__name__}: {value_type!r}."
+            )
         return value_type
 
     def __and__(self, other: TypePattern) -> TypePattern:
@@ -80,8 +83,8 @@ def is_ir_type() -> TypePattern:
 
 def is_tensor() -> TypePattern:
     return TypePattern(
-        lambda value: isinstance(value, TensorType) or isinstance(value, DistributedType) and isinstance(
-            value.tensor, TensorType),
+        lambda value: isinstance(value, TensorType)
+        or isinstance(value, DistributedType) and isinstance(value.tensor, TensorType),
         "is_tensor",
     )
 
@@ -117,7 +120,9 @@ def is_ref(name: str | None = None) -> TypePattern:
 
 def is_pointer() -> TypePattern:
     return TypePattern(
-        lambda value: isinstance(value, TensorType) and value.rank == 0 and isinstance(value.dtype, PointerType),
+        lambda value: isinstance(value, TensorType)
+        and value.rank == 0
+        and isinstance(value.dtype, PointerType),
         "is_pointer",
     )
 
@@ -140,8 +145,10 @@ def has_rank(rank: int) -> TypePattern:
     if isinstance(rank, bool) or rank < 0:
         raise ValueError(f"Rank must be a non-negative integer, got {rank!r}.")
     return TypePattern(
-        lambda value: (value.tensor.rank == rank
-                       if isinstance(value, DistributedType) else isinstance(value, TensorType) and value.rank == rank),
+        lambda value: (
+            value.tensor.rank == rank if isinstance(value, DistributedType) else
+            isinstance(value, TensorType) and value.rank == rank
+        ),
         f"rank = {rank}",
     )
 
@@ -149,9 +156,10 @@ def has_rank(rank: int) -> TypePattern:
 def has_dtype(dtype: DataType | str) -> TypePattern:
     expected = data_type(dtype)
     return TypePattern(
-        lambda value:
-        (value.tensor.dtype == expected
-         if isinstance(value, DistributedType) else isinstance(value, TensorType) and value.dtype == expected),
+        lambda value: (
+            value.tensor.dtype == expected if isinstance(value, DistributedType) else
+            isinstance(value, TensorType) and value.dtype == expected
+        ),
         f"dtype = {expected.value}",
     )
 

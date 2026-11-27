@@ -31,7 +31,8 @@ from triton.flagmega.ir.ops.nn._norm import (
 )
 from triton.flagmega.ir.ops.nn.norm_apply import NormApply
 from triton.flagmega.ir.ops.ntt.add_norm_stats import (
-    can_materialize_sum_partial, )
+    can_materialize_sum_partial,
+)
 from triton.flagmega.ir.type_pattern import is_tensor
 
 
@@ -51,7 +52,9 @@ class GatherReduceAddNormApply(OpDefinition):
     workspace during bufferization.
     """
 
-    input = input_parameter(is_tensor(), memory_effect=MemoryEffect.READ.across_partial_owners())
+    input = input_parameter(
+        is_tensor(), memory_effect=MemoryEffect.READ.across_partial_owners()
+    )
     # The collective's work domain may gather a source split or refine a
     # destination split. These accesses and both published results therefore
     # require chip-visible storage, not independent per-CTA copies.
@@ -79,38 +82,41 @@ class GatherReduceAddNormApply(OpDefinition):
         if epsilon <= 0:
             raise IRSchemaError("GatherReduceAddNormApply epsilon must be positive.")
         return {
-            **({
-                "input_dtype": NormApply.normalize_attrs(_norm_attrs(attrs))["input_dtype"]
-            } if attrs.get("input_dtype") is not None else {}),
-            **({
-                "output_dtype": NormApply.normalize_attrs(_norm_attrs(attrs))["output_dtype"]
-            } if attrs.get("output_dtype") is not None else {}),
-            "axis":
-            axis,
-            "epsilon":
-            epsilon,
-            "use_mean":
-            bool(attrs["use_mean"]),
-            "round_before_scale":
-            NormApply.normalize_attrs(_norm_attrs(attrs))["round_before_scale"],
-            "has_bias":
-            bool(attrs["has_bias"]),
+            **({"input_dtype": NormApply.normalize_attrs(_norm_attrs(attrs))["input_dtype"]}
+               if attrs.get("input_dtype") is not None else {}),
+            **({"output_dtype": NormApply.normalize_attrs(_norm_attrs(attrs))["output_dtype"]}
+               if attrs.get("output_dtype") is not None else {}),
+            "axis": axis,
+            "epsilon": epsilon,
+            "use_mean": bool(attrs["use_mean"]),
+            "round_before_scale": NormApply.normalize_attrs(_norm_attrs(attrs))["round_before_scale"],
+            "has_bias": bool(attrs["has_bias"]),
         }
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
         source_type = cls.input.type_of(inputs)
         value_type = cls.addend.type_of(inputs)
-        if (not isinstance(source_type, DistributedType) or source_type.partial is None
-                or source_type.partial.reduce_op is not ReduceOp.SUM or not source_type.partial.axes):
-            raise IRSchemaError("GatherReduceAddNormApply requires a non-empty Sum-partial input.")
+        if (
+            not isinstance(source_type, DistributedType)
+            or source_type.partial is None
+            or source_type.partial.reduce_op is not ReduceOp.SUM
+            or not source_type.partial.axes
+        ):
+            raise IRSchemaError(
+                "GatherReduceAddNormApply requires a non-empty Sum-partial input."
+            )
         if not can_materialize_sum_partial(source_type, value_type):
-            raise IRSchemaError(f"GatherReduceAddNormApply cannot materialize {source_type!r} "
-                                f"into {value_type!r}.")
+            raise IRSchemaError(
+                f"GatherReduceAddNormApply cannot materialize {source_type!r} "
+                f"into {value_type!r}."
+            )
         materialized = _typed_node("<materialized_value>", value_type)
         value_tensor = tensor_of(value_type)
         axis = normalize_axis(int(attrs["axis"]), value_tensor.rank)
-        stats_tensor = stats_tensor_type(value_tensor, axis, bool(attrs["use_mean"]))
+        stats_tensor = stats_tensor_type(
+            value_tensor, axis, bool(attrs["use_mean"])
+        )
         if isinstance(value_type, DistributedType):
             stats_type: IRType = DistributedType(
                 stats_tensor,
@@ -148,7 +154,9 @@ class GatherReduceAddNormApply(OpDefinition):
             try:
                 bias = context.torch.zeros_like(bias)
             except AttributeError as error:
-                raise EvaluationError("GatherReduceAddNormApply evaluation requires a torch-like context.") from error
+                raise EvaluationError(
+                    "GatherReduceAddNormApply evaluation requires a torch-like context."
+                ) from error
         value = (partial + addend).to(dtype=addend.dtype)
         stats = norm_stats_value(
             value,
@@ -178,20 +186,22 @@ class GatherReduceAddNormApply(OpDefinition):
     @classmethod
     def cost(cls, node: Node) -> OpCost:
         if not isinstance(node.type, TupleType) or len(node.type.fields) != 2:
-            return OpCost(notes=("invalid-gather-reduce-add-norm-apply-type", ))
+            return OpCost(notes=("invalid-gather-reduce-add-norm-apply-type",))
         value = tensor_of(node.type.fields[0])
         normalized = tensor_of(node.type.fields[1])
         elements = tensor_elements(value)
         return OpCost(
             flops=None if elements is None else elements * (11 if node.attrs["use_mean"] else 9),
             bytes_read=None,
-            bytes_written=_sum_optional(tensor_nbytes(value), tensor_nbytes(normalized)),
+            bytes_written=_sum_optional(
+                tensor_nbytes(value), tensor_nbytes(normalized)
+            ),
             # Operand types are not available through ``cost(node)``.  The
             # candidate provider records exact owner counts for target cost
             # and launch selection instead of inventing a free collective.
             communication_bytes=None,
             synchronizations=1,
-            notes=("fused-gather-reduce-add-private-stats-norm-apply", ),
+            notes=("fused-gather-reduce-add-private-stats-norm-apply",),
         )
 
 

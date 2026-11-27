@@ -1,6 +1,8 @@
 # Copyright 2025- FlagOS Contributors
 # SPDX-License-Identifier: MIT
 
+from pathlib import Path
+
 import pytest
 
 from triton.flagmega import ir as fm
@@ -8,14 +10,17 @@ from triton.flagmega.codegen.triton.call_abi import describe_local_buffer_abi
 from triton.flagmega.codegen.triton.kernel_call_renderers import prepare_kernel_calls
 from triton.flagmega.errors import CodegenError
 from triton.flagmega.targets.portable_triton_implementations import (
-    portable_triton_implementation_model, )
+    portable_triton_implementation_model,
+)
 
 
 def _descriptor(name, dtype, shape):
     nbytes = dtype.itemsize
     for extent in shape:
         nbytes *= extent
-    physical = fm.PhysicalBuffer(f"physical:{name}", "workspace", fm.dim(nbytes), 16)
+    physical = fm.PhysicalBuffer(
+        f"physical:{name}", "workspace", fm.dim(nbytes), 16
+    )
     strides = []
     stride = 1
     for extent in reversed(shape):
@@ -34,21 +39,20 @@ def _descriptor(name, dtype, shape):
 
 def _parameter(formal, descriptor):
     return {
-        "formal":
-        formal,
+        "formal": formal,
         "buffers": ({
             "formal": formal,
             "actual": descriptor.id,
             "runtime_argument": descriptor.id,
             "runtime_value_kind": "pointer",
             "abi": describe_local_buffer_abi(descriptor),
-        }, ),
+        },),
     }
 
 
 def _call(scope):
-    value = _descriptor("value", fm.DType.BFLOAT16, (16, ))
-    stats = _descriptor("stats", fm.DType.FLOAT32, (1, ))
+    value = _descriptor("value", fm.DType.BFLOAT16, (16,))
+    stats = _descriptor("stats", fm.DType.FLOAT32, (1,))
     facts = {} if scope is None else {"participant_scope": scope}
     return prepare_kernel_calls(({
         "call": "add_stats",
@@ -67,16 +71,24 @@ def _call(scope):
             _parameter("result_1", stats),
         ),
         "workspaces": (),
-    }, ), function_name="main")[0]
+    },), function_name="main")[0]
 
 
 def test_single_program_scope_is_an_enforced_implementation_fact():
-    implementation = portable_triton_implementation_model().implementation("tir.add_norm_stats.persistent_rms")
+    implementation = portable_triton_implementation_model().implementation(
+        "tir.add_norm_stats.persistent_rms"
+    )
 
     assert implementation is not None
     assert "participant_scope" not in implementation.parameters
     assert implementation.facts["participant_scope"] == "single_program"
 
+    template = Path(__file__).parents[6] / (
+        "triton/flagmega/codegen/triton/kernels/add_norm_stats/_function.py.jinja"
+    )
+    source = template.read_text(encoding="utf-8")
+    assert "if {{ call.participant_active }}:" in source
+    assert "_flagmega_add_norm_stats_persistent_rms(" in source
     assert _call("single_program")["participant_active"] == "(shard_index == 0)"
 
 

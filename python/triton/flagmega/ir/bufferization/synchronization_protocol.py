@@ -23,13 +23,13 @@ class MemorySynchronizationProtocol:
                 raise IRVerificationError("Synchronization protocol barrier counts must be nonnegative integers.")
 
     def to_data(self):
-        return dict(schema=PROTOCOL_SCHEMA, identity=self.identity, grid_cta_barriers=self.grid_cta_barriers,
-                    device_grid_barriers=self.device_grid_barriers)
+        return dict(schema=PROTOCOL_SCHEMA, identity=self.identity,
+                    grid_cta_barriers=self.grid_cta_barriers, device_grid_barriers=self.device_grid_barriers)
 
     @classmethod
     def from_data(cls, data):
         if not isinstance(data, Mapping) or set(data) != {
-                "schema", "identity", "grid_cta_barriers", "device_grid_barriers"
+            "schema", "identity", "grid_cta_barriers", "device_grid_barriers"
         } or data["schema"] != PROTOCOL_SCHEMA:
             raise IRVerificationError("Malformed synchronization protocol contract.")
         return cls(data["identity"], data["grid_cta_barriers"], data["device_grid_barriers"])

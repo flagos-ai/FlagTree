@@ -9,18 +9,27 @@ from triton.flagmega.codegen.triton import (
     render_tir_package,
 )
 from triton.flagmega.codegen.triton.kernel_call_renderers import (
-    _dense_matmul_norm_stats_call, )
+    _dense_matmul_norm_stats_call,
+)
 from triton.flagmega.codegen.triton.runtime_binding import (
-    describe_function_runtime_binding, )
+    describe_function_runtime_binding,
+)
 
 
 def test_packed_norm_stats_pipeline_has_explicit_results_and_no_private_partials(
-    packed_norm_stats_descriptor_pipeline_module, ):
+    packed_norm_stats_descriptor_pipeline_module,
+):
     package = describe_tir_package(packed_norm_stats_descriptor_pipeline_module)
-    call = next(value for value in package["render_calls"] if value["semantic_op"] == "ntt.matmul_norm_stats")
+    call = next(
+        value
+        for value in package["render_calls"]
+        if value["semantic_op"] == "ntt.matmul_norm_stats"
+    )
 
     assert call["family"] == "dense_matmul"
-    assert call["variant"] == ("packed_tensor_descriptor_smem_pipeline_gemv_norm_stats")
+    assert call["variant"] == (
+        "packed_tensor_descriptor_smem_pipeline_gemv_norm_stats"
+    )
     assert tuple(output["formal"] for output in call["outputs"]) == (
         "result_0",
         "result_1",
@@ -34,29 +43,47 @@ def test_packed_norm_stats_pipeline_has_explicit_results_and_no_private_partials
     descriptor = call["host_tensor_descriptor_requests"][0]
     assert descriptor["shape"] == (128, 256, 2, 64)
     assert descriptor["block_shape"] == (64, 2, 2, 64)
-    assert tuple(value["name"] for value in call["shared_workspaces"]) == ("weight_stage", )
-    assert not any(value["family"] in {"add_norm_stats", "gather_reduce_add_norm_stats"}
-                   for value in package["render_calls"])
-    fused = next(value for value in package["render_calls"] if value["semantic_op"] == "ntt.gather_reduce_norm_apply")
+    assert tuple(value["name"] for value in call["shared_workspaces"]) == (
+        "weight_stage",
+    )
+    assert not any(
+        value["family"] in {"add_norm_stats", "gather_reduce_add_norm_stats"}
+        for value in package["render_calls"]
+    )
+    fused = next(
+        value
+        for value in package["render_calls"]
+        if value["semantic_op"] == "ntt.gather_reduce_norm_apply"
+    )
     assert fused["family"] == "gather_reduce_norm_apply"
     assert fused["variant"] == "sum"
     assert fused["partial_owner_count"] == 128
     assert fused["internal_grid_barriers"] == 0
-    assert not any(value["family"] == "distributed_boxing" and value["variant"] == "gather_reduce_scatter"
-                   for value in package["render_calls"])
+    assert not any(
+        value["family"] == "distributed_boxing"
+        and value["variant"] == "gather_reduce_scatter"
+        for value in package["render_calls"]
+    )
 
 
 def test_packed_norm_stats_template_publishes_one_owner_local_bf16_partial(
-    packed_norm_stats_descriptor_pipeline_module, ):
+    packed_norm_stats_descriptor_pipeline_module,
+):
     source = render_tir_package(
         describe_tir_package(packed_norm_stats_descriptor_pipeline_module),
         "unit",
     )
     package = describe_tir_package(packed_norm_stats_descriptor_pipeline_module)
-    call = next(value for value in package["render_calls"] if value["semantic_op"] == "ntt.matmul_norm_stats")
+    call = next(
+        value
+        for value in package["render_calls"]
+        if value["semantic_op"] == "ntt.matmul_norm_stats"
+    )
     consumer_start = source.index(f"def {call['symbol']}__consumer(")
     consumer_end = source.find("\n\n# flagmega-kernel:", consumer_start)
-    consumer_source = source[consumer_start:None if consumer_end < 0 else consumer_end]
+    consumer_source = source[
+        consumer_start:None if consumer_end < 0 else consumer_end
+    ]
 
     compile(source, "packed_dense_norm_stats_package.py", "exec")
     assert "dense_owner_n_iteration" not in consumer_source
@@ -71,9 +98,16 @@ def test_packed_norm_stats_template_publishes_one_owner_local_bf16_partial(
 
 
 def test_packed_norm_stats_table_uses_owner_entry_and_local_tma_offsets(
-    packed_norm_stats_descriptor_table_pipeline_module, ):
-    package = describe_tir_package(packed_norm_stats_descriptor_table_pipeline_module)
-    call = next(value for value in package["render_calls"] if value["semantic_op"] == "ntt.matmul_norm_stats")
+    packed_norm_stats_descriptor_table_pipeline_module,
+):
+    package = describe_tir_package(
+        packed_norm_stats_descriptor_table_pipeline_module
+    )
+    call = next(
+        value
+        for value in package["render_calls"]
+        if value["semantic_op"] == "ntt.matmul_norm_stats"
+    )
     source = render_tir_package(package, "unit")
 
     assert call["descriptor_kind"] == "table"
@@ -89,10 +123,16 @@ def test_packed_norm_stats_table_uses_owner_entry_and_local_tma_offsets(
 
 
 def test_descriptor_norm_stats_accepts_block_local_logical_coordinate_result(
-    packed_norm_stats_descriptor_pipeline_module, ):
-    binding = describe_function_runtime_binding(packed_norm_stats_descriptor_pipeline_module)
-    raw = deepcopy(
-        next(value for value in binding["call_abi"]["kernel_calls"] if value["semantic_op"] == "ntt.matmul_norm_stats"))
+    packed_norm_stats_descriptor_pipeline_module,
+):
+    binding = describe_function_runtime_binding(
+        packed_norm_stats_descriptor_pipeline_module
+    )
+    raw = deepcopy(next(
+        value
+        for value in binding["call_abi"]["kernel_calls"]
+        if value["semantic_op"] == "ntt.matmul_norm_stats"
+    ))
     value_abi = raw["outputs"][0]["buffers"][0]["abi"]
     assert value_abi["coordinate_space"] == "canonical_global"
     value_abi["storage_kind"] = "replicated_local"
@@ -102,14 +142,23 @@ def test_descriptor_norm_stats_accepts_block_local_logical_coordinate_result(
     assert encoded["result_writer_active"] == "True"
 
 
-def test_descriptor_norm_stats_accepts_a_parent_shard_local_result(packed_norm_stats_descriptor_pipeline_module, ):
-    binding = describe_function_runtime_binding(packed_norm_stats_descriptor_pipeline_module)
-    raw = deepcopy(
-        next(value for value in binding["call_abi"]["kernel_calls"] if value["semantic_op"] == "ntt.matmul_norm_stats"))
+def test_descriptor_norm_stats_accepts_a_parent_shard_local_result(
+    packed_norm_stats_descriptor_pipeline_module,
+):
+    binding = describe_function_runtime_binding(
+        packed_norm_stats_descriptor_pipeline_module
+    )
+    raw = deepcopy(next(
+        value
+        for value in binding["call_abi"]["kernel_calls"]
+        if value["semantic_op"] == "ntt.matmul_norm_stats"
+    ))
     value_abi = raw["outputs"][0]["buffers"][0]["abi"]
     value_abi["storage_kind"] = "compact_local"
     value_abi["coordinate_space"] = "parent_shard_local"
-    value_abi["storage_coordinate_expressions"] = tuple(value_abi["logical_coordinate_expressions"])
+    value_abi["storage_coordinate_expressions"] = tuple(
+        value_abi["logical_coordinate_expressions"]
+    )
 
     encoded = _dense_matmul_norm_stats_call(raw)
 
@@ -117,7 +166,9 @@ def test_descriptor_norm_stats_accepts_a_parent_shard_local_result(packed_norm_s
     assert encoded["result_writer_active"] == "True"
 
 
-def test_portable_packed_norm_stats_template_defines_the_helper_it_calls(packed_norm_stats_portable_pipeline_module, ):
+def test_portable_packed_norm_stats_template_defines_the_helper_it_calls(
+    packed_norm_stats_portable_pipeline_module,
+):
     source = render_tir_package(
         describe_tir_package(packed_norm_stats_portable_pipeline_module),
         "unit",

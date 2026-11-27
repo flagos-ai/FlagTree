@@ -3,7 +3,7 @@
 """Prepared direct C-launcher wrapper for FlagTree Triton kernels.
 
 This is a Python-native restructuring of the prepared-launch contract used by
-``../reference/pyntt/pyntt/runtime/triton.py`` at reference commit 2823f485.  It does
+``../nncase/pyntt/pyntt/runtime/triton.py`` at nncase commit 2823f485.  It does
 not require a fork-only ``JITFunction.prepare`` method: compilation happens
 once through the local JIT API, then steady-state launches call the compiled
 C launcher directly.
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import prod
-from typing import Sequence
+from typing import Any, Sequence
 
 from triton.flagmega.errors import RuntimeContractError
 from triton.flagmega.runtime.diagnostic_resources import BoundDiagnosticEntry
@@ -108,7 +108,7 @@ class PreparedKernel:
         from triton.experimental.tle.grid_barrier_runtime import validate_launch_contract
         validate_launch_contract(compiled_kernel.metadata, self.grid)
         self._global_scratch = _prepare_global_scratch(compiled_kernel, self._arguments, self.grid,
-                                                       allocation_device=allocation_device)
+                                                     allocation_device=allocation_device)
         self._scratch_stream = None
         if len(set(self._dynamic_indices)) != len(self._dynamic_indices):
             raise RuntimeContractError("Prepared dynamic argument indices must be unique.")
@@ -128,31 +128,39 @@ class PreparedKernel:
     def resource_report(self) -> dict[str, object]:
         compiled = self.compiled_kernel
         registers = int(compiled.n_regs)
-        shared = int(compiled.metadata.shared)
+        dynamic_shared = int(compiled.metadata.shared)
+        static_shared = int(getattr(compiled.metadata, "static_shared", 0))
+        shared = dynamic_shared + static_shared
         return {
             "name": str(compiled.name),
             "num_warps": int(compiled.metadata.num_warps),
             "registers_per_thread": registers,
             "shared_memory_bytes": shared,
+            "dynamic_shared_memory_bytes": dynamic_shared,
+            "static_shared_memory_bytes": static_shared,
             **_spill_resource_report(compiled, self.contract),
             "required_resident_blocks_per_sm": self.contract.resident_blocks_per_sm,
-            "resident_registers": registers * int(compiled.metadata.num_warps) * self.contract.warp_size *
-            self.contract.resident_blocks_per_sm,
+            "resident_registers": registers * int(compiled.metadata.num_warps) * self.contract.warp_size
+            * self.contract.resident_blocks_per_sm,
             "resident_shared_memory_bytes": shared * self.contract.resident_blocks_per_sm,
             "global_scratch_bytes": 0 if self._global_scratch is None else self._global_scratch.nbytes,
             "cooperative_grid": bool(getattr(compiled.metadata, "launch_cooperative_grid", False)),
             "grid": list(self.grid),
-            **({} if self.contract.diagnostic_resources is None else self.contract.diagnostic_resources.policy_report),
+            **({} if self.contract.diagnostic_resources is None
+               else self.contract.diagnostic_resources.policy_report),
         }
 
     def launch(self, *dynamic_arguments: object, stream=None) -> None:
         if len(dynamic_arguments) != len(self._dynamic_indices):
-            raise RuntimeContractError(f"Prepared kernel expects {len(self._dynamic_indices)} dynamic arguments, "
-                                       f"got {len(dynamic_arguments)}.")
+            raise RuntimeContractError(
+                f"Prepared kernel expects {len(self._dynamic_indices)} dynamic arguments, "
+                f"got {len(dynamic_arguments)}.")
         arguments = list(self._arguments)
         for index, value in zip(self._dynamic_indices, dynamic_arguments):
             alignment = self._pointer_alignments.get(index, 1)
-            if alignment > 1 and (not callable(getattr(value, "data_ptr", None)) or value.data_ptr() % alignment):
+            if alignment > 1 and (
+                not callable(getattr(value, "data_ptr", None)) or value.data_ptr() % alignment
+            ):
                 raise RuntimeContractError(
                     f"Prepared argument {index} must retain its compiled {alignment}-byte pointer alignment; "
                     "prepare another specialization for a differently aligned buffer.")
@@ -228,7 +236,6 @@ def _compiled_pointer_alignments(compiled, arguments):
 
 
 class _PreparedGlobalScratch:
-
     def __init__(self, storage, buffer, nbytes: int, alignment: int) -> None:
         self.storage = storage
         self.buffer = buffer
@@ -240,8 +247,9 @@ class _PreparedGlobalScratch:
             raise RuntimeContractError(
                 f"Compiled launch requested {size} scratch bytes; prepared allocation has {self.nbytes}.")
         if int(alignment) > self.alignment or self.buffer.data_ptr() % int(alignment):
-            raise RuntimeContractError(f"Compiled launch requested scratch alignment {alignment}; "
-                                       f"prepared allocation guarantees {self.alignment}.")
+            raise RuntimeContractError(
+                f"Compiled launch requested scratch alignment {alignment}; "
+                f"prepared allocation guarantees {self.alignment}.")
         return _ScratchBufferView(self.buffer, self.nbytes)
 
 
@@ -283,7 +291,11 @@ def _prepare_global_scratch(compiled, arguments: Sequence[object], grid: Sequenc
     nbytes = prod(int(value) for value in grid) * num_ctas * per_program
     alignment = max(1, int(getattr(metadata, "global_scratch_align", 1) or 1))
     device = next(
-        (value.device for value in arguments if getattr(getattr(value, "device", None), "type", None) == "cuda"),
+        (
+            value.device
+            for value in arguments
+            if getattr(getattr(value, "device", None), "type", None) == "cuda"
+        ),
         None,
     )
     try:
@@ -297,8 +309,7 @@ def _prepare_global_scratch(compiled, arguments: Sequence[object], grid: Sequenc
         if device.type != 'cuda':
             raise RuntimeContractError('Compiler global scratch requires a CUDA allocation device.')
     if device is None:
-        raise RuntimeContractError(
-            'Compiler global scratch requires an explicit allocation device or a CUDA tensor argument.')
+        raise RuntimeContractError('Compiler global scratch requires an explicit allocation device or a CUDA tensor argument.')
     # TLE's grid barrier is a reusable sense-reversing counter.  Its atomic
     # protocol preserves the phase bit between barriers, but requires the
     # arrival-count low bits to start at zero.  An uninitialized CUDA
@@ -306,7 +317,9 @@ def _prepare_global_scratch(compiled, arguments: Sequence[object], grid: Sequenc
     # published its workspace writes.  Initialize the complete compiler-owned
     # scratch allocation once at prepare time; subsequent launches reuse the
     # phase-safe counter state on the same stream.
-    storage = torch.zeros(nbytes + alignment - 1, dtype=torch.uint8, device=device)
+    storage = torch.zeros(
+        nbytes + alignment - 1, dtype=torch.uint8, device=device
+    )
     # ``prepare`` may be followed by a first launch on a different CUDA
     # stream.  Make the one-time counter initialization globally visible
     # before the prepared object is published; steady-state launches remain
@@ -369,22 +382,26 @@ def prepare_compiled_kernel(
         raise RuntimeContractError("Frozen native preparation requires a compiled kernel.")
     normalized_grid = _normalize_grid(grid)
     _validate_resources(compiled, contract, normalized_grid)
-    return PreparedKernel(compiled, arguments, dynamic_argument_indices, grid=normalized_grid, contract=contract,
-                          allocation_device=allocation_device)
+    return PreparedKernel(compiled, arguments, dynamic_argument_indices, grid=normalized_grid,
+                          contract=contract, allocation_device=allocation_device)
 
 
-def _validate_resources(compiled, contract: ResourceContract, grid: Sequence[int] = (1, )) -> None:
+def _validate_resources(compiled, contract: ResourceContract, grid: Sequence[int] = (1,)) -> None:
     # Shared usage is available before driver loading. A failed load may cache
     # an error launcher without initializing the driver register counters.
-    shared = int(compiled.metadata.shared)
+    # metadata.shared is the launch's dynamic byte count. Static allocation
+    # also occupies the CTA/SM budget, without becoming launch dynamic bytes.
+    # Backends predating static placement report their entire footprint in shared.
+    shared = int(compiled.metadata.shared) + int(getattr(compiled.metadata, "static_shared", 0))
     if shared > contract.shared_memory_capacity_bytes:
         raise RuntimeContractError(
             f"Compiled kernel uses {shared} shared-memory bytes; limit is {contract.shared_memory_capacity_bytes}.")
     resident_shared = shared * contract.resident_blocks_per_sm
     if resident_shared > contract.shared_memory_capacity_bytes:
-        raise RuntimeContractError(f"Compiled kernel needs {resident_shared} shared-memory bytes for "
-                                   f"{contract.resident_blocks_per_sm} resident block(s); SM capacity is "
-                                   f"{contract.shared_memory_capacity_bytes}.")
+        raise RuntimeContractError(
+            f"Compiled kernel needs {resident_shared} shared-memory bytes for "
+            f"{contract.resident_blocks_per_sm} resident block(s); SM capacity is "
+            f"{contract.shared_memory_capacity_bytes}.")
     if contract.diagnostic_resources is not None:
         contract.diagnostic_resources.verify_identity(compiled)
     # Materialize the module/function and resource counters without launching.
@@ -399,9 +416,10 @@ def _validate_resources(compiled, contract: ResourceContract, grid: Sequence[int
         # without admission is launching no more CTAs than there are SMs --
         # every CTA is guaranteed a physical slot, so none can block another.
         if contract.available_sm_count is None:
-            raise RuntimeContractError("Kernel requires grid-wide barrier synchronization and this backend has no "
-                                       "cooperative-launch admission API, but no available_sm_count was supplied to "
-                                       "validate that the launch grid fits without oversubscription.")
+            raise RuntimeContractError(
+                "Kernel requires grid-wide barrier synchronization and this backend has no "
+                "cooperative-launch admission API, but no available_sm_count was supplied to "
+                "validate that the launch grid fits without oversubscription.")
         num_ctas = int(getattr(compiled.metadata, "num_ctas", 1) or 1)
         total_ctas = prod(int(value) for value in grid) * num_ctas
         if total_ctas > contract.available_sm_count:
@@ -421,9 +439,10 @@ def _validate_resources(compiled, contract: ResourceContract, grid: Sequence[int
             f"Compiled kernel uses {registers} registers/thread; limit is {contract.registers_per_thread_limit}.")
     resident_registers = registers * actual_warps * contract.warp_size * contract.resident_blocks_per_sm
     if resident_registers > contract.register_file_capacity_per_sm:
-        raise RuntimeContractError(f"Compiled kernel needs at least {resident_registers} registers for "
-                                   f"{contract.resident_blocks_per_sm} resident block(s); SM capacity is "
-                                   f"{contract.register_file_capacity_per_sm}.")
+        raise RuntimeContractError(
+            f"Compiled kernel needs at least {resident_registers} registers for "
+            f"{contract.resident_blocks_per_sm} resident block(s); SM capacity is "
+            f"{contract.register_file_capacity_per_sm}.")
     resources = _spill_resource_report(compiled, contract)
     if contract.diagnostic_resources is not None:
         # Physical limits above and assembler evidence remain mandatory. This
@@ -461,8 +480,9 @@ def _spill_resource_report(compiled, contract: ResourceContract) -> dict[str, in
         report["spill_bytes"] = local_memory_bytes
         return report
     if any(not hasattr(metadata, f"ptxas_{field}") for field in fields):
-        raise RuntimeContractError("Compiled kernel lacks assembler resource metadata; recompile with a TLE backend "
-                                   "that records per-function stack and spill usage.")
+        raise RuntimeContractError(
+            "Compiled kernel lacks assembler resource metadata; recompile with a TLE backend "
+            "that records per-function stack and spill usage.")
     report = {field: int(getattr(metadata, f"ptxas_{field}")) for field in fields}
     # The NVIDIA driver wrapper returns LOCAL_SIZE_BYTES / sizeof(int), not
     # spill bytes. Keep the historical report key for the *sum of assembler

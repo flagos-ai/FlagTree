@@ -11,9 +11,7 @@ from triton.flagmega.ir.ops.math.add import Add
 
 
 def _add_module():
-
     class AddGraph(fm.Module):
-
         def __init__(self):
             super().__init__(dialect="high_level", stage="imported", entry="main")
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Mapping, Sequence
 
 from triton.flagmega.errors import EvaluationError, IRSchemaError
+from triton.flagmega.ir.ops._compute_profile import normalize_compute_profile, require_host_reference, verify_complete_f32
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.distributed_type import SBPBroadCast
 from triton.flagmega.ir.memory_effect import MemoryEffect
@@ -24,7 +25,7 @@ from triton.flagmega.ir.ops.nn._attention_layout import (
     normalize_attention_layout,
     to_seq_head_dim,
 )
-from triton.flagmega.ir.ops.nn._paged_attention_state import PagedAttentionState
+from triton.flagmega.ir.ops.nn._paged_attention_state import PagedAttentionState, paged_attention_state_config_from_type
 from triton.flagmega.ir.ops.nn.qwen3_paged_attention import _scalar_int
 from triton.flagmega.ir.type_pattern import has_dtype, has_rank, is_ref, is_tensor
 from triton.flagmega.ir.types import VectorType
@@ -39,8 +40,7 @@ from triton.flagmega.ir.types import VectorType
 class PagedAttention(OpDefinition):
     q = input_parameter(is_tensor() & has_rank(3))
     state = input_parameter(
-        is_ref(),
-        parameter_kind=ParameterKind.ATTRIBUTE,
+        is_ref(), parameter_kind=ParameterKind.ATTRIBUTE,
         memory_effect=MemoryEffect.CHIP_READ.partitioned_by_argument(2),
     )
     layer_id = input_parameter(
@@ -53,6 +53,7 @@ class PagedAttention(OpDefinition):
     probability_rounding = attribute_parameter(default="normalized")
     softmax_block_size = attribute_parameter(default=64)
     softmax_traversal = attribute_parameter(default="forward")
+    compute_profile = attribute_parameter(default="default")
 
     @classmethod
     def normalize_attrs(cls, attributes: Mapping[str, object]) -> dict[str, object]:
@@ -61,12 +62,9 @@ class PagedAttention(OpDefinition):
 
     @classmethod
     def ir_attrs(cls, attrs):
-        return {
-            key: value
-            for key, value in attrs.items()
-            if not (attrs.get("probability_rounding", "normalized") == "normalized"
-                    and key in {"probability_rounding", "softmax_block_size", "softmax_traversal"})
-        }
+        return {key: value for key, value in attrs.items()
+                if not (attrs.get("probability_rounding", "normalized") == "normalized"
+                        and key in {"probability_rounding", "softmax_block_size", "softmax_traversal"})}
 
     @classmethod
     def infer_type(cls, inputs: Sequence[Node], attrs: Mapping[str, object]) -> IRType:
@@ -76,17 +74,33 @@ class PagedAttention(OpDefinition):
         if attrs.get("probability_rounding", "normalized") == "online_bf16" and scalar != DType.BFLOAT16:
             raise IRSchemaError("PagedAttention online BF16 probabilities require BF16 queries.")
         layout = tuple(attrs["layout"])
+        if attrs.get("compute_profile", "default") != "default":
+            verify_complete_f32(query_type, "PagedAttention")
+            config = paged_attention_state_config_from_type(cls.state.type_of(inputs))
+            tokens = query.shape[layout.index("seq")].value
+            rowwise = attrs["compute_profile"] == "ggml_cpu_f16_rowwise_1t_v1"
+            if (config.cache_dtype != DType.FLOAT16 or (tokens not in range(2, 9) if rowwise else tokens != 1)
+                    or query.shape[layout.index("dim")].value != config.head_dim
+                    or query.shape[layout.index("head")].fixed_value % config.num_kv_heads):
+                raise IRSchemaError("PagedAttention native profile requires its exact F32 query count and compatible F16 KV heads.")
         head_axis = layout.index("head")
         dim_axis = layout.index("dim")
-        if (query.shape[head_axis].is_fixed and query.shape[dim_axis].is_fixed
-                and query.shape[head_axis].fixed_value * query.shape[dim_axis].fixed_value *
-            (query.dtype.lane_count if isinstance(query.dtype, VectorType) else 1) != int(attrs["hidden_size"])):
-            raise IRSchemaError("PagedAttention query heads/dim do not match hidden_size.")
+        if (
+            query.shape[head_axis].is_fixed
+            and query.shape[dim_axis].is_fixed
+            and query.shape[head_axis].fixed_value
+            * query.shape[dim_axis].fixed_value
+            * (query.dtype.lane_count if isinstance(query.dtype, VectorType) else 1)
+            != int(attrs["hidden_size"])
+        ):
+            raise IRSchemaError(
+                "PagedAttention query heads/dim do not match hidden_size.")
         if isinstance(query_type, DistributedType):
             if query_type.partial is not None:
                 raise IRSchemaError("PagedAttention requires a materialized query.")
             if not isinstance(query_type.axis_policies[dim_axis], SBPBroadCast):
-                raise IRSchemaError("PagedAttention head-dimension axis cannot be split.")
+                raise IRSchemaError(
+                    "PagedAttention head-dimension axis cannot be split.")
         return query_type
 
     @classmethod
@@ -95,6 +109,7 @@ class PagedAttention(OpDefinition):
 
     @classmethod
     def evaluate(cls, node, arguments, context):
+        require_host_reference(node)
         query_type = tensor_of(context.types[cls.q.read(node.inputs)])
         result = paged_attention_scalar_value(
             cls.q.read(arguments),
@@ -110,7 +125,8 @@ class PagedAttention(OpDefinition):
         )
         if isinstance(query_type.dtype, VectorType):
             from triton.flagmega.ir.ops.ntt._paged_attention_split import (
-                pack_dim_from_scalar, )
+                pack_dim_from_scalar,
+            )
 
             result = pack_dim_from_scalar(
                 result,
@@ -121,15 +137,22 @@ class PagedAttention(OpDefinition):
 
     @classmethod
     def cost(cls, node: Node) -> OpCost:
-        return OpCost(notes=("stateful-paged-attention-read", ))
+        return OpCost(notes=("stateful-paged-attention-read",))
 
 
-def normalize_paged_attention_attrs(attributes: Mapping[str, object], ) -> dict[str, object]:
+def normalize_paged_attention_attrs(
+    attributes: Mapping[str, object],
+) -> dict[str, object]:
+    profile = normalize_compute_profile(attributes, "PagedAttention", supported=("ggml_cpu_f16_1t_v1", "ggml_cpu_f16_rowwise_1t_v1"))
     scale = float(attributes["scale"])
     hidden_size = attributes["hidden_size"]
     if scale <= 0:
         raise IRSchemaError("PagedAttention scale must be positive.")
-    if (isinstance(hidden_size, bool) or not isinstance(hidden_size, int) or hidden_size <= 0):
+    if (
+        isinstance(hidden_size, bool)
+        or not isinstance(hidden_size, int)
+        or hidden_size <= 0
+    ):
         raise IRSchemaError("PagedAttention hidden_size must be a positive integer.")
     rounding = attributes.get("probability_rounding", "normalized")
     block = attributes.get("softmax_block_size", 64)
@@ -140,15 +163,15 @@ def normalize_paged_attention_attrs(attributes: Mapping[str, object], ) -> dict[
     traversal = attributes.get("softmax_traversal", "forward")
     if traversal not in {"forward", "reverse"}:
         raise IRSchemaError("PagedAttention softmax_traversal must be forward or reverse.")
+    if profile and (rounding != "normalized" or block != 64 or traversal != "forward"):
+        raise IRSchemaError("PagedAttention ggml_cpu_f16_1t_v1 does not use GPU softmax overrides.")
     return {
-        "scale":
-        scale,
-        "layout":
-        normalize_attention_layout(attributes["layout"]),
-        "hidden_size":
-        hidden_size,
-        **({"probability_rounding": rounding, "softmax_block_size": block,
-            "softmax_traversal": traversal} if rounding != "normalized" else {}),
+        **profile,
+        "scale": scale,
+        "layout": normalize_attention_layout(attributes["layout"]),
+        "hidden_size": hidden_size,
+        **({"probability_rounding": rounding, "softmax_block_size": block, "softmax_traversal": traversal}
+           if rounding != "normalized" else {}),
     }
 
 
@@ -168,9 +191,12 @@ def paged_attention_scalar_value(
     """Evaluate attention as scalar elements, independent of vector packing."""
 
     from triton.flagmega.ir.ops.ntt._paged_attention_split import (
-        unpack_dim_to_scalar, )
+        unpack_dim_to_scalar,
+    )
 
-    query_value = unpack_dim_to_scalar(query_value, query_type, layout.index("dim"))
+    query_value = unpack_dim_to_scalar(
+        query_value, query_type, layout.index("dim")
+    )
     query_value = to_seq_head_dim(query_value, layout)
     if query_value.ndim != 3 or query_value.shape[0] == 0:
         raise EvaluationError("PagedAttention requires a nonempty [seq, head, dim] query chunk.")
@@ -215,8 +241,8 @@ def paged_attention_scalar_value(
                 score = (torch.bmm(query[:, None, :], keys.transpose(1, 2), out_dtype=torch.float32).squeeze(1)
                          if query.is_cuda else torch.einsum("hd,hsd->hs", query.float(), keys.float())) * scale
                 if query.is_cuda and valid < softmax_block_size:
-                    score = score.masked_fill(
-                        torch.arange(softmax_block_size, device=query.device)[None, :] >= valid, -float("inf"))
+                    score = score.masked_fill(torch.arange(softmax_block_size, device=query.device)[None, :] >= valid,
+                                              -float("inf"))
                 updated = torch.maximum(maximum, score.max(-1, keepdim=True).values)
                 previous_scale = torch.exp2((maximum - updated) * 1.4426950408889634)
                 if query.is_cuda:
@@ -227,9 +253,8 @@ def paged_attention_scalar_value(
                 denominator = denominator * previous_scale + probability.sum(-1, keepdim=True)
                 accumulator = accumulator * previous_scale
                 if query.is_cuda:
-                    accumulator = torch.baddbmm(accumulator[:, None, :],
-                                                probability.bfloat16()[:, None, :], values,
-                                                out_dtype=torch.float32).squeeze(1)
+                    accumulator = torch.baddbmm(accumulator[:, None, :], probability.bfloat16()[:, None, :],
+                                               values, out_dtype=torch.float32).squeeze(1)
                 else:
                     accumulator += torch.einsum("hs,hsd->hd", probability.bfloat16().float(), values.float())
                 maximum = updated
@@ -240,8 +265,12 @@ def paged_attention_scalar_value(
                 result = accumulator / denominator
             results.append(result.to(query.dtype))
             continue
-        scores = context.torch.einsum("hd,hsd->hs", query.float(), expanded_key[:, :length].float()) * scale
-        probabilities = context.torch.softmax(scores, dim=-1, dtype=context.torch.float32).to(dtype=query.dtype)
+        scores = context.torch.einsum(
+            "hd,hsd->hs", query.float(), expanded_key[:, :length].float()
+        ) * scale
+        probabilities = context.torch.softmax(
+            scores, dim=-1, dtype=context.torch.float32
+        ).to(dtype=query.dtype)
         results.append(context.torch.einsum("hs,hsd->hd", probabilities, expanded_value[:, :length]))
     result = context.torch.stack(results)
     return from_seq_head_dim(result, layout).contiguous()

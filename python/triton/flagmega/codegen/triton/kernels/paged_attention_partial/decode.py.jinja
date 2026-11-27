@@ -1,5 +1,4 @@
-{# Copyright 2026 FlagOS Contributors
-   SPDX-License-Identifier: MIT #}# flagmega-kernel: paged_attention_partial/decode
+# flagmega-kernel: paged_attention_partial/decode
 {% if paged_attention_partial_variant == "decode_layout4" %}
 # The BI-V150 experiment keeps the entry launch contract unchanged, but maps
 # each [token, head_dim] tile to four logical warps.  With a 128-wide head,

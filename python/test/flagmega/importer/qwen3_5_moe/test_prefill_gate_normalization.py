@@ -19,12 +19,11 @@ def test_prefill_normalization_has_no_intermediate_bf16_store():
     source = checkpoint(with_values=True)
     importer = Qwen35MoeImporter(source, execution_phase="prefill", num_tokens=3)
     module = apply_numerical_profile(importer.import_module(), VLLM_AE10_INDUCTOR_LEVEL3)
-    _, trace = TorchEvaluator(CheckpointWeightResolver(source)).run_with_trace(
-        module, {
-            "input_ids": torch.tensor([7, 11, 5], dtype=torch.int32),
-            "gated_delta_net_state": create_gdn_state(importer.gdn_config),
-            "paged_attention_state": create_paged_attention_state(importer.paged_config),
-        })
+    _, trace = TorchEvaluator(CheckpointWeightResolver(source)).run_with_trace(module, {
+        "input_ids": torch.tensor([7, 11, 5], dtype=torch.int32),
+        "gated_delta_net_state": create_gdn_state(importer.gdn_config),
+        "paged_attention_state": create_paged_attention_state(importer.paged_config),
+    })
     node = module.node_map["prefill_linear_recurrent.norm_apply"]
     core, stats, weight, bias = (trace[identity] for identity in node.inputs)
     expected = core.float() * torch.rsqrt(core.float().square().mean(-1, keepdim=True) + node.attrs["epsilon"])
@@ -42,11 +41,8 @@ def test_native_projection_stores_survive_private_widening(phase, tokens):
 
     importer = Qwen35MoeImporter(checkpoint(), execution_phase=phase, num_tokens=tokens)
     module = apply_numerical_profile(importer.import_module(), VLLM_AE10_INDUCTOR_LEVEL3)
-    projections = {
-        node.id
-        for node in module.nodes
-        if node.op == "math.matmul" and node.type.dtype == fm.DType.BFLOAT16
-    }
-    result = DataflowRewriter((fold_matmul_cast_rule(), )).rewrite(module)
+    projections = {node.id for node in module.nodes
+                   if node.op == "math.matmul" and node.type.dtype == fm.DType.BFLOAT16}
+    result = DataflowRewriter((fold_matmul_cast_rule(),)).rewrite(module)
     assert projections <= result.node_map.keys()
     assert all(result.node_map[identity].type.dtype == fm.DType.BFLOAT16 for identity in projections)

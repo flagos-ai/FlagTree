@@ -1,0 +1,5 @@
+// flagmega-kernel: dense_matmul/split_k_n_packed_k_major_gemv platform=generic
+{% set dense_matmul_variant = "split_k_n_packed_k_major_gemv" %}
+{% if render_calls is defined %}
+{% include "kernels/dense_matmul/_function.cpp.jinja" %}
+{% endif %}
