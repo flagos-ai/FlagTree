@@ -34,8 +34,11 @@ def _group_exchange_kernel(values, output, mesh: tl.constexpr, WIDTH: tl.constex
 @pytest.mark.parametrize("shape,axis,width", [((2, 4), 0, 2), ((2, 4), 1, 2), ((2, 1, 2), 0, 2), ((2, 1, 2), 2, 2)])
 def test_grid_axis_groups_through_helper_calls(shape, axis, width, with_allocator):
     torch = pytest.importorskip("torch")
-    if not torch.cuda.is_available() or torch.version.cuda is None:
-        pytest.skip("requires CUDA grid barrier lowering")
+    if not torch.cuda.is_available():
+        pytest.skip("requires a CUDA or HIP device")
+    backend = triton.runtime.driver.active.get_current_target().backend
+    if backend not in ("cuda", "hip"):
+        pytest.skip("requires CUDA or HIP grid barrier lowering")
     names = tuple(f"block_{i}" for i in range(len(shape)))
     mesh = tle.device_mesh({"block": list(zip(names, shape))})
     group = mesh.axis_group(names[axis], group_shape=(width, ))
@@ -54,4 +57,30 @@ def test_grid_axis_groups_through_helper_calls(shape, axis, width, with_allocato
         torch.testing.assert_close(output.cpu(), torch.tensor(expected, dtype=torch.int32), rtol=0, atol=0)
     assert compiled.metadata.launch_cooperative_grid
     assert 'group_kind = "grid_axis"' in compiled.asm["ttgir"]
-    assert "atom.add.release.gpu.u32" in compiled.asm["ptx"]
+    if backend == "cuda":
+        assert "atom.add.release.gpu.u32" in compiled.asm["ptx"]
+    else:
+        assert compiled.metadata.global_scratch_size > 0
+
+
+def test_amd_grid_axis_group_sets_cooperative_launch_metadata():
+    from triton.backends import backends
+    from triton.backends.compiler import GPUTarget
+    from triton.compiler import ASTSource
+
+    if "amd" not in backends:
+        pytest.skip("requires the AMD compiler backend")
+
+    mesh = tle.device_mesh({"block": [("block_0", 2), ("block_1", 4)]})
+    group = mesh.axis_group("block_1", group_shape=(2, ))
+    signature = {
+        "values": "*i32", "output": "*i32", "mesh": "constexpr", "WIDTH": "constexpr", "STRIDE": "constexpr", "DOMAIN":
+        "constexpr"
+    }
+    constants = {"mesh": group, "WIDTH": 2, "STRIDE": 1, "DOMAIN": 4}
+    source = ASTSource(_group_exchange_kernel, signature, constexprs=constants)
+    compiled = triton.compile(source, target=GPUTarget("hip", "gfx1100", 32), options={"num_warps": 4})
+
+    assert compiled.metadata.launch_cooperative_grid
+    assert compiled.metadata.global_scratch_size > 0
+    assert compiled.asm["hsaco"][:4] == b"\x7fELF"

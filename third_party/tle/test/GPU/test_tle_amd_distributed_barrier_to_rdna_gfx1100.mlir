@@ -1,0 +1,64 @@
+// RUN: triton-opt %s -split-input-file -tritongpu-global-scratch-memory-allocation -convert-triton-amdgpu-to-llvm=arch=gfx1100 | FileCheck %s
+
+// FlagMega-on-Radeon P1-C: tle.distributed_barrier (group_kind "grid") lowers to
+// a sense-reversing global-memory barrier — a global atomicrmw add with agent
+// scope to arrive, an acquire atomicrmw to spin, and a CTA barrier bracket. No
+// tle op survives.
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: llvm.func @grid_barrier
+  // The workgroup count is read from the implicit-argument block counts with
+  // invariant aligned loads, not through __ockl_get_num_groups, whose
+  // unaligned remainder reads are vector loads re-fetched after every acquire.
+  // CHECK-NOT: __ockl_get_num_groups
+  // CHECK: llvm.call_intrinsic "llvm.amdgcn.implicitarg.ptr"
+  // CHECK-COUNT-3: llvm.load {{.*}}invariant{{.*}} : !llvm.ptr<4> -> i32
+  // CHECK-NOT: __ockl_get_num_groups
+  // arrive (release) + spin (acquire), both agent-scoped global atomics:
+  // CHECK: llvm.atomicrmw add {{.*}} syncscope("agent") release
+  // CHECK: llvm.atomicrmw add {{.*}} syncscope("agent") acquire
+  // CHECK-NOT: tle.distributed_barrier
+  tt.func public @grid_barrier() {
+    "tle.distributed_barrier"() <{group_kind = "grid"}> : () -> ()
+    tt.return
+  }
+}
+
+// -----
+
+// grid_axis: a per-group counter (group of 4 along axis 1 of an 8x16 domain).
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: llvm.func @grid_axis_barrier
+  // The declared group_domain_shape (8 x 16 = 128) is checked against the actual
+  // launch grid at runtime; a mismatch traps instead of grouping CTAs wrongly.
+  // CHECK: llvm.mlir.constant(128 : i32)
+  // CHECK: llvm.call_intrinsic "llvm.trap"
+  // CHECK: llvm.unreachable
+  // CHECK: llvm.atomicrmw add {{.*}} syncscope("agent")
+  // CHECK-NOT: tle.distributed_barrier
+  tt.func public @grid_axis_barrier() {
+    "tle.distributed_barrier"() <{group_kind = "grid_axis", group_rank = 1 : i32, group_shape = array<i32: 4>, group_axes = array<i32: 1>, group_domain_shape = array<i32: 8, 16>}> : () -> ()
+    tt.return
+  }
+}
+
+// -----
+
+// A singleton domain axis contributes coordinate zero. For the barrier
+// pairing workgroups (0, 2) and (1, 3), the middle coordinate must not carry
+// the outer coordinate into the scratch index.
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "hip:gfx1100", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: llvm.func @grid_axis_barrier_unit_dim
+  // CHECK-COUNT-2: llvm.urem
+  // CHECK: %[[QUOTIENT:[0-9]+]] = llvm.udiv
+  // CHECK-NEXT: %[[ONE:[0-9]+]] = llvm.mlir.constant(1 : i32)
+  // CHECK-NEXT: %[[SINGLETON:[0-9]+]] = llvm.urem %[[QUOTIENT]], %[[ONE]]
+  // CHECK: llvm.add {{.*}}, %[[SINGLETON]]
+  // CHECK: llvm.atomicrmw add {{.*}} syncscope("agent") release
+  tt.func public @grid_axis_barrier_unit_dim() {
+    "tle.distributed_barrier"() <{group_kind = "grid_axis", group_rank = 1 : i32, group_shape = array<i32: 2>, group_axes = array<i32: 0>, group_domain_shape = array<i32: 2, 1, 2>}> : () -> ()
+    tt.return
+  }
+}
