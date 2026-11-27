@@ -125,9 +125,11 @@ def _find_llvm_tools(directories, compiler_major, *, allow_split=False):
 
 
 def _toolchain():
-    sdk = Path(os.environ.get("DEVICE_HOME") or os.environ.get("HIP_PATH") or "/opt/dtk").expanduser().resolve()
-    if not (sdk / "bin/hipcc").is_file():
-        raise RuntimeError(f"HCU FlagCX requires {sdk / 'bin/hipcc'}. Set DEVICE_HOME to the DTK installation.")
+    home = Path(os.environ.get("DEVICE_HOME") or os.environ.get("HIP_PATH") or "/opt/dtk").expanduser().resolve()
+    sdk = next((root.resolve() for root in (home, home / "hip") if (root / "bin/hipcc").is_file()), None)
+    if sdk is None:
+        raise RuntimeError(f"HCU FlagCX requires hipcc under {home / 'bin'} or {home / 'hip/bin'}. "
+                           "Set DEVICE_HOME to the DTK installation or its HIP SDK directory.")
 
     compiler_major = _llvm_major(sdk / "bin/hipcc")
     override = os.environ.get("FLAGCX_HCU_LLVM_BIN")
@@ -136,17 +138,20 @@ def _toolchain():
         tools = _find_llvm_tools((directory, ), compiler_major)
         searched = f"FLAGCX_HCU_LLVM_BIN={directory}"
     else:
-        dtk_dirs = (sdk / "llvm/bin", sdk / "aillvm/bin", sdk / "bin")
+        # DTK can install the LLVM tools alongside the hip/ SDK directory.
+        dtk_root = home.parent if home.name == "hip" else home
+        roots = tuple(dict.fromkeys((sdk, dtk_root)))
+        dtk_dirs = tuple(root / subdir for root in roots for subdir in ("llvm/bin", "aillvm/bin", "bin"))
         tools = _find_llvm_tools(dtk_dirs, compiler_major)
         if tools is None:
             path_dirs = tuple(dict.fromkeys(Path(entry).resolve() for entry in os.get_exec_path()))
             config_dirs = _llvm_config_bindirs((*dtk_dirs, *path_dirs))
             tools = _find_llvm_tools((*dtk_dirs, *config_dirs, *path_dirs), compiler_major, allow_split=True)
-        searched = f"the DTK at {sdk}, llvm-config, and PATH"
+        searched = f"DTK directories under {', '.join(map(str, roots))}, llvm-config, and PATH"
     if tools is None:
         raise RuntimeError("Cannot find opt, llvm-as and llvm-dis with the same LLVM major version "
                            f">= {compiler_major} for HCU FlagCX. Checked {searched}. "
-                           "Set FLAGCX_HCU_LLVM_BIN to a compatible LLVM bin directory.")
+                           "Install the matching LLVM tools or set FLAGCX_HCU_LLVM_BIN to their bin directory.")
     return sdk, tools
 
 
