@@ -1,8 +1,3 @@
-# [MetaX CommonIR] Disable __TLE__ in CLI tools while keeping CommonIR (tile) registration.
-if("$ENV{FLAGTREE_BACKEND}" STREQUAL "metax")
-  remove_definitions(-D__TLE__)
-  list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
-endif()
 get_property(triton_libs GLOBAL PROPERTY TRITON_LIBS)
 
 find_package(Threads REQUIRED)
