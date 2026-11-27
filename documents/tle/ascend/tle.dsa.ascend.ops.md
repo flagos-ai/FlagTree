@@ -44,3 +44,4 @@ tle.dsa.ascend.UB
 | `tle.dsa.ascend.compile_hint` | 向编译器传递优化提示，指导代码生成和性能调优，支持 `bitwise_mask` 等 Hint 类型。 | [tle.dsa.ascend.compile_hint.md](tle.dsa.ascend.compile_hint.md) |
 | `tle.dsa.ascend.raw` | 通用定制算子（custom op）调用入口，按名字调用编译器内置 `__builtin_*` 模板算子或 TLE 随包 bitcode 算子。 | [tle.dsa.ascend.raw_cn.md](tle.dsa.ascend.raw_cn.md) |
 | `tle.dsa.ascend.distribute` | Ascend 后端分布式通信 OP，涵盖通信域初始化、对称内存管理、远端访问、全 rank 同步与 Nz 索引排布。 | [tle.dsa.ascend.distribute.md](tle.dsa.ascend.distribute.md) |
+| `tle.dsa.ascend.inplaced_elemop_gm` | 原地 element-wise GM 更新模式开关：`kind=add/max/min` 打开对应更新模式、`none` 关闭，紧贴 `tl.store` 成对使用，使写 GM（含 fixpipe 回写）从覆写变为原地更新，addmm 类算子可省掉对 C 的读。 | [tle.dsa.ascend.inplaced_elemop_gm_cn.md](tle.dsa.ascend.inplaced_elemop_gm_cn.md) |
