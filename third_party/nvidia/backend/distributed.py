@@ -91,8 +91,6 @@ class FlagcxRuntimeConfig:
             self.bitcode_path = self._get_bitcode_paths()[path_order]
             self.shared_lib_path = self._get_shared_lib_paths()[path_order]
             self.include_path = self._get_include_paths()[path_order]
-        else:
-            raise ImportError("FlagCX runtime is not available. Please ensure that FlagCX is installed.")
 
     def _check_path_available(self, paths, name):
         available_paths = [Path(p) for p in paths if p and Path(p).exists()]
