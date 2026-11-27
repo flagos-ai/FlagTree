@@ -36,11 +36,19 @@ Typical usage:
 
 
 def flagcx_packages_detector() -> bool:
-    from .flagcx_wrapper import (FLAGCXLibrary,  # noqa: F401
-                                 flagcxDevCommRequirements,  # noqa: F401
-                                 flagcxUniqueId,  # noqa: F401
-                                 FLAGCX_WIN_COLL_SYMMETRIC,  # noqa: F401
-                                 )
+    try:
+        from .flagcx_wrapper import (FLAGCXLibrary,  # noqa: F401
+                                     flagcxDevCommRequirements,  # noqa: F401
+                                     flagcxUniqueId,  # noqa: F401
+                                     FLAGCX_WIN_COLL_SYMMETRIC,  # noqa: F401
+                                     )
+    except ImportError:
+        # no FlagCX bundled into this wheel -- use the installed distribution
+        from flagcx.api import (FLAGCXLibrary,  # noqa: F401
+                                flagcxDevCommRequirements,  # noqa: F401
+                                flagcxUniqueId,  # noqa: F401
+                                FLAGCX_WIN_COLL_SYMMETRIC,  # noqa: F401
+                                )
     return True
 
 
