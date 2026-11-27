@@ -23,14 +23,24 @@ def is_pingpong_schedule_enabled(arch, use_async_copy):
             ) if knobs.hcu.use_block_pingpong is None else knobs.hcu.use_block_pingpong
 
 
-def is_in_thread_transpose_enabled(arch):
-    return (arch == "gfx942") if knobs.hcu.use_in_thread_transpose is None else knobs.hcu.use_in_thread_transpose
+def is_in_thread_transpose_enabled(arch, in_thread_transpose=False):
+    # gfx938 reads a transposed dot operand out of LDS two bytes at a time
+    # otherwise; transposing in registers first keeps both the local stores and
+    # the local loads wide (1.17-1.35x on sparse MLA prefill). It is opt-in
+    # there rather than on by default, because it also costs up to 9% on
+    # kernels whose transposed operand is already read efficiently.
+    if knobs.hcu.use_in_thread_transpose is not None:
+        return knobs.hcu.use_in_thread_transpose
+    return arch == "gfx942" or (arch == "gfx938" and in_thread_transpose)
 
 
 @dataclass(frozen=True)
 class HIPOptions:
     num_warps: int = 4
     waves_per_eu: int = 0
+    # Run the in-thread-transpose pass on gfx938, where it is not on by
+    # default. See is_in_thread_transpose_enabled.
+    in_thread_transpose: bool = False
     num_stages: int = 2
     num_ctas: int = 1
     extern_libs: dict = None
@@ -240,7 +250,7 @@ class HIPBackend(BaseBackend):
                 hcu.passes.ttgpuir.insert_instruction_sched_hints(pm, hint)
         passes.ttgpuir.add_remove_layout_conversions(pm)
         passes.ttgpuir.add_reduce_data_duplication(pm)
-        if is_in_thread_transpose_enabled(options.arch):
+        if is_in_thread_transpose_enabled(options.arch, options.in_thread_transpose):
             hcu.passes.ttgpuir.add_in_thread_transpose(pm)
             passes.ttgpuir.add_remove_layout_conversions(pm)
         hcu.passes.ttgpuir.add_reorder_instructions(pm)

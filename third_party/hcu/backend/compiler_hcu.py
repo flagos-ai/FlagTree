@@ -26,8 +26,15 @@ def is_pingpong_schedule_enabled(arch, use_async_copy):
             ) if knobs.hcu.use_block_pingpong is None else knobs.hcu.use_block_pingpong
 
 
-def is_in_thread_transpose_enabled(arch):
-    return (arch == "gfx942") if knobs.hcu.use_in_thread_transpose is None else knobs.hcu.use_in_thread_transpose
+def is_in_thread_transpose_enabled(arch, in_thread_transpose=False):
+    # gfx938 reads a transposed dot operand out of LDS two bytes at a time
+    # otherwise; transposing in registers first keeps both the local stores and
+    # the local loads wide (1.17-1.35x on sparse MLA prefill). It is opt-in
+    # there rather than on by default, because it also costs up to 9% on
+    # kernels whose transposed operand is already read efficiently.
+    if knobs.hcu.use_in_thread_transpose is not None:
+        return knobs.hcu.use_in_thread_transpose
+    return arch == "gfx942" or (arch == "gfx938" and in_thread_transpose)
 
 
 _AMDGCN_TARGET_RE = re.compile(r'\.amdgcn_target\s+"amdgcn-amd-amdhsa-[^-"]*-(gfx[0-9a-z]+(?::[a-z0-9]+[+-])*)"')
@@ -45,6 +52,14 @@ def _retarget_clang_args(clang_args, asm_text):
 class HIPOptions:
     num_warps: int = 4
     waves_per_eu: int = 1
+    # Emit amdgpu-waves-per-eu as "<min>, <max>" rather than "<min>" alone.
+    # With only <min> the allocator still sizes the kernel for maximum
+    # occupancy, so waves_per_eu cannot pin a register budget; pinning it helps
+    # a kernel that spills but costs occupancy-bound kernels, so it is opt-in.
+    waves_per_eu_exact: bool = False
+    # Run the in-thread-transpose pass on gfx938, where it is not on by
+    # default. See is_in_thread_transpose_enabled.
+    in_thread_transpose: bool = False
     num_stages: int = 2
     num_ctas: int = 1
     extern_libs: dict = None
@@ -369,16 +384,20 @@ class HIPBackend(BaseBackend):
             options_args.extend(version_args[clang_major])
 
         if options.sched_latency != 'none':
-            sched_latency_args = {
-                "mmac5-ds10":
-                ["-mllvm=-enable-latency-hack=true", "-mllvm=-mmac-latency=5", "-mllvm=-ds-load-store-latency=10"],
-                "mmac5-ds6":
-                ["-mllvm=-enable-latency-hack=true", "-mllvm=-mmac-latency=5", "-mllvm=-ds-load-store-latency=6"],
-            }
-            if options.sched_latency in sched_latency_args:
-                options_args.extend(sched_latency_args[options.sched_latency])
-            else:
+            # "mmac<N>-ds<M>": tell the scheduler an mmac takes N cycles and an
+            # LDS access M. The useful values are not a short list - an
+            # attention loop whose ds_reads the scheduler leaves adjacent to
+            # their consumers wants an M far above the real latency, and the
+            # response to M is not monotonic - so the tier is parsed rather
+            # than enumerated.
+            match = re.fullmatch(r"mmac(\d+)-ds(\d+)", options.sched_latency)
+            if match is None:
                 raise ValueError(f"Unsupported scheduling latency: {options.sched_latency}")
+            options_args.extend([
+                "-mllvm=-enable-latency-hack=true",
+                f"-mllvm=-mmac-latency={match.group(1)}",
+                f"-mllvm=-ds-load-store-latency={match.group(2)}",
+            ])
 
         clang_args = [
             "-target",
@@ -495,7 +514,7 @@ class HIPBackend(BaseBackend):
         hcu.passes.ttgpuir.add_mls_lowering_pass(pm)
 
         passes.ttgpuir.add_reduce_data_duplication(pm)
-        if is_in_thread_transpose_enabled(options.arch):
+        if is_in_thread_transpose_enabled(options.arch, options.in_thread_transpose):
             hcu.passes.ttgpuir.add_in_thread_transpose(pm)
             passes.ttgpuir.add_remove_layout_conversions(pm)
         hcu.passes.ttgpuir.add_reorder_instructions(pm)
@@ -690,8 +709,10 @@ class HIPBackend(BaseBackend):
         # Specifying N, N forces LLVM to focus on a single register count, simplifies some heuristics
         # and may improve scheduling.
         # FIXME: Keep legacy HCU behavior from Triton 3.1.x, need check triton-llvm waves_per_eu {0} or {0, 0} why not eliminate
-        # fns[0].add_fn_attr("amdgpu-waves-per-eu", f"{options.waves_per_eu}, {options.waves_per_eu}")
-        fns[0].add_fn_attr("amdgpu-waves-per-eu", f"{options.waves_per_eu}")
+        if options.waves_per_eu_exact and options.waves_per_eu:
+            fns[0].add_fn_attr("amdgpu-waves-per-eu", f"{options.waves_per_eu}, {options.waves_per_eu}")
+        else:
+            fns[0].add_fn_attr("amdgpu-waves-per-eu", f"{options.waves_per_eu}")
         denormal_mode = "preserve-sign" if options.allow_flush_denorm else "ieee"
         fns[0].add_fn_attr("denormal-fp-math-f32", denormal_mode)
         if knobs.compilation.enable_asan:
@@ -773,7 +794,9 @@ class HIPBackend(BaseBackend):
         # can also lead to regression in some cases. But from current observation,
         # the regression is not significant. It would be better to have some heuristics.
         if options.schedule_hint == 'attention':
-            flags.append('sink-insts-to-avoid-spills')
+            # `flags` reaches clang, not llvm.translate_to_asm, so the LLVM flag
+            # needs the -mllvm prefix the other entries in _get_clang_args use.
+            flags.append('-mllvm=-sink-insts-to-avoid-spills')
         # features = '-real-true16' if 'gfx11' in options.arch else ''
         # amdgcn = llvm.translate_to_asm(src, hcu.TARGET_TRIPLE, options.arch, features, flags, options.enable_fp_fusion,
         #                                False)
