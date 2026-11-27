@@ -48,7 +48,9 @@ class TritonTleLowerAsyncLoadPass
     m.walk([&, this](triton::LoadOp srcOp) {
       auto asyncAttr =
           llvm::cast_if_present<BoolAttr>(srcOp->getAttr("tt.load.async"));
-      if (!asyncAttr || !asyncAttr.getValue() || !canBeAsyncLoad(srcOp))
+      if (!asyncAttr || !asyncAttr.getValue() ||
+          !isa<RankedTensorType>(srcOp.getType()) || srcOp.getIsVolatile() ||
+          !canBeAsyncLoad(srcOp))
         return;
       builder.setInsertionPointAfter(srcOp);
       // Replace the load with a local alloc + local load
@@ -136,13 +138,18 @@ class TritonTleLowerAsyncLoadPass
         loc, copyAsync->getResult(0));
     // insert wait before the first use of loadop
     Operation *firstUse = nullptr;
+    Block *loadBlock = loadOp->getBlock();
     for (Operation *user : loadOp->getResult(0).getUsers()) {
       if (user == loadOp)
         continue;
-      if (!firstUse)
-        firstUse = user;
-      else if (user->getBlock() == firstUse->getBlock() &&
-               user->isBeforeInBlock(firstUse))
+      user = loadBlock->findAncestorOpInBlock(*user);
+      // A use in another CFG block is still dominated by the original load.
+      // Keep the wait/load immediately after the commit in that case.
+      if (!user) {
+        firstUse = nullptr;
+        break;
+      }
+      if (!firstUse || user->isBeforeInBlock(firstUse))
         firstUse = user;
     }
 

@@ -68,6 +68,16 @@ void mlir::triton::hcugpu::TritonHCUGPUDialect::initialize() {
 
 namespace mlir::triton::hcugpu {
 
+LogicalResult AccumulatorFenceOp::verify() {
+  auto type = cast<RankedTensorType>(getAcc().getType());
+  auto element = type.getElementType();
+  if (!element.isF32() && !element.isInteger(32))
+    return emitOpError("requires a tensor of f32 or i32 accumulator values");
+  if (getPriority() != 0 && getPriority() != 1)
+    return emitOpError("priority must be 0 (normal) or 1 (high)");
+  return success();
+}
+
 std::string getStringFromCoords(mlir::triton::HCU::ElemLocationKey coords) {
   std::string result;
   llvm::raw_string_ostream os(result);

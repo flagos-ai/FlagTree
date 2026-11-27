@@ -63,10 +63,10 @@
 
 namespace mlir {
 namespace test {
+void registerTestAllocationPass();
 #ifndef __HCU__
 void registerTestAliasPass();
 void registerTestAlignmentPass();
-void registerTestAllocationPass();
 void registerTestMembarPass();
 void registerTestLoopPeelingPass();
 #endif
@@ -95,10 +95,10 @@ inline void registerTritonDialects(mlir::DialectRegistry &registry) {
 #ifdef __TLE__
   mlir::triton::tle::registerPasses(); // flagtree tle
 #endif
+  mlir::test::registerTestAllocationPass();
 #ifndef __HCU__
   mlir::test::registerTestAliasPass();
   mlir::test::registerTestAlignmentPass();
-  mlir::test::registerTestAllocationPass();
   mlir::test::registerTestMembarPass();
   mlir::test::registerTestLoopPeelingPass();
 #endif

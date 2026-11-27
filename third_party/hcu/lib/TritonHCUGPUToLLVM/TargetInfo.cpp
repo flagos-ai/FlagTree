@@ -639,7 +639,12 @@ bool TargetInfo::requiresAliasInfoForAsyncOps() const {
   }
 }
 
-bool TargetInfo::supportsDirectToLdsLoadBitWidth(int bitWidth) const {
+bool TargetInfo::supportsDirectToLdsLoadBitWidth(int bitWidth,
+                                                 bool isBuffer) const {
+  // gfx936 supports wide BUFFER-to-LDS. Generic GLOBAL-to-LDS keeps the
+  // CDNA3 widths below; the two opcodes have different selector support.
+  if (isBuffer && getArch() == "gfx936")
+    return llvm::is_contained({32, 64, 128}, bitWidth);
   switch (getISAFamily()) {
   case ISAFamily::CDNA3:
     // Disable 8 and 16 bits because they get extended to 32 bit.

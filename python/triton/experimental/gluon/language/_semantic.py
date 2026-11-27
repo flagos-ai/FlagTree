@@ -281,11 +281,15 @@ class GluonSemantic(TritonSemantic[TensorTy]):
             handle = self.builder.create_local_alloc(ty.to_ir(self.builder))
         return ttgl.shared_memory_descriptor(handle, element_ty, shape, layout, shape)
 
-    def shared_load(self, mem_desc, layout):
+    def shared_load(self, mem_desc, layout, token=None):
         _check(isinstance(layout, ttgl.DistributedLayout),
                lambda: f"expected 'layout' to be a DistributedLayout but got {layout}")
         ret_ty = ttgl.distributed_type(mem_desc.dtype, mem_desc.shape, layout)
-        handle = self.builder.create_local_load(ret_ty.to_ir(self.builder), mem_desc.handle)
+        if token is None:
+            handle = self.builder.create_local_load(ret_ty.to_ir(self.builder), mem_desc.handle)
+        else:
+            _check(isinstance(token, ttgl.async_token), lambda: "expected an async wait token")
+            handle = self.builder.create_local_load(ret_ty.to_ir(self.builder), mem_desc.handle, token.handle)
         return ttgl.tensor(handle, ret_ty)
 
     def shared_store(self, mem_desc, value):

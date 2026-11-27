@@ -93,6 +93,8 @@ __all__ = [
     "float64",
     "distributed_type",
     "shared_memory_descriptor_type",
+    "async_token_type",
+    "async_token",
     "static_range",
     "tuple",
     "tuple_type",
@@ -197,6 +199,39 @@ class distributed_type(block_type):
         return super().__eq__(other) and self.layout == other.layout
 
 
+class async_token_type(base_type):
+    """The ordinary TTGIR async token; it has no physical-layout payload."""
+
+    def to_ir(self, builder):
+        return builder.get_async_token_ty()
+
+    def _flatten_ir_types(self, builder, out):
+        out.append(self.to_ir(builder))
+
+    def _unflatten_ir(self, handles, cursor):
+        return async_token(handles[cursor]), cursor + 1
+
+    def __eq__(self, other):
+        return isinstance(other, async_token_type)
+
+    def __hash__(self):
+        return hash("GluonAsyncToken")
+
+    def mangle(self):
+        return "GluonAsyncToken"
+
+
+class async_token(base_value):
+    """Completion dependency returned by an explicit async wait."""
+
+    def __init__(self, handle):
+        self.handle = handle
+        self.type = async_token_type()
+
+    def _flatten_ir(self, handles):
+        handles.append(self.handle)
+
+
 class shared_memory_descriptor_type(base_type):
 
     def __init__(self, element_ty, shape, layout, alloc_shape):
@@ -275,18 +310,21 @@ class shared_memory_descriptor(base_value):
         return str(self.type)
 
     @builtin
-    def load(self, layout, _semantic: GluonSemantic = None) -> tensor:
+    def load(self, layout, token=None, _semantic: GluonSemantic = None) -> tensor:
         """
         Load a tensor from shared memory.
 
         Args:
             layout (DistributedLayout): The destination layout of the tensor.
+            token (async_token, optional): Completion dependency from an async
+                wait that made this buffer available. It does not replace
+                synchronization needed before overwriting a shared buffer.
 
         Returns:
             tensor: A Gluon tensor containing the loaded data.
         """
         layout = _unwrap_if_constexpr(layout)
-        return _semantic.shared_load(self, layout)
+        return _semantic.shared_load(self, layout, _unwrap_if_constexpr(token))
 
     @builtin
     def store(self, value, _semantic: GluonSemantic = None) -> None:

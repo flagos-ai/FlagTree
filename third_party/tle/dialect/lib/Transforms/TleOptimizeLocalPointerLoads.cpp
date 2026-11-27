@@ -393,9 +393,9 @@ static std::optional<RematerializedValue> rematerializeExpandDims(
   return RematerializedValue{newExpand, input->usesLocalPointerLoad};
 }
 
-static std::optional<RematerializedValue> rematerializeLocalPointerLoad(
-    triton::LoadOp load, RankedTensorType targetTy, OpBuilder &builder,
-    llvm::SmallVectorImpl<RematerializationCacheEntry> &cache, unsigned depth) {
+static std::optional<RematerializedValue>
+rematerializeLocalPointerLoad(triton::LoadOp load, RankedTensorType targetTy,
+                              OpBuilder &builder, unsigned depth) {
   if (load.getMask() || load.getOther())
     return std::nullopt;
   if (!load.getBoundaryCheck().empty() || load.getPadding())
@@ -420,6 +420,13 @@ static std::optional<RematerializedValue> rematerializeLocalPointerLoad(
   if (!memDescTy || memDescTy.getElementType() != targetTy.getElementType())
     return std::nullopt;
 
+  // Change the distribution of the read, not its position relative to shared
+  // stores, barriers or fences. The conversion can be arbitrarily later than
+  // the original load. Index values cached at that later insertion point also
+  // need not dominate the read, so rematerialize its indices independently.
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPoint(load);
+  SmallVector<RematerializationCacheEntry> indexCache;
   SmallVector<Value> indices;
   indices.reserve(localPointers.getIndices().size());
   for (Value index : localPointers.getIndices()) {
@@ -430,8 +437,8 @@ static std::optional<RematerializedValue> rematerializeLocalPointerLoad(
 
     auto targetIndexTy = RankedTensorType::get(
         targetTy.getShape(), indexTy.getElementType(), targetTy.getEncoding());
-    auto rematerializedIndex =
-        rematerializeForLayout(index, targetIndexTy, builder, cache, depth + 1);
+    auto rematerializedIndex = rematerializeForLayout(
+        index, targetIndexTy, builder, indexCache, depth + 1);
     if (!rematerializedIndex || rematerializedIndex->usesLocalPointerLoad)
       return std::nullopt;
     indices.push_back(rematerializedIndex->value);
@@ -516,7 +523,7 @@ static std::optional<RematerializedValue> rematerializeForLayout(
         rematerializeExpandDims(expand, targetTy, builder, cache, depth);
   } else if (auto load = dyn_cast<triton::LoadOp>(def)) {
     rematerialized =
-        rematerializeLocalPointerLoad(load, targetTy, builder, cache, depth);
+        rematerializeLocalPointerLoad(load, targetTy, builder, depth);
   } else if (auto addPtr = dyn_cast<triton::AddPtrOp>(def)) {
     auto offsetTy = dyn_cast<RankedTensorType>(addPtr.getOffset().getType());
     auto sourceResultTy = dyn_cast<RankedTensorType>(addPtr.getType());

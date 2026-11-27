@@ -96,6 +96,7 @@ void expandLoops(ModuleOp moduleOp) {
 
   tt::resolveMaskOp(moduleOp);
 }
+
 } // namespace
 
 struct PipelinePass : impl::TritonHCUGPUPipelineBase<PipelinePass> {
@@ -106,11 +107,10 @@ struct PipelinePass : impl::TritonHCUGPUPipelineBase<PipelinePass> {
     lowerLoops(moduleOp, useAsyncCopy, usePingpong);
     expandLoops(moduleOp);
 
-    if (useAsyncCopy) {
-      llvm::SmallSetVector<ttg::AsyncWaitOp, 8> waitOps;
-      moduleOp.walk([&](ttg::AsyncWaitOp waitOp) { waitOps.insert(waitOp); });
-      tt::combineRedundantWaitOps(waitOps);
-    }
+    // Explicit per-op async loads can introduce waits with the global knob off.
+    llvm::SmallSetVector<ttg::AsyncWaitOp, 8> waitOps;
+    moduleOp.walk([&](ttg::AsyncWaitOp waitOp) { waitOps.insert(waitOp); });
+    tt::combineRedundantWaitOps(waitOps);
 
     tt::removePipeliningAttributes(moduleOp);
   }

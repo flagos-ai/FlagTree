@@ -1,4 +1,5 @@
 #include "Dialect/TritonHCUGPU/IR/Dialect.h"
+#include "TritonHCUGPUToLLVM/LLVMModuleTransforms.h"
 #include "TritonHCUGPUToLLVM/Passes.h"
 #include "TritonHCUGPUToLLVM/TargetUtils.h"
 #include "TritonHCUGPUTransforms/Passes.h"
@@ -6,12 +7,22 @@
 #include "hcu/include/hipblas_types.h"
 #include "lib/TritonHCUGPUToLLVM/TargetInfo.h"
 #include "lld/Common/Driver.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
 #include "passes.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/IntrinsicsAMDGPU.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAsmInfo.h"
@@ -31,6 +42,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/TargetParser/TargetParser.h"
+#include <algorithm>
 #include <array>
 #include <optional>
 #include <pybind11/pybind11.h>
@@ -45,6 +57,16 @@
 #endif
 
 namespace py = pybind11;
+
+using mlir::triton::HCU::annotateLdsObjectScopes;
+using mlir::triton::HCU::interleaveGlobalLdsReads;
+using mlir::triton::HCU::lowerTaggedLocalBarriers;
+using mlir::triton::HCU::preferReadySharedLoads;
+using mlir::triton::HCU::preserveBufferLoadByteOffsets;
+using mlir::triton::HCU::preserveLdsBarrierOrder;
+using mlir::triton::HCU::preserveLdsDmaAliasScopes;
+using mlir::triton::HCU::preserveUniformResourceIndices;
+using mlir::triton::HCU::stripSynchronousBarrierMarkers;
 
 namespace {
 const char *const hcuTargetTriple = "amdgcn-amd-amdhsa";
@@ -89,9 +111,15 @@ void init_triton_hcu_passes_ttgpuir(py::module &&m) {
     pm.addNestedPass<mlir::triton::FuncOp>(
         mlir::createTritonHCUGPUCanonicalizePointers());
   });
-  ADD_PASS_OPTION_WRAPPER_3("add_convert_to_buffer_ops",
-                            mlir::createTritonHCUGPUConvertToBufferOps,
-                            const std::string &, bool, bool);
+  m.def(
+      "add_convert_to_buffer_ops",
+      [](mlir::PassManager &pm, const std::string &arch, bool allowAtomics,
+         bool analyzeSmallTensorOfst, bool asyncOnly) {
+        pm.addPass(mlir::createTritonHCUGPUConvertToBufferOps(
+            {arch, allowAtomics, analyzeSmallTensorOfst, asyncOnly}));
+      },
+      py::arg("pm"), py::arg("arch"), py::arg("allow_buffer_atomics"),
+      py::arg("analyze_small_tensor_ofst"), py::arg("async_only") = false);
   ADD_PASS_WRAPPER_0("add_reorder_instructions",
                      mlir::createTritonHCUGPUReorderInstructions);
   ADD_PASS_WRAPPER_0("add_fold_true_cmpi", mlir::createTritonHCUFoldTrueCmpI);
@@ -372,7 +400,178 @@ static std::optional<std::string> lldInvoke(const char *inPath,
   return {};
 }
 
+// DTK LLVM 18 MachineSink can move an LDS read past s.barrier into a
+// successor block. Reuse the empty memory-clobber fence from Triton's AMD
+// workaround (PRs 9624 and 11096; LLVM issue 181708). This emits no ISA.
 void init_triton_hcu(py::module &&m) {
+  m.def("create_accumulator_fence",
+        [](mlir::OpBuilder &builder, mlir::Location loc, mlir::Value acc,
+           int32_t priority) -> mlir::Value {
+          auto type = mlir::dyn_cast<mlir::RankedTensorType>(acc.getType());
+          if (!type || (!type.getElementType().isF32() &&
+                        !type.getElementType().isInteger(32)))
+            throw std::invalid_argument(
+                "accumulator fence requires an f32 or i32 tensor");
+          if (priority != 0 && priority != 1)
+            throw std::invalid_argument(
+                "accumulator fence priority must be 0 or 1");
+          return builder
+              .create<mlir::triton::hcugpu::AccumulatorFenceOp>(
+                  loc, acc.getType(), acc, builder.getI32IntegerAttr(priority))
+              .getResult();
+        });
+  m.def("create_local_memory_wait",
+        [](mlir::OpBuilder &builder, mlir::Location loc) {
+          // Reuse the target counter operation so native wait insertion
+          // recognizes the completed LDS responses; an opaque asm leaves
+          // redundant waits.
+          builder.create<mlir::triton::hcugpu::MemoryCounterWaitOp>(
+              loc, /*load=*/nullptr, /*store=*/nullptr,
+              /*ds=*/builder.getI32IntegerAttr(0));
+        });
+  m.def("has_warp_specialize", [](mlir::ModuleOp mod) {
+    bool found = false;
+    mod.walk([&](mlir::triton::gpu::WarpSpecializeOp) { found = true; });
+    return found;
+  });
+  m.def("has_cta_barrier", [](mlir::ModuleOp mod) {
+    bool found = false;
+    mod.walk([&](mlir::triton::gpu::LocalBarrierOp op) {
+      found |= op->hasAttr("hcu.cta_scope");
+    });
+    return found;
+  });
+  m.def("create_cta_barrier", [](mlir::OpBuilder &builder, mlir::Location loc) {
+    // GPU dialect's adjacent-barrier folding is invalid for independently
+    // phased WS actors. The standard TTG local barrier retains each rendezvous.
+    auto barrier = builder.create<mlir::triton::gpu::LocalBarrierOp>(loc);
+    barrier->setAttr("hcu.cta_scope", builder.getUnitAttr());
+  });
+  m.def("create_warp_group_id",
+        [](mlir::OpBuilder &builder, mlir::Location loc,
+           int32_t size) -> mlir::Value {
+          if (size <= 0 || !llvm::isPowerOf2_32(size))
+            throw std::invalid_argument(
+                "warp group size must be a positive power of two");
+          return builder
+              .create<mlir::triton::hcugpu::WarpGroupIdOp>(
+                  loc, builder.getI32Type(), builder.getI32IntegerAttr(size))
+              .getResult();
+        });
+  // Target scheduling boundary, independent of any shared-memory protocol.
+  m.def(
+      "create_sched_barrier",
+      [](mlir::OpBuilder &builder, mlir::Location loc, int32_t mask) {
+        if (mask < 0)
+          throw std::invalid_argument(
+              "scheduler barrier mask must be nonnegative");
+        mlir::ROCDL::SchedBarrier::create(builder, loc, mask);
+      },
+      py::arg("builder"), py::arg("loc"), py::arg("mask") = 0);
+  using namespace mlir;
+  namespace tt = mlir::triton;
+  namespace tg = mlir::triton::gpu;
+  auto scalarTypes = [](ValueRange values, unsigned width, unsigned count) {
+    if (values.size() != count)
+      throw std::invalid_argument(
+          "structured register coordinate/extent/stride count mismatch");
+    for (Value value : values)
+      if (!value || !value.getType().isInteger(width))
+        throw std::invalid_argument(
+            "structured register coordinate/extent/stride has wrong scalar "
+            "type");
+  };
+  m.def("create_structured_register_load",
+        [scalarTypes](OpBuilder &b, Location loc, Value base, Type resultType,
+                      const std::vector<Value> &shape,
+                      const std::vector<Value> &strides,
+                      const std::vector<Value> &indices) -> Value {
+          auto result = dyn_cast<RankedTensorType>(resultType);
+          auto ptr = dyn_cast<tt::PointerType>(base.getType());
+          if (!result || result.getRank() != 2 ||
+              !(result.getElementType().isF16() ||
+                result.getElementType().isBF16()) ||
+              !isa<tg::DistributedEncodingTrait>(result.getEncoding()) ||
+              !ptr || ptr.getAddressSpace() != 1 ||
+              ptr.getPointeeType() != result.getElementType())
+            throw std::invalid_argument(
+                "structured register load needs matching AS1 f16/bf16 pointer "
+                "and rank-two distributed result");
+          scalarTypes(shape, 32, 2);
+          scalarTypes(strides, 64, 2);
+          scalarTypes(indices, 32, 3);
+          SmallVector<int32_t> tile;
+          for (int64_t d : result.getShape()) {
+            if (d < 1 || d > INT32_MAX)
+              throw std::invalid_argument("invalid structured register tile");
+            tile.push_back(int32_t(d));
+          }
+          auto op = b.create<tt::MatrixLoadOp>(
+              loc, resultType, base, shape, strides, tile, indices,
+              ArrayRef<int32_t>{}, tt::CacheModifier::NONE,
+              tt::EvictionPolicy::NORMAL, false);
+          op->setAttr("hcu.structured_register", b.getUnitAttr());
+          return op.getResult();
+        });
+  // Reuse MLIR's standard LLVM loop metadata, as other backends do. Preserve
+  // other loop annotations; explicit LLVM unroll hints take precedence.
+  m.def("disable_llvm_loop_unroll", [](mlir::ModuleOp mod) {
+    auto *ctx = mod.getContext();
+    mod.walk([&](mlir::scf::ForOp loop) {
+      auto old = loop->getAttrOfType<mlir::LLVM::LoopAnnotationAttr>(
+          "llvm.loop_annotation");
+      if (old && old.getUnroll())
+        return;
+      if (!old)
+        old = mlir::LLVM::LoopAnnotationAttr::get(
+            ctx, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});
+      auto unroll = mlir::LLVM::LoopUnrollAttr::get(
+          ctx, mlir::BoolAttr::get(ctx, true), {}, {}, {}, {}, {}, {});
+      auto annotation = mlir::LLVM::LoopAnnotationAttr::get(
+          ctx, old.getDisableNonforced(), old.getVectorize(),
+          old.getInterleave(), unroll, old.getUnrollAndJam(), old.getLicm(),
+          old.getDistribute(), old.getPipeline(), old.getPeeled(),
+          old.getUnswitch(), old.getMustProgress(), old.getIsVectorized(),
+          old.getStartLoc(), old.getEndLoc(), old.getParallelAccesses());
+      loop->setAttr("llvm.loop_annotation", annotation);
+    });
+  });
+
+  m.def("preserve_buffer_load_byte_offsets", &preserveBufferLoadByteOffsets);
+  m.def("preserve_uniform_resource_indices", &preserveUniformResourceIndices);
+  m.def("preserve_lds_barrier_order", &preserveLdsBarrierOrder);
+  m.def("strip_synchronous_barrier_markers",
+        [](llvm::Module *module, const std::string &arch) {
+          auto result = stripSynchronousBarrierMarkers(module, arch);
+          if (!result)
+            throw std::invalid_argument(llvm::toString(result.takeError()));
+          return *result;
+        });
+  m.def("lower_tagged_local_barriers",
+        [](llvm::Module *module, const std::string &arch) {
+          auto result = lowerTaggedLocalBarriers(module, arch);
+          if (!result)
+            throw std::invalid_argument(llvm::toString(result.takeError()));
+          return *result;
+        });
+  m.def("annotate_lds_object_scopes", &annotateLdsObjectScopes);
+  m.def("preserve_lds_dma_alias_scopes", &preserveLdsDmaAliasScopes);
+  m.def("prefer_ready_shared_loads", &preferReadySharedLoads);
+  m.def("interleave_global_lds_reads",
+        [](llvm::Module *module, const std::string &arch) {
+          auto s = interleaveGlobalLdsReads(module, arch);
+          py::dict d;
+          d["transformed_windows"] = s.windows;
+          d["moved_global_reads"] = s.globalReads;
+          d["moved_pure_dependents"] = s.pureDependents;
+          d["split_lds_reads"] = s.ldsReads;
+          d["sched_barriers_added"] = s.fences;
+          d["rejected_dependencies"] = s.rejectedDependencies;
+          d["invalid_functions"] = s.invalidFunctions;
+          d["iglp_functions"] = s.iglpFunctions;
+          return d;
+        });
+
   m.doc() = "Python bindings to the HCU Triton backend";
 
   auto passes = m.def_submodule("passes");

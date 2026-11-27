@@ -10,6 +10,7 @@
 #include "triton/Conversion/MLIRTypes.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include <cstdint>
+#include <limits>
 
 namespace mlir::LLVM::HCU {
 // Utility class to take care of buffer operation emission. We may add more
@@ -59,12 +60,23 @@ namespace mlir::LLVM::HCU {
 // Failure to meet 1) will result in a scalarized loop (very poor performance).
 // Failure to meet 2) and 3) will result in incorrect memory access.
 struct BufferEmitter {
+  // Default raw descriptors reserve a signed-i32 byte range. Offset and
+  // vector-store proofs must use the same bound as descriptor construction.
+  static constexpr uint64_t MaxRawBufferBytes =
+      uint64_t(std::numeric_limits<int32_t>::max()) - 1;
+
   BufferEmitter(RewriterBase &rw, Location loc,
                 mlir::triton::HCU::TargetInfo ti);
 
   // Create a resource descriptor that points to the area of memory we want to
   // load from
   Value createResourceDescriptor(Value basePtr, Value inferredStride = nullptr);
+
+  // Raw (zero-stride) resource only. The caller proves a wave-uniform,
+  // nonnegative byte offset and no wrap in the remaining lane offsets.
+  // Preserve the existing descriptor extent, subtracting the rebased prefix.
+  Value createResourceDescriptor(Value basePtr, Value inferredStride,
+                                 Value uniformByteOffset);
 
   // Emit a predicated rocdl.raw.ptr.buffer.load
   Value emitLoad(Type type, Value rsrcDesc, Value offset, Value pred,
@@ -89,6 +101,9 @@ struct BufferEmitter {
                  CacheModifier cm);
 
 private:
+  // Both operands must be wave-uniform i32. This remains exact for lhs < rhs.
+  Value emitUniformUnsignedSaturatingSub(Value lhs, Value rhs);
+
   // Fill common buffer operation arguments.
   void fillCommonArgs(Type type, Value rsrcDesc, Value vOffsetElems, Value pred,
                       CacheModifier cm, bool isBufferLoad,
