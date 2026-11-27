@@ -1,6 +1,5 @@
 add_triton_library(HCUTLERawTransforms
   MaterializeDeferredRaw.cpp
-  DeferredRawSourceRegistry.cpp
 
   DEPENDS
   HCUTLERawTransformsIncGen
