@@ -28,6 +28,9 @@ import subprocess
 from python.setup_tools.utils.default import FlagCXRegistrar, printinfo
 
 
+_LLVM_TOOLS = ("opt", "llvm-as", "llvm-dis")
+
+
 def relocate_flagcx():
     from python.setup_tools.utils import flagtree_submodules
     from python.setup_tools.utils.tools import flagtree_configs
@@ -68,38 +71,84 @@ def _device_arch(sdk):
                        "(for example gfx936 on BW1000); cross builds must name the deployment GPU.")
 
 
+def _llvm_major(executable):
+    output = subprocess.check_output([str(executable), "--version"], text=True, stderr=subprocess.STDOUT)
+    match = re.search(r"(?:clang|LLVM) version\s+(\d+)", output)
+    if not match:
+        raise RuntimeError(f"Cannot determine the LLVM version of {executable}")
+    return int(match.group(1))
+
+
+def _llvm_executables(directory, name):
+    versioned = sorted(directory.glob(f"{name}-[0-9]*"))
+    for executable in (directory / name, *versioned):
+        if executable.is_file() and os.access(executable, os.X_OK):
+            yield executable
+
+
+def _llvm_config_bindirs(directories):
+    for directory in dict.fromkeys(directories):
+        for config in _llvm_executables(directory, "llvm-config"):
+            try:
+                output = subprocess.check_output([str(config), "--bindir"], text=True, stderr=subprocess.DEVNULL)
+            except (OSError, subprocess.CalledProcessError):
+                continue
+            bindir = Path(output.strip())
+            if bindir.is_absolute():
+                yield bindir.resolve()
+
+
+def _find_llvm_tools(directories, compiler_major, *, allow_split=False):
+    suites = {}
+    split_suites = {}
+    for directory in dict.fromkeys(directories):
+        for name in _LLVM_TOOLS:
+            for executable in _llvm_executables(directory, name):
+                try:
+                    major = _llvm_major(executable)
+                except (OSError, subprocess.CalledProcessError, RuntimeError):
+                    continue
+                if major < compiler_major:
+                    continue
+                suites.setdefault((major, directory), {}).setdefault(name, executable)
+                if allow_split:
+                    split_suites.setdefault(major, {}).setdefault(name, executable)
+
+    # Prefer a complete suite from one directory before combining tools from different paths.
+    compatible = [(major, tools) for (major, _), tools in suites.items() if len(tools) == len(_LLVM_TOOLS)]
+    if not compatible:
+        compatible = [(major, tools) for major, tools in split_suites.items() if len(tools) == len(_LLVM_TOOLS)]
+    if compatible:
+        # A nearby reader version minimizes bitcode format changes. The DU build
+        # verifies the processed IR before FlagTree links it into a kernel.
+        return min(compatible, key=lambda entry: entry[0])[1]
+    return None
+
+
 def _toolchain():
     sdk = Path(os.environ.get("DEVICE_HOME") or os.environ.get("HIP_PATH") or "/opt/dtk").expanduser().resolve()
     if not (sdk / "bin/hipcc").is_file():
         raise RuntimeError(f"HCU FlagCX requires {sdk / 'bin/hipcc'}. Set DEVICE_HOME to the DTK installation.")
 
-    def llvm_major(executable):
-        output = subprocess.check_output([str(executable), "--version"], text=True, stderr=subprocess.STDOUT)
-        match = re.search(r"(?:clang|LLVM) version\s+(\d+)", output)
-        if not match:
-            raise RuntimeError(f"Cannot determine the LLVM version of {executable}")
-        return int(match.group(1))
-
-    compiler_major = llvm_major(sdk / "bin/hipcc")
+    compiler_major = _llvm_major(sdk / "bin/hipcc")
     override = os.environ.get("FLAGCX_HCU_LLVM_BIN")
-    candidates = [Path(override).expanduser()] if override else [sdk / "llvm/bin", sdk / "aillvm/bin", sdk / "bin"]
-    compatible = []
-    for candidate in candidates:
-        tools = [candidate / tool for tool in ("opt", "llvm-as", "llvm-dis")]
-        if not all(tool.is_file() for tool in tools):
-            continue
-        versions = {llvm_major(tool) for tool in tools}
-        if len(versions) == 1 and next(iter(versions)) >= compiler_major:
-            compatible.append((versions.pop(), candidate))
-    if compatible:
-        # LLVM bitcode readers support older producers. In DTK, hipcc can use
-        # LLVM 17 while the complete opt/as/dis suite uses AOMP LLVM 18. Prefer
-        # the nearest eligible version; actual readability is checked by the
-        # DU build's llvm-dis and opt verifier, then by the kernel link check.
-        _, selected = min(compatible, key=lambda entry: entry[0])
-        return sdk, selected.resolve()
-    raise RuntimeError(f"Cannot find a consistent DTK opt/llvm-as/llvm-dis suite with LLVM >= {compiler_major}. "
-                       "Set FLAGCX_HCU_LLVM_BIN to its directory. Mixed tool versions and older readers are rejected.")
+    if override:
+        directory = Path(override).expanduser().resolve()
+        tools = _find_llvm_tools((directory,), compiler_major)
+        searched = f"FLAGCX_HCU_LLVM_BIN={directory}"
+    else:
+        dtk_dirs = (sdk / "llvm/bin", sdk / "aillvm/bin", sdk / "bin")
+        tools = _find_llvm_tools(dtk_dirs, compiler_major)
+        if tools is None:
+            path_dirs = tuple(dict.fromkeys(Path(entry).resolve() for entry in os.get_exec_path()))
+            config_dirs = _llvm_config_bindirs((*dtk_dirs, *path_dirs))
+            tools = _find_llvm_tools((*dtk_dirs, *config_dirs, *path_dirs), compiler_major, allow_split=True)
+        searched = f"the DTK at {sdk}, llvm-config, and PATH"
+    if tools is None:
+        raise RuntimeError("Cannot find opt, llvm-as and llvm-dis with the same LLVM major version "
+                           f">= {compiler_major} for HCU FlagCX. Checked {searched}. "
+                           "Set FLAGCX_HCU_LLVM_BIN to a compatible LLVM bin directory.")
+    return sdk, tools
 
 
 class HCUFlagCXRegistrar(FlagCXRegistrar):
@@ -140,7 +189,7 @@ class HCUFlagCXRegistrar(FlagCXRegistrar):
         if not (source / "bindings/ir/du/Makefile").is_file():
             raise RuntimeError(f"{source} lacks the Hygon bitcode build. Use the shared pinned FlagCX revision, "
                                "or set FLAGCX_SOURCE_DIR to a compatible checkout.")
-        sdk, llvm_bin = _toolchain()
+        sdk, llvm_tools = _toolchain()
         self.arch = _device_arch(sdk)
         json_dir = self._json_include_dir()
         build_dir = source / "build/hcu" / self.arch
@@ -154,7 +203,10 @@ class HCUFlagCXRegistrar(FlagCXRegistrar):
             f"DEVICE_HOME={sdk}",
             f"CCL_HOME={os.environ.get('CCL_HOME') or sdk}",
             f"DEVICE_BITCODE_ARCH={self.arch}",
-            f"DTK_LLVM_BIN={llvm_bin}",
+            f"DTK_LLVM_BIN={llvm_tools['opt'].parent}",
+            f"OPT={llvm_tools['opt']}",
+            f"LLVM_AS={llvm_tools['llvm-as']}",
+            f"LLVM_DIS={llvm_tools['llvm-dis']}",
             f"BUILDDIR={build_dir}",
             f"JSON_INCLUDE_DIR={json_dir}",
         ]
