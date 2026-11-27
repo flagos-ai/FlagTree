@@ -3554,7 +3554,10 @@ def run_bench_table(warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS, sh
                     tilelang_num_stages=2, tilelang_threads=256, input_mode="flashmla", seed=BENCH_DEFAULT_SEED,
                     only_unit_test=False):
     bench = benchmark_sparse_mla_fwd.benchmarks
-    selected = [i for i, provider in enumerate(_BENCH_PROVIDERS) if not only_unit_test or provider != "tilelang"]
+    selected = [
+        i for i, provider in enumerate(_BENCH_PROVIDERS)
+        if not only_unit_test or not provider.startswith("tilelang")
+    ]
     bench.line_vals = [_BENCH_PROVIDERS[i] for i in selected]
     bench.line_names = [_BENCH_NAMES[i] for i in selected]
     bench.styles = [_BENCH_STYLES[i] for i in selected]
@@ -3574,7 +3577,10 @@ def run_bench_table(warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS, sh
 def run_decode_bench_table(warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS, show_plots=False,
                            tilelang_block_I=64, tilelang_num_stages=2, tilelang_threads=256, only_unit_test=False):
     bench = benchmark_sparse_mla_decode.benchmarks
-    selected = [i for i, provider in enumerate(_DECODE_BENCH_PROVIDERS) if not only_unit_test or provider != "tilelang"]
+    selected = [
+        i for i, provider in enumerate(_DECODE_BENCH_PROVIDERS)
+        if not only_unit_test or not provider.startswith("tilelang")
+    ]
     bench.line_vals = [_DECODE_BENCH_PROVIDERS[i] for i in selected]
     bench.line_names = [_DECODE_BENCH_NAMES[i] for i in selected]
     bench.styles = [_DECODE_BENCH_STYLES[i] for i in selected]
@@ -4075,7 +4081,7 @@ def bench_sparse_mla_fwd(
     elif not _HAVE_TILELANG:
         print("TileLang is not installed, skip TileLang bench.")
 
-    if _HAVE_TILELANG:
+    if _HAVE_TILELANG and not only_unit_test:
 
         def run_tilelang_pipelined():
             return tilelang_sparse_mla_fwd_pipelined_interface(
@@ -4557,7 +4563,11 @@ def _parse_args():
     parser.add_argument("--rep", type=int, default=BENCH_DEFAULT_REP_MS,
                         help="Benchmark measurement budget in milliseconds.")
     parser.add_argument("--show-plots", action="store_true")
-    parser.add_argument("--only_unit_test", action="store_true", help="skip the baseline TileLang provider")
+    parser.add_argument(
+        "--only_unit_test",
+        action="store_true",
+        help="skip all TileLang providers",
+    )
     parser.add_argument("--bench-input-mode", choices=["flashmla", "causal"], default="flashmla")
     parser.add_argument("--seed", type=int, default=BENCH_DEFAULT_SEED, help="Seed for benchmark input generation.")
     parser.add_argument("--skip-output-check", action="store_true")
@@ -4593,8 +4603,8 @@ if __name__ == "__main__":
             check_tle_pipe=not args.skip_tle_pipe_check,
             check_tle_flashmla_prefill=not args.skip_tle_flashmla_prefill_check,
             check_tilelang=args.check_tilelang and not args.only_unit_test,
-            check_tilelang_pipelined=args.check_tilelang_pipelined,
-            check_tilelang_seesaw=args.check_tilelang_seesaw,
+            check_tilelang_pipelined=args.check_tilelang_pipelined and not args.only_unit_test,
+            check_tilelang_seesaw=args.check_tilelang_seesaw and not args.only_unit_test,
             check_flashmla=args.check_flashmla,
             tilelang_block_I=args.tilelang_block_I,
             tilelang_num_stages=args.tilelang_num_stages,
@@ -4614,8 +4624,8 @@ if __name__ == "__main__":
             check_tle=not args.skip_tle_check,
             check_tle_pipe=not args.skip_tle_pipe_check,
             check_tilelang=args.check_tilelang and not args.only_unit_test,
-            check_tilelang_pipelined=args.check_tilelang_pipelined,
-            check_tilelang_seesaw=args.check_tilelang_seesaw,
+            check_tilelang_pipelined=args.check_tilelang_pipelined and not args.only_unit_test,
+            check_tilelang_seesaw=args.check_tilelang_seesaw and not args.only_unit_test,
             check_flashmla=args.check_flashmla,
             tilelang_block_I=args.decode_block_size,
             tilelang_num_stages=args.tilelang_num_stages,
