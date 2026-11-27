@@ -263,20 +263,19 @@ def merge_exhaust_kernel(SrcGM, OutGM, ConsGM, WAY_CAP: tl.constexpr, WAYS: tl.c
 
 
 @triton.jit
-def mrgsort_kernel(src, dst, TOP_K: tl.constexpr):
+def mrgsort_kernel(src, dst, L0: tl.constexpr, L1: tl.constexpr, L2: tl.constexpr, L3: tl.constexpr,
+                   OUT_K: tl.constexpr, VALID_BIT: tl.constexpr, IF_EXHAUSTED: tl.constexpr,
+                   REPEAT_TIMES: tl.constexpr):
     GROUP_SIZE: tl.constexpr = 32
     PROPOSALS_BYTES: tl.constexpr = 2
     BLOCK_SIZE: tl.constexpr = GROUP_SIZE * 4 * PROPOSALS_BYTES
-    IF_EXHAUSTED_SUSPENSION: tl.constexpr = 1
-    VALID_BIT: tl.constexpr = 15
-    REPEAT_TIMES: tl.constexpr = 1
 
     offs = tl.arange(0, BLOCK_SIZE)
     src_t = tl.load(src + offs)
     pair = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
-    pair = tle_raw.call("ascend_mrgsort", src_t, 0, GROUP_SIZE, GROUP_SIZE * 2, GROUP_SIZE * 3, TOP_K, TOP_K, TOP_K,
-                        TOP_K, IF_EXHAUSTED_SUSPENSION, VALID_BIT, REPEAT_TIMES, out=pair)
-    tl.store(dst + offs, pair, mask=offs < TOP_K * 2)
+    pair = tle_raw.call("ascend_mrgsort", src_t, 0, GROUP_SIZE, GROUP_SIZE * 2, GROUP_SIZE * 3, L0, L1, L2, L3,
+                        IF_EXHAUSTED, VALID_BIT, REPEAT_TIMES, out=pair)
+    tl.store(dst + offs, pair, mask=offs < OUT_K * 2)
 
 
 @triton.jit
@@ -449,9 +448,19 @@ def test_gather_gm_to_ub(torch_dtype):
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def _run_sort_case(n, k, index_offset, sort_impl, label, descending=True):
+def _make_sort_input(n, kind):
+    if kind == "uniform":
+        return torch.rand((n, ), dtype=torch.float32, device=DEVICE)
+    if kind == "negative":
+        return torch.empty((n, ), dtype=torch.float32, device=DEVICE).uniform_(-1.0, 1.0)
+    if kind == "duplicate":
+        return (torch.randint(0, 8, (n, ), dtype=torch.int32, device=DEVICE).float() - 4.0) / 4.0
+    raise ValueError(f"unknown sort input kind: {kind}")
+
+
+def _run_sort_case(n, k, index_offset, sort_impl, label, descending=True, kind="uniform"):
     torch.manual_seed(0)
-    x = torch.rand((n, ), dtype=torch.float32, device=DEVICE)
+    x = _make_sort_input(n, kind)
     out = torch.zeros((triton.next_power_of_2(k * 2), ), dtype=torch.float32, device=DEVICE)
 
     sort_pack_kernel[(1, )](
@@ -480,22 +489,44 @@ def _run_sort_case(n, k, index_offset, sort_impl, label, descending=True):
                                err_msg=f"{label}: values are not the {order} top-{k}")
     np.testing.assert_allclose(x_np[indices.astype(np.int64) - index_offset], values, rtol=1e-5, atol=1e-5,
                                err_msg=f"{label}: index does not match value")
-    print(f"[PASS] sort_1d_pack {label} (N={n}, K={k}, offset={index_offset}, {order})")
+    print(f"[PASS] sort_1d_pack {label} (N={n}, K={k}, offset={index_offset}, {order}, {kind})")
 
 
 def test_sort_1d_pack():
     _run_sort_case(2048, 100, 0, SORT_IMPL_BASE, "BASE")
     _run_sort_case(2048, 100, 500, SORT_IMPL_BASE, "BASE index_offset")
     _run_sort_case(2048, 100, 0, SORT_IMPL_BASE, "BASE ascending", descending=False)
+    _run_sort_case(2048, 100, 500, SORT_IMPL_BASE, "BASE ascending index_offset", descending=False)
+    _run_sort_case(2048, 100, 0, SORT_IMPL_BASE, "BASE negative", kind="negative")
+    _run_sort_case(2048, 100, 0, SORT_IMPL_BASE, "BASE negative ascending", descending=False, kind="negative")
+    _run_sort_case(2048, 100, 0, SORT_IMPL_BASE, "BASE duplicate", kind="duplicate")
+    _run_sort_case(2048, 100, 0, SORT_IMPL_BASE, "BASE duplicate ascending", descending=False, kind="duplicate")
     _run_sort_case(2048, 1, 0, SORT_IMPL_BASE, "BASE K=1")
     _run_sort_case(2048, 2048, 0, SORT_IMPL_BASE, "BASE K=N")
     _run_sort_case(4096, 129, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 K=129")
     _run_sort_case(4096, 256, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512")
     _run_sort_case(4096, 256, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 ascending", descending=False)
+    _run_sort_case(4096, 256, 1000, SORT_IMPL_S4096_K129_512, "S4096_K129_512 index_offset")
+    _run_sort_case(4096, 256, 1000, SORT_IMPL_S4096_K129_512, "S4096_K129_512 ascending index_offset", descending=False)
+    _run_sort_case(4096, 256, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 negative", kind="negative")
+    _run_sort_case(4096, 256, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 negative ascending", descending=False,
+                   kind="negative")
+    _run_sort_case(4096, 256, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 duplicate", kind="duplicate")
+    _run_sort_case(4096, 256, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 duplicate ascending", descending=False,
+                   kind="duplicate")
     _run_sort_case(4096, 512, 0, SORT_IMPL_S4096_K129_512, "S4096_K129_512 K=512")
     _run_sort_case(4096, 1, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 K=1")
     _run_sort_case(4096, 32, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 ascending K=32", descending=False)
     _run_sort_case(4096, 64, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 early-stop")
+    _run_sort_case(4096, 64, 1000, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 index_offset")
+    _run_sort_case(4096, 64, 1000, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 ascending index_offset",
+                   descending=False)
+    _run_sort_case(4096, 64, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 negative", kind="negative")
+    _run_sort_case(4096, 64, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 negative ascending", descending=False,
+                   kind="negative")
+    _run_sort_case(4096, 64, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 duplicate", kind="duplicate")
+    _run_sort_case(4096, 64, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 duplicate ascending",
+                   descending=False, kind="duplicate")
     _run_sort_case(4096, 128, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 early-stop K=128")
     _run_sort_case(4096, 128, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 ascending K=128", descending=False)
     _run_sort_case(4096, 512, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 ascending K=512", descending=False)
@@ -503,27 +534,63 @@ def test_sort_1d_pack():
     _run_sort_case(4096, 2048, 0, SORT_IMPL_S4096_K1_128_K2048, "S4096_K1_128_K2048 ascending K=2048", descending=False)
 
 
+def test_sort_repeatability():
+    cases = [
+        (2048, 100, 0, SORT_IMPL_BASE, True),
+        (2048, 100, 0, SORT_IMPL_BASE, False),
+        (4096, 256, 0, SORT_IMPL_S4096_K129_512, True),
+        (4096, 256, 0, SORT_IMPL_S4096_K129_512, False),
+        (4096, 64, 0, SORT_IMPL_S4096_K1_128_K2048, True),
+        (4096, 64, 0, SORT_IMPL_S4096_K1_128_K2048, False),
+    ]
+    for n, k, index_offset, sort_impl, descending in cases:
+        torch.manual_seed(0)
+        base = torch.rand((n, ), dtype=torch.float32, device=DEVICE)
+        outs = []
+        for _ in range(3):
+            x = base.clone()
+            out = torch.zeros((triton.next_power_of_2(k * 2), ), dtype=torch.float32, device=DEVICE)
+            sort_pack_kernel[(1, )](
+                x,
+                out,
+                N=n,
+                K=k,
+                INDEX_OFFSET=index_offset,
+                SORT_IMPL=sort_impl,
+                TMP_SIZE=_sort_tmp_size(n, k, sort_impl),
+                DESCENDING=descending,
+            )
+            torch_npu.npu.synchronize()
+            outs.append(out.cpu().numpy())
+        for out in outs[1:]:
+            np.testing.assert_array_equal(outs[0], out)
+        print(f"[PASS] sort_1d_pack repeatability (N={n}, K={k}, impl={sort_impl}, desc={descending})")
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # merge_exhaust_sort4
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def _make_way(rng, length, tag):
-    """Generate one descending proposal way: globally unique values with a
-    one-to-one value/index mapping."""
-    values = np.sort(rng.random(length))[::-1].astype(np.float32)
+def _make_way(rng, length, tag, ties=False):
+    """Generate one descending proposal way: a one-to-one value/index mapping."""
+    if ties:
+        values = (rng.integers(0, 8, size=length).astype(np.float32) - 4.0) / 4.0
+        values = np.sort(values)[::-1]
+    else:
+        values = np.sort(rng.random(length))[::-1].astype(np.float32)
     indices = np.arange(length, dtype=np.int32) + tag * 100000
     return list(zip(values.tolist(), indices.astype(np.int64).tolist()))
 
 
-def _run_merge_case(lengths, label, seed=0):
+def _run_merge_case(lengths, label, seed=0, ties=False):
     rng = np.random.default_rng(seed)
     way_cap = max(lengths)
     src = np.zeros(4 * way_cap * 2, dtype=np.float32)
     ways = []
     for tag, ln in enumerate(lengths):
         if ln > 0:
-            way = _make_way(rng, ln, tag)
+            way = _make_way(rng, ln, tag, ties=ties)
             ways.append((tag, way))
             src[tag * way_cap * 2:tag * way_cap * 2 + ln * 2] = _encode_props(*zip(*way))
 
@@ -548,6 +615,7 @@ def _run_merge_case(lengths, label, seed=0):
     cons = cons_gm.cpu().numpy()
     total = int(cons[:len(lengths)].sum())
     assert total > 0, f"{label}: merge produced no output"
+    assert total <= sum(lengths), f"{label}: consumed more proposals than available"
     for tag, ln in enumerate(lengths):
         assert 0 <= cons[tag] <= ln, (f"{label}: way{tag} consumed count {cons[tag]} exceeds length {ln}")
 
@@ -555,14 +623,18 @@ def _run_merge_case(lengths, label, seed=0):
     assert np.all(out_v[:-1] >= out_v[1:]), f"{label}: output prefix is not descending"
 
     out_pairs = list(zip(out_v.tolist(), out_i.tolist()))
-    full_merge = sorted((p for _, way in ways for p in way), key=lambda p: -p[0])
-    assert out_pairs == full_merge[:total], (f"{label}: output is not a safe prefix of the full merge")
-
-    value_to_way = {p[0]: tag for tag, way in ways for p in way}
-    for tag, way in ways:
-        used = [p for p in out_pairs if value_to_way[p[0]] == tag]
-        assert used == way[:cons[tag]], (
-            f"{label}: way{tag} proposals actually consumed do not match the reported consumed count")
+    all_pairs = [p for _, way in ways for p in way]
+    full_merge = sorted(all_pairs, key=lambda p: -p[0])
+    if ties:
+        ref_values = np.array([p[0] for p in full_merge[:total]], dtype=np.float32)
+        np.testing.assert_array_equal(out_v, ref_values)
+    else:
+        assert out_pairs == full_merge[:total], (f"{label}: output is not a safe prefix of the full merge")
+        value_to_way = {p[0]: tag for tag, way in ways for p in way}
+        for tag, way in ways:
+            used = [p for p in out_pairs if value_to_way[p[0]] == tag]
+            assert used == way[:cons[tag]], (
+                f"{label}: way{tag} proposals actually consumed do not match the reported consumed count")
     print(f"[PASS] merge_exhaust_sort4 {label} "
           f"(lens={lengths}, consumed={cons[:len(lengths)].tolist()}, total={total})")
 
@@ -571,6 +643,13 @@ def test_merge_exhaust_sort4():
     _run_merge_case((64, 64, 64, 64), "4-way")
     _run_merge_case((64, 64, 0, 0), "2-way")
     _run_merge_case((64, 0, 64, 32), "3-way with hole")
+    _run_merge_case((64, 0, 0, 0), "1-way")
+    _run_merge_case((0, 64, 0, 0), "1-way middle")
+    _run_merge_case((32, 16, 8, 4), "asymmetric")
+    _run_merge_case((7, 3, 0, 1), "small asymmetric with hole")
+    _run_merge_case((1, 0, 0, 0), "single proposal")
+    _run_merge_case((64, 64, 64, 64), "4-way ties", ties=True)
+    _run_merge_case((32, 16, 8, 4), "asymmetric ties", ties=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -619,33 +698,61 @@ def test_sort32():
         print(f"[PASS] sort32 correctness (repeat_times={repeat_times})")
 
 
+def _run_mrgsort_case(lengths, top_k, label, if_exhausted=1, repeat_times=1):
+    num_valid = sum(1 for ln in lengths if ln > 0)
+    assert all(ln > 0 for ln in lengths[:num_valid]) and all(
+        ln == 0 for ln in lengths[num_valid:]), (f"{label}: mrgsort valid ways must be a prefix, got {lengths}")
+    valid_mask = (1 << num_valid) - 1
+    assert valid_mask in (3, 7, 15), f"{label}: mrgsort supports 2-4 valid ways, got {num_valid}"
+
+    torch.manual_seed(0)
+    n_experts = 128
+    n_groups = 4
+
+    val = torch.rand([n_experts], dtype=torch.float32, device="cpu")
+    idx = torch.arange(0, n_experts, dtype=torch.int32, device="cpu")
+    val_2d = val.numpy().reshape(n_groups, 32)
+    idx_2d = idx.numpy().reshape(n_groups, 32)
+    local_idx_2d = np.argsort(-val_2d, axis=1, kind="stable")
+    global_val = np.take_along_axis(val_2d, local_idx_2d, axis=1).reshape(n_experts)
+    global_idx = np.take_along_axis(idx_2d, local_idx_2d, axis=1).reshape(n_experts)
+
+    pair = np.zeros(4 * 32 * 2, dtype=np.float32)
+    prefix_val = []
+    prefix_idx = []
+    for tag, ln in enumerate(lengths):
+        if ln > 0:
+            gv = global_val[tag * 32:tag * 32 + ln]
+            gi = global_idx[tag * 32:tag * 32 + ln]
+            pair[tag * 32 * 2:tag * 32 * 2 + ln * 2] = _encode_props(gv, gi)
+            prefix_val.append(gv)
+            prefix_idx.append(gi)
+
+    out_k = min(top_k, sum(lengths))
+    out = torch.zeros([out_k * 2], dtype=torch.float32, device=DEVICE)
+
+    mrgsort_kernel[(1, )](torch.from_numpy(pair).to(DEVICE), out, L0=lengths[0], L1=lengths[1], L2=lengths[2],
+                          L3=lengths[3], OUT_K=out_k, VALID_BIT=valid_mask, IF_EXHAUSTED=if_exhausted,
+                          REPEAT_TIMES=repeat_times)
+    torch_npu.npu.synchronize()
+
+    out_v, out_i = _decode_props(out.cpu().numpy()[:out_k * 2])
+    ref_v = np.concatenate(prefix_val)
+    ref_i = np.concatenate(prefix_idx)
+    order = np.argsort(-ref_v, kind="stable")
+
+    np.testing.assert_array_equal(ref_v[order[:out_k]], out_v, err_msg=f"mrgsort values mismatch ({label})")
+    np.testing.assert_array_equal(ref_i[order[:out_k]], out_i, err_msg=f"mrgsort indices mismatch ({label})")
+    print(f"[PASS] mrgsort correctness ({label})")
+
+
 def test_mrgsort():
     for top_k in (1, 8, 16, 32):
-        torch.manual_seed(0)
-        n_experts = 128
-        n_groups = 4
-
-        val = torch.rand([n_experts], dtype=torch.float32, device="cpu")
-        idx = torch.arange(0, n_experts, dtype=torch.int32, device="cpu")
-        val_2d = val.numpy().reshape(n_groups, 32)
-        idx_2d = idx.numpy().reshape(n_groups, 32)
-        local_idx_2d = np.argsort(-val_2d, axis=1, kind="stable")
-        global_val = np.take_along_axis(val_2d, local_idx_2d, axis=1).reshape(n_experts)
-        global_idx = np.take_along_axis(idx_2d, local_idx_2d, axis=1).reshape(n_experts)
-        pair = torch.from_numpy(_encode_props(global_val, global_idx)).to(DEVICE)
-        out = torch.zeros([top_k * 2], dtype=torch.float32, device=DEVICE)
-
-        mrgsort_kernel[(1, )](pair, out, TOP_K=top_k)
-        torch_npu.npu.synchronize()
-
-        out_v, out_i = _decode_props(out.cpu().numpy()[:top_k * 2])
-        local_idx = np.argsort(-val.numpy(), axis=0, kind="stable")
-        ref_val = np.take_along_axis(val.numpy(), local_idx[:top_k], axis=0)
-        ref_idx = np.take_along_axis(idx.numpy(), local_idx[:top_k], axis=0)
-
-        np.testing.assert_array_equal(ref_val, out_v, err_msg=f"mrgsort values mismatch (top_k={top_k})")
-        np.testing.assert_array_equal(ref_idx, out_i, err_msg=f"mrgsort indices mismatch (top_k={top_k})")
-        print(f"[PASS] mrgsort correctness (top_k={top_k})")
+        _run_mrgsort_case((top_k, top_k, top_k, top_k), top_k, f"top_k={top_k}")
+    _run_mrgsort_case((32, 16, 8, 4), 32, "asymmetric", if_exhausted=0)
+    _run_mrgsort_case((32, 16, 8, 0), 32, "3-way", if_exhausted=0)
+    _run_mrgsort_case((32, 16, 0, 0), 32, "2-way", if_exhausted=0)
+    _run_mrgsort_case((1, 1, 1, 1), 4, "four maxima", if_exhausted=0)
 
 
 def test_gather_mask():
@@ -744,6 +851,19 @@ def test_duplicate():
         print(f"[PASS] duplicate correctness ({torch_dtype})")
 
 
+def test_duplicate_repeatability():
+    for torch_dtype, tld in ((torch.float16, tl.float16), (torch.bfloat16, tl.bfloat16), (torch.float32, tl.float32)):
+        outs = []
+        for _ in range(4):
+            out = torch.zeros([32], dtype=torch_dtype, device=DEVICE)
+            duplicate_bitwise_mask_kernel[(1, )](out, MASK0=0xFFFFFF00, SCALAR=float("-inf"), INIT=7.0, DTYPE=tld)
+            torch_npu.npu.synchronize()
+            outs.append(out.cpu())
+        for out in outs[1:]:
+            assert torch.equal(outs[0], out), f"duplicate_bitwise_mask is not repeatable ({torch_dtype})"
+        print(f"[PASS] duplicate repeatability ({torch_dtype})")
+
+
 def test_arch_gating():
     from triton.experimental.tle.language.dsa.ascend.custom_ops import registry as R
 
@@ -804,6 +924,8 @@ def main():
     run("gather_mask", test_gather_mask)
     run("pair_reduce_sum", test_pair_reduce_sum)
     run("duplicate", test_duplicate)
+    run("sort_repeatability", test_sort_repeatability)
+    run("duplicate_repeatability", test_duplicate_repeatability)
     run("arch_gating", test_arch_gating)
 
     if failures:
