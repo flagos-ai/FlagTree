@@ -2450,6 +2450,20 @@ struct XPUGM2LMOpConversion
       : ConvertOpToLLVMPattern<triton::xpu::GM2LMOp>(converter, benefit),
         LoadStoreConversionBase(targetInfo, axisAnalysisPass) {}
 
+  void emitPredicatedCopy(Location loc, ConversionPatternRewriter &rewriter,
+                          MLIRContext *ctx, Value predicate, Value src,
+                          Value dst, Value bytes) const {
+    Block *block = rewriter.getInsertionBlock();
+    Block *next = rewriter.splitBlock(block, rewriter.getInsertionPoint());
+    Block *copy = rewriter.createBlock(next);
+    rewriter.setInsertionPointToEnd(block);
+    rewriter.create<LLVM::CondBrOp>(loc, predicate, copy, next);
+    rewriter.setInsertionPointToStart(copy);
+    createGM2LMOp(rewriter, ctx, loc, src, dst, i32_val(0), bytes);
+    rewriter.create<LLVM::BrOp>(loc, next);
+    rewriter.setInsertionPointToStart(next);
+  }
+
   LogicalResult
   matchAndRewrite(triton::xpu::GM2LMOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -2494,6 +2508,71 @@ struct XPUGM2LMOpConversion
 
     Value elemBytes = i32_val(elemNbits / 8u);
     Value offsetBytes = i32_val(0);
+    OffsetState offsetState = static_cast<OffsetState>(op.getOffsetState());
+    int32_t fixedStride = op.getFixedStride();
+
+    // Mask.cpp converts supported prefix masks to element counts. The other
+    // i1 masks still need predication. Masked lanes retain the value staged in
+    // the local buffer by OtherSim (or consumed by the explicit select).
+    if (len && getElementTypeOrSelf(len.getType()).isInteger(1)) {
+      auto predicates = unpackLLElements(loc, llLen, rewriter);
+      if (predicates.size() != llGMPtrs.size() ||
+          predicates.size() != llLMPtrs.size() || predicates.empty())
+        return rewriter.notifyMatchFailure(op,
+                                           "incompatible masked DMA layout");
+
+      auto source = [&](unsigned i) {
+        return bitcast(llGMPtrs[i], ptr_ty(ctx, 1));
+      };
+      auto destination = [&](unsigned i) {
+        return bitcast(llLMPtrs[i], ptr_ty(ctx, 0));
+      };
+      auto copyLanes = [&]() {
+        for (unsigned i = 0; i < predicates.size(); ++i)
+          emitPredicatedCopy(loc, rewriter, ctx, predicates[i], source(i),
+                             destination(i), elemBytes);
+      };
+
+      // Use the same contiguous cases as the unmasked lowering below.
+      bool contiguous =
+          offsetState == OffsetState::Continuous ||
+          (offsetState == OffsetState::LocallyContinuous &&
+           op.getRowLen() > 0 && op.getRowLen() % numElems == 0) ||
+          (offsetState == OffsetState::Unknown && fixedStride == 1 &&
+           numElems <= targetInfo.getXPUBufferSize());
+      if (!coreDealMultiRows && contiguous && predicates.size() == numElems &&
+          numElems > 1) {
+        Value allActive = predicates[0];
+        Value anyActive = predicates[0];
+        for (Value predicate : llvm::drop_begin(predicates)) {
+          allActive = and_(allActive, predicate);
+          anyActive = or_(anyActive, predicate);
+        }
+        Block *block = rewriter.getInsertionBlock();
+        Block *next = rewriter.splitBlock(block, rewriter.getInsertionPoint());
+        Block *dense = rewriter.createBlock(next);
+        Block *checkMixed = rewriter.createBlock(next);
+        Block *mixed = rewriter.createBlock(next);
+        rewriter.setInsertionPointToEnd(block);
+        rewriter.create<LLVM::CondBrOp>(loc, allActive, dense, checkMixed);
+        rewriter.setInsertionPointToStart(dense);
+        createGM2LMOp(rewriter, ctx, loc, source(0), destination(0),
+                      offsetBytes, mul(i32_val(numElems), elemBytes));
+        rewriter.create<LLVM::BrOp>(loc, next);
+        rewriter.setInsertionPointToStart(checkMixed);
+        rewriter.create<LLVM::CondBrOp>(loc, anyActive, mixed, next);
+        rewriter.setInsertionPointToStart(mixed);
+        copyLanes();
+        rewriter.create<LLVM::BrOp>(loc, next);
+        rewriter.setInsertionPointToStart(next);
+      } else {
+        copyLanes();
+      }
+      if (!async)
+        createMfenceLMOp(rewriter, loc);
+      rewriter.replaceOp(op, {resultStruct});
+      return success();
+    }
 
     bool mask = false;
     unsigned lenElemBit = 32;
@@ -2518,8 +2597,6 @@ struct XPUGM2LMOpConversion
     }
     Value readBytes = mul(readLen, elemBytes);
 
-    OffsetState offsetState = static_cast<OffsetState>(op.getOffsetState());
-    int32_t fixedStride = op.getFixedStride();
     if (offsetState == OffsetState::Unknown) {
       /*  Small Col Size Opt Mask(14 < 16)
 
