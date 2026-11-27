@@ -15,15 +15,9 @@ def _build_ascend_impl() -> dict[str, ...]:
         create_dist_tensor,
         init_communicator,
     )
-    from triton.experimental.tle.language.dsa.ascend.distributed import (
-        MeshConfig,
-        device_mesh,
-        distributed_barrier,
-        gemm_swizzle2d_Nz,
-        remote,
-        shard_id,
-        swizzle2d_Nz,
-    )
+    from triton.experimental.tle.language.dsa.ascend.distributed import (MeshConfig, device_mesh, distributed_barrier,
+                                                                         remote, shard_id, signal, signal_wait, n_pes,
+                                                                         get_local_rank, get_global_rank, shmem_fence)
 
     return {
         "init_communicator": init_communicator,
@@ -34,8 +28,12 @@ def _build_ascend_impl() -> dict[str, ...]:
         "remote": remote,
         "shard_id": shard_id,
         "distributed_barrier": distributed_barrier,
-        "swizzle2d_Nz": swizzle2d_Nz,
-        "gemm_swizzle2d_Nz": gemm_swizzle2d_Nz,
+        "signal": signal,
+        "signal_wait": signal_wait,
+        "n_pes": n_pes,
+        "get_local_rank": get_local_rank,
+        "get_global_rank": get_global_rank,
+        "shmem_fence": shmem_fence,
     }
 
 

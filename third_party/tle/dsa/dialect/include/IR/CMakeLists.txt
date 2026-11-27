@@ -17,5 +17,9 @@ add_mlir_doc(TleDSAOps TleDSAOps dialects/ -gen-op-doc)
 set(LLVM_TARGET_DEFINITIONS TleDSAAttrDefs.td)
 mlir_tablegen(TleDSAAttrDefs.h.inc -gen-attrdef-decls)
 mlir_tablegen(TleDSAAttrDefs.cpp.inc -gen-attrdef-defs)
+# Enum attrs (I32EnumAttr) declared in TleDSAAttrDefs.td are emitted by the
+# enum backends, not by the attrdef backends.
+mlir_tablegen(TleDSAEnums.h.inc -gen-enum-decls)
+mlir_tablegen(TleDSAEnums.cpp.inc -gen-enum-defs)
 
 add_public_tablegen_target(TleDSATableGen)

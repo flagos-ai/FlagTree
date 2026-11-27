@@ -420,8 +420,31 @@ void init_tle_dsa_ir(py::module &&m) {
               bool isPure) -> OpState {
              return self.create<triton::tle::ExternCallOp>(
                  retTypes, argList, libName, libPath, symbol, isPure);
+           })
+      .def("create_signal_wait",
+           [](TritonOpBuilder &self, Value &barrierPtrs, Value &numBarriers,
+              Value &waitValue, MemSyncScope scope, MemSemantic semantic,
+              Type &type) -> Value {
+             return self.create<triton::tle::WaitOp>(
+                 type, barrierPtrs, numBarriers, waitValue, scope, semantic);
+           })
+      .def("create_consume_token",
+           [](TritonOpBuilder &self, Value &input, Value &token) -> Value {
+             return self.create<triton::tle::ConsumeTokenOp>(input, token);
+           })
+      .def("create_notify",
+           [](TritonOpBuilder &self, Value ptr, Value signal, Value rank,
+              uint32_t sigOp, uint32_t commScope) -> void {
+             // The python layer passes raw enum values (IntEnum); cast them
+             // to the tablegen-generated scoped enums.
+             self.create<triton::tle::NotifyOp>(
+                 ptr, signal, rank, static_cast<distributed::SignalOp>(sigOp),
+                 static_cast<distributed::CommScope>(commScope));
+           })
+      .def("create_get_num_ranks",
+           [](TritonOpBuilder &self, Value axis) -> Value {
+             return self.create<triton::tle::GetNumRanksOp>(axis);
            });
-
   // ============================================================================
   // CommonIR builder methods — create tile.* dialect ops
   // ============================================================================

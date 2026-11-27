@@ -99,8 +99,10 @@ jobs:
               echo "127.0.0.1 ${host}" >> /etc/hosts
           fi
           pushd python/tutorials/tle/dsa
-          PATH=/usr/local/Ascend/cann-9.1.0-shmem/bin:$PATH torchrun --nproc_per_node=2 09-ascend-allgather-gemm.py
-          PATH=/usr/local/Ascend/cann-9.1.0-shmem/bin:$PATH torchrun --nproc_per_node=2 10-tle-d2d-barrier.py
+          ASH_MASTER_PORT=8666 PATH=/usr/local/Ascend/cann-9.1.0-shmem/bin:$PATH torchrun --nproc_per_node=2 09-ascend-allgather-gemm.py
+          ASH_MASTER_PORT=8667 PATH=/usr/local/Ascend/cann-9.1.0-shmem/bin:$PATH torchrun --nproc_per_node=2 10-tle-d2d-barrier.py
+          ASH_MASTER_PORT=8668 PATH=/usr/local/Ascend/cann-9.1.0-shmem/bin:$PATH torchrun --nproc_per_node=2 12-signal-wait.py
+          ASH_MASTER_PORT=8669 PATH=/usr/local/Ascend/cann-9.1.0-shmem/bin:$PATH torchrun --nproc_per_node=2 13-shmem-put-get-nbi.py
           popd
 
           ## flagtree tle custom-op tutorial
