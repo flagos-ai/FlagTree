@@ -3566,8 +3566,7 @@ def run_bench_table(warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS, sh
     bench.line_names = [_BENCH_NAMES[i] for i in selected]
     bench.styles = [_BENCH_STYLES[i] for i in selected]
     bench.x_vals = [
-        x_val for x_val in _BENCH_X_VALS
-        if not only_unit_test or x_val not in _ONLY_UNIT_TEST_SKIPPED_BENCH_X_VALS
+        x_val for x_val in _BENCH_X_VALS if not only_unit_test or x_val not in _ONLY_UNIT_TEST_SKIPPED_BENCH_X_VALS
     ]
     benchmark_sparse_mla_fwd.run(
         print_data=True,
