@@ -24,6 +24,7 @@ Notes
 
 import argparse
 import math
+import shutil
 import sys
 from typing import Tuple
 
@@ -35,6 +36,8 @@ import triton.experimental.tle.language as tle
 try:
     import cuda.tile as ct  # type: ignore
     import cupy as cp  # type: ignore
+    if shutil.which("tileiras") is None:
+        raise FileNotFoundError("tileiras compiler not found")
     _HAVE_CUTILE = True
 except Exception:  # pragma: no cover - optional dependency
     ct = None
