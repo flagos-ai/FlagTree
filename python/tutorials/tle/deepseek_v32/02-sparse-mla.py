@@ -3574,9 +3574,7 @@ def run_bench_table(warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS, sh
 def run_decode_bench_table(warmup=BENCH_DEFAULT_WARMUP_MS, rep=BENCH_DEFAULT_REP_MS, show_plots=False,
                            tilelang_block_I=64, tilelang_num_stages=2, tilelang_threads=256, only_unit_test=False):
     bench = benchmark_sparse_mla_decode.benchmarks
-    selected = [
-        i for i, provider in enumerate(_DECODE_BENCH_PROVIDERS) if not only_unit_test or provider != "tilelang"
-    ]
+    selected = [i for i, provider in enumerate(_DECODE_BENCH_PROVIDERS) if not only_unit_test or provider != "tilelang"]
     bench.line_vals = [_DECODE_BENCH_PROVIDERS[i] for i in selected]
     bench.line_names = [_DECODE_BENCH_NAMES[i] for i in selected]
     bench.styles = [_DECODE_BENCH_STYLES[i] for i in selected]
