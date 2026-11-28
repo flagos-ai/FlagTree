@@ -18,11 +18,15 @@ def test_binary_only_cache_retains_npubin(tmp_path):
         knobs.cache.manager_class = FileCacheManager
         knobs.compilation.store_binary_only = True
         knobs.compilation.always_compile = False
+        cache_hits = []
+        knobs.compilation.listener = lambda *, cache_hit, **_: cache_hits.append(cache_hit)
 
         cold = triton.compile(source)
         assert cold.kernel
         assert f"{source.name}.npubin" in cold.metadata_group
-        assert f"{source.name}.ttir" not in cold.metadata_group
+        for ext in ("ttir", "ttadapter", "mlirbc"):
+            assert f"{source.name}.{ext}" not in cold.metadata_group
 
         warm = triton.compile(source)
         assert warm.kernel == cold.kernel
+        assert cache_hits == [False, True]
