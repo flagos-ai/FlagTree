@@ -1,0 +1,31 @@
+# Generated on runner: enflame3.6-gcu300
+# Skip operators that cause GPU state corruption
+skip_operators:
+  - addmv
+  - addmv_out
+  - copy
+  - copy_
+  - maximum
+  - mean
+  - mean_dim
+  - quantile
+  - resolve_neg
+  - scatter_add
+  - scatter_add_
+  - scatter_reduce
+  - scatter_reduce_
+  - scatter_src
+  - scatter_src_
+  - upsample_bicubic2d_aa
+  - upsample_bicubic2d_aa_backward
+  - weight_norm
+  - weight_norm_interface
+  - weight_norm_interface_backward
+
+# Skip specific test functions
+skip_test_patterns:
+  #- test_example_pattern
+
+# Skip entire test files
+skip_test_files:
+  #- test_example.py

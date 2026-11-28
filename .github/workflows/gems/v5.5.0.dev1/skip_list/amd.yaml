@@ -1,0 +1,12 @@
+# Generated on runner: amd3.6
+# Skip operators that cause GPU state corruption
+skip_operators:
+  #- example_operator
+
+# Skip specific test functions
+skip_test_patterns:
+  #- test_example_pattern
+
+# Skip entire test files
+skip_test_files:
+  #- test_example.py
