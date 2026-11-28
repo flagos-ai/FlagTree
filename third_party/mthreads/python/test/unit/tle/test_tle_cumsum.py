@@ -81,7 +81,10 @@ def test_tle_cumsum_builder_binding_is_backend_local():
 
     assert hasattr(builder, "create_exclusive_cumsum")
     assert hasattr(libtriton, "mthreads")
-    assert not hasattr(libtriton, "tle")
+    commonir = getattr(libtriton, "tle", None)
+    if commonir is not None:
+        assert commonir.is_common_ir_enabled()
+        assert not hasattr(commonir, "attr")
 
 
 def test_tle_cumsum_ttir_uses_musa_tle_op():

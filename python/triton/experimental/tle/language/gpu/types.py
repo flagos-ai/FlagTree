@@ -663,6 +663,15 @@ class buffered_tensor(tl.base_value):
         if self.type.storage is not smem:
             raise ValueError(f"buffered_tensor.slot currently supports only smem storage, got {self.type.storage}")
 
+        from . import semantic as tle_semantic
+        from .mthreads import common as mthreads_common
+
+        if tle_semantic.COMMON_IR_ENABLED and mthreads_common.enabled():
+            stage_index = tl._unwrap_if_constexpr(stage)
+            if type(stage_index) is int and not 0 <= stage_index < self.shape[0]:
+                raise ValueError(f"mthreads TLE memdesc index {stage_index} out of bounds for leading dimension "
+                                 f"{self.shape[0]}")
+
         stage_tensor = _semantic.to_tensor(stage)
         stage_ty = stage_tensor.type
         if getattr(stage_ty, "is_block", lambda: False)():
@@ -688,7 +697,6 @@ class buffered_tensor(tl.base_value):
         offsets = [stage_tensor]
         for _ in range(len(self.shape) - 1):
             offsets.append(_semantic.to_tensor(0))
-        from . import semantic as tle_semantic
         slot_handle = tle_semantic.subview(
             self,
             offsets,

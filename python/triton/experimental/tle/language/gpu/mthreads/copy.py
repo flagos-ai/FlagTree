@@ -21,7 +21,6 @@
 import triton.language.core as tl
 
 from .. import types as tle
-from . import common
 from .types import TMECachePolicy, _TME_CACHE_POLICIES
 
 
@@ -91,19 +90,18 @@ def normalize_cache_policy(cache_policy):
     cache_policy = tl._unwrap_if_constexpr(cache_policy)
     if cache_policy is None:
         return None
-    # Import lazily because gpu.semantic also imports this module.
-    from .. import semantic as tle_semantic
-    if not common.enabled() or tle_semantic.COMMON_IR_ENABLED:
-        raise ValueError("copy cache_policy is only supported by the MUSA TLE backend")
     if not isinstance(cache_policy, TMECachePolicy):
         raise ValueError("cache_policy must be a compile-time tle.gpu.mthreads.TMECachePolicy")
     return tuple(_TME_CACHE_POLICIES.index(value) for value in (cache_policy.inner, cache_policy.outer))
 
 
 def tmacopy(src, dst, direction, shape, offsets, barrier=None, cache_policy=None, _semantic=None) -> None:
+    from ..semantic import get_memdesc
+
     shape = normalize_copy_shape(shape)
-    desc = src if direction.name == "GM_TO_LOCAL" else dst
-    buffer = dst if direction.name == "GM_TO_LOCAL" else src
+    is_load = direction.name == "GM_TO_LOCAL"
+    desc = src if is_load else dst
+    buffer = dst if is_load else src
 
     validate_copy_buffer(buffer, shape)
     desc_shape = tuple(int(tl._unwrap_if_constexpr(dim)) for dim in desc.block_shape)
@@ -116,14 +114,16 @@ def tmacopy(src, dst, direction, shape, offsets, barrier=None, cache_policy=None
     offset_values = _semantic._convert_to_ir_values(offset_values, require_i64=False)
     if not hasattr(_semantic.builder, "create_tma_copy"):
         raise RuntimeError("TLE TMA copy builder binding is not available")
+    buffer_handle = get_memdesc(buffer, _semantic)
+    src_handle, dst_handle = (desc.handle, buffer_handle) if is_load else (buffer_handle, desc.handle)
     if barrier is not None:
-        if direction.name != "GM_TO_LOCAL":
+        if not is_load:
             raise ValueError("TMA copy barrier is only supported for global-to-shared TMA copy")
         if not isinstance(barrier, tle.barrier) or not barrier.is_slot:
             raise ValueError("TMA copy barrier must be an indexed tle.gpu barrier slot")
         if barrier.expect_bytes is None or int(barrier.expect_bytes) <= 0:
             raise ValueError("TMA copy barrier must have positive expect_bytes")
-        _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values, barrier.handle,
+        _semantic.builder.create_tma_copy(src_handle, dst_handle, offset_values, barrier.handle,
                                           int(barrier.expect_bytes), cache_policy)
         return
-    _semantic.builder.create_tma_copy(src.handle, dst.handle, offset_values, cachePolicy=cache_policy)
+    _semantic.builder.create_tma_copy(src_handle, dst_handle, offset_values, cachePolicy=cache_policy)

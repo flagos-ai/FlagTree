@@ -76,7 +76,10 @@ def test_tle_copy_mthreads_bindings_are_backend_local():
     assert hasattr(builder, "create_local_pointers")
     assert hasattr(builder, "create_tma_copy")
     assert hasattr(libtriton, "mthreads")
-    assert not hasattr(libtriton, "tle")
+    commonir = getattr(libtriton, "tle", None)
+    if commonir is not None:
+        assert commonir.is_common_ir_enabled()
+        assert not hasattr(commonir, "attr")
     assert hasattr(
         libtriton.mthreads.passes.ttgpuir,
         "add_tle_optimize_local_pointer_async_stores",
@@ -137,9 +140,15 @@ def test_tle_gpu_alloc_emits_local_alloc_in_ttir():
 
     ttir = compile_to_ttir(kernel, {"out": "*fp32"})
 
-    assert "ttg.local_alloc" in ttir, ttir
-    assert "!ttg.memdesc<16xf32" in ttir, ttir
-    assert "#smem" in ttir, ttir
+    from triton._common_ir import ENABLED as common_ir_enabled
+
+    if common_ir_enabled:
+        assert "tile.alloc" in ttir, ttir
+        assert "!tile.buf<[16], f32, shared>" in ttir, ttir
+    else:
+        assert "ttg.local_alloc" in ttir, ttir
+        assert "!ttg.memdesc<16xf32" in ttir, ttir
+        assert "#smem" in ttir, ttir
 
 
 def test_tle_load_forwards_tl_load_options():

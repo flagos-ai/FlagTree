@@ -1,3 +1,8 @@
+# Build the Proton dialect without generic TLE support on MetaX.
+if(FLAGTREE_BACKEND STREQUAL "metax")
+  remove_definitions(-D__TLE__)
+  list(REMOVE_ITEM LLVM_TABLEGEN_FLAGS -D__TLE__)
+endif()
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include)
 add_subdirectory(include)

@@ -1157,6 +1157,13 @@ public:
         populateSCFPatterns(typeConverter, patterns);
         populateCFPatterns(typeConverter, patterns);
         patterns.insert<GenericOpPattern<ub::PoisonOp>>(typeConverter, context);
+#ifdef __FLAGTREE_COMMON_IR__
+        // FlagTree CommonIR: re-encode the undecorated ttg.local_load/store
+        // that CommonIRToTTGIR emits in make_ttir.
+        patterns.insert<GenericOpPattern<triton::gpu::LocalLoadOp>,
+                        GenericOpPattern<triton::gpu::LocalStoreOp>>(
+            typeConverter, context);
+#endif
 #ifdef ENABLE_TLE
         populateTlePatterns(typeConverter, patterns);
 #endif

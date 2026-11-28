@@ -57,8 +57,10 @@ def validate_operands(a, b, acc) -> None:
 
 
 def _transpose_smem_operand(operand, semantic):
+    from ..semantic import get_memdesc
+
     order = [1, 0]
-    handle = semantic.builder.create_memdesc_trans(operand.handle, order)
+    handle = semantic.builder.create_memdesc_trans(get_memdesc(operand, semantic), order)
     shape = [operand.type.shape[index] for index in order]
 
     alloc_shape = operand.type.alloc_shape

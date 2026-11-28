@@ -193,6 +193,8 @@ def get_backend_cmake_args(*args, **kargs):
         cmake_args += ["-DEDITABLE_MODE=ON"]
     if flagtree_backend not in configs.default_backends:
         cmake_args += ["-DFLAGTREE_BACKEND={}".format(flagtree_backend)]
+    # The default backends share a CMake build path. Pass the package's CommonIR choice explicitly.
+    cmake_args.append("-DFLAGTREE_COMMON_IR_ENABLED:BOOL=" + ("ON" if common_ir_enabled else "OFF"))
     return cmake_args
 
 
@@ -912,9 +914,16 @@ else:
 
 cache = FlagTreeCache()
 
-# FLIR supplies the CommonIR dialect, which the ascend backend requires for its
-# CommonIRToHIVM lowering and FLIR's triton-lane-vectorize pass.
-download_flagtree_third_party("flir", condition=(flagtree_backend in ("tsingmicro", "ascend")), required=True)
+# Match the build-time CommonIR default and CMake's false constants.
+common_ir = os.environ.get("FLAGTREE_COMMON_IR")
+if common_ir is None:
+    common_ir_enabled = flagtree_backend in ("enflame", "hcu", "iluvatar", "metax", "mthreads")
+else:
+    common_ir = common_ir.upper()
+    common_ir_enabled = common_ir not in ("", "0", "OFF", "NO", "FALSE", "N", "IGNORE",
+                                          "NOTFOUND") and not common_ir.endswith("-NOTFOUND")
+download_flagtree_third_party("flir", condition=common_ir_enabled or flagtree_backend in ("tsingmicro", "ascend"),
+                              required=True)
 
 # The ascend backend links the BiShengIR dialects built from AscendNPU-IR.
 if flagtree_backend == "ascend":
