@@ -936,7 +936,7 @@ if relocate_flagcx:
 flagcx_wheel = PathFinder.find_spec("flagcx", sys.path)
 # HCU source builds use the explicit USE_FLAGCX opt-in in enable_flagtree_third_party.
 is_download_flagcx = (not flagcx_wheel and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS
-                     and (DIST_DEV_MODE or flagtree_backend == "hcu"))
+                      and (DIST_DEV_MODE or flagtree_backend == "hcu"))
 download_flagtree_third_party("flagcx", condition=is_download_flagcx, hook="handle_flagcx", required=True)
 
 if (flagcx_wheel and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS
