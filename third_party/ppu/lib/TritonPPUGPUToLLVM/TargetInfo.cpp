@@ -175,6 +175,45 @@ void TargetInfo::barrier(Location loc, RewriterBase &rewriter,
   }
 }
 
+namespace {
+constexpr unsigned kSubgroupBarrierSharedFence = 1;
+
+LLVM::LLVMFuncOp getPPUBarrierSyncBuiltin(RewriterBase &rewriter,
+                                          Location loc) {
+  constexpr StringRef kName = "__ppukernel_barrier_sync_cnt_void";
+  auto module =
+      rewriter.getInsertionBlock()->getParentOp()->getParentOfType<ModuleOp>();
+  if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(kName))
+    return func;
+  MLIRContext *ctx = rewriter.getContext();
+  Type i32 = IntegerType::get(ctx, 32);
+  auto funcTy = LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(ctx),
+                                            {i32, i32, i32});
+  RewriterBase::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(module.getBody());
+  auto func = LLVM::LLVMFuncOp::create(rewriter, loc, kName, funcTy);
+  // Keep barrier calls ordered relative to surrounding memory operations.
+  func.setPassthroughAttr(
+      ArrayAttr::get(ctx, {StringAttr::get(ctx, "convergent"),
+                           StringAttr::get(ctx, "nounwind")}));
+  return func;
+}
+} // namespace
+
+bool TargetInfo::subgroupBarrier(Location loc, RewriterBase &rewriter,
+                                 Value subgroupId,
+                                 unsigned numSubgroupThreads) const {
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  // Reserve barrier id 0 for CTA-wide barriers and assign ids 1..N to
+  // disjoint warp subgroups.
+  Value barId = b.add(b.i32_val(1), subgroupId);
+  auto func = getPPUBarrierSyncBuiltin(rewriter, loc);
+  Value args[] = {barId, b.i32_val(numSubgroupThreads),
+                  b.i32_val(kSubgroupBarrierSharedFence)};
+  LLVM::CallOp::create(rewriter, loc, func, args);
+  return true;
+}
+
 static Value mapa(RewriterBase &rewriter, Location loc, Value ptr, Value ctaid,
                   Value pred) {
   return NVVM::MapaOp::create(rewriter, loc, ptr.getType(), ptr, ctaid);

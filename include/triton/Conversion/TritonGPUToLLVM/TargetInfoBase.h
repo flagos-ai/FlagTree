@@ -48,6 +48,19 @@ public:
   virtual void barrier(Location loc, RewriterBase &rewriter,
                        bool isWarpSync = false) const = 0;
 
+  // Prefer direct vector SMEM gather and local register combine over a second
+  // warp-0 shuffle, SMEM write-back, and CTA barrier for small inter-warp
+  // reductions (2, 4, or 8 warps).
+  virtual bool preferDirectInterWarpReduceGather() const { return false; }
+
+  // Emit a subgroup-scoped shared-memory barrier when warp subgroups access
+  // disjoint scratch slices. Returns false if unsupported.
+  virtual bool subgroupBarrier(Location loc, RewriterBase &rewriter,
+                               Value subgroupId,
+                               unsigned numSubgroupThreads) const {
+    return false;
+  }
+
   // Store/load a value from shared memory, either in the same CTA or, if
   // `ctaId` is non-nullopt, in another CTA in the same group.
   //

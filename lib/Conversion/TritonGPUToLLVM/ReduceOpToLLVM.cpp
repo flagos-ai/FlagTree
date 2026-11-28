@@ -25,10 +25,12 @@
 
 #include "ReduceScanCommon.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Support/LLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#include "llvm/Support/MathExtras.h"
 #include <optional>
 
 using namespace mlir;
@@ -88,6 +90,12 @@ public:
         getSmemBases(op, product<unsigned>(smemShape), rewriter, targetInfo);
 
     storeWarpReduceToSharedMemory(helper, accs, indices, smemBases, rewriter);
+
+    if (canDirectGatherInterWarp(op, helper, smemShape)) {
+      syncInterWarp(rewriter, loc, op, helper);
+      directGatherAndPackResult(helper, smemShape, smemBases, rewriter);
+      return success();
+    }
 
     sync(rewriter, loc, op);
 
@@ -189,6 +197,211 @@ private:
             triton::ReduceOp op) const {
     auto b = TritonLLVMOpBuilder(loc, rewriter);
     b.barrier();
+  }
+
+  bool canDirectGatherInterWarp(triton::ReduceOp op, ReduceOpHelper &helper,
+                                ArrayRef<unsigned> smemShape) const {
+    if (!targetInfo.preferDirectInterWarpReduceGather())
+      return false;
+    unsigned sizeInterWarps = helper.getInterWarpSizeWithUniqueData();
+    if (sizeInterWarps != 2 && sizeInterWarps != 4 && sizeInterWarps != 8)
+      return false;
+    if (smemShape[op.getAxis()] != sizeInterWarps)
+      return false;
+    for (unsigned i = 0; i < op.getNumOperands(); ++i) {
+      Type elemTy = getElementType(op, i);
+      if (!elemTy.isIntOrFloat())
+        return false;
+      unsigned bw = elemTy.getIntOrFloatBitWidth();
+      if (bw != 16 && bw != 32 && bw != 64)
+        return false;
+      if ((sizeInterWarps * bw) % 32 != 0)
+        return false;
+    }
+    return true;
+  }
+
+  void syncInterWarp(ConversionPatternRewriter &rewriter, Location loc,
+                     triton::ReduceOp op, ReduceOpHelper &helper) const {
+    unsigned sizeInterWarps = helper.getInterWarpSizeWithUniqueData();
+    auto mod = op->getParentOfType<ModuleOp>();
+    unsigned numLanes = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
+    unsigned numWarps = triton::gpu::lookupNumWarps(op);
+    unsigned axis = op.getAxis();
+
+    // Use a subgroup-scoped shared-memory barrier when warp subgroups access
+    // disjoint slices of the reduction scratch buffer and physical named
+    // barrier ids [1 .. numSubgroups] are free.
+    if (sizeInterWarps > 1 && sizeInterWarps < numWarps &&
+        llvm::isPowerOf2_32(sizeInterWarps) && llvm::isPowerOf2_32(numWarps)) {
+      unsigned numSubgroups = numWarps / sizeInterWarps;
+      unsigned k = llvm::Log2_32(sizeInterWarps);
+      auto func = op->getParentOfType<FunctionOpInterface>();
+      bool hasNamedOrWS = false;
+      if (func) {
+        func.walk([&](Operation *child) {
+          StringRef name = child->getName().getStringRef();
+          if (name == "ttg.warp_specialize" || name.contains("barrier_named"))
+            hasNamedOrWS = true;
+        });
+      }
+      if (func && !hasNamedOrWS && 1 + numSubgroups <= 16 &&
+          isa<RankedTensorType>(op.getResult()[0].getType())) {
+        auto srcTy = cast<RankedTensorType>(op.getInputTypes()[0]);
+        auto srcLL = mlir::triton::gpu::toLinearLayout(srcTy);
+        auto kWarp = rewriter.getStringAttr("warp");
+        // Subgroup barriers require every warp to be representative (no
+        // broadcast warp bits) and upper warp bits to index disjoint slices.
+        if (srcLL.hasInDim(kWarp) &&
+            srcLL.getFreeVariableMasks().lookup(kWarp) == 0) {
+          const auto &warpBases = srcLL.getBases().lookup(kWarp);
+          unsigned rank = srcTy.getRank();
+          SmallVector<unsigned> subgroupMask(rank, 0);
+          SmallVector<unsigned> innerMask(rank, 0);
+          bool disjoint = (warpBases.size() == llvm::Log2_32(numWarps));
+          for (unsigned bit = 0; disjoint && bit < warpBases.size(); ++bit) {
+            const auto &basis = warpBases[bit];
+            if (bit < k) {
+              if (basis[axis] == 0)
+                disjoint = false;
+              for (unsigned d = 0; d < rank; ++d)
+                if (d != axis && basis[d] != 0)
+                  disjoint = false;
+            } else {
+              if (basis[axis] != 0)
+                disjoint = false;
+              bool hasNonAxis = false;
+              for (unsigned d = 0; d < rank; ++d) {
+                if (d != axis && basis[d] != 0) {
+                  hasNonAxis = true;
+                  subgroupMask[d] |= static_cast<unsigned>(basis[d]);
+                }
+              }
+              if (!hasNonAxis)
+                disjoint = false;
+            }
+          }
+          if (disjoint) {
+            for (const auto &entry : srcLL.getBases()) {
+              if (entry.first == kWarp)
+                continue;
+              for (const auto &basis : entry.second)
+                for (unsigned d = 0; d < rank; ++d)
+                  innerMask[d] |= static_cast<unsigned>(basis[d]);
+            }
+            for (unsigned d = 0; d < rank; ++d) {
+              if (d != axis && (subgroupMask[d] & innerMask[d]) != 0) {
+                disjoint = false;
+                break;
+              }
+            }
+          }
+          if (disjoint) {
+            auto b = TritonLLVMOpBuilder(loc, rewriter);
+            auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
+            Value subgroupId = b.lshr(warpId, b.i32_val(k));
+            if (targetInfo.subgroupBarrier(loc, rewriter, subgroupId,
+                                           sizeInterWarps * numLanes))
+              return;
+          }
+        }
+      }
+    }
+    targetInfo.barrier(loc, rewriter, /*isWarpSync=*/false);
+  }
+
+  // Directly vector-load all sizeInterWarps contiguous partials from SMEM and
+  // combine them locally in registers, eliminating the second warp-0 shuffle,
+  // SMEM write-back, and second CTA barrier.
+  void directGatherAndPackResult(ReduceOpHelper &helper,
+                                 SmallVector<unsigned> smemShape,
+                                 SmallVector<Value> &smemBases,
+                                 ConversionPatternRewriter &rewriter) const {
+    triton::ReduceOp op = helper.getOperation();
+    Location loc = op.getLoc();
+    auto b = TritonLLVMOpBuilder(loc, rewriter);
+    unsigned axis = op.getAxis();
+    unsigned sizeInterWarps = helper.getInterWarpSizeWithUniqueData();
+    auto smemOrder = helper.getOrderWithAxisAtBeginning();
+    unsigned numOps = op.getNumOperands();
+
+    auto gatherAtOffset = [&](Value readOffset) -> SmallVector<Value> {
+      SmallVector<SmallVector<Value>> laneAccs(sizeInterWarps);
+      for (unsigned w = 0; w < sizeInterWarps; ++w)
+        laneAccs[w].reserve(numOps);
+
+      for (unsigned i = 0; i < numOps; ++i) {
+        Type elemTy = getElementType(op, i);
+        unsigned bw = elemTy.getIntOrFloatBitWidth();
+        unsigned vecWidth = std::min<unsigned>(sizeInterWarps, 128 / bw);
+        unsigned numVecs = sizeInterWarps / vecWidth;
+        for (unsigned v = 0; v < numVecs; ++v) {
+          Value off = (v == 0) ? readOffset
+                               : b.add(readOffset, b.i32_val(v * vecWidth));
+          Value readPtr =
+              b.gep(smemBases[i].getType(), elemTy, smemBases[i], off);
+          if (vecWidth > 1) {
+            auto vecTy =
+                VectorType::get({static_cast<int64_t>(vecWidth)}, elemTy);
+            Value vec = b.load(vecTy, readPtr);
+            for (unsigned u = 0; u < vecWidth; ++u)
+              laneAccs[v * vecWidth + u].push_back(
+                  b.extract_element(vec, b.i32_val(u)));
+          } else {
+            laneAccs[v].push_back(b.load(elemTy, readPtr));
+          }
+        }
+      }
+      // Binary-tree combine matching warpReduce order: (0 op N/2), ...
+      for (unsigned step = sizeInterWarps / 2; step >= 1; step >>= 1) {
+        for (unsigned w = 0; w < step; ++w) {
+          accumulate(loc, rewriter, op.getCombineOp(), laneAccs[w],
+                     laneAccs[w + step]);
+        }
+      }
+      return laneAccs[0];
+    };
+
+    SmallVector<Value> results(numOps);
+    if (auto resultTy0 =
+            dyn_cast<RankedTensorType>(op.getResult()[0].getType())) {
+      auto resultLayout = cast<SliceEncodingAttr>(resultTy0.getEncoding());
+      unsigned resultElems = getTotalElemsPerThread(resultTy0);
+      auto resultIndices =
+          emitIndices(loc, rewriter, targetInfo, resultLayout, resultTy0, true);
+      auto resultShape = resultTy0.getShape();
+      assert(resultIndices.size() == resultElems);
+
+      SmallVector<SmallVector<Value>> allResultVals(
+          numOps, SmallVector<Value>(resultElems));
+      for (unsigned j = 0; j < resultElems; ++j) {
+        SmallVector<Value> readIdx = resultIndices[j];
+        readIdx.insert(readIdx.begin() + axis, b.i32_val(0));
+        for (size_t resultIdx = 0, resultDim = resultShape.size();
+             resultIdx < resultDim; ++resultIdx) {
+          auto smemIdx = resultIdx < axis ? resultIdx : resultIdx + 1;
+          if (resultShape[resultIdx] > smemShape[smemIdx]) {
+            readIdx[smemIdx] =
+                b.urem(readIdx[smemIdx], b.i32_val(smemShape[smemIdx]));
+          }
+        }
+        Value readOffset =
+            linearize(rewriter, loc, readIdx, smemShape, smemOrder);
+        auto combined = gatherAtOffset(readOffset);
+        for (unsigned i = 0; i < numOps; ++i)
+          allResultVals[i][j] = combined[i];
+      }
+      for (unsigned i = 0; i < numOps; ++i) {
+        auto resTy = cast<RankedTensorType>(op.getResult()[i].getType());
+        results[i] = packLLElements(loc, getTypeConverter(), allResultVals[i],
+                                    rewriter, resTy);
+      }
+    } else {
+      auto combined = gatherAtOffset(b.i32_val(0));
+      for (unsigned i = 0; i < numOps; ++i)
+        results[i] = combined[i];
+    }
+    rewriter.replaceOp(op, results);
   }
 
   // Reduce along op axis for elements that are in the same thread. The
