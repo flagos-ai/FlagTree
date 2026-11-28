@@ -175,3 +175,26 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 2 : i32, ttg.targ
     tt.return %out : tensor<64xi32, #blocked_alt>
   }
 }
+
+// -----
+
+#blocked = #ttg.blocked<{sizePerThread = [1], threadsPerWarp = [32], warpsPerCTA = [4], order = [0]}>
+#shared = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
+#smem = #ttg.shared_memory
+
+module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:90", "ttg.threads-per-warp" = 32 : i32} {
+  // CHECK-LABEL: tt.func @load_non_tile_offset
+  // CHECK: tle.local_pointers
+  // CHECK-NOT: ttg.memdesc_subslice
+  // CHECK: tt.load
+  // CHECK-NOT: ttg.local_load
+  tt.func @load_non_tile_offset() -> tensor<128xi8, #blocked> {
+    %index = tt.make_range {end = 128 : i32, start = 0 : i32} : tensor<128xi32, #blocked>
+    %c1 = arith.constant dense<1> : tensor<128xi32, #blocked>
+    %offset = arith.addi %index, %c1 : tensor<128xi32, #blocked>
+    %smem = ttg.local_alloc : () -> !ttg.memdesc<256xi8, #shared, #smem, mutable>
+    %ptr = "tle.local_pointers"(%smem, %offset) : (!ttg.memdesc<256xi8, #shared, #smem, mutable>, tensor<128xi32, #blocked>) -> tensor<128x!tt.ptr<i8, 3>, #blocked>
+    %value = tt.load %ptr : tensor<128x!tt.ptr<i8, 3>, #blocked>
+    tt.return %value : tensor<128xi8, #blocked>
+  }
+}

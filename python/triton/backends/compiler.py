@@ -46,10 +46,13 @@ class DotSupport(Enum):
 
 @dataclass(frozen=True)
 class DotCap:
-    """Answer to a backend `resolve_dot(a_dtype, b_dtype, acc_dtype, M, N, K)` /
-    `resolve_dot_scaled(lhs_format, rhs_format)` codegen-function query: the
-    semantic layer rejects UNSUPPORTED combinations with `diag` as the error
-    message and emits `diag` as a compile-time warning for NON_NATIVE ones."""
+    """Result of a backend's optional `resolve_dot` or `resolve_dot_scaled` query.
+
+    When a backend omits a resolver, its lookup returns `None` and the default
+    semantic rules apply. A registered resolver must return a DotCap for every query.
+    NATIVE proceeds silently, NON_NATIVE emits a compile-time warning, and
+    UNSUPPORTED raises ValueError. A backend can supply its own message in `diag`.
+    """
     support: DotSupport
     diag: Optional[str] = None
 

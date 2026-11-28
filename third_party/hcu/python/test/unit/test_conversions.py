@@ -305,9 +305,8 @@ def test_typeconvert_upcast(src_dtype, dst_dtype, device):
                 launch_exhaustive_populate(getattr(tl, src_dtype), 0, 65536, False, 8, 0x7f, device=device)
             return
     elif is_hip():
-        # HCU test coverage is intentionally narrower than upstream HIP:
-        # compiler_hcu.py only exposes OCP float8 types for gfx938, and we skip
-        # all float8 coverage on other HIP targets to match the backend contract.
+        # This module runs float8 cases on gfx938. The gfx936 conversion
+        # regressions are in language/test_precision.py.
         if (is_float8_dtype_name(src_dtype) or is_float8_dtype_name(dst_dtype)) and not is_hip_gfx938():
             pytest.skip("float8 conversion tests are only enabled on gfx938 for the HCU backend")
         if is_float8_dtype_name(src_dtype) and not is_ocp_float8_dtype_name(src_dtype) and is_hip_gfx938():
@@ -372,9 +371,7 @@ def test_typeconvert_downcast(src_dtype, dst_dtype, rounding, max_repr, device):
             pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported on AMDGPU CDNA3")
 
     if is_hip():
-        # Match the HCU backend support matrix:
-        # - gfx938: only OCP float8 types are covered here
-        # - non-gfx938: skip all float8 tests
+        # This suite covers the OCP float8 formats on gfx938.
         if (is_float8_dtype_name(src_dtype) or is_float8_dtype_name(dst_dtype)) and not is_hip_gfx938():
             pytest.skip("float8 conversion tests are only enabled on gfx938 for the HCU backend")
         if is_float8_dtype_name(dst_dtype) and not is_ocp_float8_dtype_name(dst_dtype) and is_hip_gfx938():
@@ -409,8 +406,6 @@ def test_typeconvert_downcast_clamping(src_dtype, dst_dtype, mode, device, round
         if dst_dtype in ('float8e5', 'float8e4nv') and rounding == 'rtne' and torch.cuda.get_device_capability(0) < (9, 0):
             pytest.skip(f"{dst_dtype} downcast with RTNE rounding tests only supported on NVGPU with compute capability 9.0+")
     elif is_hip():
-        # Keep float8 clamping checks aligned with the HCU backend support
-        # matrix instead of the broader upstream HIP matrix.
         if (is_float8_dtype_name(src_dtype) or is_float8_dtype_name(dst_dtype)) and not is_hip_gfx938():
             pytest.skip("float8 conversion tests are only enabled on gfx938 for the HCU backend")
 

@@ -1,11 +1,12 @@
-from triton.backends.compiler import BaseBackend, GPUTarget, Language
+from triton.backends.compiler import BaseBackend, DotCap, DotSupport, GPUTarget, Language
 from triton._C.libtriton import ir, passes, llvm, hcu, distributed, tle
 from triton import knobs
 from triton.runtime.errors import HSACOError
 from dataclasses import dataclass
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 from types import ModuleType
 import hashlib
+import inspect
 import tempfile
 import re
 import subprocess
@@ -21,6 +22,61 @@ def get_min_dot_size(target: GPUTarget):
     return lambda lhs_type, rhs_type: (1, 1, 1)
 
 
+_FP8 = ("fp8e4nv", "fp8e5")
+_HCU_MMAC_ARCHES = ("gfx928", "gfx936", "gfx938", "gfx92a", "gfx946")
+_BYTE_DTYPES = ("int8", "uint8", "int16", "uint16", "int32", "uint32", "fp16", "bf16", "fp32")
+_WIDE_DTYPES = ("int64", "uint64", "fp64")
+
+
+def _make_resolve_dot(arch: str, matrix_instr_nonkdim: int):
+    product = arch.split(":")[0]
+    # The unscaled HCU MMAC table uses 16x16 output tiles.
+    k_width = {"fp32": 8, "fp16": 16, "bf16": 16, "int8": 32, "fp64": 4}
+
+    def resolve_dot(a_dtype: str, b_dtype: str, acc_dtype: str, M: int, N: int, K: int) -> DotCap:
+        fp8_pair = a_dtype in _FP8 and b_dtype in _FP8
+        if (fp8_pair or a_dtype == b_dtype == "fp16") and acc_dtype not in ("fp16", "fp32"):
+            return DotCap(
+                DotSupport.UNSUPPORTED, f"tl.dot: {a_dtype} x {b_dtype} on hip/{arch} "
+                f"requires out_dtype fp16 or fp32, got {acc_dtype}")
+        if not fp8_pair and not (a_dtype == b_dtype and a_dtype in k_width):
+            return DotCap(
+                DotSupport.UNSUPPORTED, f"tl.dot: {a_dtype} x {b_dtype} is not supported on hip/{arch}; "
+                "INT32 is reserved for integer accumulation/output")
+        if fp8_pair and product not in ("gfx938", "gfx92a", "gfx946"):
+            return DotCap(
+                DotSupport.NON_NATIVE, f"tl.dot: {a_dtype} x {b_dtype} on hip/{arch} "
+                "uses software FP8 decoding to FP16 (native=false)")
+        k_tile = 32 if fp8_pair else k_width[a_dtype]
+        # A forced 16x16 instruction can pad a smaller output tile.
+        fits_mn = matrix_instr_nonkdim == 16 or (matrix_instr_nonkdim == 0 and M % 16 == 0 and N % 16 == 0)
+        if (product in _HCU_MMAC_ARCHES and fits_mn and K % k_tile == 0 and (a_dtype != "fp64" or product == "gfx936")):
+            return DotCap(DotSupport.NATIVE)
+        return DotCap(
+            DotSupport.NON_NATIVE, f"tl.dot: {a_dtype} x {b_dtype} on hip/{arch} with tile "
+            f"{M}x{N}x{K} uses a non-matrix dot (native=false)")
+
+    return resolve_dot
+
+
+def _make_resolve_dot_scaled(arch: str):
+
+    def resolve_dot_scaled(lhs_format: str, rhs_format: str) -> DotCap:
+        formats = ("e2m1", "e4m3", "e5m2", "bf16", "fp16")
+        if lhs_format in formats and rhs_format in formats:
+            return DotCap(
+                DotSupport.NON_NATIVE, f"tl.dot_scaled: {lhs_format} x {rhs_format} on hip/{arch} "
+                "uses a decomposed dot with FP32 accumulation (native=false)")
+        if lhs_format in ("int4", "int8") and rhs_format in ("int4", "int8"):
+            return DotCap(
+                DotSupport.NON_NATIVE, f"tl.dot_scaled: {lhs_format} x {rhs_format} on hip/{arch} "
+                "uses groupwise integer dot or software unpacking for packed INT4 (native=false)")
+        return DotCap(DotSupport.UNSUPPORTED,
+                      f"tl.dot_scaled: {lhs_format} x {rhs_format} is not supported on hip/{arch}")
+
+    return resolve_dot_scaled
+
+
 def is_pingpong_schedule_enabled(arch, use_async_copy):
     return (arch == "gfx942" or (arch == "gfx950" and use_async_copy is True)
             ) if knobs.hcu.use_block_pingpong is None else knobs.hcu.use_block_pingpong
@@ -31,6 +87,35 @@ def is_in_thread_transpose_enabled(arch):
 
 
 _AMDGCN_TARGET_RE = re.compile(r'\.amdgcn_target\s+"amdgcn-amd-amdhsa-[^-"]*-(gfx[0-9a-z]+(?::[a-z0-9]+[+-])*)"')
+
+
+@functools.lru_cache(None)
+def _clang_uses_i32_buffer_extent(compiler, arch):
+    # Vendor clang versions with the same major version ship different intrinsics.
+    probe = ("__amdgpu_buffer_rsrc_t probe(char __attribute__((address_space(1))) *p, unsigned long long n) {"
+             " return __builtin_amdgcn_make_buffer_rsrc(p, 0, n, 0); }")
+    result = subprocess.run([
+        compiler, "-target", hcu.TARGET_TRIPLE, f"-mcpu={arch}", "-nogpulib", "-x", "c", "-S", "-emit-llvm", "-O1", "-",
+        "-o", "-"
+    ], input=probe, capture_output=True, text=True)
+    return result.returncode == 0 and re.search(
+        r"declare [^\n]*@llvm\.amdgcn\.make\.buffer\.rsrc[^\n]*, i16, i32, i32\)", result.stdout) is not None
+
+
+def _buffer_extent_for_clang(kernel_ir, compiler, arch):
+    if "@llvm.amdgcn.make.buffer.rsrc." not in kernel_ir or not _clang_uses_i32_buffer_extent(compiler, arch):
+        return kernel_ir
+
+    # LLVM 22 requires i64. Only adapt the external clang input, and only
+    # narrow literal extents that the consumer can represent without truncation.
+    def narrow(match):
+        operand = match.group(2)
+        if operand and (not operand.strip().isdigit() or int(operand) > 0xffffffff):
+            raise HSACOError(f"{compiler} requires a 32-bit constant buffer extent, got i64{operand}")
+        return match.group(1) + "i32" + operand
+
+    return re.sub(r"(@llvm\.amdgcn\.make\.buffer\.rsrc[.\w]+\([^,\n]*, [^,\n]*, )i64([^,\n]*)(?=, i32)", narrow,
+                  kernel_ir)
 
 
 def _retarget_clang_args(clang_args, asm_text):
@@ -55,6 +140,10 @@ class HIPOptions:
     # we software emulate the support for them.
     # For leagcy HCU, enable software emulation for fp8e4nv conversions.
     supported_fp8_dtypes: Tuple[str] = ("fp8e4nv", "fp8e5")
+    supported_fp8_cast_dtypes: Tuple[str, ...] = _FP8
+    async_copy_dtypes: Tuple[str, ...] = ()
+    descriptor_dtypes: Tuple[str, ...] = ()
+    custom_cast_fp8_dtypes: Tuple[str] = ("fp8e4nv", "fp8e5")
     deprecated_fp8_dot_operand_dtypes: Tuple[str] = ()
     default_dot_input_precision: str = "ieee"
     allowed_dot_input_precisions: Tuple[str] = ("ieee", )
@@ -146,6 +235,7 @@ class HIPOptions:
 
 
 class HIPBackend(BaseBackend):
+
     instrumentation = None
     supports_native_tensor_specialization = False
 
@@ -176,6 +266,14 @@ class HIPBackend(BaseBackend):
 
         if "supported_fp8_dtypes" not in opts:
             args["supported_fp8_dtypes"] = tuple(sorted(HIPOptions.supported_fp8_dtypes))
+
+        fp8_storage = tuple(opts.get("supported_fp8_dtypes", args.get("supported_fp8_dtypes", _FP8)))
+        args["supported_fp8_cast_dtypes"] = tuple(dtype for dtype in fp8_storage if dtype in _FP8)
+        args["descriptor_dtypes"] = _BYTE_DTYPES + _WIDE_DTYPES + fp8_storage
+        arch = (opts.get("arch") or args["arch"]).split(":")[0]
+        if arch in _HCU_MMAC_ARCHES:
+            # gfx946 also supports 128-bit transfers (two coalesced 64-bit elements).
+            args["async_copy_dtypes"] = _BYTE_DTYPES + fp8_storage + (_WIDE_DTYPES if arch == "gfx946" else ())
 
         if self.target.arch == 'gfx950':
             deprecated_fp8_dot_operand_dtypes = set(HIPOptions.deprecated_fp8_dot_operand_dtypes)
@@ -227,7 +325,15 @@ class HIPBackend(BaseBackend):
         )
 
     def get_codegen_implementation(self, options):
-        return {"min_dot_size": get_min_dot_size(self.target)}
+        from triton.language.extra.hip import utils
+
+        return {
+            "convert_custom_types": utils._convert_fp8,
+            "min_dot_size": get_min_dot_size(self.target),
+            "resolve_dot": _make_resolve_dot(options.arch, options.matrix_instr_nonkdim),
+            "resolve_dot_scaled": _make_resolve_dot_scaled(options.arch),
+            "get_dot_scaled_lowering": utils._get_dot_scaled_lowering,
+        }
 
     def get_module_map(self) -> Dict[str, ModuleType]:
         from triton.language.extra.hip import libdevice
@@ -445,6 +551,11 @@ class HIPBackend(BaseBackend):
         tle.passes.add_insert_local_pointer_barriers(pm)
         tle.passes.add_optimize_local_pointer_loads(pm)
         tle.passes.add_optimize_local_pointer_stores(pm)
+        # Explicit TLE requests are independent of automatic loop pipelining.
+        # Validate vector/mask widths before constructing native LDS copies.
+        hcu.passes.ttgpuir.add_coalesce_async_copy(pm, options.arch)
+        tle.passes.add_lower_async_load(pm)
+        hcu.passes.ttgpuir.add_coalesce_async_copy(pm, options.arch)
         # end flagtree tle
         hcu.passes.ttgpuir.add_accelerate_matmul(pm, options.arch, options.matrix_instr_nonkdim, options.kpack,
                                                  options.mmac_layout_force)
@@ -530,6 +641,9 @@ class HIPBackend(BaseBackend):
         if 1:  #use_async_copy:
             hcu.passes.ttgpuir.add_update_async_wait_count(pm, options.arch)
         pm.run(mod, 'make_ttgir')
+        diagnostics = mod.get_operation().get_str_attr("hcug.async_load_diagnostics")
+        if diagnostics:
+            warnings.warn(diagnostics, UserWarning)
         metadata["tensordesc_meta"] = mod.get_tensordesc_metadata()
         return mod
 
@@ -784,6 +898,9 @@ class HIPBackend(BaseBackend):
         use_dcc = (bool(metadata.get("hcu_tle_raw")) and dcc.is_file()
                    and "llvm.amdgcn.make.buffer.rsrc" not in kernel_ir)
         metadata["hcu_raw_dcc"] = use_dcc
+        asm_compiler = str(dcc) if use_dcc else HIPBackend.path_to_rocm_clang()
+        if not use_dcc:
+            kernel_ir = _buffer_extent_for_clang(kernel_ir, asm_compiler, options.arch)
         try:
             with tempfile.NamedTemporaryFile(mode='w', suffix=".ll", delete=False) as f:
                 llir_file = f.name
@@ -791,7 +908,6 @@ class HIPBackend(BaseBackend):
 
             asm_file = tempfile.mktemp(suffix=".amdgcn")
             # dcc or aillvm clang: both drive llir -> .s
-            asm_compiler = str(dcc) if use_dcc else HIPBackend.path_to_rocm_clang()
             asm_args = (["-target", hcu.TARGET_TRIPLE, f"-mcpu={options.arch}", "-O3"]
                         if use_dcc else HIPBackend._get_clang_args(metadata, options) + flags)
 
@@ -892,4 +1008,16 @@ class HIPBackend(BaseBackend):
     @functools.lru_cache()
     def hash(self):
         version = subprocess.check_output([HIPBackend.path_to_rocm_clang(), "--version"], encoding='utf-8')
-        return f'{version}-{self.target}'
+        from triton.experimental.tle.language import core as tle_core
+        from triton.language import core, standard
+        from triton.language.semantic import TritonSemantic
+        from triton.runtime.driver import DriverConfig
+        from triton.language.extra.hip import utils
+
+        # Include actual bound providers, including spec overlays and runtime
+        # driver sources outside the compiler/language package scan.
+        providers = (inspect.unwrap(core.dot), TritonSemantic.dot, standard, DriverConfig, utils, tle_core)
+        sources = hashlib.sha256()
+        for provider in providers:
+            sources.update(Path(inspect.getfile(provider)).read_bytes())
+        return f'{version}-{self.target}-{sources.hexdigest()}'
