@@ -29,21 +29,27 @@ def test_packed_qkv_physical_order_and_active_tails(tmp_path, template_spec, k, 
         pytest.skip("requires a GPU")
     torch.manual_seed(79)
     total_n = sum(capacities)
+
+    # The single-row RDNA templates elide the row loop, as does the call ABI
+    # when it generates source and result offsets for that launch.
+    def row_offset(width):
+        return "" if rows == 1 else f"qkv_local_m * {width} + "
+
     outputs = []
     start = 0
     for i, capacity in enumerate(capacities):
         outputs.append({
             "result": f"Y{i}", "local_n_capacity": capacity, "active": f"qkv_local_n_offsets < {capacity - i}",
-            "result_offset": f"qkv_local_m * {capacity} + qkv_local_n_offsets", "weight_group_start": start
+            "result_offset": f"{row_offset(capacity)}qkv_local_n_offsets", "weight_group_start": start
         })
         start += capacity // 8
     call = {
         "family": "qkv_parallel_linear", "variant": "packed_fused_gemv", "symbol": "run", "signature":
         "X, W, Y0, Y1, Y2", "source": "X", "weight": "W", "local_m": rows, "rows": rows, "source_offset":
-        f"qkv_local_m * {k} + qkv_local_k_offsets", "source_active": f"qkv_local_k_offsets < {active_k}",
-        "local_k_capacity": k, "tile_n": tile_n, "block_k": block_k, "k_lane": 16, "n_lane": 8, "weight_owner_stride":
-        k * total_n, "weight_k_group_stride": total_n * 16, "weight_n_group_stride": 128, "outputs": outputs,
-        "output_type": "tl.bfloat16"
+        f"{row_offset(k)}qkv_local_k_offsets", "source_active": f"qkv_local_k_offsets < {active_k}", "local_k_capacity":
+        k, "tile_n": tile_n, "block_k": block_k, "k_lane": 16, "n_lane": 8, "weight_owner_stride": k * total_n,
+        "weight_k_group_stride": total_n * 16, "weight_n_group_stride": 128, "outputs": outputs, "output_type":
+        "tl.bfloat16"
     }
     body = TritonTemplateRegistry().render_kernel(
         template_spec,

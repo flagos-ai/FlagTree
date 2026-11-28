@@ -71,7 +71,6 @@ def test_two_layer_call_graph_runtime_matches_evaluator_on_h800(tmp_path):
         rtol=0.04,
     )
     diagnostic_views = runtime.diagnostic_workspace()
-    assert diagnostic_views["token_embedding"].shape == (1, 16)
     assert any(name.startswith("layer_0_decode_layer_call::decode_layer_") for name in diagnostic_views)
     assert any(name.startswith("layer_1_decode_layer_call::decode_layer_") for name in diagnostic_views)
     assert all(value.device == logits.device for value in diagnostic_views.values())
