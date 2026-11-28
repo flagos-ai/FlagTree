@@ -348,7 +348,7 @@ def ref_paged_attn(
             k = torch.repeat_interleave(k, q.shape[1] // k.shape[1], dim=1)
             v = torch.repeat_interleave(v, q.shape[1] // v.shape[1], dim=1)
         attn = torch.einsum("qhd,khd->hqk", q, k).float()
-        empty_mask = torch.ones(query_len, kv_len)
+        empty_mask = torch.ones(query_len, kv_len, device=attn.device)
         mask = torch.triu(empty_mask, diagonal=kv_len - query_len + 1).bool()
         if sliding_window is not None:
             sliding_window_mask = torch.triu(empty_mask,
@@ -388,8 +388,7 @@ def test_triton_unified_attn(
     num_blocks: int,
     q_dtype: Optional[torch.dtype],
 ) -> None:
-    torch.set_default_device("npu")
-
+    default_device = torch.get_default_device()
     if q_dtype is not None and q_dtype.itemsize < 2 and block_size < 32:
         pytest.skip("block size must be at least 32 for fp8")
 
@@ -404,14 +403,15 @@ def test_triton_unified_attn(
     window_size = ((sliding_window - 1, 0) if sliding_window is not None else (-1, -1))
     scale = head_size**-0.5
 
-    query = torch.randn(sum(query_lens), num_query_heads, head_size, dtype=dtype)
-    key_cache = torch.randn(num_blocks, block_size, num_kv_heads, head_size, dtype=dtype)
+    device = torch.device("npu")
+    query = torch.randn(sum(query_lens), num_query_heads, head_size, dtype=dtype, device=device)
+    key_cache = torch.randn(num_blocks, block_size, num_kv_heads, head_size, dtype=dtype, device=device)
     value_cache = torch.randn_like(key_cache)
-    cu_query_lens = torch.tensor([0] + query_lens, dtype=torch.int32).cumsum(dim=0, dtype=torch.int32)
-    kv_lens = torch.tensor(kv_lens, dtype=torch.int32)
+    cu_query_lens = torch.tensor([0] + query_lens, dtype=torch.int32, device=device).cumsum(dim=0, dtype=torch.int32)
+    kv_lens = torch.tensor(kv_lens, dtype=torch.int32, device=device)
 
     max_num_blocks_per_seq = (max_kv_len + block_size - 1) // block_size
-    block_tables = torch.randint(0, num_blocks, (num_seqs, max_num_blocks_per_seq), dtype=torch.int32)
+    block_tables = torch.randint(0, num_blocks, (num_seqs, max_num_blocks_per_seq), dtype=torch.int32, device=device)
 
     output = torch.empty_like(query)
 
@@ -429,8 +429,8 @@ def test_triton_unified_attn(
 
         scale_shape = (num_seqs, num_kv_heads)
         q_descale = None  # Not yet supported
-        k_descale = torch.rand(scale_shape, dtype=torch.float32)
-        v_descale = torch.rand(scale_shape, dtype=torch.float32)
+        k_descale = torch.rand(scale_shape, dtype=torch.float32, device=device)
+        v_descale = torch.rand(scale_shape, dtype=torch.float32, device=device)
 
     unified_attention(
         q=maybe_quantized_query,
@@ -467,3 +467,4 @@ def test_triton_unified_attn(
         atol, rtol = 1.5e-1, 1.5e-1
     torch.testing.assert_close(output, ref_output, atol=atol, rtol=rtol), \
         f"{torch.max(torch.abs(output - ref_output))}"
+    assert torch.get_default_device() == default_device
