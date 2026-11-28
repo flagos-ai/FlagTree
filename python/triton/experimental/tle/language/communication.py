@@ -151,8 +151,6 @@ def compile_flagcx_allocator():
         _allocator = _allocator_wrapper.allocator()
 
     except Exception as e:
-        if _is_xpu:
-            raise
         _flagcx_allocator_failed_to_compile = True
         print(
             f"[WARNING] Failed to load FlagCX memory allocator: {e}",
@@ -197,7 +195,7 @@ def cleanup_communicator():
 
 
 def init_communicator(*, backend=None):
-    global comm, rank, _init_communicator_
+    global comm, rank, dev_comm, _init_communicator_
     if enabled and _init_communicator_:
         return
     if backend is None:
@@ -230,26 +228,21 @@ def init_communicator(*, backend=None):
     print(f"[Rank {rank}] FlagCX comm initialized")
     if _is_xpu:
         # Initialize XSHMEM before the first allocation from the FlagCX pool.
-        _create_dev_comm()
+        reqs = flagcxDevCommRequirements()
+        reqs.intraMulticast = False
+        reqs.barrierCount = 8
+        reqs.intraBarrierCount = 8
+        reqs.interBarrierCount = 8
+        reqs.intraLLA2ABlockCount = 0
+        reqs.intraLLA2ASlotCount = 0
+        reqs.interForceEnable = False
+        reqs.interContextCount = 4
+        reqs.interSignalCount = 8
+        reqs.interCounterCount = 8
+
+        dev_comm = flagcx.flagcxDevCommCreate(comm, reqs)
+        print(f"[Rank {rank}] DevComm created")
     _init_communicator_ = True
-
-
-def _create_dev_comm():
-    global dev_comm
-    reqs = flagcxDevCommRequirements()
-    reqs.intraMulticast = False
-    reqs.barrierCount = 8
-    reqs.intraBarrierCount = 8
-    reqs.interBarrierCount = 8
-    reqs.intraLLA2ABlockCount = 0
-    reqs.intraLLA2ASlotCount = 0
-    reqs.interForceEnable = False
-    reqs.interContextCount = 4
-    reqs.interSignalCount = 8
-    reqs.interCounterCount = 8
-
-    dev_comm = flagcx.flagcxDevCommCreate(comm, reqs)
-    print(f"[Rank {rank}] DevComm created")
 
 
 def create_dist_tensor(buf_tensor):
@@ -262,7 +255,20 @@ def create_dist_tensor(buf_tensor):
     print(f"[Rank {rank}] Window registered (symmetric)")
 
     if not _is_xpu:
-        _create_dev_comm()
+        reqs = flagcxDevCommRequirements()
+        reqs.intraMulticast = False
+        reqs.barrierCount = 8
+        reqs.intraBarrierCount = 8
+        reqs.interBarrierCount = 8
+        reqs.intraLLA2ABlockCount = 0
+        reqs.intraLLA2ASlotCount = 0
+        reqs.interForceEnable = False
+        reqs.interContextCount = 4
+        reqs.interSignalCount = 8
+        reqs.interCounterCount = 8
+
+        dev_comm = flagcx.flagcxDevCommCreate(comm, reqs)
+        print(f"[Rank {rank}] DevComm created")
 
     # Create DevMem (with window)
     dev_mem = flagcx.flagcxDevMemCreate(comm, buf_ptr, buf_size, win)
