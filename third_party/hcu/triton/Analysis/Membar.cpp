@@ -47,6 +47,12 @@ void MembarOrFenceAnalysis::resolve(FunctionOpInterface funcOp,
     if (block->isEntryBlock() &&
         !isa<RegionBranchOpInterface>(block->getParentOp()))
       blockList.emplace_back(block, Block::iterator());
+#ifdef __TLE__
+    if (block->isEntryBlock() &&
+        !isa<RegionBranchOpInterface>(block->getParentOp()) &&
+        tracksEntrySync() && block->getParentOp() == funcOp.getOperation())
+      inputBlockInfoMap[{block, Block::iterator()}].entryUnsynced = true;
+#endif
   });
 
   // A fixed point algorithm
@@ -160,6 +166,69 @@ void MembarOrFenceAnalysis::visitTerminator(
   llvm_unreachable("Unknown terminator encountered in membar analysis");
 }
 
+#ifdef __TLE__
+bool ModuleMembarAnalysis::isAtomicWithoutScratch(Operation *op) const {
+  if (!isa<triton::AtomicRMWOp, triton::AtomicCASOp>(op))
+    return false;
+  // Call summaries retain operations from the callee. Buffer IDs are scoped
+  // to a function, so an absent ID in the caller cannot prove no return
+  // scratch.
+  auto funcOp = op->getParentOfType<FunctionOpInterface>();
+  auto *ownerAllocation = moduleAllocation->getFuncData(funcOp);
+  return ownerAllocation->getBufferId(op) == Allocation::InvalidBufferId;
+}
+
+void MembarAnalysis::addToEntryPrefix(const BlockInfo &blockInfo) {
+  auto funcOp = cast<FunctionOpInterface>(allocation->getOperation());
+  BlockInfo accesses = blockInfo;
+  accesses.entryUnsynced = false;
+  (*entryPrefixMap)[funcOp].join(accesses);
+}
+
+void MembarAnalysis::updateCall(Operation *op, FunctionOpInterface callee,
+                                BlockInfo *blockInfo,
+                                FuncBlockInfoMapT *funcBlockInfoMap,
+                                MembarFilterFn filter, OpBuilder *builder) {
+  // The callee's shared memory lives in this call's virtual buffer.
+  size_t callOffset = 0;
+  auto callBufferId = allocation->getBufferId(op);
+  if (callBufferId != Allocation::InvalidBufferId)
+    callOffset = allocation->getAllocatedInterval(callBufferId).start();
+
+  auto exitIt = funcBlockInfoMap->find(callee);
+  BlockInfo calleeExit;
+  if (exitIt != funcBlockInfoMap->end())
+    calleeExit = exitIt->second.translated(callOffset);
+  else
+    calleeExit.entryUnsynced = true;
+
+  // Without entry summaries, fall back to the callee's exit state.
+  BlockInfo calleeEntry = calleeExit;
+  if (entryPrefixMap) {
+    auto entryIt = entryPrefixMap->find(callee);
+    calleeEntry = entryIt != entryPrefixMap->end()
+                      ? entryIt->second.translated(callOffset)
+                      : BlockInfo();
+  }
+
+  // Accesses pending in the caller must be ordered against what the callee
+  // touches before its first barrier.
+  if (blockInfo->isIntersected(calleeEntry, filter)) {
+    builder->setInsertionPoint(op);
+    insertBarrier(op, builder);
+    blockInfo->sync();
+  }
+  if (entryPrefixMap && blockInfo->entryUnsynced)
+    addToEntryPrefix(calleeEntry);
+  // A callee that synchronizes on every path also synchronizes the caller.
+  if (!calleeExit.entryUnsynced)
+    blockInfo->sync();
+  calleeExit.entryUnsynced = false;
+  blockInfo->join(calleeExit);
+}
+
+#endif
+
 void MembarAnalysis::insertBarrier(Operation *op, OpBuilder *builder) {
   OpBuilder::InsertionGuard g(*builder);
   auto barrierOp = triton::gpu::LocalBarrierOp::create(*builder, op->getLoc());
@@ -189,9 +258,16 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
   if (isa<triton::CallOp>(op)) {
     // Inter-function dependencies
     auto callOpInterface = dyn_cast<CallOpInterface>(op);
+#ifdef __TLE__
+    if (auto callee =
+            dyn_cast<FunctionOpInterface>(callOpInterface.resolveCallable()))
+      updateCall(op, callee, blockInfo, funcBlockInfoMap, filter, builder);
+    return;
+#else
     if (auto callee =
             dyn_cast<FunctionOpInterface>(callOpInterface.resolveCallable()))
       curBlockInfo = funcBlockInfoMap->lookup(callee);
+#endif
   } else {
     // Intra-function dependencies
     if (auto memoryEffectOpInterface = dyn_cast<MemoryEffectOpInterface>(op)) {
@@ -228,18 +304,6 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
     scratchBufferId = allocation->getBufferId(op);
   }
 
-#ifdef __TLE__
-  // Preserve the 3.5 behavior for atomic chains in TLE mode: consecutive
-  // atomics on overlapping shared intervals do not require an extra CTA
-  // barrier here.
-  auto effectiveFilter = [&](Operation *lhs, Operation *rhs) -> bool {
-    if (isa<triton::AtomicRMWOp, triton::AtomicCASOp>(lhs) &&
-        isa<triton::AtomicRMWOp, triton::AtomicCASOp>(rhs))
-      return true;
-    return filter ? filter(lhs, rhs) : false;
-  };
-#endif
-
   // Scratch buffer operations consist of a series of shared memory operations
   // starting from a shared memory write, followed by a series of shared memory
   // read/write operations, and ending with a shared memory read, i.e., shared
@@ -271,30 +335,37 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
 #endif
     auto interval = allocation->getAllocatedInterval(scratchBufferId);
     curBlockInfo.syncWriteIntervals[interval].insert(op);
-#ifdef __TLE__
-    auto insertCTABarrier =
-        blockInfo->isIntersected(curBlockInfo, effectiveFilter);
-#else
     auto insertCTABarrier = blockInfo->isIntersected(curBlockInfo, filter);
-#endif
     if (insertCTABarrier) {
       builder->setInsertionPoint(op);
       insertBarrier(op, builder);
+#ifdef __TLE__
+      blockInfo->sync();
+#endif
     }
+#ifdef __TLE__
+    // Record writes before the scratch operation's internal CTA barrier.
+    if (entryPrefixMap && blockInfo->entryUnsynced)
+      addToEntryPrefix(curBlockInfo);
+#endif
     // Ops with a scratch buffer that don't use warp.sync internally sync
     // read/write on shared memory
+#ifdef __TLE__
+    if (!isWarpSync)
+#else
     if (insertCTABarrier || !isWarpSync)
+#endif
       blockInfo->sync();
     curBlockInfo.syncReadIntervals[interval].insert(op);
-#ifdef __TLE__
-  } else if (blockInfo->isIntersected(curBlockInfo, effectiveFilter)) {
-#else
   } else if (blockInfo->isIntersected(curBlockInfo, filter)) {
-#endif
     builder->setInsertionPoint(op);
     insertBarrier(op, builder);
     blockInfo->sync();
   }
+#ifdef __TLE__
+  if (entryPrefixMap && blockInfo->entryUnsynced)
+    addToEntryPrefix(curBlockInfo);
+#endif
   // Update the region info, even if barrier is inserted, we have to maintain
   // the current op's read/write buffers.
   blockInfo->join(curBlockInfo);

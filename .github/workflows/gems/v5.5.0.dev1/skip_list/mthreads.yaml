@@ -1,0 +1,12 @@
+# Skip operators that cause GPU state corruption
+skip_operators:
+  - outplace_fused_experts
+  - upsample_nearest_exact2d
+
+# Skip specific test functions
+skip_test_patterns:
+  #- test_example_pattern
+
+# Skip entire test files
+skip_test_files:
+  #- test_example.py

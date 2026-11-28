@@ -75,6 +75,7 @@ jobs:
           export USE_FLAGCX=ON
           export FLAGCX_RECOMPILE=ON
           export FLAGCX_CACHE=clean
+          export DIST_DEV=1
           export FLAGCX_ILUVATAR_CLANG="${FLAGCX_ILUVATAR_CLANG:-$(command -v clang)}"
           export FLAGCX_ILUVATAR_SDK="${FLAGCX_ILUVATAR_SDK:-$(dirname "$(dirname "$(realpath "$FLAGCX_ILUVATAR_CLANG")")")}"
           MAX_JOBS=32 python3 -m pip install . --no-build-isolation -v
@@ -93,6 +94,7 @@ jobs:
         run: |
           set -x
           source ~/env.sh
+          export DIST_DEV=1
           export LD_LIBRARY_PATH=/usr/local/corex-4.5.0/lib64/:${LD_LIBRARY_PATH}
 
           if [[ "$(uname -m)" == "aarch64" ]]; then
