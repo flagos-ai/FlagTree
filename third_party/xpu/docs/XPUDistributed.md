@@ -70,6 +70,6 @@ bash third_party/xpu/test/run_tle_distributed.sh
 Use the same Python environment as the install. The runner configures the SDK
 library paths and launches the rank, barrier, remote store, signal, and
 signal-wait tests. `tle.get_mem_pool()` initializes communication first. Local
-rank 0 builds `flagcx_allocator_xpu_ccl.so` in the temporary directory on a
+rank 0 builds `flagcx_xpu/flagcx_allocator.so` in the temporary directory on a
 cache miss. After synchronization, each rank loads the library. Add `debug` to stream FlagCX
 diagnostics. Each test also writes a log in the directory printed by the runner.

@@ -37,7 +37,7 @@ if enabled:
     from .flagcx_wrapper import (
         FLAGCXLibrary,
         flagcxDevCommRequirements,
-        flagcxUniqueId,
+        flagcxUniqueId,  # noqa: F401
         FLAGCX_WIN_COLL_SYMMETRIC,
     )
     import os
@@ -46,7 +46,6 @@ if enabled:
     import torch.distributed as dist
     from torch.cuda.memory import CUDAPluggableAllocator
     from torch.utils.cpp_extension import load_inline
-    from itertools import count
     from pathlib import Path
 
     FLAGCX_LIB_PATH = str(flagcx_rt_conf.shared_lib_path.parent)
@@ -61,7 +60,6 @@ if enabled:
     _flagcx_allocator_failed_to_compile = False
     _init_communicator_ = False
     _window_allocator = {"allocator": 1} if _is_xpu else {}
-    _host_barrier_ids = count()
 
     def _cleanup_flagcx_mem_pool():
         global _mem_pool
@@ -75,6 +73,7 @@ if enabled:
     atexit.register(_cleanup_flagcx_mem_pool)
     atexit.register(_cleanup_flagcx_allocator_wrapper)
     flagcx = FLAGCXLibrary(so_file=_libflagcx_path())
+    global comm, rank, dev_mem, dev_comm, win
 
     flagcx_allocator_source = """
     #include <flagcx.h>
@@ -103,33 +102,48 @@ def compile_flagcx_allocator():
     global _allocator, _allocator_wrapper, _flagcx_allocator_failed_to_compile
 
     try:
-        lib_name = f"flagcx_allocator_{FLAGTREE_BACKEND or 'nvidia'}_ccl"
-        lib_path = Path(tempfile.gettempdir()) / f"{lib_name}.so"
+        out_dir = tempfile.gettempdir()
+        if _is_xpu:
+            out_dir = os.path.join(out_dir, "flagcx_xpu")
+            os.makedirs(out_dir, exist_ok=True)
+        lib_name = "flagcx_allocator"
+        lib_path = os.path.join(out_dir, f"{lib_name}.so")
+
         local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-        if local_rank == 0 and not lib_path.is_file():
-            print(f"[INFO] Compiling FlagCX allocator: {lib_path}", flush=True)
-            # Publish only the finished library when jobs share a temporary directory.
-            with tempfile.TemporaryDirectory(dir=lib_path.parent) as build_dir:
-                built = load_inline(
-                    name=lib_name,
-                    cpp_sources=flagcx_allocator_source,
-                    with_cuda=not _is_xpu,
-                    extra_ldflags=[f"-L{FLAGCX_LIB_PATH}", "-lflagcx", f"-Wl,-rpath,{FLAGCX_LIB_PATH}"],
-                    verbose=True,
-                    is_python_module=False,
-                    build_directory=build_dir,
-                    extra_include_paths=[FLAGCX_INCLUDE_PATH],
-                )
-                Path(built).replace(lib_path)
+        if local_rank == 0 and not os.path.isfile(lib_path):
+            print(
+                f"[INFO] FlagCX allocator not found, compiling: {lib_path}",
+                flush=True,
+            )
 
-        if dist.is_available() and dist.is_initialized():
-            _sync_ranks()
+            load_inline(
+                name=lib_name,
+                cpp_sources=flagcx_allocator_source,
+                with_cuda=not _is_xpu,
+                extra_ldflags=[
+                    f"-L{FLAGCX_LIB_PATH}",
+                    "-lflagcx",
+                    f"-Wl,-rpath,{FLAGCX_LIB_PATH}",
+                ],
+                verbose=True,
+                is_python_module=False,
+                build_directory=out_dir,
+                extra_include_paths=[FLAGCX_INCLUDE_PATH],
+            )
+        else:
+            print(
+                f"[INFO] Using cached FlagCX allocator: {lib_path}",
+                flush=True,
+            )
 
-        if not lib_path.is_file():
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+
+        if not os.path.isfile(lib_path):
             raise FileNotFoundError(f"FlagCX allocator library not found after compilation: {lib_path}")
 
         _allocator_wrapper = CUDAPluggableAllocator(
-            str(lib_path),
+            lib_path,
             "flagcx_alloc_plug",
             "flagcx_free_plug",
         )
@@ -148,7 +162,7 @@ def compile_flagcx_allocator():
 
 def get_mem_pool(*, backend=None):
     """Return a cached PyTorch MemPool backed by flagcxMemAlloc."""
-    global _mem_pool
+    global _mem_pool, _flagcx_allocator_failed_to_compile
     init_communicator(backend=backend)
     if _mem_pool is None and not _flagcx_allocator_failed_to_compile:
         compile_flagcx_allocator()
@@ -167,21 +181,9 @@ def _cleanup_flagcx_allocator_wrapper():
     _allocator_wrapper = None
 
 
-def _sync_ranks():
-    if _is_xpu:
-        from torch.distributed.elastic.utils.store import barrier
-
-        store = dist.distributed_c10d._get_default_store()
-        # Each barrier needs its own Store key, including when registering successive buffers.
-        key_prefix = f"tle_flagcx_barrier_{next(_host_barrier_ids)}"
-        barrier(store, dist.get_world_size(), key_prefix)
-    else:
-        dist.barrier()
-
-
 def cleanup_communicator():
     global comm, rank, dev_mem, dev_comm, win
-    _sync_ranks()
+    dist.barrier()
     flagcx.flagcxDevMemFreeDevicePtr(dev_mem)
     flagcx.flagcxDevCommFreeDevicePtr(dev_comm)
     flagcx.flagcxDevMemDestroy(comm, dev_mem)
@@ -208,37 +210,32 @@ def init_communicator(*, backend=None):
 
     print(f"[Rank {rank}] Starting (world_size={world_size})")
 
-    if _is_xpu:
-        # Use the process group's rendezvous store, as the FlagCX PyTorch plugin does.
-        # XSHMEM is initialized below, so the ID exchange must run before device allocation.
-        store = dist.distributed_c10d._get_default_store()
-        key = "triton/tle/flagcx/unique_id"
-        if rank == 0:
-            unique_id = flagcx.flagcxGetUniqueId()
-            store.set(key, bytes(unique_id.internal))
-        else:
-            unique_id = flagcx.unique_id_from_bytes(store.get(key))
+    # Create unique ID on rank 0 and broadcast
+    if rank == 0:
+        unique_id = flagcx.flagcxGetUniqueId()
+        id_bytes = bytes(unique_id.internal)
     else:
-        if rank == 0:
-            unique_id = flagcx.flagcxGetUniqueId()
-            id_bytes = bytes(unique_id.internal)
-        else:
-            id_bytes = bytes(len(flagcxUniqueId().internal))
-        id_tensor = torch.frombuffer(bytearray(id_bytes), dtype=torch.uint8).cuda()
-        dist.broadcast(id_tensor, src=0)
-        id_bytes = id_tensor.cpu().numpy().tobytes()
-        if rank != 0:
-            unique_id = flagcx.unique_id_from_bytes(id_bytes)
+        id_bytes = b"\x00" * 256
+
+    # Broadcast unique_id bytes via torch distributed
+    id_tensor = torch.frombuffer(bytearray(id_bytes), dtype=torch.uint8).cuda()
+    dist.broadcast(id_tensor, src=0)
+    id_bytes = id_tensor.cpu().numpy().tobytes()
+
+    if rank != 0:
+        unique_id = flagcx.unique_id_from_bytes(id_bytes)
 
     # Init FlagCX communicator
     comm = flagcx.flagcxCommInitRank(world_size, unique_id, rank)
     print(f"[Rank {rank}] FlagCX comm initialized")
     if _is_xpu:
+        # Initialize XSHMEM before the first allocation from the FlagCX pool.
         _create_dev_comm()
     _init_communicator_ = True
 
 
-def _make_dev_comm_requirements():
+def _create_dev_comm():
+    global dev_comm
     reqs = flagcxDevCommRequirements()
     reqs.intraMulticast = False
     reqs.barrierCount = 8
@@ -250,12 +247,8 @@ def _make_dev_comm_requirements():
     reqs.interContextCount = 4
     reqs.interSignalCount = 8
     reqs.interCounterCount = 8
-    return reqs
 
-
-def _create_dev_comm():
-    global dev_comm
-    dev_comm = flagcx.flagcxDevCommCreate(comm, _make_dev_comm_requirements())
+    dev_comm = flagcx.flagcxDevCommCreate(comm, reqs)
     print(f"[Rank {rank}] DevComm created")
 
 
@@ -282,7 +275,7 @@ def create_dist_tensor(buf_tensor):
           f"mem={dev_mem_dptr.value:#x}")
 
     # Synchronize all ranks before kernel launch
-    _sync_ranks()
+    dist.barrier()
 
     from triton.runtime import DistributedRtContext
     ctx = DistributedRtContext(dev_mem_dptr.value, dev_comm_dptr.value)
