@@ -1270,14 +1270,14 @@ LogicalResult DistributedBarrierOp::verify() {
   return success();
 }
 
-LogicalResult NodePutOp::verify() {
+LogicalResult RemotePutOp::verify() {
   return verifyNodeTransfer(getOperation(), getSrc(), getDstMem(), getComm(),
                             getPeer(), getSrcOffset(), getDstOffset(),
                             getNelems(), getContextIdAttr(), getElemBytesAttr(),
                             getCoopKind());
 }
 
-LogicalResult NodeGetOp::verify() {
+LogicalResult RemoteGetOp::verify() {
   return verifyNodeTransfer(getOperation(), getSrc(), getDstMem(), getComm(),
                             getPeer(), getSrcOffset(), getDstOffset(),
                             getNelems(), getContextIdAttr(), getElemBytesAttr(),
@@ -1286,6 +1286,12 @@ LogicalResult NodeGetOp::verify() {
 
 LogicalResult RemotePointersOp::verify() {
   StringRef spaceAttr = getSpace();
+
+  if (getTransfer() && spaceAttr != "device")
+    return emitOpError() << "transfer marker attribute requires device space";
+
+  if (getOrderAttr() && !isTransferMarker())
+    return emitOpError() << "order requires a remote transfer marker";
 
   if (spaceAttr == "chiplet") {
     if (!getShardId().getType().isInteger(32))
@@ -1300,8 +1306,8 @@ LogicalResult RemotePointersOp::verify() {
   if (!getShardId().getType().isInteger(32))
     return emitOpError() << "expects shard_id to be i32";
 
-  if (spaceAttr == "node")
-    return RemotePointers::verifyNodeSpace(*this);
+  if (isTransferMarker())
+    return RemotePointers::verifyTransferMarker(*this);
 
   auto coopKindAttr = getCoopKindAttr();
   if (getComm() || getContextIdAttr() || coopKindAttr)

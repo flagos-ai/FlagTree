@@ -1157,7 +1157,7 @@ def _parse_barrier_enum_arg(arg) -> str:
     return str(arg).lower()
 
 
-def _normalize_barrier_order(order) -> attr.MemoryOrder:
+def _normalize_memory_order(order) -> attr.MemoryOrder:
     # Normalize MemoryOrder enum / raw string to the builder-side enum attr.
     order = tl._unwrap_if_constexpr(order)
     if isinstance(order, attr.MemoryOrder):
@@ -1167,8 +1167,8 @@ def _normalize_barrier_order(order) -> attr.MemoryOrder:
     return attr.MemoryOrder.from_str(str(order).lower())
 
 
-def _require_barrier_order(order) -> attr.MemoryOrder:
-    normalized = _normalize_barrier_order(order)
+def _require_memory_order(order) -> attr.MemoryOrder:
+    normalized = _normalize_memory_order(order)
     if normalized is None:
         raise ValueError(f"order must be 'relaxed', 'acquire', 'release', or 'acqrel', got {order!r}")
     return normalized
@@ -1206,7 +1206,7 @@ def _handle_explicit_space_barrier(mesh: device_mesh | None, space: str | attr.F
             barrier_index=index or 0,
             space="chiplet",
             group_kind=_parse_barrier_enum_arg(group_kind),
-            order=_require_barrier_order(order),
+            order=_require_memory_order(order),
             barrier_kind=_parse_barrier_enum_arg(barrier_kind),
             context_id=tl._unwrap_if_constexpr(context_id),
             memory_scope=attr.SyncScope.from_str("system"),
@@ -1232,7 +1232,7 @@ def _handle_explicit_space_barrier(mesh: device_mesh | None, space: str | attr.F
     else:
         group_kind = str(group_kind).lower()
 
-    order = _require_barrier_order(order)
+    order = _require_memory_order(order)
 
     barrier_kind = tl._unwrap_if_constexpr(barrier_kind)
     if isinstance(barrier_kind, BarrierKind):
@@ -1596,26 +1596,26 @@ def _remote_pointer(
     return _create_remote_pointers_tensor(tensor, shard_id_tensor, _semantic, dtype=dtype, space=space, offset=offset)
 
 
-def _normalize_node_elem_bytes(dtype) -> int:
+def _normalize_transfer_elem_bytes(dtype) -> int:
     dtype = tl._unwrap_if_constexpr(dtype)
     if not isinstance(dtype, tl.dtype):
-        raise TypeError(f"node space dtype must be a scalar Triton dtype, got {type(dtype).__name__}")
+        raise TypeError(f"remote transfer dtype must be a scalar Triton dtype, got {type(dtype).__name__}")
     elem_bytes = dtype.itemsize
     if elem_bytes <= 0:
-        raise ValueError(f"node space dtype must be byte-addressable, got {dtype}")
+        raise ValueError(f"remote transfer dtype must be byte-addressable, got {dtype}")
     return elem_bytes
 
 
-def _normalize_node_peer(shard_id, scope, _semantic) -> tl.tensor:
+def _normalize_transfer_peer(shard_id, scope, space, _semantic) -> tl.tensor:
     shard_id = _unwrap_remote_shard_id(shard_id)
     scope = tl._unwrap_if_constexpr(scope)
     if scope is not None and not isinstance(scope, device_mesh):
-        raise TypeError(f"node space scope must be device_mesh or None, got {type(scope).__name__}")
+        raise TypeError(f"{space} space scope must be device_mesh or None, got {type(scope).__name__}")
 
     if isinstance(shard_id, (int, tuple, list)):
         is_coordinate = isinstance(shard_id, (tuple, list))
         peer = _normalize_compile_time_remote_shard_id(shard_id, scope)
-        if is_coordinate:
+        if space == "node" and is_coordinate:
             # Coordinates are relative to the selected mesh. Resolve through
             # physical_ids so coordinates on a sliced submesh still produce
             # the corresponding world rank rather than a submesh-local rank.
@@ -1628,56 +1628,59 @@ def _normalize_node_peer(shard_id, scope, _semantic) -> tl.tensor:
     return _normalize_runtime_remote_shard_id_tensor(shard_id)
 
 
-def _normalize_node_context_id(context_id) -> int:
+def _normalize_transfer_context_id(context_id) -> int:
     context_id = tl._unwrap_if_constexpr(context_id)
     if isinstance(context_id, bool):
-        raise TypeError("node space context_id must be an integer, not bool")
+        raise TypeError("remote transfer context_id must be an integer, not bool")
     if not isinstance(context_id, int):
-        raise TypeError(f"node space context_id must be a compile-time int, got {type(context_id).__name__}")
+        raise TypeError(f"remote transfer context_id must be a compile-time int, got {type(context_id).__name__}")
     if context_id < 0 or context_id > 0x7FFFFFFF:
-        raise ValueError(f"node space context_id must be in int32 range, got {context_id}")
+        raise ValueError(f"remote transfer context_id must be in int32 range, got {context_id}")
     return context_id
 
 
-def _parse_node_context(builder, value, label: str, index: int):
+def _create_transfer_remote_pointer(ctx, shard_id, scope, space, dtype, coopkind, context_id, order,
+                                    _semantic) -> tl.tensor:
     from triton.runtime import DistributedRtContext
-    value = tl._unwrap_if_constexpr(value)
-    if not isinstance(value, DistributedRtContext):
-        raise TypeError(f"node space {label} must be DistributedRtContext, got {type(value).__name__}")
-    return _parse_src_arg(builder, value, index)
-
-
-def _create_node_remote_pointer(ctx, shard_id, scope, dtype, coopkind, context_id, _semantic) -> tl.tensor:
     if dtype is None:
-        raise TypeError('tle.remote(..., space="node") requires dtype')
+        raise TypeError(f'tle.remote(..., space="{space}") in transfer mode requires dtype')
+
+    ctx = tl._unwrap_if_constexpr(ctx)
+    if not isinstance(ctx, DistributedRtContext):
+        raise TypeError(f"{space} space ctx must be DistributedRtContext, got {type(ctx).__name__}")
 
     builder = _semantic.builder
     if not hasattr(builder, "create_remote_pointers"):
-        raise RuntimeError("node remote pointer requires TLE remote_pointers support in the active Triton build")
+        raise RuntimeError("remote transfer requires TLE remote_pointers support in the active Triton build")
 
-    peer = _normalize_node_peer(shard_id, scope, _semantic)
+    peer = _normalize_transfer_peer(shard_id, scope, space, _semantic)
     dtype = tl._unwrap_if_constexpr(dtype)
-    _normalize_node_elem_bytes(dtype)
-    context_id = _normalize_node_context_id(context_id)
+    _normalize_transfer_elem_bytes(dtype)
+    context_id = _normalize_transfer_context_id(context_id)
+    order = _require_memory_order(order) if order is not None else None
     coop_kind = tl._unwrap_if_constexpr(coopkind)
+    if coop_kind is None:
+        coop_kind = GroupKind.BLOCK
     coop_kind = coop_kind.value if isinstance(coop_kind, GroupKind) else str(coop_kind).lower()
     coop_kind = attr.FlagCXCoopKind.from_str(coop_kind)
     if coop_kind is None:
         expected = "thread, warp, or block"
         raise ValueError(f"coopkind must be {expected}, got {coop_kind!r}")
 
-    src_mem = _parse_node_context(builder, ctx, "ctx", 0)
-    comm = _parse_node_context(builder, ctx, "ctx", 1)
+    src_mem = _parse_src_arg(builder, ctx, 0)
+    comm = _parse_src_arg(builder, ctx, 1)
     remote_ptr_dtype = tl.pointer_type(dtype, 1)
     remote_op = builder.create_remote_pointers(
         remote_ptr_dtype.to_ir(builder),
         src_mem,
         peer.handle,
-        "node",
+        space,
         None,
         comm,
         context_id,
         coop_kind,
+        transfer=space == "device",
+        order=order,
     )
     return tl.tensor(remote_op.get_result(0), remote_ptr_dtype)
 
@@ -1692,6 +1695,8 @@ def remote(
     offset: int | tl.tensor | None = None,
     coopkind: GroupKind | str | None = None,
     context_id: int = 0,
+    mode: str | None = None,
+    order: MemoryOrder | attr.MemoryOrder | str | None = None,
     _semantic: TLESemantic | None = None,
 ):
     """
@@ -1702,15 +1707,16 @@ def remote(
       should then use `tle.gpu.local_ptr(...)` to materialize remote pointers.
     - tl.tensor shared-memory pointer (scalar or tensor): returns remote
       pointer directly.
-    - DistributedRtContext with `space="node"`: returns a global pointer
-      marker consumed by a direct `tl.load`/`tl.store` copy pattern.
+    - DistributedRtContext in transfer mode: returns a global pointer marker
+      consumed by a direct `tl.load`/`tl.store` copy pattern.
 
     `shard_id` is the target block id inside the current thread block cluster.
     For cluster/device pointer paths, when `scope` is provided, launch cluster
     dimensions are inferred from that mesh and this mode requires `num_ctas=1`
     (one program maps to one block).
 
-    For `space="node"`, `tensor` must be the registered-memory
+    Transfer mode is selected by `space="node"` or by `mode="transfer"` with
+    `space="device"`. In this mode, `tensor` must be the registered-memory
     `DistributedRtContext` created by `create_dist_tensor`. A load from the
     local buffer followed by a store through the returned pointer performs a
     put; the reverse performs a get. The local buffer root must be the entry
@@ -1728,36 +1734,54 @@ def remote(
 
     `dtype` is required. `coopkind` defaults to `GroupKind.BLOCK`, and
     `context_id` defaults to zero and must be a compile-time integer in
-    `[0, INT32_MAX]`, selecting an existing network context. `shard_id` may be a world rank
-    or, with `scope=device_mesh`, a compile-time mesh coordinate.
+    `[0, INT32_MAX]`, selecting an existing context if FlagCX uses the network
+    path. `shard_id` is a world rank for node space and a node-local rank for
+    device space. A compile-time mesh coordinate requires `scope=device_mesh`.
 
-    For `space="device"`, `offset` is the remote-memory element offset and
-    may be a Python `int` or scalar integer `tl.tensor`.
+    In transfer mode, `order` sets the FlagCX put/get memory order. It accepts
+    a compile-time `MemoryOrder` or a string (`"relaxed"`, `"acquire"`,
+    `"release"`, `"acq_rel"` or `"acqrel"`). The default is `"relaxed"`.
+    On the FlagCX peer-to-peer path, `"release"` and `"acq_rel"` fence before
+    a put, and `"acquire"` and `"acq_rel"` fence after a get. The network path
+    uses FlagCX's transport ordering.
+
+    Use pointer arithmetic for offsets in transfer mode. For `space="device"`
+    with the default mode, `offset` is the remote-memory element offset and may
+    be a Python `int` or scalar integer `tl.tensor`.
     """
     space = tl._unwrap_if_constexpr(space)
     if not isinstance(space, str):
         raise TypeError(f"space must be str, got {type(space).__name__}")
     if space not in ("cluster", "chiplet", "device", "node"):
         raise ValueError(f"space must be 'cluster', 'chiplet', 'device', or 'node', got {space!r}")
+    mode = tl._unwrap_if_constexpr(mode)
+    if mode is not None:
+        if not isinstance(mode, str) or mode != "transfer":
+            raise ValueError('mode must be None or "transfer"')
+        if space not in ("device", "node"):
+            raise ValueError(f'{space} space does not support mode="transfer"')
     shard_id = _unwrap_remote_shard_id(shard_id)
     scope = tl._unwrap_if_constexpr(scope)
-    if space == "node":
+    offset = tl._unwrap_if_constexpr(offset)
+    order = tl._unwrap_if_constexpr(order)
+    if space == "node" or mode == "transfer":
         if offset is not None:
-            raise TypeError('tle.remote(..., space="node") does not accept offset; '
+            raise TypeError(f'tle.remote(..., space="{space}") in transfer mode does not accept offset; '
                             'add element offsets to the returned pointer')
-        # Keep None as an internal sentinel so cluster/device can still reject
-        # an explicitly supplied node-only coopkind. Node behavior defaults to
-        # BLOCK as documented.
-        if coopkind is None:
-            coopkind = GroupKind.BLOCK
-        return _create_node_remote_pointer(tensor, shard_id, scope, dtype, coopkind, context_id, _semantic)
-    node_only_args = ["coopkind"] if coopkind is not None else []
+        remote_ptr = _create_transfer_remote_pointer(tensor, shard_id, scope, space, dtype, coopkind, context_id, order,
+                                                     _semantic)
+        if space == "device" and scope is not None:
+            _apply_mesh_cluster_launch(scope, _semantic)
+        return remote_ptr
+    transfer_only_args = ["coopkind"] if coopkind is not None else []
     unwrapped_context_id = tl._unwrap_if_constexpr(context_id)
     if not isinstance(unwrapped_context_id, int) or unwrapped_context_id != 0:
-        node_only_args.append("context_id")
-    if node_only_args:
-        raise TypeError(f'{space} space does not accept node-only argument(s): '
-                        f'{", ".join(node_only_args)}')
+        transfer_only_args.append("context_id")
+    if order is not None:
+        transfer_only_args.append("order")
+    if transfer_only_args:
+        raise TypeError(f'{space} space does not accept transfer-only argument(s): '
+                        f'{", ".join(transfer_only_args)}')
     if scope is not None and not isinstance(scope, device_mesh):
         raise TypeError(f"scope must be device_mesh or None, got {type(scope).__name__}")
     if scope is not None and space != "chiplet":

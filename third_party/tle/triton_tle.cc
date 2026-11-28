@@ -1088,7 +1088,8 @@ void init_triton_tle_ir(py::module &&m) {
              Value shardId, const std::string &space,
              std::optional<Value> offset, std::optional<Value> comm,
              std::optional<int32_t> contextId,
-             std::optional<tle::FlagCXCoopKind> coopKind) -> OpState {
+             std::optional<tle::FlagCXCoopKind> coopKind, bool transfer,
+             std::optional<tle::MemoryOrder> order) -> OpState {
             auto &builder = self.getBuilder();
             static const std::unordered_set<std::string> valid = {
                 "cluster", "chiplet", "device", "node"};
@@ -1105,15 +1106,20 @@ void init_triton_tle_ir(py::module &&m) {
             tle::FlagCXCoopKindAttr coopKindAttr =
                 coopKind ? builder.getAttr<tle::FlagCXCoopKindAttr>(*coopKind)
                          : tle::FlagCXCoopKindAttr();
+            tle::MemoryOrderAttr orderAttr =
+                order ? builder.getAttr<tle::MemoryOrderAttr>(*order)
+                      : tle::MemoryOrderAttr();
             return self.create<tle::RemotePointersOp>(
                 resultTy, src.value_or(Value()), comm.value_or(Value()),
                 shardId, spaceAttr, offset.value_or(Value()), contextIdAttr,
-                coopKindAttr);
+                coopKindAttr, transfer ? builder.getUnitAttr() : UnitAttr(),
+                orderAttr);
           },
           py::arg("resultTy"), py::arg("src") = py::none(), py::arg("shardId"),
           py::arg("space"), py::arg("offset") = py::none(),
           py::arg("comm") = py::none(), py::arg("context_id") = py::none(),
-          py::arg("coop_kind") = py::none())
+          py::arg("coop_kind") = py::none(), py::arg("transfer") = false,
+          py::arg("order") = py::none())
       .def("get_device_id",
            [](TritonOpBuilder &self, Type resultTy,
               std::optional<Value> src) -> Value {

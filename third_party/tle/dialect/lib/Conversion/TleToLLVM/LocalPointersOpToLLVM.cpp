@@ -486,9 +486,9 @@ struct RemotePointersOpConversion
     };
 
     auto space = adaptor.getSpace();
-    if (space == "node")
+    if (op.isTransferMarker())
       return reportFailure(
-          "unfused node remote pointer reached LLVM conversion");
+          "unfused remote transfer marker reached LLVM conversion");
 
     SmallVector<Value> srcElems;
     if (auto src = adaptor.getSrc())

@@ -4,9 +4,9 @@ set(TLE_TO_LLVM_SRC
     ExclusiveCumsumOpToLLVM.cpp
     ExtractOpToLLVM.cpp
     LocalPointersOpToLLVM.cpp
-    NodeTransferOpToLLVM.cpp
     PackOpToLLVM.cpp
     RemotePointerUtils.cpp
+    RemoteTransferOpToLLVM.cpp
     SignalOpToLLVM.cpp
     TMAStoreCommitGroupOpToLLVM.cpp
     ViewOpToLLVM.cpp
