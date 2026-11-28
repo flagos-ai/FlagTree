@@ -31,6 +31,7 @@ TLE_PRIMITIVES = frozenset({
     "device_mesh",
     "sharding",
     "shard_id",
+    "n_pes",
     "distributed_barrier",
     "remote",
     "signal",

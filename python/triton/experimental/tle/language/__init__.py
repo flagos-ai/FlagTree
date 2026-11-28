@@ -65,7 +65,7 @@ from .distributed import (
     sharding,
 )
 from . import communication
-from .communication import get_mem_pool, init_communicator, cleanup_communicator
+from .communication import get_mem_pool, init_communicator, cleanup_communicator, device_type
 from triton._flagtree_backend import FLAGTREE_BACKEND
 
 if FLAGTREE_BACKEND == "ascend":
@@ -171,6 +171,7 @@ __all__ = [
     "init_communicator",
     "create_dist_tensor",
     "cleanup_communicator",
+    "device_type",
     "BarrierKind",
     "MemoryOrder",
     "MemoryScope",

@@ -32,8 +32,8 @@ if TYPE_CHECKING:
     IterableType = Union[list[Any], tuple[Any, ...], core.tuple, core.tuple_type]
     ObjPath = tuple[int, ...]
 
-# Construction limit: NVIDIA node transfers may use large tensors that are
-# eliminated by fusion. That pipeline separately limits surviving tensors to 2^20.
+# Construction limit: NVIDIA and HCU node transfers may use large tensors that
+# are eliminated by fusion. Those pipelines limit surviving tensors to 2^20.
 TRITON_MAX_TENSOR_NUMEL = 33554432
 
 

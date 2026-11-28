@@ -41,7 +41,7 @@ from .utils import DIST_DEV_MODE
 downloader = utils.tools.DownloadManager()
 configs = configs
 flagtree_backend = configs.flagtree_backend
-FLAGCX_SUPPORT_BACKENDS = {"nvidia", "iluvatar"}
+FLAGCX_SUPPORT_BACKENDS = {"nvidia", "iluvatar", "hcu"}
 
 
 def get_console_colors() -> Tuple[str, str]:
@@ -930,8 +930,15 @@ if relocate_flagcx:
     relocate_flagcx()
 
 flagcx_wheel = PathFinder.find_spec("flagcx", sys.path)
-is_download_flagcx = DIST_DEV_MODE and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS
+is_download_flagcx = (DIST_DEV_MODE and not flagcx_wheel and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS)
 download_flagtree_third_party("flagcx", condition=is_download_flagcx, hook="handle_flagcx", required=True)
+
+if (flagcx_wheel and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS
+        and enable_flagtree_third_party("flagcx")):
+    # Preinstalled packages supply the libraries directly, but clean checkouts
+    # still need the generated Python wrappers and consumer headers installed.
+    utils.default.FlagCXRegistrar({"configs": configs, "backend": utils.flagtree_submodules["flagcx"], "cache":
+                                   cache}).run()
 
 download_flagtree_third_party("cuda-tile", condition=(flagtree_backend == "tileir"), required=True)
 

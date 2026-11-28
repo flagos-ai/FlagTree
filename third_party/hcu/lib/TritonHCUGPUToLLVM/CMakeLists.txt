@@ -5,6 +5,9 @@ if(FLAGTREE_TLE)
         TleToLLVM # flagtree tle raw
         TritonTLETransforms
     )
+    if(FLAGCX_ENABLED)
+        list(APPEND _TLE_LIBS FlagCxToLLVM)
+    endif()
 else()
     set(_TLE_LIBS "")
 endif()

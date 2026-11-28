@@ -544,6 +544,19 @@ tl.store(scatter_ptrs, values, mask=scatter_row_mask & col_mask)
 
 The node path targets cross-node point-to-point transfers, using FlagCX registered memory (symmetric window) for the data plane.
 
+**HCU backend: communication interface selection and environment connectivity.** When using FlagCX/RDMA on the HCU backend, ensure that the SHCA interfaces selected by each rank provide the network connectivity required by the workload. In deployments with isolated network planes, selecting communication interfaces solely by proximity to each GPU may select SHCAs that cannot reach each other, causing communication failures.
+
+For example, in a local test environment with network isolation configured, `{shca_0, shca_3}` and `{shca_1, shca_2}` each have connectivity within the group, but not between groups. This behavior is specific to the deployment and is not a universal limitation of the HCU backend; other user environments may not exhibit this issue. In the table below, rows are senders and columns are receivers (`PASS`: reachable; `FAIL`: unreachable).
+
+| Sender / Receiver | `shca_0` | `shca_1` | `shca_2` | `shca_3` |
+| --- | --- | --- | --- | --- |
+| `shca_0` | PASS | FAIL | FAIL | PASS |
+| `shca_1` | FAIL | PASS | PASS | FAIL |
+| `shca_2` | FAIL | PASS | PASS | FAIL |
+| `shca_3` | PASS | FAIL | FAIL | PASS |
+
+If a similar issue occurs, verify connectivity between the interfaces actually selected, then adjust interface selection or check the network configuration. Interface numbering and grouping must be determined from the actual environment.
+
 `context_id` has the same user-level meaning as
 `tle.distributed_barrier(..., context_id=...)`: it selects a pre-created
 FlagCX network context. It is neither a peer rank nor a transfer/barrier
