@@ -15,19 +15,26 @@ def assign_npu():
     yield
 
 
-def test_permute_constexpr_order():
+@pytest.mark.parametrize("form", ["permute_tuple", "permute_axes", "trans_tuple"])
+def test_permute_constexpr_order(form):
 
     @triton.jit
-    def permute_order(out, ORDER: tl.constexpr):
+    def permute_order(out, ORDER: tl.constexpr, D0: tl.constexpr, D1: tl.constexpr, FORM: tl.constexpr):
         offsets = tl.arange(0, 8)
         tile = tl.reshape(offsets, (2, 4))
-        permuted = tl.permute(tile, ORDER)
+        if FORM == "permute_axes":
+            permuted = tl.permute(tile, D0, D1)
+        elif FORM == "trans_tuple":
+            permuted = tl.trans(tile, ORDER)
+        else:
+            permuted = tl.permute(tile, ORDER)
         tl.store(out + offsets, tl.reshape(permuted, (8, )))
 
     target = GPUTarget("npu", "Ascend910B4", 0)
     backend = make_backend(target)
     options = backend.parse_options({})
-    source = ASTSource(permute_order, {"out": "*i32", "ORDER": "constexpr"}, {"ORDER": (1, 0)})
+    signature = {"out": "*i32", "ORDER": "constexpr", "D0": "constexpr", "D1": "constexpr", "FORM": "constexpr"}
+    source = ASTSource(permute_order, signature, {"ORDER": (1, 0), "D0": 1, "D1": 0, "FORM": form})
     context = ir.context()
     ir.load_dialects(context)
     buffer_ir.load_dialects(context)
@@ -38,4 +45,5 @@ def test_permute_constexpr_order():
                             context)
     ttir = str(module)
     assert "tt.trans" in ttir
+    assert "order = array<i32: 1, 0>" in ttir
     assert "tensor<4x2xi32>" in ttir
