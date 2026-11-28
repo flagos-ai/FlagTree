@@ -11,6 +11,7 @@ from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.ops.nn._norm import normalize_axis
 from triton.flagmega.ir.ops.ntt.add_norm_stats import AddNormStats
 from triton.flagmega.ir.ops.ntt._matmul_promotion import is_projection_promotion
+from triton.flagmega.ir.ops.tensors.pack import Pack
 from triton.flagmega.passes.tir.projection_residual_norm import (
     find_projection_residual_norm_matches, )
 
@@ -28,6 +29,7 @@ class _Plan:
     add: Node
     producer: Node
     addend: Node
+    operand_packs: tuple[Node, ...]
     stats: tuple[Node, ...]
     axis: int
     use_mean: bool
@@ -61,11 +63,23 @@ def form_add_norm_stats(module: IRModule) -> IRModule:
     stats_to_plan: dict[str, _Plan] = {}
     for add_id, stats_nodes in stats_by_add.items():
         add = node_map[add_id]
-        producers = tuple(node_map[input_id]
-                          for input_id in add.inputs
-                          if _projection_source(node_map[input_id], node_map).op in _PARTIAL_CAPABLE_PRODUCERS)
-        producer = producers[0] if len(producers) == 1 else node_map[add.inputs[0]]
-        addend = node_map[add.inputs[0] if add.inputs[1] == producer.id else add.inputs[1]]
+        if add.attrs.get("result_unpack") is not None:
+            continue
+        operands = tuple(node_map[value] for value in add.inputs)
+        packing = (add.attrs.get("lhs_pack"), add.attrs.get("rhs_pack"))
+        if any(attrs is not None and "padding" in attrs for attrs in packing):
+            continue
+        # VectorizedBinary may absorb a Pack into an operand's load
+        # coordinates. AddNormStats takes explicitly packed operands instead.
+        packed_operands = tuple(
+            Node(_fresh_id(f"{add.id}.operand_pack{index}", occupied), Pack.op_name, (
+                operand.id, ), Pack.infer_type((operand, ), attrs), PURE, attrs) if attrs is not None else operand
+            for index, (operand, attrs) in enumerate(zip(operands, packing, strict=True)))
+        producers = tuple(
+            packed for operand, packed in zip(operands, packed_operands, strict=True)
+            if _projection_source(operand, node_map).op in _PARTIAL_CAPABLE_PRODUCERS and packed is operand)
+        producer = producers[0] if len(producers) == 1 else packed_operands[0]
+        addend = packed_operands[0] if packed_operands[1] is producer else packed_operands[1]
         if producer.type != add.type or addend.type != add.type:
             continue
         contracts = set()
@@ -85,12 +99,16 @@ def form_add_norm_stats(module: IRModule) -> IRModule:
         if not valid or len(contracts) != 1:
             continue
         axis, use_mean = next(iter(contracts))
+        operand_packs = tuple(packed for operand, packed in zip(operands, packed_operands, strict=True)
+                              if packed is not operand)
+        occupied.update(value.id for value in operand_packs)
         combine_id = _fresh_id(f"{add.id}.norm_stats_combine", occupied)
         occupied.add(combine_id)
         plan = _Plan(
             add,
             producer,
             addend,
+            operand_packs,
             tuple(stats_nodes),
             axis,
             use_mean,
@@ -106,6 +124,7 @@ def form_add_norm_stats(module: IRModule) -> IRModule:
     for node in module.nodes:
         plan = plans.get(node.id)
         if plan is not None:
+            nodes.extend(plan.operand_packs)
             attrs = {"axis": plan.axis, "use_mean": plan.use_mean}
             combine_type = AddNormStats.infer_type((plan.producer, plan.addend), attrs)
             combine_metadata = {

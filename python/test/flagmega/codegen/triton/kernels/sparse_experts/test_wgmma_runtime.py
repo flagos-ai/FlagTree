@@ -107,7 +107,7 @@ def test_wgmma_expert_projection_matches_cuda(tmp_path, family, rounded, packed)
     target = NvidiaSm90Target(triton_implementation_model=replace(
         base, preferences={
             **base.preferences,
-            family: (identity, *base.preferences.get(family, ())),
+            family: (identity, *(value for value in base.preferences.get(family, ()) if value != identity)),
         }))
     compiler = Compiler()
     compiler.target = target

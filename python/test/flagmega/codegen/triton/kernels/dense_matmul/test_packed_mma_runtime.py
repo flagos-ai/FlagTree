@@ -75,8 +75,8 @@ def test_packed_bf16_mma_matches_cuda_projection(tmp_path, m, k, n, large):
     base = NvidiaSm90Target().triton_implementation_model
     identity = "tir.dense_matmul.packed_k_major_mma"
     assert identity in {i.id for i in base.implementations}
-    model = replace(base,
-                    preferences={**base.preferences, "dense_matmul": (identity, *base.preferences["dense_matmul"])})
+    defaults = tuple(value for value in base.preferences["dense_matmul"] if value != identity)
+    model = replace(base, preferences={**base.preferences, "dense_matmul": (identity, *defaults)})
     compiler = Compiler()
     compiler.target = CanonicalTarget(triton_implementation_model=model)
     result = compiler.compile(Graph(dialect="high_level", stage="imported", entry="main").build()).module

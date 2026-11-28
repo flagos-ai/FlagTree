@@ -124,6 +124,7 @@ def compile_projection(graph, placement=None, cooperative=True, warps=8):
 
 def test_projection_workspace_and_effect_contract(tmp_path):
     module = compile_projection(projection_graph())
+    assert module.metadata["codegen_package_plan"]["launch"]["grid"] == (1, 1, 1)
     (dispatch, ) = (d.dispatch for d in module.kernel_definitions if d.dispatch.microkernel.family == "block_fp8")
     assert dispatch.microkernel.implementation == IDENTITY
     assert dispatch.microkernel.facts["source_memory_scope"] == "chip"

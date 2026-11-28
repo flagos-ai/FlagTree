@@ -46,6 +46,7 @@ class CompileOptions:
     # None preserves existing backend-independent compile/checkpoint APIs.
     # Executable CLI paths bind their actual backend before TIR proposals.
     codegen_backend: str | None = None
+    require_adapter_free: bool = False
 
     def __post_init__(self) -> None:
         if self.codegen_backend not in (None, "triton"):

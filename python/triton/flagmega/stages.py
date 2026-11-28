@@ -73,11 +73,12 @@ class Stage:
     output_dialect: str | None = None
     selection_point: bool = False
     compatible_input_stages: frozenset[str] = frozenset()
+    adapter_checkpoint: str | None = None
 
     def accepts(self, module_stage: str) -> bool:
         return module_stage == self.input_stage or module_stage in self.compatible_input_stages
 
-    def run(self, module: IRModule, target: Target) -> IRModule:
+    def run(self, module: IRModule, target: Target, *, require_adapter_free: bool = False) -> IRModule:
         verify_module(module)
         if not self.accepts(module.stage):
             accepted = sorted({self.input_stage, *self.compatible_input_stages})
@@ -96,6 +97,8 @@ class Stage:
         )
         verify_module(result, expected_stage=self.output_stage)
         target.verify(result)
+        if require_adapter_free and self.adapter_checkpoint is not None:
+            check_g3_adapters(result, checkpoint=self.adapter_checkpoint)
         return result
 
 
@@ -349,27 +352,21 @@ register_stage(
     ))
 
 
-def _packing_g3_checkpoint(module, _target):
-    result = remove_unused_functions(module)
-    check_g3_adapters(result, checkpoint="02_AutoPackingPass/After")
-    return result
-
-
-def _distribution_g3_checkpoint(module, target):
+def _fuse_distributed_tensor_boundaries(module, target):
     from triton.flagmega.passes.rewriter import DataflowPass
     result = fuse_attention_gate(module)
-    result = DataflowPass("AbsorbSupportedNumericBoundariesAfterDistribution", target.pre_post_ops_rules(),
-                          rewrite_constants=False).run(result)
-    check_g3_adapters(result, checkpoint="03_AutoDistributedPass/After")
-    return result
+    return DataflowPass("AbsorbSupportedNumericBoundariesAfterDistribution", target.pre_post_ops_rules(),
+                        rewrite_constants=False).run(result)
 
 
-register_stage(Stage(
-    "remove-unused-functions",
-    "stats_combined",
-    "unused_functions_removed",
-    _packing_g3_checkpoint,
-))
+register_stage(
+    Stage(
+        "remove-unused-functions",
+        "stats_combined",
+        "unused_functions_removed",
+        lambda module, _target: remove_unused_functions(module),
+        adapter_checkpoint="02_AutoPackingPass/After",
+    ))
 register_stage(
     Stage(
         "pre-distribution-freeze",
@@ -474,7 +471,8 @@ register_stage(
         "fuse-attention-gate",
         "vector_contracts_lowered",
         "attention_gate_fused",
-        _distribution_g3_checkpoint,
+        _fuse_distributed_tensor_boundaries,
+        adapter_checkpoint="03_AutoDistributedPass/After",
     ))
 register_stage(
     Stage(

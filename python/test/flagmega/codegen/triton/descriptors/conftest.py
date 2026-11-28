@@ -229,15 +229,16 @@ def _packed_glu_descriptor_pipeline_module(
 
 
 def _packed_norm_stats_pipeline_module(
-        implementation: str,
-        *,
-        reduction_extent: int = 2048,
-        output_extent: int = 2048,
-        compiler: Compiler | None = None,
-        output_policy: fm.SBPSplit | None = None,
-        wide: bool = False,
-        addend_cast_dtypes: tuple[str, ...] = (),
-        projection_output_data_type: str = "bfloat16",
+    implementation: str,
+    *,
+    reduction_extent: int = 2048,
+    output_extent: int = 2048,
+    compiler: Compiler | None = None,
+    output_policy: fm.SBPSplit | None = None,
+    wide: bool = False,
+    addend_cast_dtypes: tuple[str, ...] = (),
+    projection_output_data_type: str = "bfloat16",
+    owned_lhs: bool = False,
 ) -> fm.IRModule:
 
     class DenseResidualNorm(fm.Module):
@@ -277,8 +278,11 @@ def _packed_norm_stats_pipeline_module(
                 key="bias",
                 id="bias",
             )
+            # The unmasked async copy needs an aligned, artifact-owned
+            # source. A real producer materializes it in the workspace.
+            lhs = fm.F.math.mul(value, value, name="owned_lhs") if owned_lhs else value
             projection = fm.F.math.matmul(
-                value,
+                lhs,
                 weight,
                 transpose_b=True,
                 name="projection",
@@ -306,6 +310,10 @@ def _packed_norm_stats_pipeline_module(
 
     compiler = compiler or Compiler()
     source = DenseResidualNorm().build()
+    if owned_lhs and output_policy is None:
+        # These staging cases copy the full K row. Shard the fixture's 256
+        # output vector groups over the default 8 x 16 block mesh.
+        output_policy = fm.SBP.split_contiguous((0, 1), granularity=2)
     if output_policy is not None:
         from triton.flagmega.passes.auto_distributed.auto_distributed import AutoDistributedPass
 

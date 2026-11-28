@@ -194,6 +194,8 @@ def _compiler_options(parser: argparse.ArgumentParser) -> None:
         help="Compatibility alias that adds the compile dump flag",
     )
     parser.add_argument("--require-review", action="store_true")
+    parser.add_argument("--require-adapter-free", action="store_true",
+                        help="Require zero runtime representation adapters after packing and distribution")
     _json_option(parser)
 
 
@@ -207,6 +209,7 @@ def _options(args: argparse.Namespace) -> CompileOptions:
         bufferize_opt_level=args.bufferize_opt_level,
         placement=args.placement,
         codegen_backend=getattr(args, "codegen_backend", None),
+        require_adapter_free=args.require_adapter_free,
     )
 
 

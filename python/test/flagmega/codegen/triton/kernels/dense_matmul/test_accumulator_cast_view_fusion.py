@@ -147,7 +147,6 @@ def test_device_rounding_across_view_matches_unfused_kernel(case, tmp_path):
     from triton.flagmega.runtime.module import GeneratedTirCallGraphModule as Run
     from triton.flagmega.selection import apply_plan, override_plan
     from triton.flagmega.targets import NvidiaSm90Target
-    from triton.flagmega.targets.nvidia.dense_matmul import packed_mma_accumulator_implementations
 
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip('requires SM90')
@@ -164,7 +163,6 @@ def test_device_rounding_across_view_matches_unfused_kernel(case, tmp_path):
                               policy='test.cast_view', rationale='Same ordered FP32 accumulator and BF16 rounding.'))
 
     base = NvidiaSm90Target().triton_implementation_model
-    catalog = replace(base, implementations=(*base.implementations, *packed_mma_accumulator_implementations()))
     runtimes = []
     outputs = []
     arguments = []
@@ -182,7 +180,7 @@ def test_device_rounding_across_view_matches_unfused_kernel(case, tmp_path):
     try:
         for fused in (False, True):
             compiler = Compiler(CompileOptions(placement=mesh))
-            target = Target(triton_implementation_model=catalog).with_placement(mesh)
+            target = Target(triton_implementation_model=base).with_placement(mesh)
             target.fused = fused
             compiler.target = target
             module = compiler.compile(source).module

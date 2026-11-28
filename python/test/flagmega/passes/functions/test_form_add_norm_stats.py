@@ -92,8 +92,10 @@ def test_forms_combine_over_explicit_promotion_without_removing_projection_round
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("vectorized", [False, True])
-def test_forms_generic_add_stats_before_distribution_without_a_matmul(vectorized):
+@pytest.mark.parametrize("representation", ["scalar", "vector", "fused_pack"])
+def test_forms_generic_add_stats_before_distribution_without_a_matmul(representation):
+    vectorized = representation != "scalar"
+    fused_pack = representation == "fused_pack"
 
     class Graph(fm.Module):
 
@@ -101,8 +103,10 @@ def test_forms_generic_add_stats_before_distribution_without_a_matmul(vectorized
             dtype = fm.vector_type("bfloat16", (8, )) if vectorized else "bfloat16"
             value_type = fm.tensor_type(dtype, (1, 4))
             first = self.input("first", value_type, id="first")
-            second = self.input("second", value_type, id="second")
-            value = (fm.F.math.vectorized_binary(first, second, binary_op="add", name="value")
+            second_type = fm.tensor_type("bfloat16", (1, 32)) if fused_pack else value_type
+            second = self.input("second", second_type, id="second")
+            packing = {"rhs_pack": {"axes": (1, ), "lanes": (8, )}} if fused_pack else {}
+            value = (fm.F.math.vectorized_binary(first, second, binary_op="add", name="value", **packing)
                      if vectorized else fm.F.math.add(first, second, name="value"))
             stats = fm.F.nn.norm_stats(value, axis=1, use_mean=False, name="stats")
             self.function("main", (first, second), (value, stats))
@@ -111,11 +115,13 @@ def test_forms_generic_add_stats_before_distribution_without_a_matmul(vectorized
     result = form_add_norm_stats(source)
     combines = [node for node in result.nodes if node.op == "ntt.add_norm_stats"]
     assert len(combines) == 1
-    assert combines[0].inputs == ("first", "second")
+    assert combines[0].inputs == ("first", "value.operand_pack1" if fused_pack else "second")
     assert "matmul_producer" not in combines[0].metadata
     assert result.node_map["value"].op == result.node_map["stats"].op == "builtin.get_item"
     shape = (1, 4, 8) if vectorized else (1, 4)
     inputs = {name: torch.randn(shape).bfloat16() for name in ("first", "second")}
+    if fused_pack:
+        inputs["second"] = inputs["second"].reshape(1, 32)
     evaluator = TorchEvaluator(DictWeightResolver({}))
     for actual, expected in zip(evaluator.run(result, inputs), evaluator.run(source, inputs), strict=True):
         torch.testing.assert_close(actual, expected, rtol=0, atol=0)

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -41,6 +42,17 @@ def make_fp8_module():
     )
     builder.function("main", [source], [result])
     return builder.build(entry="main")
+
+
+def test_compilers_own_their_target_configuration():
+    first = Compiler()
+    second = Compiler()
+    second_model = second.target.triton_implementation_model
+
+    first.target.triton_implementation_model = replace(second_model, name="custom-model")
+
+    assert second.target.triton_implementation_model is second_model
+    assert Compiler().target.triton_implementation_model is second_model
 
 
 def test_compiler_completes_without_agent_and_records_defaults(tmp_path):

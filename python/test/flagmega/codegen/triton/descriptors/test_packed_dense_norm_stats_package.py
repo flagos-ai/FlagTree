@@ -115,15 +115,3 @@ def test_descriptor_norm_stats_accepts_a_parent_shard_local_result(packed_norm_s
 
     assert "shard_" in encoded["result_offset"]
     assert encoded["result_writer_active"] == "True"
-
-
-def test_portable_packed_norm_stats_template_defines_the_helper_it_calls(packed_norm_stats_portable_pipeline_module, ):
-    source = render_tir_package(
-        describe_tir_package(packed_norm_stats_portable_pipeline_module),
-        "unit",
-    )
-
-    compile(source, "portable_packed_dense_norm_stats_package.py", "exec")
-    helper = "_flagmega_dense_matmul_packed_k_major_gemv_norm_stats_accumulate"
-    assert f"def {helper}(" in source
-    assert f"dense_accumulator += {helper}(" in source

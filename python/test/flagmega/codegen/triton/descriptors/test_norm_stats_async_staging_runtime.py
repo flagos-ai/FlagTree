@@ -35,7 +35,7 @@ def test_async_lhs_is_bitwise_equal_to_sync_across_changed_inputs(tmp_path, k):
              for name, value in weights.items()}, weights)
     runtimes = []
     for suffix in ("", "_async"):
-        module = _packed_norm_stats_pipeline_module(BASE + suffix, reduction_extent=k)
+        module = _packed_norm_stats_pipeline_module(BASE + suffix, reduction_extent=k, owned_lhs=True)
         artifact = write_artifact(module, tmp_path / (suffix or "sync"), target="nvidia-sm90", checkpoint=checkpoint,
                                   emit_executable=True)
         runtimes.append(load(artifact, device="cuda:0"))
@@ -55,10 +55,11 @@ def test_async_lhs_is_bitwise_equal_to_sync_across_changed_inputs(tmp_path, k):
         torch.cuda.synchronize()
         torch.testing.assert_close(outputs[1], outputs[0], rtol=0, atol=0)
         assert torch.count_nonzero(outputs[1][:, :16]) == 0
-        expected_value = value @ weight.cuda().T + residual
+        expected_value = value.square() @ weight.cuda().T + residual
         expected = (expected_value.float() *
                     torch.rsqrt(expected_value.float().square().mean(-1, keepdim=True) + 1e-6)).bfloat16()
         torch.testing.assert_close(outputs[1], expected, rtol=.04, atol=.04)
-    assert all(runtime.resource_report["spill_bytes"] == 0 for runtime in runtimes)
-    ptx = runtimes[1]._prepared.compiled_kernel.asm["ptx"]
-    assert re.search(r"cp\.async\.(?:ca|cg)\.shared\.global", ptx)
+    assert all(program.resource_report["spill_bytes"] == 0 for runtime in runtimes for program in runtime._prepared)
+    assert any(
+        re.search(r"cp\.async\.(?:ca|cg)\.shared\.global", program.compiled_kernel.asm["ptx"])
+        for program in runtimes[1]._prepared)

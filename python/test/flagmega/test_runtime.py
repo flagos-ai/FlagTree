@@ -97,7 +97,7 @@ def test_prepared_kernel_owns_and_scopes_compiler_global_scratch(monkeypatch):
     monkeypatch.setattr(
         prepared_runtime,
         "_prepare_global_scratch",
-        lambda compiled, arguments, grid: scratch,
+        lambda compiled, arguments, grid, *, allocation_device=None: scratch,
     )
     compiled = ScratchCompiled()
     prepared = PreparedKernel(

@@ -15,7 +15,7 @@ from triton.flagmega.codegen.triton.microkernels.materialization import (
 )
 from triton.flagmega.codegen.triton.vectorization import require_vector_schedule
 from triton.flagmega.errors import IRVerificationError
-from triton.flagmega.ir import IRModule, Node, TIRMicroKernelSelection, kernel_dispatch_of
+from triton.flagmega.ir import IRModule, Node, Placement, TIRMicroKernelSelection, kernel_dispatch_of
 from triton.flagmega.ir.distributed_inference import tensor_of
 from triton.flagmega.ir.entry_abi import redirect_entry_abi
 from triton.flagmega.ir.ops.tensors.pack import normalize_axes
@@ -268,7 +268,8 @@ class TritonTirLoweringPolicy:
         # Logical broadcast does not imply one CTA: an implementation can
         # partition a complete chip tensor internally and publish chip writes.
         # Keep that selected execution requirement separate from SBP ownership.
-        cooperative_grid = requires_distributed_grid(module) or any(
+        distributed_grid = requires_distributed_grid(module)
+        cooperative_grid = distributed_grid or any(
             "cooperative_grid" in node.attrs.get("facts", node.attrs.get("semantic_facts", {})).get("requires", ())
             for node in nodes
             if node.op == "tir.kernel")
@@ -288,11 +289,18 @@ class TritonTirLoweringPolicy:
                 "architecture": target.codegen_architecture,
             },
             "launch_contract": {
-                "kind": "single_prepared_entry",
-                "entry": f"flagmega_{module.entry}",
-                "ordinary_launch_allowed": False,
-                "cooperative_grid": cooperative_grid,
-                "grid_mesh": placement_data,
+                "kind":
+                "single_prepared_entry",
+                "entry":
+                f"flagmega_{module.entry}",
+                "ordinary_launch_allowed":
+                False,
+                "cooperative_grid":
+                cooperative_grid,
+                # A local implementation with grid barriers still needs a
+                # physical launch mesh. Its undistributed data has one owner.
+                "grid_mesh": (Placement((1, ), "x", "b").to_data() if cooperative_grid and not distributed_grid
+                              and placement_data is None else placement_data),
                 **launch_parameters,
             },
             "tir_distribution": {

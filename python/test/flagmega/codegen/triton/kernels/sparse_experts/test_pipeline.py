@@ -38,10 +38,11 @@ def pipeline_target(*, block_k=None, stages=None):
         model = replace(model, implementations=tuple(implementations))
     preferences = dict(model.preferences)
     for family in ("sparse_experts_gate_up", "sparse_experts_down"):
-        preferences[family] = tuple(i.id
-                                    for i in model.implementations
-                                    if i.family == family and i.variant == "simt_tma_pipeline") + preferences.get(
-                                        family, (f"tir.{family}.simt", ))
+        pipelines = tuple(i.id
+                          for i in model.implementations
+                          if i.family == family and i.variant == "simt_tma_pipeline")
+        defaults = preferences.get(family, (f"tir.{family}.simt", ))
+        preferences[family] = (*pipelines, *(value for value in defaults if value not in pipelines))
     target.triton_implementation_model = replace(model, preferences=preferences)
     return target
 

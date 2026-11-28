@@ -20,14 +20,14 @@ ASYNC = BASE + "_async"
 
 @pytest.fixture(scope="module")
 def sync_raw():
-    module = _packed_norm_stats_pipeline_module(BASE, reduction_extent=6144)
+    module = _packed_norm_stats_pipeline_module(BASE, reduction_extent=6144, owned_lhs=True)
     return next(value for value in describe_function_runtime_binding(module)["call_abi"]["kernel_calls"]
                 if value["semantic_op"] == "ntt.matmul_norm_stats")
 
 
 @pytest.mark.parametrize("k", (1024, 2048, 6144, 8192))
 def test_async_staging_is_explicit_and_completes_before_first_read(tmp_path, k):
-    module = _packed_norm_stats_pipeline_module(ASYNC, reduction_extent=k)
+    module = _packed_norm_stats_pipeline_module(ASYNC, reduction_extent=k, owned_lhs=True)
     path = tmp_path / "async.py"
     emit_module(module, path)
     package = describe_tir_package(load_module(path))
@@ -62,7 +62,8 @@ def test_async_staging_rejects_an_unproven_physical_row(sync_raw, mutation):
     elif mutation == "pool_offset":
         abi["pool_byte_offset"] = 2
     elif mutation == "scope_stride":
-        abi["pool_scope_stride_bytes"] += 2
+        abi["pool_scope_stride_bytes"] = abi.get("pool_scope_stride_bytes", 0) + 2
+        abi["pool_scope_index"] = "0"
     elif mutation == "owner_stride":
         abi["storage_kind"] = "compact_per_owner"
         abi["component_stride_scalar_elements"] = 6145

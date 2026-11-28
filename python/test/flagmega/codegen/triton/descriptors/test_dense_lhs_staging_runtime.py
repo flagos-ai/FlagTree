@@ -47,5 +47,6 @@ def test_registered_plain_async_row_matches_original_exactly_on_reuse(tmp_path):
         torch.testing.assert_close(outputs[0], expected, rtol=0, atol=0)
         torch.testing.assert_close(outputs[1], outputs[0], rtol=0, atol=0)
         assert not torch.isnan(outputs[1]).any()
-    ptx = runtimes[1]._prepared.compiled_kernel.asm["ptx"]
-    assert re.search(r"cp\.async\.(?:ca|cg)\.shared\.global", ptx)
+    assert any(
+        re.search(r"cp\.async\.(?:ca|cg)\.shared\.global", program.compiled_kernel.asm["ptx"])
+        for program in runtimes[1]._prepared)

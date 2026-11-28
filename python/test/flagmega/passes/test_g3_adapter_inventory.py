@@ -1,11 +1,13 @@
 # Copyright 2026 FlagOS Contributors
 # SPDX-License-Identifier: MIT
-"""Original early checkpoints reject runtime adapters, including loop bodies."""
+"""Optional early audits reject runtime adapters, including loop bodies."""
 
 import pytest
 from triton.flagmega import ir as fm
+from triton.flagmega.compiler import Compiler
 from triton.flagmega.errors import IRVerificationError
 from triton.flagmega.ir.ops.core import construction_scope
+from triton.flagmega.options import CompileOptions
 from triton.flagmega.passes.g3_adapter_inventory import check_g3_adapters, g3_adapter_inventory
 from triton.flagmega.stages import get_stage
 from triton.flagmega.targets import NvidiaSm90Target
@@ -36,12 +38,14 @@ def adapter_graph(family, *, constant=False):
 
 
 @pytest.mark.parametrize("family", ("Pack", "Slice", "Cast", "Concat", "Unpack"))
-def test_original_gates_reject_runtime_boundaries_and_report_uses(family):
+def test_optional_gates_reject_runtime_boundaries_and_report_uses(family):
     source = adapter_graph(family)
     inventory = g3_adapter_inventory(source, checkpoint="02_AutoPackingPass/After")
     assert inventory["runtime_counts"][family] == 1
+    stage = get_stage("remove-unused-functions")
+    assert stage.run(source, NvidiaSm90Target()).node_map["adapter"].op == source.node_map["adapter"].op
     with pytest.raises(IRVerificationError, match="G3.*producers=.*consumers="):
-        get_stage("remove-unused-functions").run(source, NvidiaSm90Target())
+        Compiler(CompileOptions(require_adapter_free=True)).run_stage(source, stage.name)
     with pytest.raises(IRVerificationError, match="G3.*03_AutoDistributedPass/After"):
         check_g3_adapters(source, checkpoint="03_AutoDistributedPass/After")
 

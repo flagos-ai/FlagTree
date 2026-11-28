@@ -38,7 +38,9 @@ class Compiler:
         self.options = options or CompileOptions()
         if self.options.effective_dump_flags and self.options.work_dir is None:
             raise StageError("Dump flags require CompileOptions.work_dir (CLI: --work-dir).")
-        self.target = get_target(self.options.target)
+        # Registry entries are shared, while the selected policies and codegen
+        # options belong to one compiler invocation.
+        self.target = copy(get_target(self.options.target))
         if self.options.placement is not None:
             configure = getattr(self.target, "with_placement", None)
             if configure is None:
@@ -51,8 +53,6 @@ class Compiler:
             self.target = configure(self.options.bufferize_opt_level)
         if self.options.codegen_backend is not None:
             # Bind after target configuration, which may reconstruct the target.
-            # Registered targets are shared; this belongs to one invocation.
-            self.target = copy(self.target)
             self.target.codegen_backend = self.options.codegen_backend
         self.diagnostics = DiagnosticSession(
             self.options.work_dir,
@@ -91,7 +91,10 @@ class Compiler:
             manager_name,
             dumper=self.diagnostics.create_pass_manager_dumper(manager_name),
         )
-        pass_manager.add(FunctionalPass(stage.name, lambda value: stage.run(value, self.target)))
+        pass_manager.add(
+            FunctionalPass(
+                stage.name,
+                lambda value: stage.run(value, self.target, require_adapter_free=self.options.require_adapter_free)))
         pass_result = pass_manager.run(module)
         result = pass_result.module
         checkpoint = None
@@ -158,7 +161,8 @@ class Compiler:
                 pass_manager.add(
                     FunctionalPass(
                         member.name,
-                        lambda value, selected_stage=stage: selected_stage.run(value, self.target),
+                        lambda value, selected_stage=stage: selected_stage.run(
+                            value, self.target, require_adapter_free=self.options.require_adapter_free),
                         # Only the proposal annotation pass preserves this graph.
                         # An intervening agent pass invalidates it by default;
                         # another compile/resume owns a fresh AnalysisManager.

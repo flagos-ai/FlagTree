@@ -13,6 +13,9 @@ contains generated kernel source, a manifest, and the packed readonly weights.
 Use `flagmega artifact verify` to check the artifact before loading it on the
 target device.
 
+Use `--require-adapter-free` when validating an optimization that requires
+zero runtime representation adapters after packing and distribution.
+
 Install the dependencies with the `flagmega` package extra. Install PyTorch
 with GPU support for the target to execute an artifact.
 

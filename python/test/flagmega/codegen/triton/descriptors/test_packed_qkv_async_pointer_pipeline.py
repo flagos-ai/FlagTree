@@ -7,6 +7,8 @@ import re
 import pytest
 
 import triton
+from triton.backends import backends
+from triton.backends.compiler import GPUTarget
 import triton.language as tl
 import triton.experimental.tle.language as tle
 from triton.flagmega import ir as fm
@@ -119,10 +121,18 @@ def test_model_qkv_abi_selects_real_warp_specialization_and_pointer_copy(pointer
     assert "reinterpret_tensor_map" not in source
 
 
+_COREX_TARGET = GPUTarget("corex", 71, 64)
+requires_corex_compiler = pytest.mark.skipif(
+    not any(backend.compiler.supports_target(_COREX_TARGET) for backend in backends.values()),
+    reason="requires the CoreX compiler",
+)
+
+
+@requires_corex_compiler
 def test_model_qkv_pointer_copy_reaches_sme_lowering(tmp_path, pointer_qkv_module, monkeypatch):
     import importlib.util
     import triton
-    from triton.compiler.compiler import ASTSource, GPUTarget
+    from triton.compiler.compiler import ASTSource
 
     package = describe_tir_package(pointer_qkv_module)
     source = render_tir_package(package, "pointer_qkv")
@@ -145,7 +155,7 @@ def test_model_qkv_pointer_copy_reaches_sme_lowering(tmp_path, pointer_qkv_modul
                 "block_local_data": "*bf16",
             },
         ),
-        target=GPUTarget("corex", 71, 64),
+        target=_COREX_TARGET,
         options={"num_warps": package["num_warps"]},
     )
     assert "inputStride" in compiled.asm["ttgir"]
@@ -311,9 +321,10 @@ def test_model_qkv_pointer_copy_reaches_sme_lowering(tmp_path, pointer_qkv_modul
     )
 
 
+@requires_corex_compiler
 def test_static_3072_wait_uses_exact_reciprocal_lowering():
     """The full 48-warp CTA must not lower its phase wait to i32 udiv."""
-    from triton.compiler.compiler import ASTSource, GPUTarget
+    from triton.compiler.compiler import ASTSource
 
     compiled = triton.compile(
         ASTSource(
@@ -321,7 +332,7 @@ def test_static_3072_wait_uses_exact_reciprocal_lowering():
             signature={"value": "*i32", "out": "*i32"},
             constexprs={"block": 64},
         ),
-        target=GPUTarget("corex", 71, 64),
+        target=_COREX_TARGET,
         options={"num_warps": 32},
     )
     assert "static_arrive_count = 3072 : i32" in compiled.asm["ttgir"]
