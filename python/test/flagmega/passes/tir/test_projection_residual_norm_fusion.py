@@ -54,10 +54,10 @@ def _checkpoint(num_layers: int) -> MemoryCheckpoint:
     return MemoryCheckpoint(config, infos)
 
 
-@lru_cache(maxsize=2)
-def _tir_candidates(num_layers: int = 2):
+@lru_cache(maxsize=1)
+def _tir_candidates():
     return Compiler().compile(
-        import_qwen3_model(_checkpoint(num_layers)),
+        import_qwen3_model(_checkpoint(2)),
         stop_after="propose-tir",
     ).module
 
@@ -137,7 +137,7 @@ def test_decomposed_attention_keeps_projection_epilogue_and_statistics_explicit(
 
 
 def test_final_lm_head_has_no_residual_norm_fusion_candidate():
-    module = _tir_candidates(num_layers=1)
+    module = _tir_candidates()
     point, = (point for point in module.selection_points if point.id.startswith("tir.logits.") and any(
         candidate.parameters.get("family") == "dense_matmul" for candidate in point.candidates))
 

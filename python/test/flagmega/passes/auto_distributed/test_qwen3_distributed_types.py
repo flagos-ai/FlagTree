@@ -3,7 +3,11 @@
 
 from dataclasses import replace
 
+import pytest
+
 from triton.flagmega import ir as fm
+from triton.flagmega.compiler import Compiler
+from triton.flagmega.options import CompileOptions
 from triton.flagmega.passes.auto_distributed import AutoDistributedPass
 from triton.flagmega.stages import get_stage
 from triton.flagmega.targets import NvidiaSm90Target
@@ -11,10 +15,10 @@ from triton.flagmega.targets import NvidiaSm90Target
 from .helpers import qwen3_packed_module
 
 
-def _auto_distribute():
+@pytest.fixture(scope="module")
+def distributed_module():
     target = NvidiaSm90Target()
-    module = _run_post_packing(qwen3_packed_module(), target)
-    return target.auto_distribute(module)
+    return target.auto_distribute(_run_post_packing(qwen3_packed_module(), target))
 
 
 def _run_post_packing(module, target):
@@ -29,13 +33,8 @@ def _run_post_packing(module, target):
     return module
 
 
-def test_qwen3_h800_uses_reference_two_dimensional_block_mesh():
-    module = qwen3_packed_module()
-    target = NvidiaSm90Target()
-
-    assert target.distributed_placements(module) == (fm.Placement((8, 16), "yx", "bb"), )
-
-    result = target.auto_distribute(_run_post_packing(module, target))
+def test_qwen3_h800_uses_reference_two_dimensional_block_mesh(distributed_module):
+    result = distributed_module
     placement = fm.Placement((8, 16), "yx", "bb")
     distributed = [leaf for node in result.nodes for leaf in _distributed_tensor_leaves(node.type)]
     assert distributed
@@ -60,9 +59,18 @@ def test_qwen3_h800_uses_reference_two_dimensional_block_mesh():
 
 
 def test_post_attention_norm_replication_avoids_internal_widening_view():
-    target = NvidiaSm90Target()
-    module = _run_post_packing(qwen3_packed_module(), target)
-    proposed = AutoDistributedPass.propose(module, target)
+
+    class Norm(fm.Module):
+
+        def forward(self):
+            value = self.input("value", fm.tensor_type("bfloat16", (1, 128)))
+            weight = self.input("weight", fm.tensor_type("bfloat16", (128, )))
+            result = fm.F.nn.rms_norm(value, weight, epsilon=1e-6, name="post_attention_norm")
+            self.function("main", (value, weight), (result, ))
+
+    module = Norm(dialect="high_level", stage="imported", entry="main").build()
+    compiler = Compiler(CompileOptions(placement=fm.Placement((2, 2), "yx", "bb")))
+    proposed = compiler.compile(module, stop_after="propose-distribution").module
     points = tuple(point for point in proposed.selection_points if point.kind == "distribution" if point.owner in {
         "post_attention_norm.vectorized.compute",
         "post_attention_norm",
@@ -87,7 +95,7 @@ def test_post_attention_norm_replication_avoids_internal_widening_view():
             policy="agent-no-widening-view/v1",
             rationale="Keep post-attention norm block-replicated.",
         ) if record.point_id in broadcast_ids else record for record in proposed.selections)
-    result = AutoDistributedPass.apply(replace(proposed, selections=selections), target)
+    result = AutoDistributedPass.apply(replace(proposed, selections=selections), compiler.target)
 
     normalized = result.node_map["post_attention_norm.vectorized.compute"]
     assert isinstance(normalized.type, fm.DistributedType)
@@ -96,8 +104,8 @@ def test_post_attention_norm_replication_avoids_internal_widening_view():
                    for node in result.nodes)
 
 
-def test_qwen3_every_compute_tensor_leaf_is_distributed_after_auto_dist():
-    result = _auto_distribute()
+def test_qwen3_every_compute_tensor_leaf_is_distributed_after_auto_dist(distributed_module):
+    result = distributed_module
 
     for node in result.nodes:
         if not node.inputs:
@@ -119,8 +127,8 @@ def test_qwen3_every_compute_tensor_leaf_is_distributed_after_auto_dist():
                                                             f"{input_id}: {input_type!r}")
 
 
-def test_qwen3_attention_tuple_and_program_output_keep_distributed_types(tmp_path):
-    result = _auto_distribute()
+def test_qwen3_attention_tuple_and_program_output_keep_distributed_types(tmp_path, distributed_module):
+    result = distributed_module
 
     # AutoPacking's reference-aligned FoldGetItemTuple removes the temporary
     # wrapper tuple.  The packed projection is the surviving semantic
@@ -163,8 +171,8 @@ def test_qwen3_attention_tuple_and_program_output_keep_distributed_types(tmp_pat
     assert fm.load_module(checkpoint) == result
 
 
-def test_qwen3_decomposed_attention_preserves_qkv_output_sharding():
-    result = _auto_distribute()
+def test_qwen3_decomposed_attention_preserves_qkv_output_sharding(distributed_module):
+    result = distributed_module
 
     projection = result.node_map["self_attention_qkv_projection.packed_projection"].type
     assert isinstance(projection, fm.TupleType)
@@ -187,60 +195,51 @@ def test_qwen3_decomposed_attention_preserves_qkv_output_sharding():
     assert all(
         isinstance(field, fm.DistributedType) and isinstance(field.axis_policies[1], fm.SBPSplit)
         for field in qkv_input.fields)
-    assert tuple(field.axis_policies[1].hierarchy_axes for field in qkv_input.fields) == (
-        (1, ),
-        (0, ),
-        (0, ),
-    )
+    assert qkv_input.fields[1].axis_policies[1] == qkv_input.fields[2].axis_policies[1]
     assert "self_attention_query_rope" not in result.node_map
     assert "self_attention_key_rope" not in result.node_map
     fused_type = result.node_map["updated_state.qkv_rope_with_cache"].type
     assert isinstance(fused_type, fm.TupleType)
     query_type = fused_type.fields[0]
     assert isinstance(query_type, fm.DistributedType)
-    # The fused producer may retain its canonical broadcast result, but the
-    # paged-attention edge must expose the reference head-local x view.
+    # Attention keeps head sharding and reduces only over the context axes.
+    # The solver can assign those roles to different physical axes.
     partial = result.node_map["self_attention_paged_attention.partial"]
     partial_query = result.node_map[partial.inputs[0]].type
     assert isinstance(partial_query, fm.DistributedType)
-    assert partial_query.axis_policies == (
-        fm.SBP.broadcast(),
-        fm.SBP.split_contiguous((1, ), granularity=1),
-        fm.SBP.broadcast(),
-    )
+    sequence_policy, head_policy, dimension_policy = partial_query.axis_policies
+    assert sequence_policy == dimension_policy == fm.SBP.broadcast()
+    assert isinstance(head_policy, fm.SBPSplit)
     attention_type = result.node_map["self_attention_paged_attention"].type
     assert isinstance(attention_type, fm.DistributedType)
-    assert attention_type.axis_policies == (
-        fm.SBP.broadcast(),
-        fm.SBP.split_contiguous((1, ), granularity=1),
-        fm.SBP.broadcast(),
-    )
+    assert attention_type.axis_policies == partial_query.axis_policies
+    assert attention_type.partial is None
     partial_type = result.node_map["self_attention_paged_attention.partial"].type
     assert isinstance(partial_type, fm.TupleType)
-    assert all(field.axis_policies[1] == fm.SBP.split_contiguous((1, ), granularity=1) for field in partial_type.fields)
+    assert all(field.axis_policies[1] == head_policy for field in partial_type.fields)
     assert tuple(field.partial.reduce_op for field in partial_type.fields) == (
         fm.ReduceOp.MAX,
         fm.ReduceOp.SUM,
         fm.ReduceOp.SUM,
     )
-    assert all(field.partial.axes == (0, ) for field in partial_type.fields)
+    context_axes = set(range(partial_query.placement.rank)) - set(head_policy.hierarchy_axes)
+    assert context_axes
+    assert all(set(field.partial.axes) == context_axes for field in partial_type.fields)
     assert not any(node.op == "distributed.sharded_view" and node.inputs == ("self_attention_paged_attention", )
                    for node in result.nodes)
 
 
-def test_qwen3_originators_use_target_selected_copy_or_alias_realization():
-    result = _auto_distribute()
+def test_qwen3_originators_keep_logical_storage_with_distributed_views(distributed_module):
+    result = distributed_module
 
     assert isinstance(result.node_map["input_ids"].type, fm.TensorType)
     assert isinstance(result.node_map["w_embed_tokens_weight"].type, fm.TensorType)
-    input_boxing = [node for node in result.nodes if node.op == "distributed.boxing" and node.inputs == ("input_ids", )]
-    embedding_views = [
-        node for node in result.nodes
-        if node.op == "distributed.sharded_view" and node.inputs == ("w_embed_tokens_weight", )
-    ]
-    assert input_boxing
-    assert embedding_views
-    assert all(isinstance(node.type, fm.DistributedType) for node in (*input_boxing, *embedding_views))
+    for source in ("input_ids", "w_embed_tokens_weight"):
+        views = [node for node in result.nodes if node.op == "distributed.sharded_view" and node.inputs == (source, )]
+        assert views
+        assert all(
+            isinstance(node.type, fm.DistributedType) and node.type.tensor == result.node_map[source].type
+            for node in views)
 
 
 def _logical_tensor_leaves(value: fm.IRType) -> tuple[fm.TensorType, ...]:

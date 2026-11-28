@@ -65,20 +65,26 @@ def test_remote_gather_reads_each_logical_element_from_its_compact_component(lan
 
     assert leaf["remote_peers"] == 4
     assert leaf["capacity"] == prod(target["local_capacity_shape"]) * lanes
+    peer_code = compile(leaf["remote_owner"], "<remote owner>", "eval")
+    source_code = compile(leaf["remote_source_offset"], "<remote source offset>", "eval")
+    result_code = compile(leaf["result_offset"], "<result offset>", "eval")
+    globals_without_builtins = {"__builtins__": {}}
+    language = SimpleNamespace(minimum=min, maximum=max)
     for owner in product(range(4), range(2), range(4)):
         shard = fm.local_shard_descriptor(target_type, owner)
         columns = shard.local_capacity_shape[1].fixed_value
+        scope = {
+            **{f"shard_coord_{i}": value
+               for i, value in enumerate(owner)},
+            **{f"shard_coord{i}": value
+               for i, value in enumerate(owner)},
+            "tl": language,
+        }
         for row, column, lane in product(range(3), range(shard.active_shape[1].fixed_value), range(lanes)):
-            scope = {
-                "boxing_offsets": (row * columns + column) * lanes + lane,
-                **{f"shard_coord_{i}": value
-                   for i, value in enumerate(owner)}, **{f"shard_coord{i}": value
-                                                         for i, value in enumerate(owner)}, "tl":
-                SimpleNamespace(minimum=min, maximum=max)
-            }
-            peer = eval(leaf["remote_owner"], {"__builtins__": {}}, scope)
-            offset = eval(leaf["remote_source_offset"], {"__builtins__": {}}, scope)
-            destination = eval(leaf["result_offset"], {"__builtins__": {}}, scope)
+            scope["boxing_offsets"] = (row * columns + column) * lanes + lane
+            peer = eval(peer_code, globals_without_builtins, scope)
+            offset = eval(source_code, globals_without_builtins, scope)
+            destination = eval(result_code, globals_without_builtins, scope)
             expected = (row * width + shard.axes[1].map_local_to_global(column).fixed_value) * lanes + lane
             assert images[peer][offset] == expected
             assert destination == expected

@@ -98,4 +98,4 @@ jobs:
         run: |
           source ~/env.sh
           source "$FLAGMEGA_VENV/bin/activate"
-          python3 -m pytest -s python/test/flagmega
+          python3 -m pytest --durations=30 python/test/flagmega

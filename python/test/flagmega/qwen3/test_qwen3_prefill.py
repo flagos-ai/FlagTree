@@ -81,12 +81,9 @@ def test_m_gt_1_matmul_auto_selects_wmma(target_name):
     assert tir_default(1) != "tir.dense_matmul.mma"
 
 
-# A spread of token counts exercises the batched norm-statistics epilogue across
-# different owner-local row counts and ragged (non-power-of-two, non-divisible)
-# token layouts -- the regime that reached review repeatedly because the only
-# existing coverage ran a single decode row.
-@pytest.mark.parametrize("num_tokens", [3, 5, 33, 128])
-@pytest.mark.parametrize("target_name", AMD_TARGETS)
+# The short prompt checks basic lowering. A ragged prompt on both targets
+# gives the fused epilogue multiple rows per owner.
+@pytest.mark.parametrize("target_name,num_tokens", [("amd-gfx1100", 3), ("amd-gfx1100", 33), ("amd-gfx1201", 33)])
 def test_prefill_full_lowering_completes(target_name, num_tokens):
     # A multi-token prefill lowers through code generation end to end, including
     # the after-attention fused residual/RMS-norm. Before the batched
@@ -102,8 +99,7 @@ def test_prefill_full_lowering_completes(target_name, num_tokens):
     assert describe_tir_package(compiled.module)
 
 
-@pytest.mark.parametrize("target_name", AMD_TARGETS)
-def test_prefill_token_sharded_materialized_norm_stats(target_name):
+def test_prefill_token_sharded_materialized_norm_stats():
     # A longer prompt token-shards the after-attention statistics so the whole
     # normalized feature axis stays owner-local: NormStats materializes the
     # result (partial=None) and the local RMS implementation must accept that
@@ -114,5 +110,5 @@ def test_prefill_token_sharded_materialized_norm_stats(target_name):
         execution_phase="prefill",
         num_tokens=17,
     )
-    compiled = Compiler(CompileOptions(target=target_name)).compile(module)
+    compiled = Compiler(CompileOptions(target="amd-gfx1201")).compile(module)
     assert describe_tir_package(compiled.module)

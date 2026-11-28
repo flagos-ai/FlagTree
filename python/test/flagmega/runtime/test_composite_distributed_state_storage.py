@@ -104,7 +104,7 @@ def test_state_owner_binding_uses_the_placement_chip_count(tmp_path, monkeypatch
     runtime = _compile_and_load(tmp_path)
     try:
         # Exercise the real ownership binding without loading device buffers.
-        monkeypatch.setattr(GeneratedTirCallGraphModule, "load", lambda self, device: self)
+        monkeypatch.setattr(GeneratedTirCallGraphModule, "load", lambda self, device, *, shared_rdata=None: self)
         monkeypatch.setenv("RANK", str(chip))
         runtime.load(f"cuda:{chip}")
         assert runtime._kda_config.chip_index == chip

@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: MIT
 
 from triton.flagmega import ir as fm
-from triton.flagmega.compiler import Compiler
-from triton.flagmega.selection import override_plan
+from triton.flagmega.targets import NvidiaSm90Target
 
 
 def _proposed_tir(*, reduction: int = 128, output: int = 128) -> fm.IRModule:
-    builder = fm.IRBuilder(dialect="high_level", stage="imported")
+    # Host descriptors read logical affine weight tiles. Already-packed
+    # VectorizedMatMul operands exercise a different candidate path.
+    builder = fm.IRBuilder(dialect="high_level", stage="distributed")
     lhs = builder.var("lhs", fm.tensor_type("bfloat16", (1, reduction)), id="lhs")
     rhs = builder.var("rhs", fm.tensor_type("bfloat16", (reduction, output)), id="rhs")
     result = builder.call(
@@ -16,19 +17,13 @@ def _proposed_tir(*, reduction: int = 128, output: int = 128) -> fm.IRModule:
         fm.tensor_type("bfloat16", (1, output)),
         id="result",
         attrs={"transpose_a": False, "transpose_b": False},
+        metadata={
+            "selected_vectorization": "vectorization.matmul.n", "selected_vector_axes": (1, ), "selected_vector_lanes":
+            (8, )
+        },
     )
     builder.function("main", (lhs, rhs), (result, ))
-    compiler = Compiler()
-    proposed = compiler.compile(builder.build(entry="main"), stop_after="propose-vectorization").module
-    vectorized = compiler.run_stage(
-        proposed,
-        "apply-vectorization",
-        plan=override_plan(
-            proposed,
-            (("vectorization.result", "vectorization.matmul.n"), ),
-        ),
-    ).module
-    return Compiler().compile(vectorized, stop_after="propose-tir").module
+    return NvidiaSm90Target().propose_tir(builder.build(entry="main"))
 
 
 def test_descriptor_variant_is_real_but_not_the_unmeasured_default():

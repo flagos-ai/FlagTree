@@ -904,6 +904,7 @@ def portable_triton_implementation_model() -> TritonImplementationModel:
             "packed_k_major_gemv_norm_stats",
             {"block_k": 16, "tile_n": 8},
             contract={
+                "supports_local_row_loop": True,
                 "input_kind": "packed",
                 "epilogue": "residual_norm_stats",
                 "vectorization_kind": "output_axis",

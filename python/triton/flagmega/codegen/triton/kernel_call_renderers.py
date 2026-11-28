@@ -41,6 +41,7 @@ from triton.flagmega.codegen.triton.physical_access import (
     emit_owner_base,
     emit_remote_storage_pointer,
     emit_storage_pointer,
+    emit_triton_scalar_type,
 )
 from triton.flagmega.codegen.triton.reduce_sum_renderer import reduce_sum_call
 from triton.flagmega.codegen.triton.routing_renderer import routing_call
@@ -3447,6 +3448,8 @@ def _elementwise_call(raw) -> dict[str, object]:
     binary = variant in {"add", "mul", "div"}
     lhs = _buffer(raw, "inputs", "lhs" if binary else "value")
     rhs = _buffer(raw, "inputs", "rhs") if binary else None
+    lhs_is_scalar = lhs["abi"].get("storage") == "scalar"
+    rhs_is_scalar = rhs is not None and rhs["abi"].get("storage") == "scalar"
     result = _buffer(raw, "outputs", "result")
     result_abi = result["abi"]
     schedule = raw["parameters"]["vector_schedule"]
@@ -3488,9 +3491,12 @@ def _elementwise_call(raw) -> dict[str, object]:
         "math_mode":
         raw.get("semantic_attrs", {}).get("math_mode", "fast"),
         "lhs":
-        _pointer(lhs),
-        "rhs":
-        None if rhs is None else _pointer(rhs),
+        _scalar_expression(lhs) if lhs_is_scalar else _pointer(lhs),
+        "lhs_scalar_type":
+        emit_triton_scalar_type(str(lhs["abi"]["scalar_dtype"])) if lhs_is_scalar else None,
+        "rhs": (_scalar_expression(rhs) if rhs_is_scalar else _pointer(rhs)) if rhs is not None else None,
+        "rhs_scalar_type":
+        emit_triton_scalar_type(str(rhs["abi"]["scalar_dtype"])) if rhs_is_scalar else None,
         "result":
         _pointer(result),
         "local_capacity":

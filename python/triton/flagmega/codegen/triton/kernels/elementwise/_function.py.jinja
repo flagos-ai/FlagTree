@@ -18,17 +18,25 @@ def {{ call.symbol }}({{ call.signature }}):
         local_mask = (
             (local_offsets < {{ call.local_capacity }}) & ({{ call.active }})
         )
+{% if call.lhs_scalar_type | default(none) %}
+        lhs_value = tl.cast({{ call.lhs }}, {{ call.lhs_scalar_type }})
+{% else %}
         lhs_value = tl.load(
             {{ call.lhs }} + (({{ call.lhs_offset }}) + tl.zeros_like(local_offsets)),
             mask=local_mask & ({{ call.lhs_read_active | default('True') }}),
             other={{ call.lhs_other | default(0.0) }},
         )
+{% endif %}
 {% if call.variant in ("add", "mul", "div") %}
+{% if call.rhs_scalar_type | default(none) %}
+        rhs_value = tl.cast({{ call.rhs }}, {{ call.rhs_scalar_type }})
+{% else %}
         rhs_value = tl.load(
             {{ call.rhs }} + (({{ call.rhs_offset }}) + tl.zeros_like(local_offsets)),
             mask=local_mask & ({{ call.rhs_read_active | default('True') }}),
             other={{ call.rhs_other | default(0.0) }},
         )
+{% endif %}
 {% endif %}
 {% for line in call.fusion_lines %}
         {{ line }}

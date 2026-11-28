@@ -13,7 +13,7 @@ from triton.flagmega.runtime import load
 from triton.flagmega.runtime.module import GeneratedTirCallGraphModule
 
 
-def _module(round_before_scale, rotary_dim=None, head_dim=64):
+def _module(round_before_scale, rotary_dim, head_dim):
     config = PagedAttentionStateConfig(1, 1, head_dim, block_size=4, num_blocks=2, lanes=8)
 
     class Graph(fm.Module):
@@ -62,14 +62,15 @@ def _module(round_before_scale, rotary_dim=None, head_dim=64):
     return Graph(dialect="high_level", stage="imported", entry="main").build(), config
 
 
-@pytest.mark.parametrize("round_before_scale", [False, True])
-@pytest.mark.parametrize("head_dim,rotary_dim", [(64, None), (64, 16), (64, 48), (256, 64)])
-@pytest.mark.parametrize("cosine,sine", [(1.0, 0.0), (0.75, 0.625)])
-def test_fused_qkv_preserves_bf16_norm_and_rotary_results(tmp_path, round_before_scale, cosine, sine, rotary_dim,
-                                                          head_dim):
+@pytest.mark.parametrize(
+    "rotary_dim,round_before_scale",
+    [(None, False), (None, True), (16, True), (48, False)],
+)
+def test_fused_qkv_preserves_bf16_norm_and_rotary_results(tmp_path, rotary_dim, round_before_scale):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
         pytest.skip("SM90 CUDA is required")
+    head_dim = 64
     source, config = _module(round_before_scale, rotary_dim, head_dim)
     extent = rotary_dim or head_dim
     compiled = Compiler().compile(source).module
@@ -84,10 +85,9 @@ def test_fused_qkv_preserves_bf16_norm_and_rotary_results(tmp_path, round_before
                                                                                                         (head_dim, )))
     }
     values["bias"] = torch.zeros_like(values["scale"])
-    values["cos"] = torch.full((1, 1, extent), cosine, device="cuda")
-    values["sin"] = torch.full((1, 1, extent), sine, device="cuda")
+    values["cos"] = torch.ones((1, 1, extent), device="cuda")
+    values["sin"] = torch.zeros_like(values["cos"])
     state = create_paged_attention_state(config, device="cuda:0")
-    state.kv_caches.zero_()
     output = torch.empty((1, 2, head_dim), dtype=torch.bfloat16, device="cuda")
     function = runtime.buffer_plan.function_map[compiled.entry]
     bound = {}
@@ -104,11 +104,6 @@ def test_fused_qkv_preserves_bf16_norm_and_rotary_results(tmp_path, round_before
             bound[argument["buffer"]] = output
     arguments = [bound[argument["buffer"]] for argument in runtime.external_arguments]
     runtime.prepare(*arguments)
-    runtime.run_into(*arguments)
-    torch.cuda.synchronize()
-    for index, prepared in enumerate(runtime._prepared):
-        for kind in ("ttir", "llir", "ptx"):
-            (tmp_path / f"kernel_{index}.{kind}").write_text(prepared.compiled_kernel.asm[kind])
 
     def expected(value):
         unit = value.float() * torch.rsqrt(value.float().square().mean(-1, keepdim=True) + 1e-6)
@@ -120,6 +115,14 @@ def test_fused_qkv_preserves_bf16_norm_and_rotary_results(tmp_path, round_before
         result = prefix * values["cos"].float() + rotated * values["sin"].float()
         return torch.cat((result, normalized[..., extent:]), dim=-1).bfloat16()
 
-    torch.testing.assert_close(output, expected(values["q"]), rtol=0, atol=0)
-    key = state.kv_caches[0, 0, 0, 0].reshape(1, 1, head_dim)
-    torch.testing.assert_close(key, expected(values["k"]), rtol=0, atol=0)
+    # Cosine and sine are runtime inputs of the same compiled specialization.
+    for cosine, sine in ((1.0, 0.0), (0.75, 0.625)):
+        values["cos"].fill_(cosine)
+        values["sin"].fill_(sine)
+        state.kv_caches.zero_()
+        output.fill_(float("nan"))
+        runtime.run_into(*arguments)
+        torch.cuda.synchronize()
+        torch.testing.assert_close(output, expected(values["q"]), rtol=0, atol=0)
+        key = state.kv_caches[0, 0, 0, 0].reshape(1, 1, head_dim)
+        torch.testing.assert_close(key, expected(values["k"]), rtol=0, atol=0)

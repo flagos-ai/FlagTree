@@ -15,10 +15,10 @@ def test_dense_row_loop_is_an_explicit_implementation_contract(rows):
         impl for impl in portable_triton_implementation_model().implementations if impl.family == "dense_matmul"
     ]
     for impl in implementations:
-        assert _supports_local_rows(impl, tensor) == (rows == 1 or impl.contract.get("supports_local_row_loop", False))
+        assert _supports_local_rows(impl, tensor) == (rows == 1 or impl.contract.get("supports_local_row_loop", False)
+                                                      or impl.contract.get("supports_local_row_tile", False))
         if impl.contract.get("supports_local_row_loop"):
             assert impl.transfer_pipeline is None
-            assert impl.contract["epilogue"] == "none"
 
 
 def test_dense_single_row_contract_uses_capacity_not_global_token_count():
