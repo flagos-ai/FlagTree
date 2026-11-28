@@ -190,7 +190,7 @@ class FlagCXRegistrar:
         whl = self._get_flagcx_wheel_path()
         if whl is not None:
             printinfo("FlagCX is already installed, skipping compilation...")
-        elif DIST_DEV_MODE or self.backend_name == "hcu":
+        elif DIST_DEV_MODE:
             self._compile_and_cache()
         self._copy_required_files()
 

@@ -76,6 +76,7 @@ jobs:
           source ~/env.sh
           export FLAGTREE_BACKEND=hcu
           export USE_FLAGCX=ON
+          export DIST_DEV=1
           export FLAGCX_RECOMPILE=ON
           export COMPILE_KERNEL=1
           # SHCA runners opt in with USE_SHCA=1 in ~/env.sh.
@@ -100,6 +101,7 @@ jobs:
           source ~/env.sh
           export FLAGTREE_BACKEND=hcu
           export USE_FLAGCX=ON
+          export DIST_DEV=1
           export GLOG_minloglevel=2
           export PYTHONPATH=~/.flagtree/hcu/hcu-llvm22-188a510-glibc2.35-glibcxx3.4.30-ubuntu-x86_64/python_packages/mlir_core/:$PYTHONPATH
           export NODE_RANK=0

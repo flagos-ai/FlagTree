@@ -243,11 +243,7 @@ def finalize_backend_build_tree(build_lib):
 
 
 def enable_flagtree_third_party(name):
-    # FlagCX's HCU device-bitcode build needs a consistent DTK LLVM
-    # opt/llvm-as/llvm-dis suite >= hipcc's version, which many HCU
-    # environments lack; require an explicit opt-in there.
-    default = 'OFF' if name == "flagcx" and (flagtree_backend or "nvidia") == "hcu" else 'ON'
-    return os.environ.get(f"USE_{name.upper()}", default) == 'ON'
+    return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
 
 
 def download_flagtree_third_party(name, condition, required=False, hook=None):
@@ -934,9 +930,8 @@ if relocate_flagcx:
     relocate_flagcx()
 
 flagcx_wheel = PathFinder.find_spec("flagcx", sys.path)
-# HCU source builds use the explicit USE_FLAGCX opt-in in enable_flagtree_third_party.
-is_download_flagcx = (not flagcx_wheel and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS
-                      and (DIST_DEV_MODE or flagtree_backend == "hcu"))
+is_download_flagcx = (DIST_DEV_MODE and not flagcx_wheel
+                     and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS)
 download_flagtree_third_party("flagcx", condition=is_download_flagcx, hook="handle_flagcx", required=True)
 
 if (flagcx_wheel and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS
