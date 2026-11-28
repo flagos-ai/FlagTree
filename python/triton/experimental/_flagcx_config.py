@@ -40,7 +40,7 @@ class FlagcxRuntimeConfig:
     use_wheel = True
     use_cache = True
 
-    def __init__(self, backend_dir, path_order=0):
+    def __init__(self, backend_dir, path_order=0, *, require_wheel=False):
         self.backend_dir = Path(backend_dir)
         # Keep the installed package path even when backend_dir is a symlink.
         self.triton_path = self.backend_dir.parent.parent
@@ -58,6 +58,11 @@ class FlagcxRuntimeConfig:
         self.module_path = Path(module).expanduser() if module else None
         if self.use_wheel and self.module_path is None:
             self.flagcx_whl_path = self._get_flagcx_wheel_path()
+        # Release-mode discovery still honors paths explicitly selected by the user.
+        if require_wheel and self.flagcx_whl_path is None and self.module_path is None:
+            override_keys = ("FLAGCX_BITCODE_PATH", "FLAGCX_LIB_PATH", "FLAGCX_INCLUDE_PATH")
+            if not any(os.environ.get(key) for key in override_keys):
+                return
 
         bitcode = self._get_bitcode_paths()
         shared = self._get_shared_lib_paths()

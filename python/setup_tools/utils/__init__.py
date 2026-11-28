@@ -23,6 +23,7 @@ import importlib.util
 import os
 from . import tools, default
 from .tools import flagtree_configs, OfflineBuildManager, is_skip_cuda_toolkits
+from .default import DIST_DEV_MODE
 
 
 class SubmoduleRegistrar:
@@ -92,4 +93,6 @@ def activate(backend, suffix=".py"):
     return module
 
 
-__all__ = ["default", "activate", "flagtree_submodules", "OfflineBuildManager", "tools", "submodule_registrar"]
+__all__ = [
+    "default", "activate", "flagtree_submodules", "OfflineBuildManager", "tools", "submodule_registrar", "DIST_DEV_MODE"
+]

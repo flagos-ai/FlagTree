@@ -32,6 +32,21 @@ def printinfo(msgs):
     print(f" [TLE-DIST-INFO]: {msgs}.")
 
 
+def _is_dist_dev_mode():
+    ENVS = ("DIST_DEV", "DEV_MODE", "FLAGCX_DEV")
+    for env in ENVS:
+        env_value = os.environ.get(env, "0")
+        if env_value in ("1", "true", "True", "ON"):
+            printinfo("Running in Tle-Distributed development mode...")
+            return True
+    printinfo("\033[32mRunning in Tle-Distributed release mode, if\033[0m " \
+    "\033[32myou want to run in development mode, please set DIST_DEV=1\033[0m")
+    return False
+
+
+DIST_DEV_MODE = _is_dist_dev_mode()
+
+
 class FlagCXRegistrar:
 
     def __init__(self, external):
@@ -175,7 +190,7 @@ class FlagCXRegistrar:
         whl = self._get_flagcx_wheel_path()
         if whl is not None:
             printinfo("FlagCX is already installed, skipping compilation...")
-        else:
+        elif DIST_DEV_MODE or self.backend_name == "hcu":
             self._compile_and_cache()
         self._copy_required_files()
 

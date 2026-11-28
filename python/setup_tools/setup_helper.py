@@ -36,6 +36,7 @@ from importlib.machinery import PathFinder
 from setuptools import find_packages
 from urllib.parse import unquote, urlparse
 from .utils.tools import flagtree_configs as configs
+from .utils import DIST_DEV_MODE
 
 downloader = utils.tools.DownloadManager()
 configs = configs
@@ -933,9 +934,10 @@ if relocate_flagcx:
     relocate_flagcx()
 
 flagcx_wheel = PathFinder.find_spec("flagcx", sys.path)
-download_flagtree_third_party("flagcx", condition=not flagcx_wheel
-                              and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS, hook="handle_flagcx",
-                              required=True)
+# HCU source builds use the explicit USE_FLAGCX opt-in in enable_flagtree_third_party.
+is_download_flagcx = (not flagcx_wheel and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS
+                     and (DIST_DEV_MODE or flagtree_backend == "hcu"))
+download_flagtree_third_party("flagcx", condition=is_download_flagcx, hook="handle_flagcx", required=True)
 
 if (flagcx_wheel and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS
         and enable_flagtree_third_party("flagcx")):
