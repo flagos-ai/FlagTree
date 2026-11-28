@@ -695,6 +695,16 @@ void init_ascend_ir(py::module &&m) {
              TypeRange res_types{outputs};
              auto op = self.create<hivm::CustomOp>(res_types, name, inputs,
                                                    outputs, temp_buffers);
+             // Explicitly set the operandSegmentSizes PROPERTY: the auto-builder
+             // left it [0,0,0,0], which fails the CustomOp verifier ("operand
+             // count does not match total size"). It is an inherent *property*
+             // (std::array<int32_t,4>: inputs, outputs, temp_buffers, sync_args),
+             // so a generic op->setAttr is ignored -- use the generated property
+             // setter. sync_related_args is 0 for ops built through this path.
+             op.getProperties().setOperandSegmentSizes(
+                 {static_cast<int32_t>(inputs.size()),
+                  static_cast<int32_t>(outputs.size()),
+                  static_cast<int32_t>(temp_buffers.size()), 0});
              for (auto &attr : attrs) {
                std::string attr_name = py::cast<std::string>(attr.first);
                Attribute attr_value = py::cast<Attribute>(attr.second);
