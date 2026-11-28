@@ -103,56 +103,42 @@ def compile_flagcx_allocator():
     global _allocator, _allocator_wrapper, _flagcx_allocator_failed_to_compile
 
     try:
-        out_dir = tempfile.gettempdir()
-        # The CCL allocator must not load the cached XPU SHMEM allocator.
-        lib_name = "flagcx_allocator" if _is_xpu else f"flagcx_allocator_{FLAGTREE_BACKEND or 'nvidia'}_ccl"
-        lib_path = os.path.join(out_dir, f"{lib_name}.so")
-
+        lib_name = f"flagcx_allocator_{FLAGTREE_BACKEND or 'nvidia'}_ccl"
+        lib_path = Path(tempfile.gettempdir()) / f"{lib_name}.so"
         local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-        if local_rank == 0 and not os.path.isfile(lib_path):
-            print(
-                f"[INFO] FlagCX allocator not found, compiling: {lib_path}",
-                flush=True,
-            )
-
-            load_inline(
-                name=lib_name,
-                cpp_sources=flagcx_allocator_source,
-                with_cuda=not _is_xpu,
-                extra_ldflags=[
-                    f"-L{FLAGCX_LIB_PATH}",
-                    "-lflagcx",
-                    f"-Wl,-rpath,{FLAGCX_LIB_PATH}",
-                ],
-                verbose=True,
-                is_python_module=False,
-                build_directory=out_dir,
-                extra_include_paths=[FLAGCX_INCLUDE_PATH],
-            )
-        else:
-            print(
-                f"[INFO] Using cached FlagCX allocator: {lib_path}",
-                flush=True,
-            )
+        if local_rank == 0 and not lib_path.is_file():
+            print(f"[INFO] Compiling FlagCX allocator: {lib_path}", flush=True)
+            # Publish only the finished library when jobs share a temporary directory.
+            with tempfile.TemporaryDirectory(dir=lib_path.parent) as build_dir:
+                built = load_inline(
+                    name=lib_name,
+                    cpp_sources=flagcx_allocator_source,
+                    with_cuda=not _is_xpu,
+                    extra_ldflags=[f"-L{FLAGCX_LIB_PATH}", "-lflagcx", f"-Wl,-rpath,{FLAGCX_LIB_PATH}"],
+                    verbose=True,
+                    is_python_module=False,
+                    build_directory=build_dir,
+                    extra_include_paths=[FLAGCX_INCLUDE_PATH],
+                )
+                Path(built).replace(lib_path)
 
         if dist.is_available() and dist.is_initialized():
             _sync_ranks()
 
-        if not os.path.isfile(lib_path):
+        if not lib_path.is_file():
             raise FileNotFoundError(f"FlagCX allocator library not found after compilation: {lib_path}")
 
         _allocator_wrapper = CUDAPluggableAllocator(
-            lib_path,
+            str(lib_path),
             "flagcx_alloc_plug",
             "flagcx_free_plug",
         )
 
-        if _is_xpu:
-            # torch_xmlir needs the process-wide switch before FlagCX initializes the native allocator.
-            torch.cuda.memory.change_current_allocator(_allocator_wrapper)
         _allocator = _allocator_wrapper.allocator()
 
     except Exception as e:
+        if _is_xpu:
+            raise
         _flagcx_allocator_failed_to_compile = True
         print(
             f"[WARNING] Failed to load FlagCX memory allocator: {e}",
@@ -162,15 +148,12 @@ def compile_flagcx_allocator():
 
 def get_mem_pool(*, backend=None):
     """Return a cached PyTorch MemPool backed by flagcxMemAlloc."""
-    global _mem_pool, _flagcx_allocator_failed_to_compile
-    if not _is_xpu:
-        init_communicator(backend=backend)
+    global _mem_pool
+    init_communicator(backend=backend)
     if _mem_pool is None and not _flagcx_allocator_failed_to_compile:
         compile_flagcx_allocator()
         if _allocator is not None:
             _mem_pool = torch.cuda.MemPool(_allocator)
-    if _is_xpu and _mem_pool is not None:
-        init_communicator(backend=backend)
     return _mem_pool
 
 
