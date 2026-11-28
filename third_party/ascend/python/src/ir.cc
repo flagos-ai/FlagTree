@@ -817,6 +817,7 @@ void init_triton_ir(py::module &&m) {
 
   // The Ascend Python API owns the compile mode. Keep the native builder type
   // and constructor shared with TLE, Buffer and Gluon.
+  // The code generator maps the backend's "simt_only" option to "simt".
   py::object nativeInit = builderClass.attr("__init__");
   builderClass.attr("__init__") = py::cpp_function(
       [nativeInit](const py::object &self, MLIRContext *context,
@@ -833,8 +834,12 @@ void init_triton_ir(py::module &&m) {
       .def(
           "is_simt_mode",
           [](const py::object &self) {
-            return py::getattr(self, "_ascend_is_simt", py::bool_(false))
-                .cast<bool>();
+            if (!py::isinstance<TritonOpBuilder>(self))
+              throw py::type_error("is_simt_mode requires an ir.builder");
+            auto mode = py::getattr(self, "_ascend_is_simt", py::bool_(false));
+            if (!py::isinstance<py::bool_>(mode))
+              throw py::type_error("_ascend_is_simt must be a bool");
+            return mode.cast<bool>();
           },
           "Check if the compile mode is simt")
       .def("get_op_builder", &TritonOpBuilder::getBuilder, ret::reference)
