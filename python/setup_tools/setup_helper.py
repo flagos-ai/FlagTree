@@ -930,8 +930,7 @@ if relocate_flagcx:
     relocate_flagcx()
 
 flagcx_wheel = PathFinder.find_spec("flagcx", sys.path)
-is_download_flagcx = (DIST_DEV_MODE and not flagcx_wheel
-                     and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS)
+is_download_flagcx = (DIST_DEV_MODE and not flagcx_wheel and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS)
 download_flagtree_third_party("flagcx", condition=is_download_flagcx, hook="handle_flagcx", required=True)
 
 if (flagcx_wheel and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS
