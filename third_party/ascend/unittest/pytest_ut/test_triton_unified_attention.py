@@ -388,6 +388,7 @@ def test_triton_unified_attn(
     num_blocks: int,
     q_dtype: Optional[torch.dtype],
 ) -> None:
+    default_device = torch.get_default_device()
     if q_dtype is not None and q_dtype.itemsize < 2 and block_size < 32:
         pytest.skip("block size must be at least 32 for fp8")
 
@@ -466,3 +467,4 @@ def test_triton_unified_attn(
         atol, rtol = 1.5e-1, 1.5e-1
     torch.testing.assert_close(output, ref_output, atol=atol, rtol=rtol), \
         f"{torch.max(torch.abs(output - ref_output))}"
+    assert torch.get_default_device() == default_device
