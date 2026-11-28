@@ -59,7 +59,13 @@ submodule_registrar = SubmoduleRegistrar(submodules=(
         "name": "triton_shared", "url": "https://github.com/microsoft/triton-shared.git", "commit_id":
         "5842469a16b261e45a2c67fbfc308057622b03ee"
     },
-    {"name": "flir", "url": "https://github.com/flagos-ai/flir.git"},
+    # Temporary cross-repo pin: build the FLIR changes under review
+    # (flagos-ai/flir#93) instead of upstream main. Switch back to
+    # https://github.com/flagos-ai/flir.git with the merged commit before landing.
+    {
+        "name": "flir", "url": "https://github.com/zhongsanming/flir.git",
+        "commit_id": "49105e8ad34eb29ab43c7761603493ab1f5da44e"
+    },
     {"name": "FlagPrism", "url": "https://github.com/flagos-ai/FlagPrism.git"},
     {
         "name": "AscendNPU-IR", "url": "https://gitcode.com/Ascend/AscendNPU-IR.git", "relative_path":
