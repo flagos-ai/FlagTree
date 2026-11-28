@@ -535,6 +535,110 @@ private:
   const ppu::TargetInfo &targetInfo;
 };
 
+LogicalResult lowerBroadcastDedupLocalStore(
+    Location loc, MLIRContext *ctx, Value regVal, MemDescType memDescTy,
+    SharedMemoryObject smemObj, SmallVector<Value> inVals,
+    const LLVMTypeConverter *typeConverter, ConversionPatternRewriter &rewriter,
+    const ppu::TargetInfo &targetInfo) {
+  auto regTy = cast<RankedTensorType>(regVal.getType());
+  auto llvmElemTy = typeConverter->convertType(memDescTy.getElementType());
+  auto key = [ctx](StringRef name) { return StringAttr::get(ctx, name); };
+  auto kReg = key("register");
+  auto kLane = key("lane");
+  auto kWarp = key("warp");
+  auto kOffset = key("offset");
+  auto kBlock = key("block");
+
+  auto regLayout = toLinearLayout(regTy);
+  auto paddedEnc = dyn_cast<PaddedSharedEncodingAttr>(memDescTy.getEncoding());
+  LinearLayout cvt =
+      paddedEnc ? regLayout.invertAndCompose(paddedEnc.getLinearComponent())
+                : regLayout.invertAndCompose(toLinearLayout(memDescTy));
+  if (!cvt.isTrivialOver({kBlock}))
+    return failure();
+  cvt = cvt.sublayout({kReg, kLane, kWarp}, {kOffset});
+
+  // Identify broadcast lane and warp bits that carry zero basis vectors in both
+  // the source register layout and the shared-memory offset map; all threads
+  // differing only in those bits write identical values to the same address.
+  uint32_t laneZeroMask = 0;
+  uint32_t warpZeroMask = 0;
+  auto isZeroBasis = [](ArrayRef<int32_t> basis) {
+    return llvm::all_of(basis, [](int32_t v) { return v == 0; });
+  };
+  if (regLayout.hasInDim(kLane) && cvt.hasInDim(kLane)) {
+    const auto &regBases = regLayout.getBases().lookup(kLane);
+    const auto &cvtBases = cvt.getBases().lookup(kLane);
+    for (unsigned bit = 0; bit < std::min(regBases.size(), cvtBases.size());
+         ++bit) {
+      if (isZeroBasis(regBases[bit]) && isZeroBasis(cvtBases[bit]))
+        laneZeroMask |= (1u << bit);
+    }
+  }
+  if (regLayout.hasInDim(kWarp) && cvt.hasInDim(kWarp)) {
+    const auto &regBases = regLayout.getBases().lookup(kWarp);
+    const auto &cvtBases = cvt.getBases().lookup(kWarp);
+    for (unsigned bit = 0; bit < std::min(regBases.size(), cvtBases.size());
+         ++bit) {
+      if (isZeroBasis(regBases[bit]) && isZeroBasis(cvtBases[bit]))
+        warpZeroMask |= (1u << bit);
+    }
+  }
+  if (!laneZeroMask && !warpZeroMask)
+    return failure();
+
+  // Strip register-dimension broadcasts before emitting predicated stores.
+  auto removeBroadcastSrc = actionRemoveBroadcastedRegs(cvt);
+  if (!removeBroadcastSrc.isIdentity()) {
+    cvt = removeBroadcastSrc.apply(cvt);
+    inVals = removeBroadcastSrc.apply(inVals);
+  }
+
+  auto b = TritonLLVMOpBuilder(loc, rewriter);
+  auto [laneId, warpId] = getLaneAndWarpId(rewriter, loc);
+  Value masked;
+  if (laneZeroMask && warpZeroMask) {
+    masked = b.or_(b.and_(laneId, b.i32_val(laneZeroMask)),
+                   b.and_(warpId, b.i32_val(warpZeroMask)));
+  } else if (laneZeroMask) {
+    masked = b.and_(laneId, b.i32_val(laneZeroMask));
+  } else {
+    masked = b.and_(warpId, b.i32_val(warpZeroMask));
+  }
+  Value storePred = b.icmp_eq(masked, b.i32_val(0));
+
+  auto calcPaddedOffset = [&](Value smemOffset) {
+    TritonLLVMOpBuilder b(loc, rewriter);
+    auto bitwidth = getIntOrFloatOrPtrBitWidth(llvmElemTy);
+    if (paddedEnc) {
+      Value padOffset = emitPadding(loc, rewriter, paddedEnc, bitwidth,
+                                    smemOffset, /*offsetInBytes=*/true);
+      smemOffset = b.add(smemOffset, padOffset);
+    }
+    return smemOffset;
+  };
+  auto affineOffset = smemObj.getShmemOffset(loc, rewriter, memDescTy);
+  auto maskSpanAffineOffset = smemObj.getMaskSpanOffsets(memDescTy);
+  std::optional<int> maybeMaxVecElems;
+  if (paddedEnc)
+    maybeMaxVecElems = paddedEnc.getMinInterval();
+
+  auto emitStore = [&](RewriterBase &rewriter, Location loc,
+                       ArrayRef<Value> vals, Value shmemAddr, int idx,
+                       VectorType vecTy) -> SmallVector<Value> {
+    auto length = vecTy.getNumElements();
+    Value valsVec =
+        packLLVector(loc, ArrayRef<Value>(vals).slice(idx, length), rewriter);
+    targetInfo.storeDShared(rewriter, loc, shmemAddr, std::nullopt, valsVec,
+                            /*pred=*/storePred);
+    return {};
+  };
+  lowerLdSt(loc, ctx, cvt, inVals, llvmElemTy, smemObj.getBase(),
+            calcPaddedOffset, affineOffset, maskSpanAffineOffset, laneId,
+            warpId, rewriter, targetInfo, maybeMaxVecElems, emitStore);
+  return success();
+}
+
 struct LocalAllocOpConversion
     : public ConvertOpToLLVMPattern<triton::gpu::LocalAllocOp> {
   LocalAllocOpConversion(const LLVMTypeConverter &converter,
@@ -546,7 +650,7 @@ struct LocalAllocOpConversion
   LogicalResult
   matchAndRewrite(triton::gpu::LocalAllocOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!op.getSrc())
+    if (!op.getSrc() || !op.isSharedMemoryAlloc())
       return failure();
     MemDescType memDescType = op.getType();
     RankedTensorType regTy = op.getSrc().getType();
@@ -561,6 +665,11 @@ struct LocalAllocOpConversion
     auto result =
         lowerLdStMatrix(op.getLoc(), regLayout, memDescType, values, smemObj,
                         rewriter, targetInfo, getTypeConverter());
+    if (failed(result)) {
+      result = lowerBroadcastDedupLocalStore(
+          op.getLoc(), op.getContext(), op.getSrc(), memDescType, smemObj,
+          values, getTypeConverter(), rewriter, targetInfo);
+    }
     if (failed(result)) {
       return failure();
     }
@@ -597,6 +706,11 @@ struct LocalStoreOpConversion
     auto result =
         lowerLdStMatrix(op.getLoc(), regLayout, memDescType, values, smemObj,
                         rewriter, targetInfo, getTypeConverter());
+    if (failed(result)) {
+      result = lowerBroadcastDedupLocalStore(
+          op.getLoc(), op.getContext(), op.getSrc(), memDescType, smemObj,
+          values, getTypeConverter(), rewriter, targetInfo);
+    }
     if (failed(result)) {
       return failure();
     }
