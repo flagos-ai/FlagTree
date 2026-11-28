@@ -269,7 +269,7 @@ def compile(src, target=None, options=None, _env_vars=None):
             cached_kernel = CompiledKernel(src, metadata_group, hash)
         except FileNotFoundError:
             # A cache file may be evicted after resolving the group.
-            metadata_group = {}
+            pass
     if cached_kernel is not None and cached_kernel.kernel:
         # cache hit!
         if compilation_listener:
@@ -281,6 +281,9 @@ def compile(src, target=None, options=None, _env_vars=None):
                 cache_hit=True,
             )
         return cached_kernel
+
+    # Rebuild the group from this compilation's outputs.
+    metadata_group = {}
 
     # initialize metadata
     metadata = {
