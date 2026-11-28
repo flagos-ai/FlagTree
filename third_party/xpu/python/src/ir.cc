@@ -18,6 +18,7 @@
 #include "mlir/Dialect/LLVMIR/Transforms/InlinerInterfaceImpl.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/MLIRContext.h"
@@ -416,9 +417,32 @@ void init_triton_ir(py::module &&m) {
       }))
       .def("printOpOnDiagnostic",
            [](MLIRContext &self, bool v) { self.printOpOnDiagnostic(v); })
-      .def("printStackTraceOnDiagnostic", [](MLIRContext &self, bool v) {
-        self.printStackTraceOnDiagnostic(v);
-      });
+      .def("printStackTraceOnDiagnostic",
+           [](MLIRContext &self, bool v) {
+             self.printStackTraceOnDiagnostic(v);
+           })
+      // Every registered op name, sorted, with its Elementwise answer. The
+      // completeness gate enumerates the dialect surface at RUNTIME (which
+      // ops exist and which carry the trait) instead of scanning tablegen,
+      // so a new shape op makes the gate red without anyone re-deriving the
+      // list. The trait is read off the RegisteredOperationName's interface
+      // (no op instance needed).
+      .def("get_registered_operation_names",
+           [](MLIRContext &self) -> std::vector<std::string> {
+             std::vector<std::string> names;
+             for (const RegisteredOperationName &n :
+                  self.getRegisteredOperations())
+               names.push_back(n.getStringRef().str());
+             return names;
+           })
+      .def("is_registered_operation_elementwise",
+           [](MLIRContext &self, const std::string &name) -> py::object {
+             for (const RegisteredOperationName &n :
+                  self.getRegisteredOperations())
+               if (n.getStringRef() == name)
+                 return py::bool_(n.hasTrait<OpTrait::Elementwise>());
+             return py::none();
+           });
 
   py::class_<SourceMgrDiagnosticHandler>(m, "source_mgr_diag",
                                          py::module_local())
@@ -476,12 +500,44 @@ void init_triton_ir(py::module &&m) {
              self.print(os);
              return os.str();
            })
-      .def("set_name", [](Location &self, std::string &name) {
-        mlir::StringAttr nameAttr =
-            mlir::StringAttr::get(self.getContext(), name);
-        mlir::NameLoc nameLoc = mlir::NameLoc::get(nameAttr, self);
-        self = dyn_cast<Location>(nameLoc);
-      });
+      .def("set_name",
+           [](Location &self, std::string &name) {
+             mlir::StringAttr nameAttr =
+                 mlir::StringAttr::get(self.getContext(), name);
+             mlir::NameLoc nameLoc = mlir::NameLoc::get(nameAttr, self);
+             self = dyn_cast<Location>(nameLoc);
+           })
+      .def("file_line_col",
+           [](Location &self)
+               -> std::optional<std::tuple<std::string, int, int>> {
+             // Peel wrappers (NameLoc, FusedLoc...) down to the innermost
+             // FileLineColLoc. The front end wraps the source position in a
+             // NameLoc whenever the value got a name, so the plain position
+             // is only reachable through this walk; None when there is none
+             // (UnknownLoc, and every kind that carries no position).
+             Location cur = self;
+             for (int depth = 0; depth < 8; ++depth) {
+               if (auto f = dyn_cast<FileLineColLoc>(cur))
+                 return std::make_tuple(std::string(f.getFilename().str()),
+                                        f.getLine(), f.getColumn());
+               if (auto n = dyn_cast<NameLoc>(cur)) {
+                 std::optional<Location> child = n.getChildLoc();
+                 if (!child)
+                   return std::nullopt;
+                 cur = *child;
+                 continue;
+               }
+               if (auto f = dyn_cast<FusedLoc>(cur)) {
+                 auto locs = f.getLocations();
+                 if (locs.empty())
+                   return std::nullopt;
+                 cur = locs[0];
+                 continue;
+               }
+               return std::nullopt;
+             }
+             return std::nullopt;
+           });
 
   py::class_<Value>(m, "value", py::module_local())
       .def(py::init<>())
@@ -699,6 +755,9 @@ void init_triton_ir(py::module &&m) {
              llvm::StringRef opName = self.getName().getStringRef();
              return opName.str();
            })
+      // The op's own loc, for the walk that reads positions off ops without
+      // results (``tt.func`` / ``tt.return`` / ``tt.store``).
+      .def("get_loc", [](Operation &self) { return self.getLoc(); })
       .def("get_num_operands", &Operation::getNumOperands)
       .def("get_operand", &Operation::getOperand)
       .def("get_num_results", &Operation::getNumResults)
@@ -719,6 +778,36 @@ void init_triton_ir(py::module &&m) {
              if (!ret)
                return py::none();
              return py::bool_(ret.getValue());
+           })
+      // Read-only twin of the ModuleOp one above (``ttg.num-warps``): the
+      // fact harvest walks a lowered module and reads per-op integer attrs
+      // (``tt.reduce``'s ``axis``) by position key, so the generic
+      // ``operation`` binding needs the same accessor.
+      .def("get_int_attr",
+           [](Operation &self, const std::string &name) -> py::object {
+             auto ret = self.getAttrOfType<IntegerAttr>(name);
+             if (!ret)
+               return py::none();
+             return py::int_(ret.getInt());
+           })
+      // Same for dense i32 array attrs (``tt.trans``'s ``order``), which
+      // IntegerAttr cannot cover.
+      .def("get_int_array_attr",
+           [](Operation &self, const std::string &name) -> py::object {
+             auto ret = self.getAttrOfType<DenseI32ArrayAttr>(name);
+             if (!ret)
+               return py::none();
+             return py::cast(std::vector<int>(ret.asArrayRef().begin(),
+                                              ret.asArrayRef().end()));
+           })
+      // The identity classification: an op the dialect declares Elementwise
+      // carries every operand's axes through. Deliberately NOT
+      // OpTrait::hasElementwiseMappableTraits, which demands the full four
+      // (Elementwise+Scalarizable+Vectorizable+Tensorizable) and would sort
+      // tt.extern_elementwise -- Elementwise only -- into "unclassified".
+      .def("is_elementwise",
+           [](Operation &self) {
+             return self.hasTrait<mlir::OpTrait::Elementwise>();
            })
       .def("get_flat_symbol_ref_attr",
            [](Operation &self, const std::string &name) -> py::object {

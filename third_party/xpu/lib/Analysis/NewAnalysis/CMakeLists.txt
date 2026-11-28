@@ -7,6 +7,7 @@ add_mlir_library(TritonXPUAnalysis
   MaskAnalysis.cpp
   OpFoldResultUtils.cpp
   PtrAnalysis.cpp
+  StructuredIdAnalysis.cpp
   UseAnalysis.cpp
   Utility.cpp
   ../ScalarAnalysis.cpp

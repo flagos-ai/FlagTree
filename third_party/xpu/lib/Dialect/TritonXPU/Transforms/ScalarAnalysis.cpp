@@ -65,6 +65,40 @@ struct TritonXPUScalarAnalysisPass
       return v.isContig() && v.stride == 1;
     };
 
+    // The Block* lattice states (BlockScalar / BlockContig) and every
+    // offsetState derived from them below (DiscreteSame / LocallyContinuous /
+    // LocallyScalar) assume a row-major layout where axis 0 is the (outer) row
+    // axis and the contiguous elements run along the innermost axis. The
+    // marking helpers read sizePerCore[0] as the per-core row extent, which
+    // holds in two cases:
+    //   - 1-D order = [0]: a flattened-pointwise tensor (e.g. the view_54
+    //     rms_dual_chain gather). There is only one axis, so no inner/outer
+    //     inversion is possible and sizePerCore[0] is the per-core extent.
+    //   - 2-D order = [1, 0]: axis 1 is the contiguous inner axis, axis 0 is
+    //     the row axis; sizePerCore[0] is the per-core row extent.
+    // For the transposed 2-D order = [0, 1] (reduce2d / softmax / layernorm
+    // layouts where axis 0 is contiguous) the inner/outer roles invert, so
+    // refuse to mark from a Block* state and let the gm2lm fall through to the
+    // conservative (Unknown) path. This is the consuming-end twin of the order
+    // guard in the broadcast transfer function (Analysis/ScalarAnalysis.cpp):
+    // the producer refuses to create a Block* for a transposed 2-D broadcast,
+    // and here the consumer refuses to act on a transposed 2-D pointer no
+    // matter how it was produced (e.g. carried through an order-changing
+    // convert_layout). The 1-D order = [0] case must NOT be rejected: it is
+    // genuinely row-major and was correctly marked before this guard existed.
+    auto isRowMajorLayout = [&](Value ptrTensor) -> bool {
+      auto ty = dyn_cast<RankedTensorType>(ptrTensor.getType());
+      if (!ty)
+        return false;
+      auto enc = dyn_cast<triton::xpu::ClusterLayoutAttr>(ty.getEncoding());
+      if (!enc)
+        return false;
+      ArrayRef<unsigned> order = enc.getOrder();
+      if (order.size() == 1)
+        return order[0] == 0;
+      return order.size() == 2 && order[0] == 1 && order[1] == 0;
+    };
+
     // Returns rowLen (>= 2) when the pointer-tensor is BlockContig with
     // stride=1 AND it is a *genuine runtime gather* (its inter-row base comes
     // from a `triton_xpu.load`, the k89 embedding case) AND it is *not
@@ -102,6 +136,9 @@ struct TritonXPUScalarAnalysisPass
       const ScalarValueState &v = lattice->getValue();
       if (!v.isBlockContig() || v.stride != 1 || v.rowLen < 2)
         return 0;
+      if (!isRowMajorLayout(ptrTensor))
+        return 0; // Block* roles assume 1-D order=[0] or 2-D order=[1,0]; see
+                  // isRowMajorLayout
       if (!aggressive && !v.blockFromLoad)
         return 0; // not a genuine runtime gather (e.g. cat strided copy)
       if (v.blockStrideKnown && v.blockStride != v.rowLen)
@@ -157,6 +194,9 @@ struct TritonXPUScalarAnalysisPass
       const ScalarValueState &v = lattice->getValue();
       if (!v.isBlockScalar() || v.rowLen < 2)
         return 0;
+      if (!isRowMajorLayout(ptrTensor))
+        return 0; // Block* roles assume 1-D order=[0] or 2-D order=[1,0]; see
+                  // isRowMajorLayout
       auto ty = dyn_cast<RankedTensorType>(ptrTensor.getType());
       if (!ty)
         return 0;
@@ -182,12 +222,36 @@ struct TritonXPUScalarAnalysisPass
           b.getIntegerAttr(b.getIntegerType(64, /*isSigned=*/true), -1));
     };
 
-    // Returns rowLen when the pointer-tensor is BlockScalar but each core spans
-    // *multiple whole blocks* (rowLen < sizePerCore && sizePerCore % rowLen ==
-    // 0). DiscreteSame requires one uniform address per core (rowLen >=
-    // sizePerCore); this complementary "locally scalar" case keeps the
-    // per-block scalar address structure so the gm2lm can issue one scalar DMA
-    // per block instead of falling back to the per-element Unknown gather.
+    // Returns rowLen when the pointer-tensor is BlockScalar and the per-core
+    // lane window can be cut into row-aligned groups, i.e. the gm2lm can issue
+    // one scalar DMA per group instead of falling back to the per-element
+    // Unknown gather.
+    //
+    // DiscreteSame (getBlockScalarRowLen, tried first) covers the case where a
+    // whole core is uniform: rowLen % sizePerCore == 0. The group size used by
+    // the lowering is
+    //
+    //     g = gcd(rowLen, lanesPerCore)
+    //
+    // which is always row-aligned: a core's lane window starts at a multiple of
+    // its lane count and row boundaries are multiples of rowLen, so both are
+    // multiples of g and no g-lane group can straddle a row boundary.
+    //
+    // Two tiers:
+    //   * rowLen < sizePerCore && sizePerCore % rowLen == 0 (g == rowLen) is
+    //     claimed in both runs -- the long-standing behaviour.
+    //   * any other rowLen with g >= 2 is claimed only in aggressive mode, i.e.
+    //     only when OffsetAnalysis already gave up (offsetState == -1). This is
+    //     the case the old code rejected outright, e.g. the MoE gate gather
+    //     with rowLen=1232 / sizePerCore=128, which degenerated into one scalar
+    //     DMA plus one i64 divide *per lane*. Restricting it to the aggressive
+    //     run matters: for pointers OffsetAnalysis classifies as Discrete it
+    //     already emits a single wide DMA plus LM re-indexing, which is cheaper
+    //     than numElems/g scalar DMAs, so we must not take those over.
+    //
+    // The lowering recomputes the gcd against its own numElems (which may be a
+    // sub-multiple of sizePerCore after unrolling) rather than trusting a group
+    // size stamped here, so the attribute keeps the true rowLen.
     auto getLocalScalarRowLen = [&](Value ptrTensor) -> int64_t {
       auto *lattice =
           solver.lookupState<dataflow::Lattice<ScalarValueState>>(ptrTensor);
@@ -196,6 +260,9 @@ struct TritonXPUScalarAnalysisPass
       const ScalarValueState &v = lattice->getValue();
       if (!v.isBlockScalar() || v.rowLen < 2)
         return 0;
+      if (!isRowMajorLayout(ptrTensor))
+        return 0; // Block* roles assume 1-D order=[0] or 2-D order=[1,0]; see
+                  // isRowMajorLayout
       auto ty = dyn_cast<RankedTensorType>(ptrTensor.getType());
       if (!ty)
         return 0;
@@ -205,11 +272,19 @@ struct TritonXPUScalarAnalysisPass
       int64_t sizePerCore = enc.getSizePerCore()[0];
       if (sizePerCore <= 0)
         return 0;
-      if (v.rowLen >= sizePerCore)
-        return 0; // DiscreteSame territory (handled by getBlockScalarRowLen)
-      if (sizePerCore % v.rowLen != 0)
-        return 0; // need whole blocks within a core
-      return v.rowLen;
+      if (v.rowLen < sizePerCore && sizePerCore % v.rowLen == 0)
+        return v.rowLen; // whole blocks within a core
+      auto gcd = [](int64_t a, int64_t b) {
+        while (b != 0) {
+          int64_t t = a % b;
+          a = b;
+          b = t;
+        }
+        return a;
+      };
+      if (aggressive && gcd(v.rowLen, sizePerCore) >= 2)
+        return v.rowLen; // row-aligned groups, better than the Unknown gather
+      return 0;
     };
 
     auto markLocallyScalar = [&](Operation *op, int64_t rowLen) {
@@ -227,6 +302,18 @@ struct TritonXPUScalarAnalysisPass
       op->setAttr(
           "rowStride",
           b.getIntegerAttr(b.getIntegerType(64, /*isSigned=*/true), -1));
+      // In aggressive mode OffsetAnalysis has already run, so it will not get
+      // another chance to propagate the state onto the consuming load. The
+      // grouped gm2lm hands out one LM slot per group instead of one per lane,
+      // which is only read correctly by the per-lane (discrete) LM path -- a
+      // vectorized load would read the unwritten slots inside each group. Stamp
+      // the load here with exactly what OffsetAnalysis would have stamped.
+      for (Operation *user : op->getResult(0).getUsers()) {
+        if (auto loadOp = dyn_cast<triton::xpu::LoadOp>(user)) {
+          loadOp->setAttr("stride", b.getSI32IntegerAttr(INT32_MIN));
+          loadOp->setAttr("isDiscrete", b.getBoolAttr(true));
+        }
+      }
     };
 
     // In aggressive mode, only update ops where offsetState is still -1

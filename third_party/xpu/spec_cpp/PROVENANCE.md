@@ -17,6 +17,36 @@
 - 迁移目标同步源：`triton_3.6` @ `d3c64dd65e401239608164d6be4d893b261b4869`
 - 生成时间：2026-07-10；2026-07-24 对 PR 当前 base 重新同步
 
+### 本轮（freeze `031faee1`）新增/重对齐的副本
+
+- 派生自 FlagTree `main` 提交：`1c34edb4669d12a51ed383cd2292dd6a85f75565`
+- 迁移目标同步源：`triton_3.6` @ `031faee1e240f7c32f87fb8c14cf838829e77c1a`（上一 freeze `cb2b194d`）
+- 底本纪律：下列副本一律**以上述 FlagTree 提交的主树原件为底**，再叠加 `cb2b194d..031faee1` 的增量；
+  不以源仓版为底（Q0b.2）。逐件已验「FlagTree 适配行零丢失 + 本轮 delta 全带入」。
+
+| 新增副本 | FlagTree 适配行/存活 | 本轮 delta/带入 |
+|---|---|---|
+| `include/triton/Dialect/TritonGPU/IR/Traits.h` | 22 / 22 | 8 / 8 |
+| `include/triton/Dialect/TritonGPU/IR/TritonGPUAttrBase.td` | 22 / 22 | 1 / 1 |
+| `include/triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h` | 22 / 22 | 8 / 8 |
+| `include/triton/Dialect/TritonGPU/Transforms/Utility.h` | 85 / 85 | 11 / 11 |
+| `lib/Dialect/TritonGPU/Transforms/Pipeliner/PipeliningUtility.cpp` | 50 / 50 | 5 / 5 |
+
+| 重对齐的已有副本 | FlagTree 适配行/存活 | 本轮 delta/带入 |
+|---|---|---|
+| `lib/Dialect/TritonGPU/Transforms/Utility.cpp` | 143 / 143 | 15 / 15 |
+
+**这批副本为什么存在**：它们供给两个本仓原先没有的符号，而本轮增量的消费方需要它们 ——
+`PipeliningUtility.h` 供 `kUserAsyncWaitAttr`；`Utility.h`/`Utility.cpp` 供
+`getForeignTensorOpNames`。按文件孤立评估会误判成"缺符号、编不过"，按组评估才成立
+（依据见 `sync_work/evidence/round-031faee1/00-analysis/DECISIONS-maintree.md` §六）。
+
+**未建副本的主树件**（本轮 §8.1 Q3/Q4 裁决，发起人 2026-11-24 确认）：
+`TritonToTritonGPUPass.cpp`（Q4，XPU 绑定但不调用）·
+`Pipeliner/WGMMAPipeline.cpp`（Q4，非 XPU 路径）·
+`TritonToTritonGPU/TritonGPUConversion.cpp`（Q3，下游已有更保守的 `__TLE__` 门控版本）。
+最后一件的排除**以「XPU 管线不进 ttgpuir」为前提**，前提变则须翻案。
+
 4 个 `.cpp` 副本已重新同步当前 base 的 FlagOS license header，并保留下表所列
 XPU 差异。
 

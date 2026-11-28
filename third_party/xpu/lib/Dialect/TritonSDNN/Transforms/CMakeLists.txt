@@ -5,22 +5,33 @@ add_xpu_sdnn_object(TritonSDNNTransforms
   ${CMAKE_CURRENT_SOURCE_DIR}/DSACopy.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/EWActTable.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/Legalize.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/LegalizePatterns.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/MergeExternEW.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/CombinePatterns.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/CombinePatternsArch5.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/CombineBefore.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/ResolveLayoutConflict.cpp.o
   # sync source d116bdf4: Combine.cpp removed; new Transforms added
+  # sync source 031faee1: 7 Transforms added (LegalizePatterns,
+  #   CombinePatternsArch5, HoistIfBuffer, EventColoring, StructuredIds,
+  #   FusePtrBitcastRetype, SdnnArchSpecArch3) -- present in the
+  #   xpu-sdnn-objects v0.3.6.9.2 bundle, so xpu_check_object_file_list
+  #   requires them here
   ${CMAKE_CURRENT_SOURCE_DIR}/FlattenMxScale.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/FusePtrBitcastRetype.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/LowerDotScaled.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/MxTmLayout.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/SdnnArchSpecArch3.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/WrapFallbackCompute.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/HoistDS.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/HoistIfBuffer.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/TransposeMMA.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/TransposeEW.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/LoopGrid.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/LoopUnroll.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/CoprocessorInterleaving.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/Pipeline.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/EventColoring.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/EWLiteScheduling.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/MultipleBuffer.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/HoistLoopInvariantDma.cpp.o
@@ -34,6 +45,7 @@ add_xpu_sdnn_object(TritonSDNNTransforms
   ${CMAKE_CURRENT_SOURCE_DIR}/SchedulePrintOp.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/RemoveDsOp.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/StripAllOp.cpp.o
+  ${CMAKE_CURRENT_SOURCE_DIR}/StructuredIds.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/InjectDMAFormat.cpp.o
   ${CMAKE_CURRENT_SOURCE_DIR}/MxScaleLayout.cpp.o
 

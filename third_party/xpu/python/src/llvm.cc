@@ -4,13 +4,17 @@
 #include "triton/Target/LLVMIR/IntrinsicAttrTable.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/CodeGen/MIRParser/MIRParser.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/Verifier.h"
@@ -655,6 +659,97 @@ static void expandConstMemSets(llvm::Module &M) {
 
 using ret = py::return_value_policy;
 
+// Cap every loop of `f` at `width` vector lanes and `interleave` iterations.
+//
+// Why metadata rather than the same-named cl::opts: the vectorizer
+// consults that option through `getNumOccurrences()`, which only counts
+// command-line occurrences, so assigning the cl::opt from code changes the
+// stored value but not the decision.  Loop hints are read per loop and do not
+// depend on how the pass was configured.
+//
+// Used for targets whose "vector" instructions do not exist below the
+// middle-end: KL5 little cores split every vector back into scalars, and the
+// LLVM 19 backend has no select/spill pattern above 256 bits, so a 512-bit
+// vector (16 x i32) aborts.  A narrow width plus an interleave depth
+// reproduces the unrolled scalar loop the hardware actually wants.
+//
+// Runs both before the O3 pipeline and at the VectorizerStartEP callback (after
+// LoopSimplify/LoopRotate canonicalize multi-latch or late-materialized loops
+// into single-latch form, right before LoopVectorize).
+static void setScalarLoopHintsOnFunction(llvm::Function &f, llvm::LoopInfo &li,
+                                         unsigned width, unsigned interleave) {
+  if (f.isDeclaration())
+    return;
+  llvm::LLVMContext &ctx = f.getContext();
+  llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
+  auto hintNode = [&](llvm::StringRef key, unsigned val) -> llvm::Metadata * {
+    llvm::Metadata *kv[2] = {
+        llvm::MDString::get(ctx, key),
+        llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, val))};
+    return llvm::MDNode::get(ctx, kv);
+  };
+  for (llvm::Loop *l : li.getLoopsInPreorder()) {
+    llvm::SmallVector<llvm::BasicBlock *, 4> latches;
+    l->getLoopLatches(latches);
+    for (llvm::BasicBlock *latch : latches) {
+      llvm::Instruction *ti = latch->getTerminator();
+      if (!ti)
+        continue;
+      llvm::SmallVector<llvm::Metadata *, 8> ops;
+      ops.push_back(nullptr); // self reference, filled in below
+      if (llvm::MDNode *old = ti->getMetadata(llvm::LLVMContext::MD_loop)) {
+        for (unsigned i = 1; i < old->getNumOperands(); ++i) {
+          llvm::Metadata *op = old->getOperand(i);
+          if (!op || op == old)
+            continue;
+          if (auto *n = llvm::dyn_cast<llvm::MDNode>(op)) {
+            if (n->getNumOperands() >= 1) {
+              if (auto *s = llvm::dyn_cast<llvm::MDString>(n->getOperand(0))) {
+                if (s->getString() == "llvm.loop.vectorize.width" ||
+                    s->getString() == "llvm.loop.interleave.count")
+                  continue; // replaced below
+              }
+            }
+          }
+          ops.push_back(op);
+        }
+      }
+      ops.push_back(hintNode("llvm.loop.vectorize.width", width));
+      ops.push_back(hintNode("llvm.loop.interleave.count", interleave));
+      llvm::MDNode *loopMd = llvm::MDNode::getDistinct(ctx, ops);
+      loopMd->replaceOperandWith(0, loopMd);
+      ti->setMetadata(llvm::LLVMContext::MD_loop, loopMd);
+    }
+  }
+}
+
+static void setScalarLoopHints(llvm::Module &mod, unsigned width,
+                               unsigned interleave) {
+  for (llvm::Function &f : mod) {
+    if (f.isDeclaration())
+      continue;
+    llvm::DominatorTree dt(f);
+    llvm::LoopInfo li(dt);
+    setScalarLoopHintsOnFunction(f, li, width, interleave);
+  }
+}
+
+namespace {
+struct StampScalarLoopHintsPass
+    : public llvm::PassInfoMixin<StampScalarLoopHintsPass> {
+  unsigned width;
+  unsigned interleave;
+  StampScalarLoopHintsPass(unsigned w, unsigned i) : width(w), interleave(i) {}
+  llvm::PreservedAnalyses run(llvm::Function &F,
+                              llvm::FunctionAnalysisManager &AM) {
+    auto &LI = AM.getResult<llvm::LoopAnalysis>(F);
+    setScalarLoopHintsOnFunction(F, LI, width, interleave);
+    return llvm::PreservedAnalyses::all();
+  }
+  static llvm::StringRef name() { return "StampScalarLoopHintsPass"; }
+};
+} // namespace
+
 void init_triton_llvm(py::module &&m) {
 
   py::class_<llvm::LLVMContext>(m, "context", py::module_local())
@@ -971,6 +1066,52 @@ void init_triton_llvm(py::module &&m) {
             false; // To Void Selecting ShuffleVector Instruction
 #endif
         //===-----------------------------------------------------------===//
+        // Caller-supplied overrides for the knobs above.
+        //
+        // Why: KL5 instruction selection has no pattern for a generic vector
+        // broadcast, so any kernel that lets the loop vectorizer widen a
+        // scalar loop aborts in llc with `Cannot select: v16i32`.  A backend
+        // needs to turn those transforms off per compilation, and
+        // DISABLE_LLVM_OPT cannot: it only ever sets a `cl::opt` to *true*,
+        // while `vectorize-loops` already defaults to true.
+        //
+        // How: `flags` (the list `translate_to_asm` already takes) accepts
+        // these negative names, each mapping to one field of
+        // PipelineTuningOptions:
+        //   - `no-loop-vectorize`  -> LoopVectorization
+        //   - `no-loop-interleave` -> LoopInterleaving
+        //   - `no-loop-unroll`     -> LoopUnrolling
+        //   - `no-slp-vectorize`   -> SLPVectorization
+        // plus two per-loop hint overrides for scalar-loop targets, where
+        // vector width buys nothing and only the interleave depth matters:
+        //   - `scalar-loop-width=<N>`       -> llvm.loop.vectorize.width
+        //   - `scalar-loop-interleave=<N>`  -> llvm.loop.interleave.count
+        unsigned forcedVectorWidth = 0;
+        unsigned forcedVectorInterleave = 0;
+        for (const std::string &flag : flags) {
+          if (flag == "no-loop-vectorize")
+            tuningOptions.LoopVectorization = false;
+          else if (flag == "no-loop-interleave")
+            tuningOptions.LoopInterleaving = false;
+          else if (flag == "no-loop-unroll")
+            tuningOptions.LoopUnrolling = false;
+          else if (flag == "no-slp-vectorize")
+            tuningOptions.SLPVectorization = false;
+          else if (llvm::StringRef(flag).starts_with("scalar-loop-width="))
+            llvm::StringRef(flag)
+                .drop_front(strlen("scalar-loop-width="))
+                .getAsInteger(10, forcedVectorWidth);
+          else if (llvm::StringRef(flag).starts_with("scalar-loop-interleave="))
+            llvm::StringRef(flag)
+                .drop_front(strlen("scalar-loop-interleave="))
+                .getAsInteger(10, forcedVectorInterleave);
+        }
+
+        // Stamp the hints on this module's loops.  Per-loop metadata, not a
+        // process-wide cl::opt: the vectorizer reads the force-* options only
+        // when they came from the command line (getNumOccurrences()).
+        if (forcedVectorWidth && forcedVectorInterleave)
+          setScalarLoopHints(*mod, forcedVectorWidth, forcedVectorInterleave);
 
         std::string pluginFile =
             mlir::triton::tools::getStrEnv("LLVM_PASS_PLUGIN_PATH");
@@ -1051,6 +1192,9 @@ void init_triton_llvm(py::module &&m) {
               // sure all the struct are removed for the following passes.
               fpm.addPass(BreakStructPhiNodesPass());
               fpm.addPass(InstCombinePass());
+              if (forcedVectorWidth && forcedVectorInterleave)
+                fpm.addPass(StampScalarLoopHintsPass(forcedVectorWidth,
+                                                     forcedVectorInterleave));
             });
         bool enableAddressSanitizer =
             mlir::triton::tools::getBoolEnv("TRITON_ENABLE_ASAN");

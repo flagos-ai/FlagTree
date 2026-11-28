@@ -49,6 +49,7 @@
 // XPU backend's include dir is put BEFORE the main tree's one by
 // third_party/xpu/CMakeLists.txt, and the deferred build order is handled there
 // too (the `triton` target is created after this subdirectory).
+#include "triton/Dialect/TritonGPU/Transforms/PipeliningUtility.h" // user wait attr
 #include "triton/Dialect/TritonXPU/IR/Dialect.h"
 #include "triton/Tools/GenericSwizzling.h"
 #include "triton/Tools/LayoutUtils.h"
@@ -539,11 +540,20 @@ void init_gluon_ir(py::module &&m) {
              ValueRange tokens;
              self.create<ttg::AsyncCommitGroupOp>(tokens);
            })
-      .def("create_async_wait_group",
-           [](GluonOpBuilder &self, int num) {
-             ValueRange tokens;
-             self.create<ttg::AsyncWaitOp>(tokens, num);
-           })
+      // `user_scheduled` marks a wait the kernel author wrote (tle.gpu's
+      // dma_wait / async_wait_group), so `updateWaits` does not renumber it
+      // from its missing token operand and `combineRedundantWaitOps` does not
+      // fold it into a neighbour.
+      .def(
+          "create_async_wait_group",
+          [](GluonOpBuilder &self, int num, bool user_scheduled) {
+            ValueRange tokens;
+            auto waitOp = self.create<ttg::AsyncWaitOp>(tokens, num);
+            if (user_scheduled)
+              waitOp->setAttr(mlir::triton::kUserAsyncWaitAttr,
+                              mlir::UnitAttr::get(self.getContext()));
+          },
+          py::arg("num"), py::arg("user_scheduled") = false)
       .def("create_convert_layout",
            [](GluonOpBuilder &self, Type resultTy, Value value) -> Value {
              return self.create<ttg::ConvertLayoutOp>(resultTy, value);

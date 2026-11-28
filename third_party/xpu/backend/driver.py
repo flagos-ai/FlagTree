@@ -1,5 +1,7 @@
 import os
 import sys
+import math
+import statistics
 import hashlib
 import shutil
 import tempfile
@@ -1201,8 +1203,7 @@ class XPUDriver(GPUDriver):
         return torch.cuda
 
     def get_benchmarker(self):
-        from triton.testing import do_bench
-        return do_bench
+        return _do_bench_wall_clock
 
     def get_empty_cache_for_benchmark(self):
         # torch_xmlir maps the XPU runtime onto torch.cuda.*; allocating with
@@ -1213,3 +1214,138 @@ class XPUDriver(GPUDriver):
 
     def clear_cache(self, cache):
         cache.zero_()
+
+
+# Ceiling on the warmup / repetition counts the benchmarker below will run.
+# `do_bench` sizes both from the estimate alone, so a bad estimate multiplies
+# straight through; this bounds the damage whatever the estimate says.
+_BENCH_MAX_ITERS = 1000
+
+
+def _bench_quantile(a, q):
+    n = len(a)
+    a = sorted(a)
+
+    def get_quantile(q_):
+        if not (0 <= q_ <= 1):
+            raise ValueError("Quantiles must be in the range [0, 1]")
+        point = q_ * (n - 1)
+        lower = math.floor(point)
+        upper = math.ceil(point)
+        t = point - lower
+        return (1 - t) * a[lower] + t * a[upper]
+
+    return [get_quantile(q_) for q_ in q]
+
+
+def _bench_summarize(times, quantiles, return_mode):
+    """Local copy of triton.testing's private ``_summarize_statistics``.
+
+    Importing a leading-underscore helper couples the XPU benchmarker to
+    upstream's internals; a rename would only surface as an ImportError on the
+    first autotune.  The behaviour here is the version this was copied from
+    (linear-interpolation quantiles, statistics.mean/median).
+    """
+    if quantiles is not None:
+        ret = _bench_quantile(times, quantiles)
+        if len(ret) == 1:
+            ret = ret[0]
+        return ret
+    if return_mode == "all":
+        return times
+    elif return_mode == "min":
+        return min(times)
+    elif return_mode == "max":
+        return max(times)
+    elif return_mode == "mean":
+        return statistics.mean(times)
+    elif return_mode == "median":
+        return statistics.median(times)
+
+
+def _do_bench_wall_clock(fn, warmup=25, rep=100, grad_to_none=None, quantiles=None, return_mode="mean"):
+    """`triton.testing.do_bench` with wall-clock timing instead of device events.
+
+    `triton.testing.do_bench` sizes its repetition count from an estimate taken
+    with device events.  On this stack `get_device_interface()` hands back
+    torch_xmlir's `torch.cuda` shim, and that shim's `Event.elapsed_time()`
+    reports 0 for kernels that have already completed, so the estimate comes
+    out as 0, the 1e-3 ms floor in `testing.py` turns it into 1e-3, and
+    `n_repeat = int(100 / 1e-3)` becomes 100_000 -- 125k launches per autotune
+    config.  Measured cost: FlagGems `fractional_max_pool3d` needs ~2 h per
+    autotune key, six configs, which reads as a compiler hang.
+
+    Wall clock does not go through the shim, so the estimate is real.  Each
+    repetition is timed between two synchronizes: with a single synchronize at
+    the end the loop would only measure how fast the host can enqueue, and the
+    quantiles autotuning asks for need per-repetition samples anyway.  A
+    synchronize per repetition costs little next to any kernel large enough for
+    its timing to matter.
+
+    Set TRITON_XPU_BENCH_USE_EVENTS=1 to get the upstream implementation back,
+    e.g. once the shim returns real elapsed times.
+    """
+    assert return_mode in ["min", "max", "mean", "median", "all"]
+
+    if os.getenv("TRITON_XPU_BENCH_USE_EVENTS", "0") == "1":
+        from triton.testing import do_bench
+        return do_bench(fn, warmup=warmup, rep=rep, grad_to_none=grad_to_none, quantiles=quantiles,
+                        return_mode=return_mode)
+
+    import time
+
+    from triton.runtime import driver
+
+    active = driver.active
+    di = active.get_device_interface()
+
+    fn()
+    di.synchronize()
+
+    cache = active.get_empty_cache_for_benchmark()
+
+    def once():
+        if grad_to_none is not None:
+            for x in grad_to_none:
+                x.grad = None
+        # Clear the L2 cache before each run, as the upstream implementation does.
+        active.clear_cache(cache)
+        fn()
+
+    # Estimate on wall clock.  The first batch is untimed warmup: it pays for
+    # the JIT of any lazily-built launch path, which would otherwise land in
+    # the estimate below.
+    for _ in range(5):
+        once()
+    di.synchronize()
+
+    start = time.perf_counter()
+    for _ in range(5):
+        once()
+    di.synchronize()
+    estimate_ms = (time.perf_counter() - start) * 1000.0 / 5
+    # Keep the upstream floor so a genuinely free closure does not divide by zero.
+    estimate_ms = max(estimate_ms, 1e-3)
+
+    n_warmup = min(max(1, int(warmup / estimate_ms)), _BENCH_MAX_ITERS)
+    n_repeat = min(max(1, int(rep / estimate_ms)), _BENCH_MAX_ITERS)
+
+    for _ in range(n_warmup):
+        once()
+
+    times = []
+    for _ in range(n_repeat):
+        # Upstream do_bench flushes the L2 cache before start_event.record(),
+        # so the flush is not part of the sample; keep the same boundary here.
+        # The synchronize makes the start time the first instruction of fn.
+        if grad_to_none is not None:
+            for x in grad_to_none:
+                x.grad = None
+        active.clear_cache(cache)
+        di.synchronize()
+        start = time.perf_counter()
+        fn()
+        di.synchronize()
+        times.append((time.perf_counter() - start) * 1000.0)
+
+    return _bench_summarize(times, quantiles, return_mode)

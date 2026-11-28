@@ -784,7 +784,7 @@ bool VectorizabilityAnalysis::vectorize(Operation *op, OperationTree &visited,
     // the vectorization path. Actions should be taken to handle this case.
     // Here we workaround to skip LoadOp's `other` value.
     if (auto loadOp = dyn_cast<triton::xpu::LoadOp>(user)) {
-      if (op == loadOp.getOther().getDefiningOp()) {
+      if (loadOp.getOther() && op == loadOp.getOther().getDefiningOp()) {
         continue;
       }
     }

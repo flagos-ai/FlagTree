@@ -174,7 +174,8 @@ void getOpChainFwd(llvm::SetVector<Operation *> &opChain, Operation *op) {
 }
 
 void getOpTreeBwd(llvm::SetVector<Operation *> &opTree,
-                  llvm::SetVector<Operation *> &visitedOps, Operation *op) {
+                  llvm::SetVector<Operation *> &visitedOps, Operation *op,
+                  const llvm::SmallPtrSetImpl<mlir::Value> *stopValues) {
   if (!op) {
     return;
   }
@@ -185,15 +186,20 @@ void getOpTreeBwd(llvm::SetVector<Operation *> &opTree,
     // Do nothing
   } else {
     for (auto operand : op->getOperands()) {
+      // A stop value is a loop-invariant leaf (e.g. a prior accumulate loop's
+      // carried total): keep the op that consumes it, but do not pull its
+      // backward cone, or the scf.for that produced it lands in this tile tree.
+      if (stopValues && operand && stopValues->contains(operand))
+        continue;
       if (!visitedOps.contains(operand.getDefiningOp())) {
-        getOpTreeBwd(opTree, visitedOps, operand.getDefiningOp());
+        getOpTreeBwd(opTree, visitedOps, operand.getDefiningOp(), stopValues);
       }
     }
   }
 
   for (auto userOp : op->getUsers()) {
     if (!visitedOps.contains(userOp)) {
-      getOpTreeBwd(opTree, visitedOps, userOp);
+      getOpTreeBwd(opTree, visitedOps, userOp, stopValues);
     }
   }
 
@@ -202,7 +208,8 @@ void getOpTreeBwd(llvm::SetVector<Operation *> &opTree,
 
 void getOpTreeBwd(llvm::SetVector<Operation *> &opTree,
                   llvm::SetVector<Operation *> &visitedOps, Operation *op,
-                  Block *block) {
+                  Block *block,
+                  const llvm::SmallPtrSetImpl<mlir::Value> *stopValues) {
   if (!op) {
     return;
   }
@@ -211,23 +218,30 @@ void getOpTreeBwd(llvm::SetVector<Operation *> &opTree,
   if (isa<mlir::arith::ConstantOp>(op)) {
     // Do nothing
   } else {
-    if (auto forOp = dyn_cast<mlir::scf::ForOp>(op)) {
-      forOp->walk([&](Operation *innerOp) {
+    // An scf.for/scf.while body can use values produced outside the loop, and
+    // those producers are neither an operand nor a user of the loop op itself.
+    // Descend into the regions so their def-chains join the tree and get
+    // sliced with the rest of it.
+    if (isa<mlir::scf::ForOp, mlir::scf::WhileOp>(op)) {
+      op->walk([&](Operation *innerOp) {
         if (!visitedOps.contains(innerOp)) {
-          getOpTreeBwd(opTree, visitedOps, innerOp, block);
+          getOpTreeBwd(opTree, visitedOps, innerOp, block, stopValues);
         }
       });
     }
     for (auto operand : op->getOperands()) {
+      if (stopValues && operand && stopValues->contains(operand))
+        continue;
       if (!visitedOps.contains(operand.getDefiningOp())) {
-        getOpTreeBwd(opTree, visitedOps, operand.getDefiningOp(), block);
+        getOpTreeBwd(opTree, visitedOps, operand.getDefiningOp(), block,
+                     stopValues);
       }
     }
   }
 
   for (auto userOp : op->getUsers()) {
     if (!visitedOps.contains(userOp)) {
-      getOpTreeBwd(opTree, visitedOps, userOp, block);
+      getOpTreeBwd(opTree, visitedOps, userOp, block, stopValues);
     }
   }
   if (op->getBlock() == block) {

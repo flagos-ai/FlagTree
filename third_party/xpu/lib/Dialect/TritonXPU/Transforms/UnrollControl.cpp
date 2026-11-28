@@ -49,6 +49,21 @@ COMOP(arith::DivUIOp, triton::xpu::VvdivUIOp);
 COMOP(arith::MaximumFOp, triton::xpu::VvmaxFOp);
 COMOP(arith::MinimumFOp, triton::xpu::VvminFOp);
 
+/// Whether the reduce collapses the dimension the unroll control slices.
+///
+/// Why: the unroll always retiles the LAST dimension, so the question is
+/// never "is the axis 1" but "is the axis the last one" -- a rank-3 reduce
+/// along axis 1 keeps the sliced dimension and needs the opposite answer
+/// from a rank-2 one.
+static bool isReduceOnLastAxis(triton::xpu::ReduceOp reduceOp) {
+  if (reduceOp.getNumOperands() == 0)
+    return false;
+  auto srcTy = dyn_cast<RankedTensorType>(reduceOp.getOperandTypes().front());
+  if (!srcTy)
+    return false;
+  return reduceOp.getAxis() == srcTy.getRank() - 1;
+}
+
 struct TritonXPUUnrollControl
     : public impl::TritonXPUUnrollControlBase<TritonXPUUnrollControl> {
 
@@ -190,6 +205,9 @@ public:
   }
 
   bool isAncestorOf(Operation *op1, Operation *op2, bool needBefore = false) {
+    // op2 is null for block arguments (no defining op); nothing nested here.
+    if (!op2)
+      return false;
     Block *block1 = op1->getBlock();
     for (Block *block2 = op2->getBlock(); block2 != nullptr;) {
       if (block1 == block2) {
@@ -217,6 +235,12 @@ public:
       }
     }
     return false;
+  }
+
+  // `isAncestorOf` also holds for same-block ops, so the hoisted producers were
+  // skipped.
+  static bool isDefinedOutsideFor(Operation *defOp, scf::ForOp forOp) {
+    return !defOp || !forOp->isProperAncestor(defOp);
   }
 
   void getUnrollTree(Operation *op, SetVector<Operation *> &opTree,
@@ -266,28 +290,30 @@ public:
 
     // from bottom to top
     if (auto forOp = dyn_cast<scf::ForOp>(op)) {
-      Block *body = forOp.getBody();
-      for (auto &op : body->getOperations()) {
+      // The operand walk cannot see through a region boundary: pull in every
+      // outside value the loop reads, over the whole region -- a nested loop's
+      // hoisted value sits two boundaries away and a one-level scan misses it.
+      forOp.walk([&](Operation *inLoopOp) {
         if (isa<triton::xpu::LoadOp, arith::ConstantOp, triton::xpu::VConstOp>(
-                &op)) {
-        } else if (auto storeOp = dyn_cast<triton::xpu::StoreOp>(&op)) {
+                inLoopOp)) {
+        } else if (auto storeOp = dyn_cast<triton::xpu::StoreOp>(inLoopOp)) {
           auto defOp = storeOp.getValue().getDefiningOp();
-          if (!isAncestorOf(forOp.getOperation(), defOp)) {
+          if (isDefinedOutsideFor(defOp, forOp)) {
             getUnrollTree(defOp, opTree, visitedOps, excludeChainOps, rootOp,
                           isTop2Bottom, needBefore);
           }
         } else {
-          for (auto operand : op.getOperands()) {
+          for (auto operand : inLoopOp->getOperands()) {
             if (isForBlockSizeArgument(forOp.getOperation(), operand))
               continue;
             auto defOp = operand.getDefiningOp();
-            if (!isAncestorOf(forOp.getOperation(), defOp)) {
+            if (isDefinedOutsideFor(defOp, forOp)) {
               getUnrollTree(defOp, opTree, visitedOps, excludeChainOps, rootOp,
                             isTop2Bottom, needBefore);
             }
           }
         }
-      }
+      });
     } else if (isa<triton::xpu::LoadOp, arith::ConstantOp,
                    triton::xpu::VConstOp>(op)) {
     } else if (auto storeOp = dyn_cast<triton::xpu::StoreOp>(op)) {
@@ -1848,41 +1874,62 @@ public:
     return true;
   }
 
+  // Ops whose value operands must track the result type but that the trait gate
+  // below cannot see: they carry a custom verifier instead of SameTypeOperands
+  // / SameOperandsAndResultType, so that gate never fires for them.
+  //
+  // Registration criterion (keep the list and this sentence together -- one
+  // definition, no second copy): an op belongs here iff it would carry one of
+  // those traits AND has a number of operands other than 2. arith.select is the
+  // first such op (cond is i1 while the values are the element type, hence no
+  // same-type trait; 3 operands, hence the NOperands<2> gate below misses it).
+  static bool isRegisteredHoistedOperandOp(Operation *op,
+                                           SmallVectorImpl<unsigned> &values) {
+    if (isa<arith::SelectOp>(op)) {
+      values.push_back(1); // true value
+      values.push_back(2); // false value
+      return true;
+    }
+    return false;
+  }
+
   void setHoistedOperand(MLIRContext *context, OpBuilder &builder,
-                         Location &loc, mlir::Block &block, scf::IfOp &ifOp,
+                         Location &loc, mlir::Block &block, Operation *owner,
                          int64_t iterNum) {
     for (auto &inBlockOp : block) {
+      // Filled by the registered-op test in the gate below; the branch it
+      // selects reads it back. Declared here so the gate can fill it.
+      SmallVector<unsigned, 2> valueOperands;
       if (auto yieldOp = llvm::dyn_cast<scf::YieldOp>(&inBlockOp)) {
-        unsigned numifOpResults = ifOp.getNumResults();
+        unsigned numOwnerResults = owner->getNumResults();
         unsigned numyieldOpOperands = yieldOp.getNumOperands();
-        // isOperandValidInSameForBlock denotes two points:
-        // 1. Extraction is required if the operand of YieldOp
-        //    does not match the type expected by the result of IfOp
-        // 2. whether the operand of YieldOp is in the same ForBlock as IfOp.
+        // isOperandValidInSameForBlock: 1) type match vs the owner's result; 2)
+        // same ForBlock.
         SmallVector<bool, 4> isOperandValidInSameForBlock(numyieldOpOperands);
-        assert((numifOpResults == numyieldOpOperands) &&
-               "The number of IfOp results and YieldOp operands must match.");
+        assert((numOwnerResults == numyieldOpOperands) &&
+               "The number of owner results and YieldOp operands must match.");
         for (unsigned i = 0; i < numyieldOpOperands; ++i) {
-          Type ifOpResTy = ifOp.getResult(i).getType();
+          Type ownerResTy = owner->getResult(i).getType();
           isOperandValidInSameForBlock[i] =
               isOperandOperationInSameForBlock(&inBlockOp, i) ||
-              (inBlockOp.getOperand(i).getType() == ifOpResTy);
+              (inBlockOp.getOperand(i).getType() == ownerResTy);
           if (!isOperandValidInSameForBlock[i]) {
             // triton_xpu.vconst is what TritonXPUVectorize turns a top-level
             // arith.constant into, and it is just as pure and loop-invariant,
             // so the hoisted extract_slice below is equally safe for it -- but
             // only for a splat, because that lowering always reads slice 0.
-            if (reportUnsliceableOperand(&inBlockOp, i, ifOpResTy))
+            if (reportUnsliceableOperand(&inBlockOp, i, ownerResTy))
               continue;
             auto extractSliceOp =
                 getExtractedOperand(context, builder, loc, yieldOp, i, iterNum);
-            extractSliceOp->moveBefore(ifOp);
+            extractSliceOp->moveBefore(owner);
             inBlockOp.setOperand(i, extractSliceOp->getResult(0));
           }
         }
       } else if (((&inBlockOp)->hasTrait<OpTrait::SameTypeOperands>() ||
                   (&inBlockOp)
-                      ->hasTrait<OpTrait::SameOperandsAndResultType>())) {
+                      ->hasTrait<OpTrait::SameOperandsAndResultType>()) ||
+                 isRegisteredHoistedOperandOp(&inBlockOp, valueOperands)) {
         // 1. setOperandTensorType
         if ((&inBlockOp)->hasTrait<OpTrait::NOperands<2>::Impl>()) {
           unsigned numOperands = inBlockOp.getNumOperands();
@@ -1898,13 +1945,72 @@ public:
                 continue;
               auto extractSliceOp = getExtractedOperand(context, builder, loc,
                                                         &inBlockOp, i, iterNum);
-              extractSliceOp->moveBefore(ifOp);
+              extractSliceOp->moveBefore(owner);
               inBlockOp.setOperand(i, extractSliceOp->getResult(0));
             }
+          }
+        } else if (!valueOperands.empty()) {
+          // A registered op (it entered through the gate above, so the list is
+          // filled). Its value operands must follow the result type that
+          // setTensorType already narrowed; a hoisted one left wide is what the
+          // verifier rejects. Only slice-invariant operands may be narrowed.
+          Type wantedTy = inBlockOp.getResult(0).getType();
+          for (unsigned i : valueOperands) {
+            if (inBlockOp.getOperand(i).getType() == wantedTy)
+              continue;
+            if (reportUnsliceableOperand(&inBlockOp, i, wantedTy))
+              continue;
+            auto extractSliceOp = getExtractedOperand(context, builder, loc,
+                                                      &inBlockOp, i, iterNum);
+            extractSliceOp->moveBefore(owner);
+            inBlockOp.setOperand(i, extractSliceOp->getResult(0));
           }
         }
       }
     }
+  }
+
+  // Align a loop body's iter-arg types with the loop's already-sliced result
+  // types.
+  void setIterArgTypes(scf::ForOp forOp) {
+    unsigned numInitArgs = forOp.getNumOperands() - 3; // minus lb, ub, step
+    Block &entryBlock = forOp.getBodyRegion().front();
+    if (numInitArgs == 0 || entryBlock.getNumArguments() <= 1)
+      return;
+    for (unsigned i = 0; i < numInitArgs; ++i) {
+      Type initIterArgType = forOp.getOperand(3 + i).getType();
+      if (entryBlock.getArgument(i + 1).getType() != initIterArgType)
+        entryBlock.getArgument(i + 1).setType(initIterArgType);
+    }
+  }
+
+  // Slice types over a region's ops (recursing into nested region-bearing ops),
+  // then reconcile the block's hoisted operands against `owner`'s results --
+  // the region structure, not the op kind, is what covers every nesting edge.
+  void setRegionTypes(MLIRContext *context, OpBuilder &builder, Location &loc,
+                      Block &block, Operation *owner, int64_t iterNum,
+                      bool isOuter) {
+    for (auto &op : block) {
+      if (auto nestedFor = dyn_cast<scf::ForOp>(op)) {
+        setTensorType(context, &op, iterNum, isOuter);
+        setIterArgTypes(nestedFor);
+        setRegionTypes(context, builder, loc, *nestedFor.getBody(),
+                       nestedFor.getOperation(), iterNum, isOuter);
+      } else if (auto nestedIf = dyn_cast<scf::IfOp>(op)) {
+        setTensorType(context, &op, iterNum, isOuter);
+        if (!nestedIf.getThenRegion().empty())
+          setRegionTypes(context, builder, loc,
+                         nestedIf.getThenRegion().front(),
+                         nestedIf.getOperation(), iterNum, isOuter);
+        if (!nestedIf.getElseRegion().empty())
+          setRegionTypes(context, builder, loc,
+                         nestedIf.getElseRegion().front(),
+                         nestedIf.getOperation(), iterNum, isOuter);
+      } else {
+        setTensorType(context, &op, iterNum, isOuter);
+      }
+    }
+    setHoistedOperand(context, builder, loc, block, owner, iterNum);
   }
 
   triton::xpu::ExtractSliceOp
@@ -1940,33 +2046,38 @@ public:
   // exact for a splat) so the op verifies. Only splat constants carrying a
   // ClusterLayout are touched; any other mismatch is left exactly as before,
   // so kernels that already compile are unaffected.
-  void sliceSplatConstOperands(MLIRContext *context, OpBuilder &builder,
-                               Location &loc, Operation *op, int64_t iterNum) {
-    // vvsubf/vvaddf/... carry SameOperandsAndResultType; vcmpf requires
-    // lhs==rhs only via its lowering assertion (no MLIR trait), so name it
-    // explicitly.
-    bool sameOperandTy = op->hasTrait<OpTrait::SameTypeOperands>() ||
-                         op->hasTrait<OpTrait::SameOperandsAndResultType>() ||
-                         isa<triton::xpu::VCmpFOp>(op);
-    if (!sameOperandTy)
-      return;
-    if (op->getNumOperands() != 2)
-      return;
-    for (unsigned i = 0; i < 2; ++i) {
-      if (op->getOperand(i).getType() == op->getOperand(i ^ 1).getType())
-        continue;
-      if (!isSliceInvariant(op->getOperand(i)))
-        continue; // only a splat constant may be narrowed via extract_slice
-      auto tensorTy = dyn_cast<RankedTensorType>(op->getOperand(i).getType());
-      if (!tensorTy ||
-          !isa<triton::xpu::ClusterLayoutAttr>(tensorTy.getEncoding()))
-        continue; // getExtractedOperand needs a ClusterLayout; else leave as-is
-      auto extractSliceOp =
-          getExtractedOperand(context, builder, loc, op, i, iterNum);
-      extractSliceOp->moveBefore(op);
-      op->setOperand(i, extractSliceOp->getResult(0));
-    }
-  }
+  // Superseded by reconcileConstOperands(), which triton_3.6 @ 031faee1
+  // introduced for the same fix (splat-constant operand slicing, the log-family
+  // compile crash).  The first generation of that fix landed here under this
+  // name in #1488 and now has no caller; kept commented out for one round so
+  // the two generations can be compared, and because -Werror rejects an unused
+  // one. void sliceSplatConstOperands(MLIRContext *context, OpBuilder &builder,
+  // Location &loc, Operation *op, int64_t iterNum) {
+  // // vvsubf/vvaddf/... carry SameOperandsAndResultType; vcmpf requires
+  // // lhs==rhs only via its lowering assertion (no MLIR trait), so name it
+  // // explicitly.
+  // bool sameOperandTy = op->hasTrait<OpTrait::SameTypeOperands>() ||
+  // op->hasTrait<OpTrait::SameOperandsAndResultType>() ||
+  // isa<triton::xpu::VCmpFOp>(op);
+  // if (!sameOperandTy)
+  // return;
+  // if (op->getNumOperands() != 2)
+  // return;
+  // for (unsigned i = 0; i < 2; ++i) {
+  // if (op->getOperand(i).getType() == op->getOperand(i ^ 1).getType())
+  // continue;
+  // if (!isSliceInvariant(op->getOperand(i)))
+  // continue; // only a splat constant may be narrowed via extract_slice
+  // auto tensorTy = dyn_cast<RankedTensorType>(op->getOperand(i).getType());
+  // if (!tensorTy ||
+  // !isa<triton::xpu::ClusterLayoutAttr>(tensorTy.getEncoding()))
+  // continue; // getExtractedOperand needs a ClusterLayout; else leave as-is
+  // auto extractSliceOp =
+  // getExtractedOperand(context, builder, loc, op, i, iterNum);
+  // extractSliceOp->moveBefore(op);
+  // op->setOperand(i, extractSliceOp->getResult(0));
+  // }
+  // }
 
   // Determine whether the operand has been hoisted
   bool isOperandOperationInSameForBlock(mlir::Operation *op,
@@ -2221,6 +2332,63 @@ public:
                                                 forOp.getInductionVar());
   }
 
+  // Give a cloned op's constant operands the width its result now has.
+  //
+  // setTensorType() slices the op's results, but a constant operand that the
+  // unroll tree does not contain is left at its pre-unroll width -- the clone
+  // simply references the original. The result then disagrees with its operand
+  // and the op fails to verify:
+  //   histogramdd_col_range: `arith.cmpi sgt, <reduce result>, dense<0>` came
+  //   out as (tensor<2xi32>, tensor<32xi32>) -> tensor<2xi1>.
+  //
+  // How: for each constant operand outside the tree whose shape differs from
+  // the result, materialise a new constant with the RESULT's shape and encoding
+  // and the operand's own element type (the same shape-only rule Legalize's
+  // reconciliation uses -- an extui's operand is i1 while its result is i32).
+  void reconcileConstOperands(Operation *op,
+                              const SetVector<Operation *> &unrollOpTree) {
+    if (op->getNumResults() != 1)
+      return;
+    auto resTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+    if (!resTy)
+      return;
+    for (OpOperand &operand : op->getOpOperands()) {
+      auto constOp = operand.get().getDefiningOp<arith::ConstantOp>();
+      if (!constOp || unrollOpTree.contains(constOp))
+        continue;
+      auto constTy = dyn_cast<RankedTensorType>(operand.get().getType());
+      if (!constTy || constTy.getShape() == resTy.getShape())
+        continue;
+      auto attr = dyn_cast<DenseElementsAttr>(constOp.getValue());
+      if (!attr)
+        continue;
+      auto targetTy = RankedTensorType::get(
+          resTy.getShape(), constTy.getElementType(), resTy.getEncoding());
+      if (!attr.isSplat() && targetTy.getNumElements() > attr.getNumElements())
+        continue;
+      // A shrinking non-splat constant keeps its leading elements, but
+      // getFromRawBuffer() needs a buffer sized exactly for the target type:
+      // handing it the longer original buffer only trips an assert, which a
+      // release build drops, and the attribute then carries the wrong length.
+      // Copy the prefix element-wise instead, so a sub-byte element type (i1
+      // is bit-packed in the raw buffer) is handled too.
+      DenseElementsAttr newValue;
+      if (attr.isSplat()) {
+        newValue =
+            DenseElementsAttr::get(targetTy, attr.getSplatValue<Attribute>());
+      } else {
+        auto values = attr.getValues<Attribute>();
+        llvm::SmallVector<Attribute> prefix(
+            values.begin(), values.begin() + targetTy.getNumElements());
+        newValue = DenseElementsAttr::get(targetTy, prefix);
+      }
+      OpBuilder constBuilder(op);
+      auto newConstOp = constBuilder.create<arith::ConstantOp>(
+          constOp.getLoc(), targetTy, newValue);
+      operand.set(newConstOp);
+    }
+  }
+
   void createLoopBody(MLIRContext *context, OpBuilder &builder, Location &loc,
                       int64_t iterNum, SetVector<Operation *> &unrollOpTree,
                       SetVector<Operation *> &outerChain,
@@ -2261,7 +2429,7 @@ public:
         newOp = builder.clone(*op, mapping);
       }
       setTensorType(context, newOp, iterNum, isOuter);
-      sliceSplatConstOperands(context, builder, loc, newOp, iterNum);
+      reconcileConstOperands(newOp, unrollOpTree);
       TypeSwitch<Operation *>(newOp)
           .Case<triton::xpu::LoadOp>([&](auto loadOp) {
             if (auto tensorTy =
@@ -2360,62 +2528,30 @@ public:
             constantOp.setValueAttr(value);
           })
           .Case<scf::IfOp>([&](auto ifOp) {
-            // process ifOp recursively to handle nested ifOp
-            auto processIfOp = [&](auto &self, scf::IfOp ifOp) -> void {
-              auto &thenRegion = ifOp.getThenRegion();
-              if (!thenRegion.empty()) {
-
-                auto &thenBlock = thenRegion.front();
-                for (auto &op : thenBlock) {
-                  if (auto nestedIfOp = dyn_cast<scf::IfOp>(op)) {
-                    self(self, nestedIfOp);
-                  } else {
-                    setTensorType(context, &op, iterNum, isOuter);
-                  }
-                }
-                setHoistedOperand(context, builder, loc, thenBlock, ifOp,
-                                  iterNum);
-              }
-              auto &elseRegion = ifOp.getElseRegion();
-              if (!elseRegion.empty()) {
-                auto &elseBlock = elseRegion.front();
-
-                for (auto &op : elseBlock) {
-                  if (auto nestedIfOp = dyn_cast<scf::IfOp>(op)) {
-                    self(self, nestedIfOp);
-                  } else {
-                    setTensorType(context, &op, iterNum, isOuter);
-                  }
-                }
-                setHoistedOperand(context, builder, loc, elseBlock, ifOp,
-                                  iterNum);
-              }
-            };
-            processIfOp(processIfOp, ifOp);
+            // The if's own results were sliced above; its regions descend here.
+            if (!ifOp.getThenRegion().empty())
+              setRegionTypes(context, builder, loc,
+                             ifOp.getThenRegion().front(), ifOp.getOperation(),
+                             iterNum, isOuter);
+            if (!ifOp.getElseRegion().empty())
+              setRegionTypes(context, builder, loc,
+                             ifOp.getElseRegion().front(), ifOp.getOperation(),
+                             iterNum, isOuter);
           })
           .Case<scf::ForOp>([&](auto forOp) {
-            // step 1 : set iter arg type.
-            unsigned numInitArgs =
-                forOp.getNumOperands() - 3; // minus init, upper bound and step
-            Block &entryBlock = forOp.getBodyRegion().front();
-            if (numInitArgs > 0 && entryBlock.getNumArguments() > 1) {
-              for (unsigned i = 0; i < numInitArgs; ++i) {
-                Type initIterArgType = forOp.getOperand(3 + i).getType();
-                Type regionIterArgType =
-                    entryBlock.getArgument(i + 1).getType();
-                if (initIterArgType != regionIterArgType) {
-                  entryBlock.getArgument(i + 1).setType(initIterArgType);
-                }
-              }
-            }
-
-            // step 2 : set ops' type in loop body.
-            Block *body = forOp.getBody();
-            for (auto &op : body->getOperations()) {
-              setTensorType(context, &op, iterNum, isOuter);
-            }
+            // The for's results were sliced above; align its iter args, then
+            // descend.
+            setIterArgTypes(forOp);
+            setRegionTypes(context, builder, loc, *forOp.getBody(),
+                           forOp.getOperation(), iterNum, isOuter);
           });
     }
+
+    // Not in unrollOpTree, so nothing reconciles it: a cross-boundary operand
+    // here keeps full width.
+    if (auto ownerFor = dyn_cast<scf::ForOp>(idxVar->getParentOp()))
+      setHoistedOperand(context, builder, loc, *idxVar->getBlock(),
+                        ownerFor.getOperation(), iterNum);
   }
 
   void eraseDAG(SetVector<Operation *> &unrollOpTree) {
@@ -2584,7 +2720,16 @@ public:
       createLoopBody(context, builder, loc, iterNum, unrollOpTree, outerChain,
                      idxVar, mapping);
       bool isOuterReduce = inOpChain(outerChain, reduceOp);
-      setTensorType(context, reduceOp, iterNum, isOuterReduce, false);
+      // sliceShape: the unroll slices the LAST dimension of every tensor it
+      // retiles. A reduce on that dimension removes it, so slicing the
+      // result's last dim would corrupt a surviving one -- hence `false`.
+      // A reduce on any other axis keeps the sliced dimension, so the result
+      // has to follow: with `false` the result would keep its pre-unroll
+      // length while its operand is sliced, and ReduceOp::inferReturnTypes()
+      // then rejects the op
+      // (inferred tensor<128xf32> vs declared tensor<1024xf32>).
+      setTensorType(context, reduceOp, iterNum, isOuterReduce,
+                    /*sliceShape=*/!isReduceOnLastAxis(reduceOp));
       // 2.3 Modify users and defs
       // replace initArgs with iterArgs
       auto inForOp = [&](OpOperand &operand) {
@@ -2731,6 +2876,17 @@ public:
           if (willTile) {
             auto lmPtr = loadOp.getPtr();
             if (auto gm2lmOp = findDefOpBwd<triton::xpu::GM2LMOp>(lmPtr)) {
+              // LocallyScalar: the GM address is *constant* within each rowLen
+              // run (per-row scalar broadcast, e.g. view_54's scale gather).
+              // markLocallyScalar deliberately set loadOp.isDiscrete=true to
+              // force the per-lane LM read, but folding the offset into the LM
+              // pointer and re-marking the gm2lm Continuous would read rowLen
+              // *distinct* consecutive elements instead of one repeated value
+              // -> wrong data. This tiling is only valid for genuine stride-1
+              // discrete gathers, so skip LocallyScalar here.
+              if (static_cast<OffsetState>(gm2lmOp.getOffsetState()) ==
+                  OffsetState::LocallyScalar)
+                continue;
               auto gmPtrOp = findDefOpBwd<triton::AddPtrOp>(gm2lmOp.getPtr());
               auto offset = gmPtrOp.getOffset();
               auto newLmPtr = builder.create<triton::AddPtrOp>(
@@ -2749,6 +2905,10 @@ public:
 
             } else if (auto gm2lmOp =
                            findDefOpBwd<triton::xpu::GM2LMMaskOp>(lmPtr)) {
+              // Same LocallyScalar guard as the plain GM2LMOp branch above.
+              if (static_cast<OffsetState>(gm2lmOp.getOffsetState()) ==
+                  OffsetState::LocallyScalar)
+                continue;
               auto gmPtrOp = findDefOpBwd<triton::AddPtrOp>(gm2lmOp.getPtr());
               auto offset = gmPtrOp.getOffset();
               auto newLmPtr = builder.create<triton::AddPtrOp>(

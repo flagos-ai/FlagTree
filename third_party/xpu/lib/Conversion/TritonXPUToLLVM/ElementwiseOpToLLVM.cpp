@@ -171,6 +171,35 @@ struct FpToFpOpConversion
   }
 };
 
+// Lower tt.clampf to min(max(x, lo), hi).  The hardware has no fused clamp in
+// this path, so emit the two comparisons upstream's ClampFOpConversion emits on
+// targets without a native clamp.  `propagate_nan=ALL` keeps the
+// NaN-propagating maximum/minimum; the default NONE uses maxnum/minnum.
+struct ClampFOpConversion
+    : public mlir::triton::gpu::ElementwiseOpConversionBase<
+          mlir::triton::ClampFOp, ClampFOpConversion> {
+  using Base =
+      mlir::triton::gpu::ElementwiseOpConversionBase<mlir::triton::ClampFOp,
+                                                     ClampFOpConversion>;
+  using Base::Base;
+  using Adaptor = typename Base::OpAdaptor;
+
+  SmallVector<Value>
+  createDestOps(mlir::triton::ClampFOp op, Adaptor adaptor,
+                ConversionPatternRewriter &rewriter, Type elemTy,
+                mlir::triton::gpu::MultipleOperandsRange operands,
+                Location loc) const {
+    if (op.getPropagateNan() == mlir::triton::PropagateNan::ALL) {
+      auto v = LLVM::MaximumOp::create(rewriter, loc, elemTy, operands[0][0],
+                                       operands[0][1]);
+      return {LLVM::MinimumOp::create(rewriter, loc, v, operands[0][2])};
+    }
+    auto v = LLVM::MaxNumOp::create(rewriter, loc, elemTy, operands[0][0],
+                                    operands[0][1]);
+    return {LLVM::MinNumOp::create(rewriter, loc, v, operands[0][2])};
+  }
+};
+
 } // namespace
 
 void mlir::triton::xpu::populateElementwiseOpToLLVMPatterns(
@@ -206,4 +235,5 @@ void mlir::triton::xpu::populateElementwiseOpToLLVMPatterns(
 #undef POPULATE_BINARY_OP
 
   patterns.add<FpToFpOpConversion>(typeConverter, axisInfoAnalysis, benefit);
+  patterns.add<ClampFOpConversion>(typeConverter, axisInfoAnalysis, benefit);
 }

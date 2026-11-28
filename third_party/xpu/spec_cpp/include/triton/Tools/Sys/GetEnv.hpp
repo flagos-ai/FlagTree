@@ -17,24 +17,25 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     "AMDGCN_ENABLE_DUMP",
     "AMDGCN_USE_BUFFER_ATOMICS",
     "AMDGCN_USE_BUFFER_OPS",
-    "ALLOW_LHS_TMEM_LAYOUT_CONVERSION",
-    "DISABLE_FAST_REDUCTION",
     "DISABLE_LLVM_OPT",
     "DISABLE_MMA_V3",
     "DISABLE_MMA_V5",
     "DISABLE_PTXAS_OPT",
-    "LLVM_EXTRACT_DI_LOCAL_VARIABLES",
     "LLVM_IR_ENABLE_DUMP",
     "LLVM_ENABLE_TIMING",
     "LLVM_PASS_PLUGIN_PATH",
+    "LLVM_EXTRACT_DI_LOCAL_VARIABLES",
     "MLIR_ENABLE_DIAGNOSTICS",
     "MLIR_ENABLE_DUMP",
     "MLIR_DUMP_PATH",
     "MLIR_ENABLE_TIMING",
     "MLIR_DISABLE_MULTITHREADING",
     "TRITON_DEFAULT_FP_FUSION",
+    "TRITON_DISABLE_ASYNC_COPY",
     "TRITON_DISABLE_LINE_INFO",
-    "TRITON_DISABLE_RESHAPE_ENCODING_INFERENCE",
+    "TRITON_DISABLE_LOOP_PEELING",
+    "TRITON_DISABLE_WARP_REDUNDANT_REDUCE",
+    "TRITON_DISABLE_HOIST_LOADS",
     "TRITON_DUMP_MIR",
     "TRITON_ENABLE_LLVM_DEBUG",
     "TRITON_HIP_USE_ASYNC_COPY",
@@ -44,42 +45,51 @@ inline const std::set<std::string> CACHE_INVALIDATING_ENV_VARS = {
     "TRITON_ENABLE_ASAN",
     "TRITON_OVERRIDE_ARCH",
     "USE_IR_LOC",
-    "USE_TTGIR_LOC",
     "NVPTX_ENABLE_DUMP",
+    "ALLOW_LHS_TMEM_LAYOUT_CONVERSION",
     "TRITON_F32_DEFAULT",
     "TRITON_PREFER_TMEM_16x256_LAYOUT",
     "TRITON_ENABLE_EXPERIMENTAL_CONSAN",
+    "TRITONXPU_HP_MODE",
     "TRITONXPU_BF16_ROUND_MID",
     "TRITONXPU_BF16_FAST",
     "TRITONXPU_FP16_FAST",
-    "LLVM_ERROR_LM_SIZE",
-    "TRITON_TUNE_BUFFER_LM_SIZE",
-    "TRITON_PRINT_HW_ID",
-    "TRITON_PRINT_VERBOSE",
-    "TRITON_XCN_DUMP_PREFIX",
-    "TRITONXPU_HP_MODE",
     "TRITONXPU_PROBE_BOUNDARY",
     "TRITONXPU_LM_WAR_FENCE",
     "TRITONXPU_LIVE_RANGE",
     "TRITONXPU_PROBE_SIDE",
-    "TRITON_DISABLE_CRASH_RECOVERY",
-    "TRITONXPU_TILE_DECIDE",
-    "TRITONXPU_VEC_HYPO_COVER",
-    "TRITONXPU_TILE_REPORT",
-    "TRITONXPU_LM_REPORT",
-    "TRITONXPU_REDUCE_REGION",
-    "USE_FAST_MATH",
-    "TRITON_DISABLE_LOOP_PEELING",
+    "TRITON_PRINT_VERBOSE",
+    "TRITON_TUNE_BUFFER_LM_SIZE",
     "TRITON_TLE_STACK_MARGIN",
+    "LLVM_ERROR_LM_SIZE",
+    "USE_FAST_MATH",
     // clang-format on
 };
 
 inline const std::set<std::string> CACHE_NEUTRAL_ENV_VARS = {
-    "TRITON_REPRODUCER_PATH",  "TRITON_ENABLE_PYTHON_STACKTRACE",
-    "TRITONXPU_UNROLL_DRYRUN", "TRITONXPU_REDUCE_BOUNDARY",
-    "TRITONXPU_VEC_COST",      "TRITONXPU_VEC_REPORT",
-    "TRITONXPU_TILE_PLAN",     "TRITONXPU_VFLOW_REPORT",
-    "TRITONXPU_REDUCE_VEC",    "TRITONXPU_SCAN_VEC",
+    // clang-format off
+    "TRITON_REPRODUCER_PATH",
+    "TRITON_DISABLE_CRASH_RECOVERY",
+    "TRITON_ENABLE_PYTHON_STACKTRACE",
+    "TRITONXPU_UNROLL_DRYRUN",
+    "TRITONXPU_REDUCE_BOUNDARY",
+    "TRITONXPU_REDUCE_REGION",
+    "TRITONXPU_REDUCE_VEC",
+    "TRITONXPU_SCAN_VEC",
+    "TRITONXPU_VEC_COST",
+    "TRITONXPU_LM_REPORT",
+    "TRITONXPU_TILE_REPORT",
+    "TRITONXPU_VEC_REPORT",
+    "TRITONXPU_TILE_PLAN",
+    "TRITONXPU_TILE_DECIDE",
+    "TRITONXPU_VFLOW_REPORT",
+    "TRITONXPU_VEC_HYPO_COVER",
+    // clang-format on
+    "TRITON_DISABLE_RESHAPE_ENCODING_INFERENCE",
+    "TRITON_PRINT_HW_ID",
+    "TRITON_XCN_DUMP_PREFIX",
+    "DISABLE_FAST_REDUCTION",
+    "USE_TTGIR_LOC",
 };
 
 namespace tools {
@@ -98,7 +108,10 @@ inline void assertIsRecognized(const std::string &env) {
          errmsg.c_str());
 }
 
+static std::mutex getenv_mutex;
+
 inline std::string getStrEnv(const std::string &env) {
+  std::lock_guard<std::mutex> lock(getenv_mutex);
   assertIsRecognized(env);
   const char *cstr = std::getenv(env.c_str());
   if (!cstr)
@@ -109,6 +122,7 @@ inline std::string getStrEnv(const std::string &env) {
 
 // return value of a cache-invalidating boolean environment variable
 inline bool getBoolEnv(const std::string &env) {
+  std::lock_guard<std::mutex> lock(getenv_mutex);
   assertIsRecognized(env);
   const char *s = std::getenv(env.c_str());
   std::string str(s ? s : "");

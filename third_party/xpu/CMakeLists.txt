@@ -185,6 +185,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
       TritonXPUTransformsIncGen       # triton/Dialect/TritonXPU/Transforms/Passes.h.inc
       TT2TTXConversionPassIncGen      # triton/Conversion/TritonToTritonXPU/Passes.h.inc
       TTX2LLVMConversionPassIncGen    # triton/Conversion/TritonXPUToLLVM/Passes.h.inc
+      libdevice-xpu3                  # backend/xpu3/lib/libdevice-xpu3.bc
 
       LINK_LIBS
       TritonXPUTransforms

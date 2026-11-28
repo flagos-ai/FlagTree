@@ -869,6 +869,110 @@ struct TritonXPUCoreTilingPass
     });
   }
 
+  // ---------------------------------------------------------------------
+  // Reconcile ClusterLayout encodings so that every elementwise op and every
+  // scf.for region-carried value has operands and results that agree on one
+  // encoding.
+  //
+  // modifyOpEncoding() assigns an encoding to each op result independently,
+  // from the axis chain that op belongs to. A value consumed by ops on
+  // different chains therefore reaches a consumer carrying an encoding that
+  // differs from the one the consumer uses. This routine walks those edges and
+  // inserts a triton_xpu.convert_layout to bring each operand into the encoding
+  // its consumer expects -- the same mechanism addCvtForBCOp / Step 2.2 use.
+  //
+  // A convert is inserted only where an operand's encoding actually differs
+  // from the target, so operands that already agree are left untouched.
+  // ---------------------------------------------------------------------
+  bool requiresUniformEncoding(Operation *op) {
+    // Elementwise arith/math ops require all tensor operands and the result to
+    // share one encoding; those are the ops this routine unifies. Structural
+    // ops (expand_dims/broadcast/reduce/reshape/convert_layout/for/yield) carry
+    // their own encoding handling and are left to it.
+    if (auto *d = op->getDialect()) {
+      StringRef ns = d->getNamespace();
+      return ns == "arith" || ns == "math";
+    }
+    return false;
+  }
+
+  // Insert a convert_layout so `use` sees `targetEnc` (same shape + elem type).
+  // No-op when the operand is not a ranked tensor, has no target, or already
+  // carries the target encoding.
+  void bridgeOperandEncoding(OpOperand &use, Attribute targetEnc) {
+    auto opndTy = dyn_cast<RankedTensorType>(use.get().getType());
+    if (!opndTy || !targetEnc || opndTy.getEncoding() == targetEnc)
+      return;
+    Operation *owner = use.getOwner();
+    OpBuilder builder(owner);
+    auto targetTy = RankedTensorType::get(opndTy.getShape(),
+                                          opndTy.getElementType(), targetEnc);
+    auto cvt = builder.create<triton::xpu::ConvertLayoutOp>(
+        owner->getLoc(), targetTy, use.get());
+    use.set(cvt.getResult());
+  }
+
+  void reconcileClusterEncodings(ModuleOp &mod, MLIRContext *context) {
+    // Pass A: elementwise ops -> unify every same-shape tensor operand to the
+    // op's first ranked-tensor result encoding.
+    mod.walk([&](Operation *op) {
+      if (!requiresUniformEncoding(op))
+        return;
+      RankedTensorType resTy;
+      for (auto res : op->getResults()) {
+        if (auto rt = dyn_cast<RankedTensorType>(res.getType())) {
+          resTy = rt;
+          break;
+        }
+      }
+      if (!resTy)
+        return;
+      Attribute target = resTy.getEncoding();
+      if (!target)
+        return;
+      for (auto &operand : op->getOpOperands()) {
+        auto opndTy = dyn_cast<RankedTensorType>(operand.get().getType());
+        if (!opndTy)
+          continue;
+        // Only pure encoding differences (same shape); a differing shape is
+        // not an elementwise encoding mismatch and must not be touched.
+        if (opndTy.getShape() != resTy.getShape())
+          continue;
+        bridgeOperandEncoding(operand, target);
+      }
+    });
+
+    // Pass B: scf.for region-carried values. The loop verifier requires
+    // init == iterArg == result == yield encodings. Step 2.3 already set
+    // iterArg and result to the same (forOp) encoding, so bridge the init
+    // operands and the yield operands to that encoding.
+    mod.walk([&](scf::ForOp forOp) {
+      unsigned ctrl = forOp.getNumControlOperands();
+      auto iterArgs = forOp.getRegionIterArgs();
+      for (auto &&[idx, iterArg] : llvm::enumerate(iterArgs)) {
+        auto argTy = dyn_cast<RankedTensorType>(iterArg.getType());
+        if (!argTy)
+          continue;
+        bridgeOperandEncoding(forOp->getOpOperand(ctrl + idx),
+                              argTy.getEncoding());
+      }
+    });
+    mod.walk([&](scf::YieldOp yieldOp) {
+      Operation *parent = yieldOp->getParentOp();
+      if (!parent || !isa<scf::ForOp, scf::IfOp>(parent))
+        return;
+      for (auto &operand : yieldOp->getOpOperands()) {
+        unsigned i = operand.getOperandNumber();
+        if (i >= parent->getNumResults())
+          continue;
+        auto resTy = dyn_cast<RankedTensorType>(parent->getResult(i).getType());
+        if (!resTy)
+          continue;
+        bridgeOperandEncoding(operand, resTy.getEncoding());
+      }
+    });
+  }
+
   void runOnOperation() override {
     mlir::MLIRContext *context = &getContext();
     mlir::ModuleOp mod = getOperation();
@@ -905,6 +1009,9 @@ struct TritonXPUCoreTilingPass
     if (rowsPerCore > 1) {
       addTensorColSizeForMemoryOp(mod, context);
     }
+
+    // Step 6. Reconcile ClusterLayout encodings across op/region edges.
+    reconcileClusterEncodings(mod, context);
 
     if (rowsPerCore == 1)
       LLVM_DEBUG(llvm::dbgs() << "Core Tiling M-ColSize Opt Hit!\n");

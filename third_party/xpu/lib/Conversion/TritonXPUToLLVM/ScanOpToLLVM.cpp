@@ -567,18 +567,23 @@ static void applyLastElemScanOnSM(
   rewriter.setInsertionPointToStart(mergeBlock);
 }
 
+// \param slotId the SM slot holding this core's incoming prefix: the core id
+// for a forward scan, the mirrored id for a reverse one (see
+// storeGroupAccumulator).
 static void applyCoreElemScanWithSMAcc(
     SmallVector<SmallVector<Value>> &srcValues,
     ConversionPatternRewriter &rewriter, const TargetInfoBase &targetInfo,
     ScanLoweringHelper &helper, SmallVector<Value> smemBases,
     SmallVector<Value> accSmemBases, SmallVector<Type> smemTypes, Value groupId,
-    Value laneId, triton::xpu::ScanOp op, ArrayRef<Value> carryIn = {},
-    Value isFirst = {}) {
+    Value laneId, Value slotId, Value ownsFirstPosition, triton::xpu::ScanOp op,
+    ArrayRef<Value> carryIn = {}, Value isFirst = {}) {
   Location loc = helper.getXPULoc();
   Value threadId = mlir::LLVM::XPU::getThreadId(rewriter, loc);
 
-  Value zero = i32_val(0);
-  Value coreIdInGroupZero = icmp_eq(threadId, zero);
+  // The core at the start of the axis has nothing before it, so it keeps its
+  // own prefix: its SM slot holds the unused accs[0] entry. Which core that is
+  // depends on the direction, hence the caller decides (see ownsFirstPosition).
+  Value coreIdInGroupZero = ownsFirstPosition;
 
   //   auto thenBlock = rewriter.splitBlock(rewriter.getInsertionBlock(),
   //                                        rewriter.getInsertionPoint());
@@ -596,7 +601,7 @@ static void applyCoreElemScanWithSMAcc(
     auto elemTy = smemTypes[operandIdx];
     Value readCurCoreAccValOnSMPtrs =
         gep(ptr_ty(rewriter.getContext(), 2), elemTy, accSmemBases[operandIdx],
-            /*readOffset*/ threadId);
+            /*readOffset*/ slotId);
     // llvm::errs() << "[readCurCoreAccValOnSMPtrs-" << operandIdx << "]"
     //              << readCurCoreAccValOnSMPtrs << "\n";
     cur_core_acc_val[operandIdx] = load_sm(elemTy, readCurCoreAccValOnSMPtrs);
@@ -725,6 +730,39 @@ struct XPUScanOpConversion
   // over independent scans (e.g. the per-row scan of a 2-D tensor along the
   // last axis, where each row is a self-contained scan). Mirror
   // ReduceOp::isNeedLoopCacheResult so scan and reduce agree.
+  /// Whether a grid-stride carry really runs for this scan.
+  ///
+  /// Why: isNeedLoopCarry() answers from the op's shape alone, but the carry
+  /// only changes a result when the loop index can be non-zero -- the lowering
+  /// selects the carry away on index 0 (isFirst). A scan the slicing loop never
+  /// multiplied keeps a constant 0 there.
+  bool hasRunningLoopCarry(triton::xpu::ScanOp op) const {
+    if (!isNeedLoopCarry(op))
+      return false;
+    mlir::APInt loopIdx;
+    if (mlir::matchPattern(op.getLoopIndex(), mlir::m_ConstantInt(&loopIdx)))
+      return !loopIdx.isZero();
+    return true;
+  }
+
+  /// Whether this scan's reverse form can be lowered.
+  ///
+  /// Why: a reverse scan is the forward scan of the reversed axis, reversed
+  /// back. Two things carry the axis order: the elements one core owns (flipped
+  /// in matchAndRewrite) and the core order across a group (flipped by the
+  /// mirrored SM slot, see storeGroupAccumulator). On the vectorized path the
+  /// lanes inside a chunk carry it as well and neither flip reaches them, and a
+  /// running grid-stride carry would have to come from the NEXT iteration
+  /// instead of the previous one.
+  ///
+  /// TODO(@claude): the vectorized path needs the lanes of each chunk reversed
+  /// (scanThreadContiguousVectorElements), and a reverse scan with a running
+  /// carry needs the carry to flow backwards through the slicing loop.
+  bool canReverseScan(ScanLoweringHelper &helper,
+                      triton::xpu::ScanOp op) const {
+    return !helper.isVectorized() && !hasRunningLoopCarry(op);
+  }
+
   bool isNeedLoopCarry(triton::xpu::ScanOp op) const {
     if (!op.getLoopIndex())
       return false;
@@ -843,10 +881,14 @@ struct XPUScanOpConversion
   // reduction into shared memory. Each parallel scan and each group will
   // store its own partial reductions. The shared memory is organized as
   // follow:
+  /// \param slotId the SM slot this core's partial belongs to. It is the core
+  /// id for a forward scan; a reverse scan passes the mirrored id, which is
+  /// what makes the prefix below run from the other end of the group.
   static void storeGroupAccumulator(SmallVector<SmallVector<Value>> &srcValues,
                                     ConversionPatternRewriter &rewriter,
                                     ScanLoweringHelper &helper, Value laneId,
-                                    Value groupId, SmallVector<Value> smemBases,
+                                    Value groupId, Value slotId,
+                                    SmallVector<Value> smemBases,
                                     SmallVector<Type> smemTypes) {
     Location loc = helper.getXPULoc();
     Value threadId = mlir::LLVM::XPU::getThreadId(rewriter, loc);
@@ -868,7 +910,7 @@ struct XPUScanOpConversion
                                     i32_val(vecTy.getNumElements() - 1));
         Value writePtr =
             gep(ptr_ty(rewriter.getContext(), 2), smemTypes[i], smemBases[i],
-                /*writeOffset*/ threadId);
+                /*writeOffset*/ slotId);
         store_sm(partial, writePtr);
       }
     }
@@ -930,8 +972,26 @@ struct XPUScanOpConversion
       }
     }
 
-    if (op.getReverse()) {
-      llvm_unreachable("wait support reverse");
+    // A reverse scan runs as the forward scan of the reversed axis, reversed
+    // back below. Only the order of the elements this core owns is flipped, so
+    // the axis has to stay inside the core -- see canReverseInRegisters().
+    bool isReverse = op.getReverse();
+    if (isReverse && !canReverseScan(helper, op))
+      return op.emitError("reverse scan is not lowered for a vectorized scan "
+                          "or one that carries a running total across loop "
+                          "iterations");
+    if (isReverse)
+      std::reverse(srcValues.begin(), srcValues.end());
+    // The second half of the flip: a core's partial goes to the mirrored slot
+    // of its group, so the SM prefix below hands each core the total of the
+    // cores AFTER it instead of before it.
+    Value scanSlotId = threadId;
+    Value ownsFirstPosition = icmp_eq(threadId, i32_val(0));
+    if (isReverse) {
+      Value lastLane = sub(groupSize, i32_val(1));
+      scanSlotId = add(mul(groupId, groupSize), sub(lastLane, laneId));
+      // Reversed, the core that has nothing before it is the LAST one.
+      ownsFirstPosition = icmp_eq(laneId, lastLane);
     }
 
     // Scan contiguous elements in a thread and update `srcValues`.
@@ -973,7 +1033,7 @@ struct XPUScanOpConversion
       xpu_barrier(); // Deal with Cumcum(Reduce+Scan) Case
 
       storeGroupAccumulator(srcValues, rewriter, helper, laneId, groupId,
-                            smemBases, smemTypes);
+                            scanSlotId, smemBases, smemTypes);
 
       // Read the carry produced by the previous grid-stride iteration. It is
       // combined into core0's prefix by applyLastElemScanOnSM /
@@ -1075,7 +1135,8 @@ struct XPUScanOpConversion
       // adding the accumulated value from the previous lane.
       applyCoreElemScanWithSMAcc(srcValues, rewriter, targetInfo, helper,
                                  smemBases, accSmemBases, smemTypes, groupId,
-                                 laneId, op, carryIn, isFirst);
+                                 laneId, scanSlotId, ownsFirstPosition, op,
+                                 carryIn, isFirst);
       // llvm::errs() << "\n After applyCoreElemScanWithSMAcc:\n"
       //              << op->getParentOfType<ModuleOp>() << "\n";
 
@@ -1133,9 +1194,10 @@ struct XPUScanOpConversion
     // dump2DSmallVector(valuesTransposed, "valuesTransposed");
 
     SmallVector<Value> results(op.getNumOperands() - 1); // skip loopIndex
-    if (op.getReverse()) {
-      llvm_unreachable("wait support reverse");
-    }
+    // Undo the input flip, so element i carries the scan of i..n-1.
+    if (isReverse)
+      for (SmallVector<Value> &values : valuesTransposed)
+        std::reverse(values.begin(), values.end());
 
     for (unsigned i = 0; i < (op.getNumOperands() - 1); ++i) { // skip loopIndex
       auto resultTy = dyn_cast<RankedTensorType>(op.getResult()[i].getType());

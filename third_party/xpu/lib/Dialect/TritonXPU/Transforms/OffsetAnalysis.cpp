@@ -32,6 +32,11 @@ public:
       TritonXPUOffsetAnalysisPass>::TritonXPUOffsetAnalysisBase;
 
   TritonXPUOffsetAnalysisPass() = default;
+  // NOTE: the `dumpFlag` traces below print through llvm::errs(), not
+  // LLVM_DEBUG. The shipped build (TritonRelBuildWithAsserts) has NDEBUG set,
+  // so LLVM_DEBUG compiles to nothing and dumpFlag=1 used to be silent there --
+  // exactly the build one needs the offset states from. The flag defaults to 0,
+  // so a normal compile stays quiet.
   TritonXPUOffsetAnalysisPass(bool dumpFlag, unsigned bufferSize) {
     this->dumpFlag = dumpFlag;
     this->bufferSize = bufferSize;
@@ -1072,7 +1077,7 @@ public:
     lrie = gcd(bufferSize, lrie);
 
     if (dumpFlag && lrie > 1) {
-      LLVM_DEBUG(llvm::dbgs() << "lrie: " << lrie << "\n");
+      llvm::errs() << "lrie: " << lrie << "\n";
     }
 
     return;
@@ -1245,7 +1250,7 @@ public:
     opChain = sortByLine(opChain);
 
     if (dumpFlag)
-      LLVM_DEBUG(dumpOpChain(opChain));
+      dumpOpChain(opChain);
 
     // Step 2. Cal offsetMock
     // Step 2.1. Get All Mockdata Items
@@ -1309,10 +1314,10 @@ public:
       auto offsetMock = allOffsetResults[token];
       allOffsetStateResult[token] = checkOffset(offsetMock, numElems);
       if (dumpFlag)
-        LLVM_DEBUG(llvm::dbgs() << "\n"
-                                << token << ":" << allOffsetStateResult[token]
-                                << ", offsetMock.size() = " << offsetMock.size()
-                                << ", numElems = " << numElems << "\n");
+        llvm::errs() << "\n"
+                     << token << ":" << allOffsetStateResult[token]
+                     << ", offsetMock.size() = " << offsetMock.size()
+                     << ", numElems = " << numElems << "\n";
       memoryState =
           memoryStateTransfer(memoryState, allOffsetStateResult[token]);
     }
@@ -1444,8 +1449,7 @@ public:
 
     mod.walk([&](triton::xpu::GM2LMOp gm2lmOp) {
       if (dumpFlag)
-        LLVM_DEBUG(llvm::dbgs()
-                   << "\n=======================================\n");
+        llvm::errs() << "\n=======================================\n";
       bool handwritten = gm2lmOp.getHandwrittenOffsetState();
       OffsetState offsetState =
           handwritten ? static_cast<OffsetState>(gm2lmOp.getOffsetState())
@@ -1458,10 +1462,9 @@ public:
       recoverForcedOffsetState(gm2lmOp, handwritten, offsetState, opFixedStride,
                                opRowLen, opRowStride, opLrie);
       if (dumpFlag) {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "\n"
-                   << gm2lmOp << "\n[OffsetState]: " << offsetState
-                   << "\n=======================================\n");
+        llvm::errs() << "\n"
+                     << gm2lmOp << "\n[OffsetState]: " << offsetState
+                     << "\n=======================================\n";
       }
       if (!handwritten) {
         if (offsetState == OffsetState::Discrete) {
@@ -1485,13 +1488,24 @@ public:
                        builder.getIntegerAttr(builder.getIntegerType(64, true),
                                               opRowStride));
       gm2lmOp->setAttr("lrie", builder.getSI32IntegerAttr(opLrie));
-      auto loadOp = cast<triton::xpu::LoadOp>(gm2lmOp->getNextNode());
-      loadOp->setOperand(0, gm2lmOp);
-      loadOp->setAttr("stride", builder.getSI32IntegerAttr(opFixedStride));
-      loadOp->setAttr(
-          "isDiscrete",
-          builder.getBoolAttr(offsetState == OffsetState::Discrete ||
-                              offsetState == OffsetState::LocallyScalar));
+      // A gm2lm normally feeds a load; chained gm2lm breaks that, and the chain
+      // tail annotates the load instead -- skipping here is safe, but keep it
+      // visible.
+      if (auto loadOp =
+              dyn_cast_or_null<triton::xpu::LoadOp>(gm2lmOp->getNextNode())) {
+        loadOp->setOperand(0, gm2lmOp);
+        loadOp->setAttr("stride", builder.getSI32IntegerAttr(opFixedStride));
+        loadOp->setAttr(
+            "isDiscrete",
+            builder.getBoolAttr(offsetState == OffsetState::Discrete ||
+                                offsetState == OffsetState::LocallyScalar));
+      } else {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "[offset-analysis] gm2lm not followed by load; load-side "
+                      "annotation skipped: "
+                   << *gm2lmOp << "\n");
+        ++gm2lmNoLoadConsumer;
+      }
       if (!handwritten) {
         fixedStride = INT32_MIN;
         rowLen = -1;
@@ -1502,8 +1516,7 @@ public:
 
     mod.walk([&](triton::xpu::LM2GMOp lm2gmOp) {
       if (dumpFlag)
-        LLVM_DEBUG(llvm::dbgs()
-                   << "\n=======================================\n");
+        llvm::errs() << "\n=======================================\n";
       bool handwritten = lm2gmOp.getHandwrittenOffsetState();
       OffsetState offsetState =
           handwritten ? static_cast<OffsetState>(lm2gmOp.getOffsetState())
@@ -1515,10 +1528,9 @@ public:
       int64_t opRowLen = handwritten ? lm2gmOp.getRowLen() : rowLen;
       int64_t opRowStride = handwritten ? lm2gmOp.getRowStride() : rowStride;
       if (dumpFlag) {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "\n"
-                   << lm2gmOp << "\n[OffsetState]: " << offsetState
-                   << "\n=======================================\n");
+        llvm::errs() << "\n"
+                     << lm2gmOp << "\n[OffsetState]: " << offsetState
+                     << "\n=======================================\n";
       }
       OpBuilder builder(lm2gmOp);
       int32_t offsetStateInt = static_cast<int32_t>(offsetState);
@@ -1542,10 +1554,9 @@ public:
       // reduction
       OffsetState offsetState = OffsetState::Continuous;
       if (dumpFlag) {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "\n=======================================\n"
-                   << sm2gmOp << "\n[OffsetState]: " << offsetState
-                   << "\n=======================================\n");
+        llvm::errs() << "\n=======================================\n"
+                     << sm2gmOp << "\n[OffsetState]: " << offsetState
+                     << "\n=======================================\n";
       }
 
       OpBuilder builder(sm2gmOp);
@@ -1557,8 +1568,7 @@ public:
 
     mod.walk([&](triton::xpu::GM2LMMaskOp gm2lmOp) {
       if (dumpFlag)
-        LLVM_DEBUG(llvm::dbgs()
-                   << "\n=======================================\n");
+        llvm::errs() << "\n=======================================\n";
       bool handwritten = gm2lmOp.getHandwrittenOffsetState();
       OffsetState offsetState =
           handwritten ? static_cast<OffsetState>(gm2lmOp.getOffsetState())
@@ -1571,10 +1581,9 @@ public:
       recoverForcedOffsetState(gm2lmOp, handwritten, offsetState, opFixedStride,
                                opRowLen, opRowStride, opLrie);
       if (dumpFlag) {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "\n"
-                   << gm2lmOp << "\n[OffsetState]: " << offsetState
-                   << "\n=======================================\n");
+        llvm::errs() << "\n"
+                     << gm2lmOp << "\n[OffsetState]: " << offsetState
+                     << "\n=======================================\n";
       }
       if (!handwritten) {
         if (offsetState == OffsetState::Discrete) {
@@ -1598,13 +1607,24 @@ public:
                        builder.getIntegerAttr(builder.getIntegerType(64, true),
                                               opRowStride));
       gm2lmOp->setAttr("lrie", builder.getSI32IntegerAttr(opLrie));
-      auto loadOp = cast<triton::xpu::LoadOp>(gm2lmOp->getNextNode());
-      loadOp->setOperand(0, gm2lmOp);
-      loadOp->setAttr("stride", builder.getSI32IntegerAttr(opFixedStride));
-      loadOp->setAttr(
-          "isDiscrete",
-          builder.getBoolAttr(offsetState == OffsetState::Discrete ||
-                              offsetState == OffsetState::LocallyScalar));
+      // A gm2lm normally feeds a load; chained gm2lm breaks that, and the chain
+      // tail annotates the load instead -- skipping here is safe, but keep it
+      // visible.
+      if (auto loadOp =
+              dyn_cast_or_null<triton::xpu::LoadOp>(gm2lmOp->getNextNode())) {
+        loadOp->setOperand(0, gm2lmOp);
+        loadOp->setAttr("stride", builder.getSI32IntegerAttr(opFixedStride));
+        loadOp->setAttr(
+            "isDiscrete",
+            builder.getBoolAttr(offsetState == OffsetState::Discrete ||
+                                offsetState == OffsetState::LocallyScalar));
+      } else {
+        LLVM_DEBUG(llvm::dbgs()
+                   << "[offset-analysis] gm2lm not followed by load; load-side "
+                      "annotation skipped: "
+                   << *gm2lmOp << "\n");
+        ++gm2lmNoLoadConsumer;
+      }
       if (!handwritten) {
         fixedStride = INT32_MIN;
         rowLen = -1;
@@ -1615,8 +1635,7 @@ public:
 
     mod.walk([&](triton::xpu::LM2GMMaskOp lm2gmOp) {
       if (dumpFlag)
-        LLVM_DEBUG(llvm::dbgs()
-                   << "\n=======================================\n");
+        llvm::errs() << "\n=======================================\n";
       bool handwritten = lm2gmOp.getHandwrittenOffsetState();
       OffsetState offsetState =
           handwritten ? static_cast<OffsetState>(lm2gmOp.getOffsetState())
@@ -1629,10 +1648,9 @@ public:
       int64_t opRowLen = handwritten ? lm2gmOp.getRowLen() : rowLen;
       int64_t opRowStride = handwritten ? lm2gmOp.getRowStride() : rowStride;
       if (dumpFlag) {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "\n"
-                   << lm2gmOp << "\n[OffsetState]: " << offsetState
-                   << "\n=======================================\n");
+        llvm::errs() << "\n"
+                     << lm2gmOp << "\n[OffsetState]: " << offsetState
+                     << "\n=======================================\n";
       }
       OpBuilder builder(lm2gmOp);
       // offsetState = OffsetState::Continuous;
@@ -1657,10 +1675,9 @@ public:
       // reduction
       OffsetState offsetState = OffsetState::Continuous;
       if (dumpFlag) {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "\n=======================================\n"
-                   << sm2gmOp << "\n[OffsetState]: " << offsetState
-                   << "\n=======================================\n");
+        llvm::errs() << "\n=======================================\n"
+                     << sm2gmOp << "\n[OffsetState]: " << offsetState
+                     << "\n=======================================\n";
       }
 
       OpBuilder builder(sm2gmOp);
@@ -1669,6 +1686,10 @@ public:
                        builder.getSI32IntegerAttr(offsetStateInt));
       findUnsupportedOp = false; // reset
     });
+
+    if (dumpFlag && gm2lmNoLoadConsumer)
+      llvm::errs() << "[offset-analysis] gm2lm ops with no load consumer: "
+                   << gm2lmNoLoadConsumer << "\n";
   }
 
 private:
@@ -1680,6 +1701,10 @@ private:
   int32_t lrie = -1; // Longest Run Of Identical Elements
   bool analysisFlag = false;
   bool findUnsupportedOp = false;
+
+  // gm2lm ops whose next node was not a LoadOp: the load-side
+  // annotation is skipped for them (see the guard above).
+  unsigned gm2lmNoLoadConsumer = 0;
 
   /*                   OffsetState Transition Table
    *

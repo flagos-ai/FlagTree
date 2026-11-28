@@ -226,6 +226,21 @@ class XPUOptions:
     use_int4_w4a8: bool = False
     load_tile_size: int = 131072
 
+    # Materialize a `tt.equal_to_1` argument as a constant of its own integer
+    # type (CodeGenerator._materialize_equal_to_one_args). Always on, not a
+    # tuning knob: the layout inference behind mma operand staging only
+    # recognises a unit stride when it is a literal
+    # (ResolveLayoutConflict::detectGMOrderFromMemref uses hasConstOne), so a
+    # `stride: tl.int32` argument carrying the value 1 makes a column-major
+    # tile look row-major and the DMA copies it wrongly. The
+    # specialised-but-annotated form (`: tl.int32` receiving 1) is common in
+    # hand-written kernels (wph_dense fused_moe_router / sparse_moe_permute)
+    # and silently miscompiles without the fold.
+    # Kept as an option (another backend declares the same field) rather than a bare env
+    # read so that it stays in the compile cache key: folded and unfolded
+    # binaries must never alias.
+    fold_equal_to_one: bool = True
+
     def __post_init__(self):
         default_libdir = Path(__file__).parent / f"xpu{self.arch}"
         extern_libs = {} if self.extern_libs is None else dict(self.extern_libs)
@@ -356,6 +371,7 @@ class XPUBackend(BaseBackend):
         TTXPU_O_ATOMIC_SIM = 0 if metadata["isCLOSE_TTXPU_O_ATOMIC_SIM"] else int(
             os.environ.get("TRITONXPU_ATOMIC_SIM", 1))
         TTXPU_O_CLOSE_OPT = int(os.environ.get("TRITONXPU_CLOSE_OPTIMIZE", 0))
+        TTXPU_D_OFFSET_STATE = int(os.environ.get("TRITONXPU_DUMP_OFFSET_STATE", 0))
         TTSDNN_F_MATMUL_FAST_MODE = int(os.environ.get("XMLIR_MATMUL_FAST_MODE", 0))
         TTSDNN_F_DMA_MODE = int(os.environ.get("XMLIR_DMA_FAST_MODE", 0))
         TTSDNN_F_KILL_EW_FILL_MODE = int(os.environ.get("XMLIR_KILL_EW_FILL_MODE", 0))
@@ -431,11 +447,10 @@ class XPUBackend(BaseBackend):
             passes.common.add_symbol_dce(pm)
         elif metadata["is_sdnn"]:
             xpu.passes.ttsdnnir.add_tritonsdnn_strip_all_ops_pass(pm, opt.arch)
-            if opt.arch < 4:
-                if metadata["use_int4_w4a8"]:
-                    xpu.passes.ttsdnnir.add_triton_convert_type_pass(pm, opt.arch, 2)
-                else:
-                    xpu.passes.ttsdnnir.add_triton_convert_type_pass(pm, opt.arch, TTSDNN_F_MATMUL_FAST_MODE)
+            if metadata["use_int4_w4a8"] == True:
+                xpu.passes.ttsdnnir.add_triton_convert_type_pass(pm, opt.arch, 2)
+            else:
+                xpu.passes.ttsdnnir.add_triton_convert_type_pass(pm, opt.arch, TTSDNN_F_MATMUL_FAST_MODE)
             xpu.passes.ttsdnnir.add_convert_triton_to_tritonsdnn_pass(pm, opt.arch, opt.load_tile_size)
             passes.ttir.add_loop_aware_cse(pm)
             xpu.passes.ttsdnnir.add_linalg_to_tritonsdnn_pass(pm, opt.arch)
@@ -447,7 +462,11 @@ class XPUBackend(BaseBackend):
             xpu.passes.ttsdnnir.add_tritonsdnn_hoist_ds_pass(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_transpose_mma_pass(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_transpose_ew_pass(pm)
-            xpu.passes.ttsdnnir.add_tritonsdnn_combine_before_pass(pm, opt.arch)
+            # Last combine-before, so it also materializes the sdnn.broadcast
+            # ops the fold patterns left behind into ds{batch} (+ rs{format});
+            # the earlier run must leave them alone for
+            # resolve-layout-conflict.
+            xpu.passes.ttsdnnir.add_tritonsdnn_combine_before_pass(pm, opt.arch, lower_broadcast=True)
             # Wrap orphan linalg.generic into sdnn.core_specialize AFTER the
             # combine-before fusion, so elementwise generics are first fused into a
             # minimal number of ops (avoids fragmenting into many tiny
@@ -458,13 +477,11 @@ class XPUBackend(BaseBackend):
             if hasattr(xpu.passes.ttsdnnir, "add_tritonsdnn_wrap_fallback_pass"):
                 xpu.passes.ttsdnnir.add_tritonsdnn_wrap_fallback_pass(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_eliminate_mma_acc_zero_pass(pm, opt.arch)
-            if opt.arch == 4:
-                xpu.passes.ttsdnnir.add_tritonsdnn_fuse_mma_vector_bias_pass(pm, opt.arch)
             xpu.passes.ttsdnnir.add_tritonsdnn_optimize_rc_layout_pass(pm, opt.arch)
-            if opt.arch == 4:
-                xpu.passes.ttsdnnir.add_tritonsdnn_ewlite_scheduling_pass(pm, opt.arch)
-                if TTSDNN_F_DMA_MODE:
-                    xpu.passes.ttsdnnir.add_tritonsdnn_remove_ds_op_pass(pm, opt.arch)
+            # tle.dsa.copy retargets the load's DMA at the user's buffer,
+            # dropping the staging copy the load would otherwise leave behind.
+            # The buffer itself is already a memref.alloc from tracing.
+            # Kept immediately before Bufferize, as it was on the 3.6 line.
             xpu.passes.ttsdnnir.add_tritonsdnn_dsa_copy_pass(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_bufferize_pass(pm, opt.arch)
             xpu.passes.ttsdnnir.add_tritonsdnn_mx_scale_layout_pass(pm)
@@ -476,17 +493,8 @@ class XPUBackend(BaseBackend):
                 xpu.passes.ttsdnnir.add_tritonsdnn_ew_act_table_pass(pm, None)
             xpu.passes.ttsdnnir.add_tritonsdnn_loop_grid_pass(pm)
             xpu.passes.ttsdnnir.add_tritonsdnn_hoist_loop_invariant_dma_pass(pm, opt.arch)
-            # FlagTree: defer_event_coloring (arch5-only wiring) needs the
-            # v0.3.6.8.x SDNN objects; the 7.1 binding has no such kwarg.
-            if opt.arch == 5:
-                xpu.passes.ttsdnnir.add_tritonsdnn_pipeline_pass(pm, opt.arch, defer_event_coloring=True)
-            else:
-                xpu.passes.ttsdnnir.add_tritonsdnn_pipeline_pass(pm, opt.arch)
-            if opt.arch == 4 and TTSDNN_F_KILL_EW_FILL_MODE:
-                xpu.passes.ttsdnnir.add_tritonsdnn_kloop_acc_elimination_pass(pm)
+            xpu.passes.ttsdnnir.add_tritonsdnn_pipeline_pass(pm, opt.arch)
             xpu.passes.ttsdnnir.add_tritonsdnn_multi_buffer_pass(pm, opt.arch, opt.num_stages)
-            if opt.arch == 5 and not TTSDNN_F_SINGLE_CODE_MODE:
-                xpu.passes.ttsdnnir.add_tritonsdnn_event_coloring_pass(pm, 0)
             xpu.passes.ttsdnnir.add_tritonsdnn_lower_rc_subview_pass(pm, opt.arch)
             passes.common.add_symbol_dce(pm)
             passes.common.add_canonicalizer(pm)
@@ -520,8 +528,10 @@ class XPUBackend(BaseBackend):
             if not metadata["isCloseOffsetAnalysis"]:
                 xpu.passes.ttxpuir.add_tritonxpu_scalar_analysis_pass(pm, False) if not TTXPU_O_CLOSE_OPT else None
                 xpu.passes.ttxpuir.add_tritonxpu_offset_state_pass(
-                    pm, 0, XPUBackend.buffer_len, is_use_mask_zero) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=0
-                xpu.passes.ttxpuir.add_tritonxpu_scalar_analysis_pass(pm, True) if not TTXPU_O_CLOSE_OPT else None
+                    pm, TTXPU_D_OFFSET_STATE, XPUBackend.buffer_len,
+                    is_use_mask_zero) if not TTXPU_O_CLOSE_OPT else None  # dumpFlag=TRITONXPU_DUMP_OFFSET_STATE
+                xpu.passes.ttxpuir.add_tritonxpu_scalar_analysis_pass(
+                    pm, True) if not TTXPU_O_CLOSE_OPT else None  # aggressive: fix offsetState=-1 using scalar analysis
             passes.common.add_canonicalizer(pm)
             xpu.passes.ttxpuir.add_tritonxpu_legalize_pass(pm, XPUBackend.buffer_len, core_num, groups_per_cluster,
                                                            is_use_mask_zero)
@@ -611,6 +621,8 @@ class XPUBackend(BaseBackend):
                 "math.exp": np.exp,
                 "math.exp2": np.exp2,
                 "math.log2": np.log2,
+                "math.log": np.log,
+                "math.rsqrt": lambda x: 1.0 / np.sqrt(x),
                 "tt.gelu": np_gelu,
             }[fn]
             dtype = {0: np.float32, 1: np.float16}[dtype]
@@ -659,7 +671,9 @@ class XPUBackend(BaseBackend):
         if cache_path is None:
             k, b = b'', b''
             for fn, info in lut_info.items():
-                table = get_range_table(fn, info.dtype, info.mode, info.size, info.min, info.interval)
+                # `fn` is `<function>@<slot>`: one slot per window, so a
+                # kernel can hold two `exp` tables over different ranges.
+                table = get_range_table(fn.split("@")[0], info.dtype, info.mode, info.size, info.min, info.interval)
                 mid = len(table) // 2
                 k += table[:mid]
                 b += table[mid:]
@@ -901,6 +915,18 @@ class XPUBackend(BaseBackend):
         tool_dir = XPUBackend.path_to_xpu_compile_tool(self.target)
         flags = " ".join(_LLC_EXTRA) + " " + llvm19_toolchain.codegen_key("xpu")
         return f"{_xtdk_lld_version(tool_dir)}-{self.target}-{flags}"
+
+    @staticmethod
+    def parse_attr(desc):
+        # "E" is emitted by create_function_from_signature for a specialized
+        # integer argument whose value is 1 but whose type is pinned by an
+        # annotation (`stride: tl.int32`), so it cannot become a constexpr.
+        # CodeGenerator turns this attribute into a constant of the argument's
+        # own integer type, which is what lets the stride analyses see the 1.
+        ret = BaseBackend.parse_attr(desc)
+        if "E" in desc:
+            ret += [["tt.equal_to_1", 1]]
+        return ret
 
     def parse_options(self, options: dict) -> object:
         args = {"arch": self.target.arch}

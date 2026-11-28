@@ -71,37 +71,60 @@ struct XPUExtractSliceOpConversion
       retVals[i] = llTensors[i];
     }
 
-    // 1 core deal with multi row
+    // Slice out the leading sizePerCore[1] columns of every row.
+    //
+    // llTensors is the *per-core* register array, so the row stride is the
+    // source's own sizePerCore[1] -- NOT srcShape[1]. The two coincide only
+    // when the source is not split along columns; when it is, srcShape[1]
+    // overruns the array and the kernel faults on device with
+    // `error code=700 illegal memory access`.
+    //
+    // This used to sit behind `if (sizePerCore[0] > 1)` and a
+    // `elems == product(sizePerCore)` assert, i.e. it only ran when the result
+    // carried more than one row per core AND the register array was exactly the
+    // per-core extent. Neither is required: the gather below is the identity
+    // whenever i stays within the first row (colsPerCore entries), so it
+    // reproduces the old copy for that case, and it is the only correct answer
+    // when the row dimension is NOT distributed -- e.g. a rank-2 tensor whose
+    // schedule has one entry, so its shape[0] is not split across cores while
+    // sizePerCore[0] still reads 1:
+    //   tensor<64x16xi64, sizePerCore=[1,16]> -> tensor<64x2xi64,
+    //   sizePerCore=[1,2]>
+    // There elems is 64 * 2, the old identity copy returned rows 0..7 of the
+    // source, and the assert fired before any of it.
     if (srcShape.size() == 2) {
       auto clusterEncoding =
           cast<triton::xpu::ClusterLayoutAttr>(rankedTy.getEncoding());
       auto sizePerCore = clusterEncoding.getSizePerCore();
-      assert(elems == product(sizePerCore) && "elems != product(sizePerCore)");
-      if (sizePerCore[0] > 1) {
-        // llTensors is the *per-core* register array, so the row stride is the
-        // source's own sizePerCore[1] -- NOT srcShape[1]. The two coincide only
-        // when the source is not split along columns; when it is, srcShape[1]
-        // overruns the array and the kernel faults on device with
-        // `error code=700 illegal memory access`.
-        // Slice out the leading sizePerCore[1] columns of every row.
-        // sizePerCore[1] == 1 no longer holds after the tiling rework: unroll
-        // control can carry a multi-column accumulator, e.g.
-        // tensor<128x16xi32, sizePerCore=[2,16]> -> tensor<128x2xi32,
-        // sizePerCore=[2,2]>.
-        auto srcClusterEncoding =
-            cast<triton::xpu::ClusterLayoutAttr>(srcRankedTy.getEncoding());
-        auto srcSizePerCore = srcClusterEncoding.getSizePerCore();
-        int64_t srcColsPerCore = srcSizePerCore[1];
-        int64_t colsPerCore = sizePerCore[1];
-        assert(colsPerCore <= srcColsPerCore &&
-               "ExtractSlice widens the per-core column count");
-        for (unsigned i = 0; i < elems; ++i) {
-          unsigned srcIdx =
-              (i / colsPerCore) * srcColsPerCore + (i % colsPerCore);
-          assert(srcIdx < llTensors.size() &&
-                 "Get Invalid Index For triton::xpu::ExtractSliceOp");
-          retVals[i] = llTensors[srcIdx];
-        }
+      // sizePerCore[1] == 1 no longer holds after the tiling rework: unroll
+      // control can carry a multi-column accumulator, e.g.
+      // tensor<128x16xi32, sizePerCore=[2,16]> -> tensor<128x2xi32,
+      // sizePerCore=[2,2]>.
+      auto srcClusterEncoding =
+          cast<triton::xpu::ClusterLayoutAttr>(srcRankedTy.getEncoding());
+      auto srcSizePerCore = srcClusterEncoding.getSizePerCore();
+      int64_t srcColsPerCore = srcSizePerCore[1];
+      int64_t colsPerCore = sizePerCore[1];
+      // Both bounds used to be asserts, which a release build drops, leaving
+      // llTensors[srcIdx] to read out of bounds. A conversion pattern can say
+      // no instead, so the unsupported shape fails the pipeline with a reason
+      // rather than corrupting registers.
+      if (colsPerCore <= 0 || colsPerCore > srcColsPerCore)
+        return rewriter.notifyMatchFailure(
+            op, "extract_slice needs 0 < per-core columns <= the source "
+                "per-core columns");
+      if (elems > 0) {
+        unsigned lastSrcIdx = (elems - 1) / colsPerCore * srcColsPerCore +
+                              (elems - 1) % colsPerCore;
+        if (lastSrcIdx >= llTensors.size())
+          return rewriter.notifyMatchFailure(
+              op, "extract_slice source register array is shorter than the "
+                  "result it has to cover");
+      }
+      for (unsigned i = 0; i < elems; ++i) {
+        unsigned srcIdx =
+            (i / colsPerCore) * srcColsPerCore + (i % colsPerCore);
+        retVals[i] = llTensors[srcIdx];
       }
     }
 

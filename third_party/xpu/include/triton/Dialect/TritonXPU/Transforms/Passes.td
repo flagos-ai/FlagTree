@@ -58,6 +58,12 @@ def TritonXPULegalize : Pass<"tritonxpu-legalize", "mlir::ModuleOp"> {
                         /*default*/ "1", "groups per cluster">,
                  Option<"isUseMaskZero", "is-use-mask-zero", "bool",
                         /*default*/ "0", "Whether Use Mask Zero Method">,
+                 Option<"allowRank3", "allow-rank3", "bool",
+                        /*default*/ "0",
+                        "Accept rank-3 tensors. Off by default: CoreTiling, "
+                        "Vectorize and TritonXPUToLLVM still assume rank <= 2, "
+                        "so enabling this only makes Legalize produce rank-3 IR "
+                        "for its own tests.">,
   ];
 }
 
