@@ -882,7 +882,7 @@ endmacro()
 # linked against TRITON_LIBRARIES: the conceal-IR definition, the GCC 11 static
 # libstdc++ archive, and the repeated public-LLVM archives.
 macro(flagtree_configure_backend_triton_target target)
-  if(FLAGTREE_BACKEND STREQUAL "xpu")
+  if(FLAGTREE_BACKEND STREQUAL "xpu" AND TRITON_XPU_CONCEAL_IR)
     target_compile_definitions(${target} PRIVATE TRITON_CONCEAL_IR=1)
   endif()
   # Link the GCC 11 static libstdc++ archive after all LLVM archives.
