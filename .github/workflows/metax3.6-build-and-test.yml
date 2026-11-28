@@ -94,7 +94,8 @@ jobs:
             --ignore=language/test_frontend.py \
             --ignore=test_debug.py \
             --ignore=language/test_tensor_descriptor.py \
-            -k "not test_fp8_support and \
+            -k "not metax_ and \
+                not test_fp8_support and \
                 not test_compile_only_sm100 and \
                 not test_compile_only_dot and \
                 not test_compile_only_k_loop and \
@@ -151,3 +152,32 @@ jobs:
             test_tle_gpu_local_ptr.py \
             -k "not test_local_pointer_tiled_matmul_matches_torch and \
                 not test_local_pointer_full_view_dot_avoids_pointer_convert_layout"
+
+      - name: Build MetaX precision plugin from source
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          export FLAGTREE_BACKEND=metax FLAGTREE_PLUGIN=ON
+          # The public checkout does not include the MCTLE plugin implementation.
+          export TRITON_APPEND_CMAKE_ARGS="${TRITON_APPEND_CMAKE_ARGS:-} -DBUILD_MCTLE=OFF"
+          MAX_JOBS=32 python3 -m pip install . --no-build-isolation --force-reinstall --no-deps -v
+
+      - name: MetaX precision regressions including descriptors and shared IR
+        if: steps.check_backend.outputs.should_skip != 'true'
+        shell: bash
+        run: |
+          set -x
+          source ~/env.sh
+          python3 -m pytest -s \
+            third_party/metax/python/test/unit/language/test_conversions.py \
+            third_party/metax/python/test/unit/language/test_core.py \
+            third_party/metax/python/test/unit/language/test_fp4.py \
+            third_party/metax/python/test/unit/language/test_int4.py \
+            third_party/metax/python/test/unit/language/test_tensor_descriptor.py \
+            third_party/metax/python/test/unit/runtime/test_driver.py \
+            third_party/metax/python/test/unit/runtime/test_cache.py \
+            -k metax_
+          python3 -m pytest -s \
+            third_party/metax/python/test/gluon/test_fp4.py \
+            -k metax_

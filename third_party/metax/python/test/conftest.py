@@ -16,6 +16,15 @@ def device(request):
 
 
 @pytest.fixture
+def metax_device(device):
+    import triton
+
+    if triton.runtime.driver.active.get_current_target().backend != "maca":
+        pytest.skip("requires the MetaX backend")
+    return device
+
+
+@pytest.fixture
 def fresh_triton_cache():
     with tempfile.TemporaryDirectory() as tmpdir:
         from triton import knobs

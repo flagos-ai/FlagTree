@@ -35,6 +35,10 @@ namespace METAX {
 
 class TargetInfo;
 
+// Decode an E2M1 nibble. BF16 is returned as its i16 LLVM representation.
+Value decodeFp4E2M1(Location loc, ConversionPatternRewriter &rewriter,
+                    Value nibble, bool toFp16);
+
 Value shuffleXor(Location loc, RewriterBase &rewriter, Value val, int i);
 Value shuffleXorIntrinsic(Location loc, RewriterBase &rewriter, Value val,
                           int i, Operation *op = nullptr);
