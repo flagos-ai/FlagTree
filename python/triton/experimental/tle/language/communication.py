@@ -118,7 +118,7 @@ def compile_flagcx_allocator():
             load_inline(
                 name=lib_name,
                 cpp_sources=flagcx_allocator_source,
-                with_cuda=True,
+                with_cuda=not _is_xpu,
                 extra_ldflags=[
                     f"-L{FLAGCX_LIB_PATH}",
                     "-lflagcx",

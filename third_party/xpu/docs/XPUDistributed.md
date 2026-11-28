@@ -7,11 +7,11 @@ space. Node and cluster remote pointers and implicit communicator launch
 parameters are outside this path.
 
 The frontend accepts a runtime `i64` communicator handle for rank, size, and
-barrier operations. A `DistributedRtContext` may be passed as a constexpr;
-rank and barrier use its communicator pointer, while remote uses its registered
-memory pointer. Remote offsets count elements; the lowering multiplies them by
-the pointee size before calling `flagcxGetIntraPointerC`. The KunlunXin
-wrapper resolves the write-only XSHMEM peer address.
+barrier operations. A `DistributedRtContext` carries the communicator pointer
+for rank and barrier operations and the registered memory pointer for remote
+stores. The lowering multiplies the element offset by the pointee size before
+passing the byte offset to `flagcxGetIntraPointerWithAccessC`. This call requests
+a write-only XSHMEM peer address.
 
 The XPU compiler inserts one `device_init` at the kernel entry, before the
 grid-stride loop, using the communicator carried by the distributed operations.
@@ -19,30 +19,55 @@ Kernels that pass only a raw memory handle can supply the communicator with
 `tle.init(comm)`. Existing explicit initializers for the same communicator
 are consolidated into the entry call.
 
-The XPU setup hook builds `libflagcx_device.bc` from the downloaded FlagCX sources
-and installs it under `third_party/xpu/backend/lib`. `FLAGCX_BITCODE_PATH` can
-override this path. The backend links it with LLVM 19 `llvm-link` after
-downgrading kernel IR, then verifies that the called FlagCX symbols have
-definitions. The staged LLVM 19 package does not contain `llvm-link`; set
-`FLAGCX_XPU_LLVM_LINK` to a compatible LLVM 19 executable. A host
-`libflagcx.so` cannot satisfy device calls.
+## Prepare the SDKs
 
-For the host library, the XPU setup hook downloads FlagCX under
-`third_party/xpu/tle/third_party/flagcx` and discovers the XPU SDK and XCCL
-from `XPU_HOME`/`XPU_SDK_HOME` and `XCCL_HOME`/`BKCL_HOME`, or from
-`/usr/local/xpu` and `/usr/local/xccl`. Set `FLAGCX_XPU_DEVICE_HOME` and
-`FLAGCX_XPU_CCL_HOME` to override those locations. The SDK must contain
-`include/xpu/runtime.h` and `so/libxpurt.so*`; XCCL must contain
-`include/bkcl.h` and `so/libbkcl.so*`. The setup hook invokes FlagCX's
-`bindings/ir/kunlunxin` recipe and expects it to write
-`build/xpu/lib/libflagcx_device.bc`. Set `FLAGCX_XPU_CLANG` if the staged
-LLVM 19 compiler is unavailable. The pinned FlagCX revision does not yet
-contain this recipe. It already includes FlagCX PR #555's KLX XSHMEM
-CommTraits, adaptor, and test kernels, but those sources do not produce
-`libflagcx_device.bc`. FlagCX must add the device IR recipe before the
-bitcode can build.
+Use a KunlunXin environment with the XPU driver, XPU-compatible PyTorch, and
+FlagTree's build dependencies. Provision compatible XRE and XCCL SDKs once.
+The two-device tests were validated with XRE 5.37.1.0 and XCCL 4a9d27ec.
 
-The compile tests in `python/test/unit/language/test_tle_{get_device_id,n_pes,distributed_barrier,remote_pointers}.py`
-run when the bitcode is present. Multi-device tests additionally need the
-FlagCX host wrapper and an initialized distributed process group. They have
-not been validated on XPU hardware in this repository.
+| Default SDK path | Required files |
+| --- | --- |
+| `~/.flagtree/xpu/sdk/xre` | `include/xpu/runtime.h`, `so/libxpurt.so`, and the XRE CUDA compatibility libraries |
+| `~/.flagtree/xpu/sdk/xccl` | `include/bkcl.h`, `include/xshmem/`, `so/libbkcl.so`, and `lib/libxshmem_device.a` |
+
+The SDK paths can be directories or symlinks to installed SDKs. When the
+corresponding cache path is absent, setup can also use `/usr/local/xpu` or
+`/usr/local/xccl`.
+`FLAGTREE_CACHE_DIR` can replace `~/.flagtree`. For SDKs in other locations,
+set `FLAGCX_XPU_DEVICE_HOME` or `FLAGCX_XPU_CCL_HOME`.
+
+## Build and install
+
+Select the backend using `FLAGTREE_BACKEND`, as in the Iluvatar build.
+`USE_FLAGCX` controls FlagCX for XPU and defaults to ON.
+
+```bash
+FLAGTREE_BACKEND=xpu USE_FLAGCX=ON python -m pip install . --no-build-isolation
+```
+
+1. The XPU setup hook stages XTDK LLVM 19 for device compilation and linking.
+2. Setup checks out the pinned public FlagCX revision under
+   `third_party/xpu/tle/third_party/` and initializes FlagCX's JSON headers.
+3. The KunlunXin host recipe builds `libflagcx.so` with XSHMEM support. The
+   device IR recipe builds and checks the ABI of `libflagcx_device.bc`.
+4. Setup caches `libflagcx.so`, `libflagcx_device.bc`, and `include/` directly
+   under `~/.flagtree/xpu/lib/` and stages the files needed by the Python
+   package. At JIT time LLVM 19 links the FlagCX bitcode into the kernel.
+   The final XPU link uses the XSHMEM device archive from the SDK.
+
+The runtime resolves each artifact independently. It checks its explicit path
+override, `FLAGCX_MODULE_PATH`, the XPU package, and the flat XPU cache in that
+order. It can also fall back to a standalone FlagCX wheel or the legacy cache.
+
+For an XPU build without FlagCX, set `USE_FLAGCX=OFF`.
+
+## Run on two local devices
+
+```bash
+bash third_party/xpu/test/run_tle_distributed.sh
+```
+
+Use the same Python environment as the install. The runner configures the SDK
+library paths, prepares the host allocator, and launches the rank, barrier,
+remote store, signal, and signal-wait tests. Add `debug` to stream FlagCX
+diagnostics. Each test also writes a log in the directory printed by the runner.

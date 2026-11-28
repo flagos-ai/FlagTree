@@ -58,7 +58,14 @@ _PKG_METADATA_FILES = frozenset({"LICENSE", "PROVENANCE", "PROVENANCE.json"})
 # The XPU overlay ships its own `triton.experimental.tle`; see
 # _merge_xpu_packages for why the main-tree one is not merged in.
 TLE_PACKAGE = "triton.experimental.tle"
-_FLAGCX_RELATIVE_PATH = os.path.join("xpu", "tle", "third_party", "flagcx")
+_FLAGCX_REPOSITORY = "https://github.com/SabYic/FlagCX.git"
+_FLAGCX_REVISION = "06463a5b769e474c9d0468d69c5d6a3d24aeb4bc"
+_FLAGCX_RELATIVE_PATH = os.path.join("xpu", "tle", "third_party", f"flagcx-{_FLAGCX_REVISION[:12]}")
+_FLAGCX_PACKAGE_LIBS = ("lib/libflagcx.so", "lib/libflagcx_device.bc")
+
+
+def flagcx_enabled():
+    return os.environ.get("USE_FLAGCX", "ON").strip().upper() in ("ON", "1", "TRUE")
 
 
 def relocate_flagcx(*args, **kwargs):
@@ -68,55 +75,62 @@ def relocate_flagcx(*args, **kwargs):
     flagcx = flagtree_submodules.get("flagcx")
     if flagcx is not None:
         flagcx.dst_path = os.path.join(flagtree_configs.flagtree_submodule_dir, _FLAGCX_RELATIVE_PATH)
+        flagcx.url = _FLAGCX_REPOSITORY
+        flagcx.commit_id = _FLAGCX_REVISION
+
 
 def _has_xpu_sdk(path):
     path = Path(path).expanduser()
-    return ((path / "include" / "xpu" / "runtime.h").is_file()
-            and any(lib.is_file() for lib in (path / "so").glob("libxpurt.so*")))
+    return (path / "include/xpu/runtime.h").is_file() and (path / "so/libxpurt.so").is_file()
 
 
 def _has_xccl(path):
     path = Path(path).expanduser()
-    return ((path / "include" / "bkcl.h").is_file() and any(lib.is_file() for lib in (path / "so").glob("libbkcl.so*")))
+    return all((path / name).is_file()
+               for name in ("include/bkcl.h", "include/xshmem/xshmem.h", "include/xshmem/xshmemx.h", "so/libbkcl.so"))
 
 
-def _resolve_flagcx_toolchain():
-    sdk_path = next((str(Path(path).expanduser()) for path in (
-        os.environ.get("FLAGCX_XPU_DEVICE_HOME"),
-        os.environ.get("XPU_HOME"),
-        os.environ.get("XPU_SDK_HOME"),
-        os.environ.get("DEVICE_HOME"),
-        "/usr/local/xpu",
-    ) if path and _has_xpu_sdk(path)), None)
-    ccl_path = next((str(Path(path).expanduser()) for path in (
-        os.environ.get("FLAGCX_XPU_CCL_HOME"),
-        os.environ.get("XCCL_HOME"),
-        os.environ.get("BKCL_HOME"),
-        os.environ.get("CCL_HOME"),
-        "/usr/local/xccl",
-    ) if path and _has_xccl(path)), None)
-    return sdk_path, ccl_path
+def _resolve_flagcx_toolchain(cache_dir):
+    sdk_dir = Path(cache_dir).expanduser() / "xpu" / "sdk"
+    default_xre = sdk_dir / "xre"
+    default_xccl = sdk_dir / "xccl"
+    xre_override = next((os.environ[key] for key in ("FLAGCX_XPU_DEVICE_HOME", "XPU_HOME", "XPU_SDK_HOME", "DEVICE_HOME")
+                         if os.environ.get(key)), None)
+    xccl_override = next((os.environ[key] for key in ("FLAGCX_XPU_CCL_HOME", "XCCL_HOME", "BKCL_HOME", "CCL_HOME")
+                          if os.environ.get(key)), None)
+    sdk_path = Path(xre_override or (default_xre if default_xre.is_dir() else "/usr/local/xpu")).expanduser()
+    ccl_path = Path(xccl_override or (default_xccl if default_xccl.is_dir() else "/usr/local/xccl")).expanduser()
+    if not _has_xpu_sdk(sdk_path):
+        raise FileNotFoundError(f"XPU FlagCX needs include/xpu/runtime.h and so/libxpurt.so under {sdk_path}. "
+                                f"The default SDK path is {default_xre}. "
+                                "Set FLAGCX_XPU_DEVICE_HOME to use another XRE SDK.")
+    if not _has_xccl(ccl_path):
+        raise FileNotFoundError(f"XPU FlagCX needs BKCL and XSHMEM headers and so/libbkcl.so under {ccl_path}. "
+                                f"The default SDK path is {default_xccl}. "
+                                "Set FLAGCX_XPU_CCL_HOME to use another XCCL SDK.")
+    explicit_archive = os.environ.get("FLAGCX_XSHMEM_DEVICE_LIB")
+    archive = Path(explicit_archive).expanduser() if explicit_archive else ccl_path / "lib/libxshmem_device.a"
+    if not archive.is_file():
+        raise FileNotFoundError(f"XPU FlagCX needs the XSHMEM device archive at {archive}.")
+    return sdk_path.resolve(), ccl_path.resolve()
 
 
 class XPUFlagCXRegistrar(FlagCXRegistrar):
 
-    def _build_env(self):
+    def _build_env(self, sdk_path, ccl_path):
         env = os.environ.copy()
         runtime_dir = Path(self.flagtree_dir) / "third_party" / "_xtdk_llvm19" / "lib"
+        library_dirs = (runtime_dir, sdk_path / "so", sdk_path / "lib64", ccl_path / "so")
         current = env.get("LD_LIBRARY_PATH")
-        env["LD_LIBRARY_PATH"] = str(runtime_dir) + (os.pathsep + current if current else "")
+        env["LD_LIBRARY_PATH"] = os.pathsep.join(map(str, library_dirs)) + (os.pathsep + current if current else "")
         return env
 
     def _set_path(self, external):
         relocate_flagcx()
         super()._set_path(external)
-        self.src_lib_dir = Path(self.flagcx_src_dir) / "build" / "xpu" / "lib"
-        self.cache_lib_dir = Path(external["cache"].dir_path) / "flagcx" / "xpu"
+        self.cache_dir = Path(external["cache"].dir_path).expanduser().resolve()
+        self.cache_lib_dir = self.cache_dir / "xpu" / "lib"
         self.cache_lib_dir.mkdir(parents=True, exist_ok=True)
-        self.libflagcx_device_src_path = self.src_lib_dir / self.bitcode_name
-        self.libflagcx_device_cache_path = self.cache_lib_dir / self.bitcode_name
-        self.libflagcx_src_path = self.src_lib_dir / self.shared_lib_name
-        self.libflagcx_cache_path = self.cache_lib_dir / self.shared_lib_name
 
     def _get_runtime_path(self, lib_name):
         if lib_name not in (self.bitcode_name, self.shared_lib_name):
@@ -125,53 +139,77 @@ class XPUFlagCXRegistrar(FlagCXRegistrar):
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
-    def get_compile_cmds(self):
+    def get_compile_cmds(self, build_dir, sdk_path, ccl_path):
         makefile = Path(self.flagcx_src_dir) / "makefiles" / "kunlunxin.mk"
         if not makefile.is_file():
             raise FileNotFoundError(f"FlagCX KunlunXin build configuration not found: {makefile}")
         device_dir = Path(self.flagcx_src_dir) / "bindings" / "ir" / "kunlunxin"
         if not device_dir.is_dir():
             raise FileNotFoundError(f"FlagCX KunlunXin device IR build entry not found: {device_dir}")
-        sdk_path, ccl_path = _resolve_flagcx_toolchain()
-        if not sdk_path or not ccl_path:
-            raise RuntimeError("Unable to locate the XPU SDK and XCCL/BKCL installation. "
-                               "Set FLAGCX_XPU_DEVICE_HOME and FLAGCX_XPU_CCL_HOME to directories "
-                               "containing include/ and so/.")
+        default_bin = Path(self.flagtree_dir) / "third_party/xpu/backend/llvm19/bin"
         clang_candidates = (
             os.environ.get("FLAGCX_XPU_CLANG"),
-            str(Path(self.flagtree_dir) / "third_party" / "xpu" / "backend" / "llvm19" / "bin" / "clang"),
+            default_bin / "clang",
             str(Path(os.environ["XTDK_HOME"]) / "bin" / "clang") if os.environ.get("XTDK_HOME") else None,
         )
-        clang_path = next((str(Path(path).expanduser().resolve())
-                           for path in clang_candidates
-                           if path and Path(path).expanduser().is_file()), None)
-        if not clang_path:
-            raise RuntimeError("XPU FlagCX device IR requires XTDK LLVM 19 clang; set FLAGCX_XPU_CLANG")
-        clang_version = subprocess.run([clang_path, "--version"], capture_output=True, text=True, check=True,
-                                       env=self._build_env()).stdout
+        clang_path = next((Path(path).expanduser().absolute() for path in clang_candidates
+                           if path and Path(path).expanduser().is_file()), default_bin / "clang")
+        llvm_bin = clang_path.parent
+        # Keep the build-only tools out of the runtime bin directory. A staged
+        # opt there also enables the backend's LLVM read-in path.
+        build_tools = self.cache_dir / "xpu/xtdk-llvm19-printf/bin"
+        opt, llvm_as = (next((root / name for root in (llvm_bin, build_tools) if (root / name).is_file()),
+                             build_tools / name) for name in ("opt", "llvm-as"))
+        llvm_link = Path(os.environ.get("FLAGCX_XPU_LLVM_LINK") or llvm_bin / "llvm-link").expanduser()
+        for tool in (clang_path, opt, llvm_as, llvm_link):
+            if not tool.is_file() or not os.access(tool, os.X_OK):
+                raise FileNotFoundError(f"XPU FlagCX needs the executable LLVM 19 tool {tool}.")
+        clang_version = subprocess.run([str(clang_path), "--version"], capture_output=True, text=True, check=True,
+                                       env=self._build_env(sdk_path, ccl_path)).stdout
         if not re.search(r"\bversion 19(?:\.|\b)", clang_version):
             raise RuntimeError(f"XPU FlagCX device IR requires XTDK LLVM 19 clang: {clang_path}")
-        build_args = [f"BUILDDIR={self.src_lib_dir.parent}", f"DEVICE_HOME={sdk_path}", f"CCL_HOME={ccl_path}"]
-        # The device Makefile defaults OPT/LLVM_AS/LLVM_DIS to $(XTDK_HOME)/bin,
-        # so it needs XTDK_HOME just as the host command does.
-        xtdk_home = Path(clang_path).parent.parent
-        device_cmd = ["make", "-C", str(device_dir), f"XPU_CLANG={clang_path}", f"XTDK_HOME={xtdk_home}", *build_args]
+        build_args = [f"BUILDDIR={build_dir}", f"DEVICE_HOME={sdk_path}", f"CCL_HOME={ccl_path}"]
+        xtdk_home = llvm_bin.parent
+        device_cmd = [
+            "make", "-C", str(device_dir), "EMIT_LLVM_IR=1", f"XPU_CLANG={clang_path}", f"XTDK_HOME={xtdk_home}",
+            f"OPT={opt}", f"LLVM_AS={llvm_as}", *build_args, "llvm_ir"
+        ]
+        sdk_rpath = f"LINKER_FLAGS=-Wl,-rpath,{sdk_path / 'so'}"
         host_cmd = [
-            "make", "USE_KUNLUNXIN=1", "USE_SHMEM=1", "COMPILE_KERNEL=0", f"XTDK_HOME={xtdk_home}", *build_args, "-j",
-            str(os.cpu_count() or 1)
+            "make", "USE_KUNLUNXIN=1", "USE_SHMEM=1", "COMPILE_KERNEL=0", f"XTDK_HOME={xtdk_home}", sdk_rpath,
+            *build_args, "-j", os.environ.get("MAX_JOBS") or str(os.cpu_count() or 1)
         ]
         return {self.bitcode_name: device_cmd, self.shared_lib_name: host_cmd}
 
     def _compile_and_cache(self):
-        printinfo(f"Initializing FlagCX submodules in {self.flagcx_src_dir}")
-        subprocess.run(["git", "submodule", "update", "--init", "--recursive"], cwd=self.flagcx_src_dir, check=True)
-        for command in self.get_compile_cmds().values():
-            subprocess.run([command[0], "-B", *command[1:]], cwd=self.flagcx_src_dir, check=True, env=self._build_env())
-        super()._compile_and_cache()
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=self.flagcx_src_dir, text=True).strip()
+        if revision != _FLAGCX_REVISION:
+            raise RuntimeError(f"XPU FlagCX checkout {self.flagcx_src_dir} is at {revision}. "
+                               f"Expected {_FLAGCX_REVISION} from {_FLAGCX_REPOSITORY}.")
+        sdk_path, ccl_path = _resolve_flagcx_toolchain(self.cache_dir)
+        env = self._build_env(sdk_path, ccl_path)
+        with tempfile.TemporaryDirectory(prefix="flagcx-", dir=self.cache_lib_dir) as directory:
+            build_dir = Path(directory) / "build"
+            commands = self.get_compile_cmds(build_dir, sdk_path, ccl_path)
+            subprocess.run(
+                ["git", "submodule", "update", "--init", "--depth", "1", "--", "third-party/json"],
+                cwd=self.flagcx_src_dir, check=True)
+            for command in commands.values():
+                subprocess.run(command, cwd=self.flagcx_src_dir, check=True, env=env)
+
+            libraries = [build_dir / "lib" / name for name in commands]
+            for library in libraries:
+                if not library.is_file():
+                    raise FileNotFoundError(f"Expected FlagCX build output at {library}")
+            self._copy_required_files()
+            for library in libraries:
+                shutil.copy2(library, self._get_runtime_path(library.name))
+            for library in libraries:
+                library.replace(self.cache_lib_dir / library.name)
+            printinfo(f"Cached XPU FlagCX artifacts in {self.cache_lib_dir}")
 
     def run(self):
         self._compile_and_cache()
-        self._copy_required_files()
 
     def _get_required_src_files_paths(self):
         return {
@@ -184,14 +222,14 @@ class XPUFlagCXRegistrar(FlagCXRegistrar):
         language = Path("triton") / "experimental" / "tle" / "language"
         return {
             "wrapper": (root / FLAGTREE_PYTHON_ROOT / language / "flagcx_wrapper.py", ),
-            "include": (root / XPU_PYTHON_ROOT / language / "include", ),
+            "include": (root / XPU_PYTHON_ROOT / language / "include", self.cache_lib_dir / "include"),
         }
 
     def _copy_required_files(self):
         super()._copy_required_files()
         paths = self._get_required_dst_files_paths()
         wrapper, = paths["wrapper"]
-        xpu_include, = paths["include"]
+        xpu_include = paths["include"][0]
         xpu_wrapper = xpu_include.parent / wrapper.name
         # XPU packages its TLE overlay. Link the shared wrapper like communication.py.
         with tempfile.TemporaryDirectory(dir=xpu_wrapper.parent) as tmpdir:
@@ -361,7 +399,14 @@ def _patch_xpu_cmdclass(existing_cmdclass):
             # with "can't copy '...': doesn't exist or not a regular file".
             # Filter out anything that is not a regular file so that only actual
             # .py / binary files are passed to the copy step.
-            return [path for path in super().find_data_files(package, src_dir) if Path(path).is_file()]
+            files = [path for path in super().find_data_files(package, src_dir) if Path(path).is_file()]
+            if flagcx_enabled():
+                return files
+            if package == "triton.backends.xpu":
+                return [path for path in files if Path(path).relative_to(src_dir).as_posix() not in _FLAGCX_PACKAGE_LIBS]
+            if package == f"{TLE_PACKAGE}.language":
+                return [path for path in files if Path(src_dir) / "include" not in Path(path).parents]
+            return files
 
         def run(self):
             self.force = True
@@ -929,6 +974,7 @@ def _compiled_python_packages():
 
 
 def get_package_data(backends):
+    include_flagcx = flagcx_enabled()
     package_data = {
         "triton": ["FLAGTREE_BACKEND"], "triton.backends": ["_tables/*.json"],
         # The one shared copy of the LLVM 19 runtime.  The package is
@@ -946,18 +992,14 @@ def get_package_data(backends):
     for backend in backends:
         if backend.name == "xpu":
             files = collect_xpu_backend_package_data(backend)
-            flagcx_library = Path(backend.backend_dir) / "lib" / "libflagcx.so"
-            if flagcx_library.is_file():
-                files.append("lib/libflagcx.so")
-            flagcx_bitcode = Path(backend.backend_dir) / "lib" / "libflagcx_device.bc"
-            if flagcx_bitcode.is_file():
-                files.append("lib/libflagcx_device.bc")
+            if include_flagcx:
+                files.extend(path for path in _FLAGCX_PACKAGE_LIBS if (Path(backend.backend_dir) / path).is_file())
             if files:
                 package_data["triton.backends.xpu"] = files
             break
     language_dir = Path(XPU_PYTHON_ROOT) / "triton" / "experimental" / "tle" / "language"
     flagcx_include = language_dir / "include"
-    if flagcx_include.is_dir():
+    if include_flagcx and flagcx_include.is_dir():
         package_data["triton.experimental.tle.language"] = [
             str(path.relative_to(language_dir)) for path in flagcx_include.rglob("*") if path.is_file()
         ]
@@ -1090,7 +1132,7 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
     #                                 the shared runtime libraries go to
     #                                 third_party/_xtdk_llvm19/lib.
     #   <root>/xpu/xtdk-llvm19-printf XPU device printf runtime.
-    #   <root>/xpu/xre-Linux-x86_64   XPU runtime (xre).
+    #   <root>/xpu/xre-Linux-x86_64   XPU runtime for the base backend build.
     #   <root>/xpu/xpu-device-libs    XPU device libraries.
     #   <root>/xpu/xpu-sdnn-objects   Prebuilt SDNN objects.
     #   <root>/xpu/xpu-python-impl-so Compiled Python implementation modules.
@@ -1237,9 +1279,6 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
                "llvm-objdump", "xpu-elfconv", "xpu2-elfconv", "xpu3-elfconv", "xpu4-elfconv", "xpu5-elfconv", "xpu-xxd",
                "xpu-crt.xpu", "xpu3-crt.xpu", "xpu4-crt.xpu", "xpu-kernel.t"), condition=is_xpu,
         copy_src_path=f"{_llvm19_pkg}/bin", copy_dst_path="third_party/xpu/backend/llvm19/bin")
-    # `opt` (read-in) and `llvm-link` (tle.raw merge) are not in the desensitized
-    # package: the read-in degrades when `opt` is absent (see compiler.py) and
-    # tle.raw payload kernels fail loudly without `llvm-link`.
     cache.store(
         # clang's resource dir for the LLVM 19 side (the tools above read it
         # through `$ORIGIN/../lib/clang/19`).
@@ -1249,9 +1288,7 @@ def register_cache(cache, flagtree_backend, check_env, set_llvm_env):
                 copy_src_path=f"{_llvm19_pkg}/lib/linux", copy_dst_path="third_party/xpu/backend/llvm19/lib/linux")
     cache.store(files=("libclang_rt.xpuprintf-xpu3.a", "libclang_rt.xpuprintfs-xpu3.a"), condition=is_xpu,
                 copy_src_path=f"{_printf_pkg}/lib/linux", copy_dst_path="third_party/xpu/backend/llvm19/lib/linux")
-    # The desensitized xtdk-llvm19 package does not ship llvm-link, but the
-    # printf package does.  Stage it from there so `link_flagcx_device_ir`
-    # can merge FlagCX bitcode without FLAGCX_XPU_LLVM_LINK being set.
+    # Runtime bitcode linking uses llvm-link from the complete LLVM 19 release.
     cache.store(files=("llvm-link", ), condition=is_xpu, copy_src_path=f"{_printf_pkg}/bin",
                 copy_dst_path="third_party/xpu/backend/llvm19/bin")
     cache.store(

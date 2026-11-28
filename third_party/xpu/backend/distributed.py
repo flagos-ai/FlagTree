@@ -10,6 +10,34 @@ from importlib.machinery import PathFinder
 from pathlib import Path
 
 
+def _xpu_cache_dir():
+    cache_dir = os.environ.get("FLAGTREE_CACHE_DIR")
+    return (Path(cache_dir).expanduser() if cache_dir else Path.home() / ".flagtree") / "xpu"
+
+
+def find_xshmem_device_lib():
+    archive_name = "libxshmem_device.a"
+    explicit = os.environ.get("FLAGCX_XSHMEM_DEVICE_LIB")
+    if explicit:
+        archive = Path(explicit).expanduser()
+        if not archive.is_file():
+            raise FileNotFoundError(f"FLAGCX_XSHMEM_DEVICE_LIB does not point to an archive: {archive}")
+        return archive
+
+    ccl_home = next((Path(os.environ[name]).expanduser()
+                     for name in ("FLAGCX_XPU_CCL_HOME", "XCCL_HOME", "BKCL_HOME", "CCL_HOME")
+                     if os.environ.get(name)), None)
+    cache_dir = _xpu_cache_dir()
+    default_sdk = cache_dir / "sdk" / "xccl"
+    if ccl_home is None:
+        ccl_home = next((sdk for sdk in (default_sdk, Path("/usr/local/xccl")) if sdk.is_dir()), None)
+    archive = ccl_home / "lib" / archive_name if ccl_home else cache_dir / "lib" / archive_name
+    if not archive.is_file():
+        raise FileNotFoundError(f"XPU FlagCX distributed kernels need {archive}. "
+                                f"Install the XCCL SDK under {default_sdk} or set FLAGCX_XSHMEM_DEVICE_LIB.")
+    return archive
+
+
 class FlagcxRuntimeConfig:
     bt_name = "libflagcx_device.bc"
     shared_name = "libflagcx.so"
@@ -22,36 +50,43 @@ class FlagcxRuntimeConfig:
         self.host_files_available = False
         self.is_available = False
 
-        env_keys = ("USE_FLAGCX")
-        disabled = any(os.environ.get(key, "").strip().lower() in ("off", "0", "false") for key in env_keys)
-        if disabled:
+        if os.environ.get("USE_FLAGCX", "ON").strip().upper() not in ("ON", "1", "TRUE"):
             return
 
         module_dir = os.environ.get("FLAGCX_MODULE_PATH")
         module_dir = Path(module_dir).expanduser() if module_dir else None
         wheel_dir = self._get_flagcx_wheel_path()
-        cache_dir = Path(Path.home() / ".flagtree") / "flagcx" / "xpu"
+        cache_dir = _xpu_cache_dir()
+        lib_dir = cache_dir / "lib"
+        legacy_cache_dir = cache_dir.parent / "flagcx" / "xpu"
         backend_dir = Path(__file__).parent
         source_triton_dir = backend_dir.parent / "python" / "triton"
         triton_dir = source_triton_dir if source_triton_dir.is_dir() else backend_dir.parent.parent
         language_dir = triton_dir / "experimental" / "tle" / "language"
 
-        def in_dir(directory, name):
-            return directory / name if directory else None
+        def find_artifact(key, name, package_path, *, directory=False):
+            value = os.environ.get(key)
+            override = Path(value).expanduser() if value else None
+            if key == "FLAGCX_LIB_PATH" and override and override.is_dir():
+                override /= name
+            exists = Path.is_dir if directory else Path.is_file
+            if override is not None and not exists(override):
+                raise FileNotFoundError(f"{key} points to a missing XPU FlagCX artifact: {override}")
+            candidates = (
+                override,
+                module_dir / name if module_dir else None,
+                package_path,
+                lib_dir / name,
+                wheel_dir / "lib" / name if wheel_dir else None,
+                legacy_cache_dir / name,
+            )
+            paths = [path for path in candidates if path is not None and exists(path)]
+            return paths[path_order] if path_order < len(paths) else None
 
-        self.bitcode_path = self._first_existing(
-            (os.environ.get("FLAGCX_BITCODE_PATH"), in_dir(module_dir, self.bt_name), backend_dir / "lib" /
-             self.bt_name, wheel_dir / "lib" / self.bt_name if wheel_dir else None, cache_dir / self.bt_name),
-            path_order, file=True)
-        self.shared_lib_path = self._first_existing(
-            (os.environ.get("FLAGCX_LIB_PATH"), in_dir(module_dir,
-                                                       self.shared_name), backend_dir / "lib" / self.shared_name,
-             wheel_dir / "lib" / self.shared_name if wheel_dir else None, cache_dir / self.shared_name), path_order,
-            file=True, name=self.shared_name)
-        self.include_path = self._first_existing(
-            (os.environ.get("FLAGCX_INCLUDE_PATH"), in_dir(module_dir, self.include_name), language_dir / self.include_name,
-             wheel_dir / "lib" / self.include_name if wheel_dir else None, cache_dir / self.include_name), path_order,
-            file=False)
+        self.bitcode_path = find_artifact("FLAGCX_BITCODE_PATH", self.bt_name, backend_dir / "lib" / self.bt_name)
+        self.shared_lib_path = find_artifact("FLAGCX_LIB_PATH", self.shared_name, backend_dir / "lib" / self.shared_name)
+        self.include_path = find_artifact("FLAGCX_INCLUDE_PATH", self.include_name, language_dir / self.include_name,
+                                          directory=True)
         # Importing the TLE package here would recurse into this runtime config.
         self.host_files_available = bool(self.shared_lib_path and self.include_path
                                          and (language_dir / "flagcx_wrapper.py").is_file())
@@ -61,20 +96,6 @@ class FlagcxRuntimeConfig:
     def _get_flagcx_wheel_path():
         spec = PathFinder.find_spec("flagcx", sys.path)
         return Path(spec.origin).parent if spec and spec.origin else None
-
-    @staticmethod
-    def _first_existing(candidates, path_order, *, file, name=None):
-        paths = []
-        for candidate in candidates:
-            if not candidate:
-                continue
-            path = Path(candidate).expanduser()
-            if name and path.is_dir():
-                path /= name
-            exists = path.is_file() if file else path.is_dir()
-            if exists:
-                paths.append(path)
-        return paths[path_order] if path_order < len(paths) else None
 
     def get_needed_package(self):
         return (self.bt_name, self.shared_name, self.include_name)
@@ -149,19 +170,24 @@ def link_flagcx_device_ir(kernel_ir: str, bitcode_path: str) -> str:
             raise RuntimeError(f"Failed to link XPU FlagCX device bitcode {bitcode_path}: {result.stderr.strip()}")
         linked_ir = linked.read_text()
         signatures = {
-            "flagcxDevCommGetIntraRank": ("ptr addrspace(1)", ),
-            "flagcxDevCommGetIntraSize": ("ptr addrspace(1)", ),
-            "flagcxGetIntraPointerC": ("ptr addrspace(1)", "i64", "i32"),
-            "flagcxIntraBarrierArriveS": ("ptr addrspace(1)", "i32", "i32", "i1", "i32"),
-            "flagcxIntraBarrierWaitS": ("ptr addrspace(1)", "i32", "i32", "i1", "i32"),
-            "flagcxIntraBarrierSyncS": ("ptr addrspace(1)", "i32", "i32", "i1", "i32"),
+            "flagcxDevCommGetIntraRank": ("i32", ("ptr addrspace(1)", )),
+            "flagcxDevCommGetIntraSize": ("i32", ("ptr addrspace(1)", )),
+            "flagcxGetIntraPointerC": ("ptr addrspace(1)", ("ptr addrspace(1)", "i64", "i32")),
+            "flagcxGetIntraPointerWithAccessC": ("ptr addrspace(1)", ("ptr addrspace(1)", "i64", "i32", "i32")),
+            "flagcxIntraBarrierArriveS": ("void", ("ptr addrspace(1)", "i32", "i32", "i1", "i32")),
+            "flagcxIntraBarrierWaitS": ("void", ("ptr addrspace(1)", "i32", "i32", "i1", "i32")),
+            "flagcxIntraBarrierSyncS": ("void", ("ptr addrspace(1)", "i32", "i32", "i1", "i32")),
+            "flagcxDevInit": ("void", ("ptr addrspace(1)", "ptr")),
+            "flagcxDevSignalInc": ("void", ("ptr addrspace(1)", "i32", "i32", "i32", "i32", "i32", "i32")),
+            "flagcxDevSignalAdd": ("void", ("ptr addrspace(1)", "i32", "i32", "i32", "i64", "i32", "i32", "i32")),
+            "flagcxDevWaitSignal": ("void", ("ptr addrspace(1)", "i32", "i64", "i32", "i32", "i32", "i32")),
+            "flagcxDevWaitSignalMeetShadow": ("void", ("ptr addrspace(1)", "i32", "i32", "i32", "i32", "i32")),
+            "flagcxDevWaitCounter": ("void", ("ptr addrspace(1)", "i32", "i64", "i32", "i32", "i32", "i32")),
         }
-        symbols = set(
-            re.findall(
-                r"@(flagcx(?:DevCommGetIntra(?:Rank|Size)|IntraBarrier(?:Sync|Arrive|Wait)S|GetIntraPointerC))\(",
-                kernel_ir))
-        for symbol in symbols:
-            definition = re.search(rf"(?m)^define\b[^\n]*@{re.escape(symbol)}\(", linked_ir)
+        symbols = set(re.findall(r"@(flagcx[A-Za-z0-9_.$]+)\s*\(", kernel_ir))
+        for symbol in sorted(signatures.keys() & symbols):
+            expected_return, expected_params = signatures[symbol]
+            definition = re.search(rf"(?m)^define\b([^\n]*)@{re.escape(symbol)}\(", linked_ir)
             if not definition:
                 raise RuntimeError(f"XPU FlagCX device bitcode {bitcode_path} does not define {symbol}")
             params = []
@@ -172,10 +198,10 @@ def link_flagcx_device_ir(kernel_ir: str, bitcode_path: str) -> str:
                 params.append(char)
                 depth += (char == "(") - (char == ")")
             actual = "".join(params).split(",")
-            expected = signatures[symbol]
-            if len(actual) != len(expected) or any(not re.match(r"^\s*" + re.escape(ty) + r"(?:\s|$)", param)
-                                                   for param, ty in zip(actual, expected)):
+            if len(actual) != len(expected_params) or any(
+                    not re.match(r"^\s*" + re.escape(ty) + r"(?!\s+addrspace\()(?:\s|$)", param)
+                    for param, ty in zip(actual, expected_params)):
                 raise RuntimeError(f"XPU FlagCX device bitcode {bitcode_path} has an incompatible {symbol} ABI")
-            if symbol == "flagcxGetIntraPointerC" and "ptr addrspace(1)" not in definition.group(0).split("@")[0]:
+            if not re.search(r"\s" + re.escape(expected_return) + r"\s*$", definition.group(1)):
                 raise RuntimeError(f"XPU FlagCX device bitcode {bitcode_path} has an incompatible {symbol} return type")
         return linked_ir

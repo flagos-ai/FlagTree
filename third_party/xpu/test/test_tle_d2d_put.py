@@ -10,10 +10,17 @@ import triton.experimental.tle.language as tle
 def lsa_put_kernel(input_ptr, device_dptr, MY_RANK: tl.constexpr):
     pid = tl.program_id(0)
     peer = (MY_RANK + 1) % tle.n_pes(device_dptr)
-    remote_mem = tle.remote(device_dptr, space="device", dtype=tl.float32, shard_id=peer, offset=pid)
-    value = tl.load(input_ptr + pid)
+
+    remote_mem = tle.remote(
+        device_dptr,
+        space="device",
+        dtype=tl.float32,
+        shard_id=peer,
+        offset=pid,
+    )
+    val = tl.load(input_ptr + pid)
     if tl.cast(remote_mem, tl.uint64) != 0:
-        tl.store(remote_mem, value)
+        tl.store(remote_mem, val)
 
 
 def main():
@@ -23,21 +30,29 @@ def main():
     if world_size < 2:
         raise ValueError("D2D put requires at least two ranks")
 
-    n = 64
-    values = torch.arange(n, dtype=torch.float32)
+    N = 64
+    values = torch.arange(N, dtype=torch.float32)
     with torch.cuda.use_mem_pool(mem_pool):
-        receive = torch.full((n,), -1.0, dtype=torch.float32, device="cpu").to("cuda")
+        buf_tensor = torch.full((N, ), -1.0, dtype=torch.float32, device="cpu").to("cuda")
     source = (values + rank * 1000).to("cuda")
-    device_dptr = tle.create_dist_tensor(receive)
+    device_dptr = tle.create_dist_tensor(buf_tensor)
     try:
-        lsa_put_kernel[(n,)](source, device_dptr, rank, num_ctas=1, num_warps=4)
+        grid = (N, )
+        lsa_put_kernel[grid](
+            source,
+            device_dptr=device_dptr,
+            MY_RANK=rank,
+            num_ctas=1,
+            num_warps=4,
+        )
         torch.cuda.synchronize()
         dist.barrier()
 
-        sender = (rank - 1) % world_size
-        actual = receive.cpu()
-        torch.testing.assert_close(actual, values + sender * 1000, rtol=0, atol=0)
-        print(f"[Rank {rank}] PASSED: received {n} floats from rank {sender}, sample={actual[:4].tolist()}", flush=True)
+        peer_rank = (rank - 1) % world_size
+        actual = buf_tensor.cpu()
+        expected = values + peer_rank * 1000
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        print(f"[Rank {rank}] PASSED: received {N} floats from rank {peer_rank}, sample={actual[:4].tolist()}", flush=True)
     finally:
         tle.cleanup_communicator()
 

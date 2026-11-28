@@ -16,7 +16,7 @@ const llvm::StringMap<StringRef> runtimeNames = {
     {"init", "flagcxDevInit"},
     {"getLocalPe", "flagcxDevCommGetIntraRank"},
     {"getNumPes", "flagcxDevCommGetIntraSize"},
-    {"getIntraPointer", "flagcxGetIntraPointerC"},
+    {"getIntraPointer", "flagcxGetIntraPointerWithAccessC"},
     {"barrier.arrive", "flagcxIntraBarrierArriveS"},
     {"barrier.wait", "flagcxIntraBarrierWaitS"},
     {"barrier.sync", "flagcxIntraBarrierSyncS"},
@@ -90,10 +90,13 @@ getNumPesFuncCall(Operation *op, ConversionPatternRewriter &rewriter,
 FailureOr<LLVM::CallOp>
 getIntraPointerFuncCall(Operation *op, ConversionPatternRewriter &rewriter,
                         Value memory, Value byteOffset, Value peer) {
+  // flagcxDevPeerAccessWriteOnly in the FlagCX device IR ABI.
+  Value writeOnly = getI32Constant(op, rewriter, 1);
   return createFlagcxDeviceCall(
       op, rewriter, runtimeNames.lookup("getIntraPointer"),
       getFlagcxGlobalPtrType(rewriter.getContext()),
-      {rewriter.getI64Type(), rewriter.getI32Type()}, memory, {byteOffset, peer});
+      {rewriter.getI64Type(), rewriter.getI32Type(), rewriter.getI32Type()},
+      memory, {byteOffset, peer, writeOnly});
 }
 
 FailureOr<LLVM::CallOp>

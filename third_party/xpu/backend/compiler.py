@@ -268,6 +268,16 @@ class XPUOptions:
     def hash(self):
         hash_dict = dict(self.__dict__)
         hash_dict["extern_libs"] = tuple((k, file_hash(v)) for k, v in sorted(hash_dict["extern_libs"]))
+        if any(name == "libflagcx" for name, _ in self.extern_libs):
+            from .distributed import find_xshmem_device_lib
+
+            try:
+                archive = find_xshmem_device_lib()
+            except FileNotFoundError:
+                # Only kernels that use FlagCX require the archive.
+                pass
+            else:
+                hash_dict["xshmem_device"] = hashlib.sha256(archive.read_bytes()).hexdigest()
         key = "_".join([f"{name}-{val}" for name, val in sorted(hash_dict.items())])
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
@@ -863,16 +873,9 @@ class XPUBackend(BaseBackend):
             # xshmemi_threadfence_system).  The consumer must provide those at
             # final device link; do a relocatable pre-link before elfconv.
             if metadata.get("xpu_uses_flagcx"):
-                xshmem_lib = os.environ.get("FLAGCX_XSHMEM_DEVICE_LIB")
-                if not xshmem_lib:
-                    ccl_home = os.environ.get("FLAGCX_XPU_CCL_HOME") or os.environ.get("XCCL_HOME")
-                    if ccl_home:
-                        candidate = os.path.join(ccl_home, "lib", "libxshmem_device.a")
-                        if os.path.isfile(candidate):
-                            xshmem_lib = candidate
-                if not xshmem_lib or not os.path.isfile(xshmem_lib):
-                    raise RuntimeError("XPU FlagCX distributed kernel needs the XSHMEM device library; "
-                                       "set FLAGCX_XSHMEM_DEVICE_LIB to libxshmem_device.a")
+                from .distributed import find_xshmem_device_lib
+
+                xshmem_lib = find_xshmem_device_lib()
                 ld = os.path.join(clang_path, "ld.lld")
                 combined = os.path.join(tmpdir, "kernel.combined.o")
                 run_cmd([ld, "-r", objfile, xshmem_lib, "-o", combined], env=llvm19_toolchain.llvm19_env("xpu"))

@@ -234,6 +234,8 @@ def get_hook_instance(hook_name):
 
 
 def enable_flagtree_third_party(name):
+    if name == "flagcx" and flagtree_backend == "xpu":
+        return configs.activated_module.flagcx_enabled()
     return os.environ.get(f"USE_{name.upper()}", 'ON') == 'ON'
 
 
@@ -901,7 +903,7 @@ if relocate_flagcx:
 register_backend_cache()
 
 flagcx_wheel = PathFinder.find_spec("flagcx", sys.path)
-download_flagtree_third_party("flagcx", condition=not flagcx_wheel
+download_flagtree_third_party("flagcx", condition=(flagtree_backend == "xpu" or not flagcx_wheel)
                               and (flagtree_backend or "nvidia") in FLAGCX_SUPPORT_BACKENDS, hook="handle_flagcx",
                               required=True)
 
