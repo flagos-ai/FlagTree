@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "synthetic": true,
+  "title": "Performance versus milestone",
+  "kind": "series",
+  "metric": "Decode throughput",
+  "unit": "tokens/s",
+  "cohort": "SYNTHETIC: matched workload/device/statistic illustration",
+  "provenance": [],
+  "x_axis": "milestone",
+  "uncertainty_method": "Synthetic uncertainty interval",
+  "rows": [
+    {
+      "label": "FlagMega",
+      "x": 0,
+      "value": 100,
+      "low": 98,
+      "high": 102,
+      "status": "qualified"
+    },
+    {
+      "label": "FlagMega",
+      "x": 1,
+      "value": 115,
+      "low": 113,
+      "high": 117,
+      "status": "achieved"
+    },
+    {
+      "label": "FlagMega",
+      "x": 2,
+      "value": 130,
+      "low": 128,
+      "high": 132,
+      "status": "achieved"
+    },
+    {
+      "label": "FlagMega",
+      "x": 3,
+      "value": null,
+      "reason": "not yet measured"
+    }
+  ],
+  "direction": "higher",
+  "chart_role": "milestone_history",
+  "milestones": [
+    {
+      "milestone_id": "m000",
+      "revision_id": "r001",
+      "series": "FlagMega",
+      "point_x": 1,
+      "baseline_point_x": 0,
+      "baseline_id": "initial baseline",
+      "baseline_value": 100,
+      "value": 115,
+      "main_improvement": "Fuse producer and consumer; remove intermediate materialization",
+      "status": "achieved"
+    },
+    {
+      "milestone_id": "m001",
+      "revision_id": "r002",
+      "series": "FlagMega",
+      "point_x": 2,
+      "baseline_point_x": 1,
+      "baseline_id": "m000/r001",
+      "baseline_value": 115,
+      "value": 130,
+      "main_improvement": "Overlap operator producer/consumer work; reduce measured synchronization waits",
+      "status": "achieved"
+    },
+    {
+      "milestone_id": "m002",
+      "revision_id": null,
+      "series": "FlagMega",
+      "point_x": 3,
+      "baseline_point_x": 2,
+      "baseline_id": "m001/r002",
+      "baseline_value": 130,
+      "value": null,
+      "main_improvement": "Awaiting the next profile-driven optimization plan",
+      "status": "open",
+      "reason": "not yet measured"
+    }
+  ],
+  "x_labels": {
+    "0": "baseline",
+    "1": "m000",
+    "2": "m001",
+    "3": "m002"
+  },
+  "performance_table": {
+    "source": "selected numerical curve points",
+    "columns": [
+      "Performance point",
+      "Decode TPS"
+    ],
+    "record_policy": "only consecutive numerical changes per comparable series/cohort; status and missing values do not create performance records"
+  }
+}

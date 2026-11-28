@@ -1,0 +1,60 @@
+{# Copyright 2026 FlagOS Contributors
+   SPDX-License-Identifier: MIT #}{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "embedding" and call.variant == "decode" %}
+{{ entry.kernel_decorator(call) }}
+def {{ call.symbol }}({{ call.signature }}):
+{{ entry.mesh_coordinates() }}
+    for embedding_row in range({{ call.rows }}):
+        if {{ call.row_active }}:
+{% filter indent(8, true) %}
+    token_id = tl.load({{ call.indices }} + ({{ call.indices_offset }})).to(tl.int32)
+    tl.device_assert(
+        (token_id >= 0) & (token_id < {{ call.vocab_size }}),
+        "input id outside vocabulary",
+    )
+    for local_start in tl.range(0, {{ call.local_capacity }}, {{ call.tile }}):
+        local_offsets = local_start + tl.arange(0, {{ call.tile }})
+        local_mask = local_offsets < ({{ call.active }})
+{% if call.weight_encoding in ("IQ4_XS", "Q4_K") %}
+{% if call.weight_encoding == "IQ4_XS" %}
+        value = _flagmega_iq4_xs_embedding(
+{% if call.native_weight_row_offset is defined and call.native_weight_row_offset is not none %}
+            {{ call.weight }} + ({{ call.native_weight_row_offset }}), 0, {{ call.global_feature }}, local_mask, {{ call.weight_hidden }},
+{% else %}
+            {{ call.weight }}, token_id, {{ call.global_feature }}, local_mask, {{ call.weight_hidden }},
+{% endif %}
+        )
+{% else %}
+        value = _flagmega_q4_k_embedding(
+{% if call.native_weight_row_offset is defined and call.native_weight_row_offset is not none %}
+            {{ call.weight }} + ({{ call.native_weight_row_offset }}), 0, {{ call.global_feature }}, local_mask, {{ call.weight_hidden }},
+{% else %}
+            {{ call.weight }}, token_id, {{ call.global_feature }}, local_mask, {{ call.weight_hidden }},
+{% endif %}
+        )
+{% endif %}
+{% else %}
+        value = tl.load(
+            {{ call.weight }} + ({{ call.weight_offset }}),
+            mask=local_mask,
+            other=0.0,
+        ).to(tl.bfloat16)
+{% endif %}
+        if {{ call.padding_idx }} >= 0:
+            value = tl.where(
+                token_id == {{ call.padding_idx }}, 0.0, value,
+            ).to(tl.bfloat16)
+{% for line in call.fusion_post_lines | default(()) %}
+        {{ line }}
+{% endfor %}
+        tl.store(
+            {{ call.result }} + ({{ call.result_offset }}),
+            {{ call.fusion_post_value if call.fusion_post_lines else "value" }},
+            mask=local_mask & ({{ call.writer_active }}),
+        )
+{% endfilter %}
+
+
+{% endif %}
+{% endfor %}

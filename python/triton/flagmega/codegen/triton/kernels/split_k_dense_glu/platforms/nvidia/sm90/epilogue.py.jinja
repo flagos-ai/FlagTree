@@ -1,0 +1,24 @@
+{# Copyright 2026 FlagOS Contributors
+   SPDX-License-Identifier: MIT #}{% import "entrypoints/_common.py.jinja" as entry with context %}
+{% for call in render_calls %}
+{% if call.family == "split_k_dense_glu" and call.variant == "epilogue" %}
+{{ call.symbol }}__N256 = tl.constexpr(tle.gpu.BlockEncoding([1], [32], [8], [0]))
+@triton.jit
+def {{ call.symbol }}__implementation(P, O):
+    """Matched gemv_silu adapter: BF16 G/U -> FP32 SiLU*U -> BF16 O."""
+    tl.static_assert(P.dtype.element_ty == tl.float32)
+    tl.static_assert(O.dtype.element_ty == tl.bfloat16)
+    j = tl.program_id(0) * 256 + tle.gpu.set_layout(tl.arange(0, 256), {{ call.symbol }}__N256)
+    g = tl.load(P + j) + tl.load(P + 12288 + j)
+    u = tl.load(P + 6144 + j) + tl.load(P + 12288 + 6144 + j)
+    gb = g.to(tl.bfloat16).to(tl.float32)
+    ub = u.to(tl.bfloat16).to(tl.float32)
+    result = (gb / (1.0 + tl.exp(-gb))) * ub
+    tl.store(O + j, result.to(tl.bfloat16))
+
+
+{{ entry.kernel_decorator(call, prefer_inline=true) }}
+def {{ call.symbol }}({{ call.signature }}):
+    {{ call.symbol }}__implementation({{ call.partial }}, {{ call.result }})
+{% endif %}
+{% endfor %}

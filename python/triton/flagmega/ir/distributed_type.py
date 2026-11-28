@@ -1,0 +1,1153 @@
+# Copyright 2025- FlagOS Contributors
+# SPDX-License-Identifier: MIT
+"""placement and SBP value objects.
+
+These objects deliberately live beside, rather than inside, ``model.py`` so
+distributed layout semantics have one reviewable home.  ``DistributedType``
+itself remains an ``IRType`` in :mod:`model` to avoid a base-type import cycle.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from enum import Enum
+from functools import lru_cache
+from itertools import combinations, product
+from math import prod
+from typing import TYPE_CHECKING, Callable, Mapping, Sequence
+
+from triton.flagmega.errors import IRSchemaError
+from triton.flagmega.ir.dim_expr import Dimension, ceil_div, dim, try_div_exactly
+
+if TYPE_CHECKING:
+    from triton.flagmega.ir.model import DistributedType, IRType, TensorType
+
+
+class ReduceOp(str, Enum):
+    SUM = "sum"
+    MIN = "min"
+    MAX = "max"
+    PROD = "prod"
+
+
+class SplitDistribution:
+    """How owners of a placement axis receive a tensor-axis partition."""
+
+    def to_data(self) -> dict[str, object]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ContiguousSplit(SplitDistribution):
+    granularity: Dimension | None = None
+
+    def __post_init__(self) -> None:
+        if self.granularity is not None:
+            value = dim(self.granularity)
+            if value.is_fixed and value.fixed_value <= 0:
+                raise IRSchemaError("Contiguous split granularity must be positive.")
+            object.__setattr__(self, "granularity", value)
+
+    def to_data(self) -> dict[str, object]:
+        return {
+            "kind": "contiguous",
+            "granularity": None if self.granularity is None else self.granularity.to_data(),
+        }
+
+    def __str__(self) -> str:
+        return "C" if self.granularity is None else f"C({self.granularity})"
+
+
+@dataclass(frozen=True)
+class BlockCyclicSplit(SplitDistribution):
+    block_size: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.block_size, bool) or self.block_size <= 0:
+            raise IRSchemaError("Block-cyclic split block_size must be positive.")
+
+    def to_data(self) -> dict[str, object]:
+        return {"kind": "block_cyclic", "block_size": self.block_size}
+
+    def __str__(self) -> str:
+        return f"BC({self.block_size})"
+
+
+@dataclass(frozen=True)
+class SplitStage:
+    hierarchy_axes: tuple[int, ...]
+    distribution: SplitDistribution
+
+    def __post_init__(self) -> None:
+        axes = tuple(int(value) for value in self.hierarchy_axes)
+        if not axes or any(value < 0 for value in axes) or len(set(axes)) != len(axes):
+            raise IRSchemaError("SplitStage axes must be a non-empty unique set of non-negative axes.")
+        if not isinstance(self.distribution, SplitDistribution):
+            raise IRSchemaError("SplitStage requires a SplitDistribution.")
+        object.__setattr__(self, "hierarchy_axes", axes)
+
+    @classmethod
+    def contiguous(
+        cls,
+        hierarchy_axes: Sequence[int],
+        granularity: int | str | Dimension | None = None,
+    ) -> SplitStage:
+        return cls(tuple(hierarchy_axes), ContiguousSplit(None if granularity is None else dim(granularity)))
+
+    @classmethod
+    def block_cyclic(cls, hierarchy_axes: Sequence[int], block_size: int) -> SplitStage:
+        return cls(tuple(hierarchy_axes), BlockCyclicSplit(block_size))
+
+    def to_data(self) -> dict[str, object]:
+        return {
+            "hierarchy_axes": list(self.hierarchy_axes),
+            "distribution": self.distribution.to_data(),
+        }
+
+    def __str__(self) -> str:
+        axes = ",".join(str(value) for value in self.hierarchy_axes)
+        return f"{self.distribution}@[{axes}]"
+
+
+class SBP:
+    """Split/Broadcast/Exclusive/Partial distribution policies."""
+
+    @staticmethod
+    def broadcast() -> SBPBroadCast:
+        return SBPBroadCast()
+
+    @staticmethod
+    def partial(axes: Sequence[int], reduce_op: ReduceOp | str = ReduceOp.SUM) -> SBPPartial:
+        return SBPPartial(tuple(axes), ReduceOp(reduce_op))
+
+    @staticmethod
+    def exclusive(
+        axes: Sequence[int],
+        owner_coordinates: Sequence[int] | None = None,
+    ) -> SBPExclusive:
+        return SBPExclusive(tuple(axes), None if owner_coordinates is None else tuple(owner_coordinates))
+
+    @staticmethod
+    def split(*stages: SplitStage) -> SBPSplit:
+        return SBPSplit(tuple(stages))
+
+    @staticmethod
+    def split_contiguous(
+        hierarchy_axes: Sequence[int],
+        granularity: int | str | Dimension | None = None,
+    ) -> SBPSplit:
+        return SBP.split(SplitStage.contiguous(hierarchy_axes, granularity))
+
+    @staticmethod
+    def split_block_cyclic(hierarchy_axes: Sequence[int], block_size: int) -> SBPSplit:
+        return SBP.split(SplitStage.block_cyclic(hierarchy_axes, block_size))
+
+    def to_data(self) -> dict[str, object]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class SBPBroadCast(SBP):
+
+    def to_data(self) -> dict[str, object]:
+        return {"kind": "broadcast"}
+
+    def __str__(self) -> str:
+        return "B"
+
+
+@dataclass(frozen=True)
+class SBPExclusive(SBP):
+    """One owner per selected mesh-axis group, with all other axes broadcast.
+
+    ``owner_coordinates`` is optional and defaults to zero on the selected
+    axes.  E is a value-ownership policy, not a tensor-dimension split, so it
+    is carried by ``DistributedType.exclusive`` rather than ``axis_policies``.
+    """
+
+    axes: tuple[int, ...]
+    owner_coordinates: tuple[int, ...] | None = None
+
+    def __post_init__(self) -> None:
+        axes = tuple(int(value) for value in self.axes)
+        if not axes or any(value < 0 for value in axes) or len(set(axes)) != len(axes):
+            raise IRSchemaError("Exclusive axes must be a non-empty unique set of non-negative axes.")
+        coordinates = self.owner_coordinates
+        if coordinates is not None:
+            coordinates = tuple(int(value) for value in coordinates)
+            if len(coordinates) != len(axes) or any(value < 0 for value in coordinates):
+                raise IRSchemaError("Exclusive owner coordinates must match axes and be non-negative.")
+        object.__setattr__(self, "axes", axes)
+        object.__setattr__(self, "owner_coordinates", coordinates)
+
+    def to_data(self) -> dict[str, object]:
+        return {
+            "kind": "exclusive",
+            "axes": list(self.axes),
+            "owner_coordinates": None if self.owner_coordinates is None else list(self.owner_coordinates),
+        }
+
+    def __str__(self) -> str:
+        owner = "0" if self.owner_coordinates is None else ",".join(str(value) for value in self.owner_coordinates)
+        return f"E([{','.join(str(value) for value in self.axes)}]@[{owner}])"
+
+
+@dataclass(frozen=True)
+class SBPPartial(SBP):
+    axes: tuple[int, ...]
+    reduce_op: ReduceOp = ReduceOp.SUM
+
+    def __post_init__(self) -> None:
+        axes = tuple(int(value) for value in self.axes)
+        if not axes or any(value < 0 for value in axes) or len(set(axes)) != len(axes):
+            raise IRSchemaError("Partial axes must be a non-empty unique set of non-negative axes.")
+        # A reduction names an owner set, unlike the ordered SplitStages that
+        # map tensor coordinates. Canonicalize it at the type boundary so all
+        # collective consumers agree on the same dense owner enumeration.
+        object.__setattr__(self, "axes", tuple(sorted(axes)))
+        object.__setattr__(self, "reduce_op", ReduceOp(self.reduce_op))
+
+    def to_data(self) -> dict[str, object]:
+        return {"kind": "partial", "axes": list(self.axes), "reduce_op": self.reduce_op.value}
+
+    def __str__(self) -> str:
+        return f"P([{','.join(str(value) for value in self.axes)}], {self.reduce_op.value})"
+
+
+@dataclass(frozen=True)
+class SBPSplit(SBP):
+    stages: tuple[SplitStage, ...]
+
+    def __post_init__(self) -> None:
+        stages = tuple(self.stages)
+        if not stages:
+            raise IRSchemaError("A split policy requires at least one SplitStage.")
+        axes = tuple(axis for stage in stages for axis in stage.hierarchy_axes)
+        if len(set(axes)) != len(axes):
+            raise IRSchemaError("A hierarchy axis can occur in only one SplitStage.")
+        object.__setattr__(self, "stages", stages)
+
+    @property
+    def hierarchy_axes(self) -> tuple[int, ...]:
+        return tuple(axis for stage in self.stages for axis in stage.hierarchy_axes)
+
+    @property
+    def is_contiguous(self) -> bool:
+        return all(isinstance(stage.distribution, ContiguousSplit) for stage in self.stages)
+
+    def to_data(self) -> dict[str, object]:
+        return {"kind": "split", "stages": [stage.to_data() for stage in self.stages]}
+
+    def __str__(self) -> str:
+        return "S(" + ", ".join(str(stage) for stage in self.stages) + ")"
+
+
+@dataclass(frozen=True)
+class Placement:
+    hierarchy: tuple[int, ...]
+    name: str
+    hierarchy_levels: str
+
+    def __post_init__(self) -> None:
+        hierarchy = tuple(int(value) for value in self.hierarchy)
+        if not hierarchy or any(value <= 0 for value in hierarchy):
+            raise IRSchemaError("Placement hierarchy must contain positive dimensions.")
+        names = self.normalize_axis_string(self.name)
+        if len(names) != len(hierarchy):
+            raise IRSchemaError(f"Placement name {self.name!r} must contain {len(hierarchy)} axes.")
+        levels = self.normalize_hierarchy_levels(self.hierarchy_levels, len(hierarchy))
+        object.__setattr__(self, "hierarchy", hierarchy)
+        object.__setattr__(self, "name", names)
+        object.__setattr__(self, "hierarchy_levels", levels)
+
+    @property
+    def rank(self) -> int:
+        return len(self.hierarchy)
+
+    @property
+    def size(self) -> int:
+        result = 1
+        for value in self.hierarchy:
+            result *= value
+        return result
+
+    @property
+    def normalized_hierarchy_names(self) -> str:
+        return self.name
+
+    @property
+    def normalized_hierarchy_levels(self) -> str:
+        return self.hierarchy_levels
+
+    def is_physical_block_axis(self, axis: int) -> bool:
+        return self.hierarchy_levels[axis] == "b"
+
+    def physical_level_size(self, level: str) -> int:
+        wanted = level.lower()
+        result = 1
+        for axis, axis_level in enumerate(self.hierarchy_levels):
+            if axis_level == wanted:
+                result *= self.hierarchy[axis]
+        return result
+
+    def to_data(self) -> dict[str, object]:
+        return {
+            "hierarchy": list(self.hierarchy),
+            "name": self.name,
+            "hierarchy_levels": self.hierarchy_levels,
+        }
+
+    @staticmethod
+    def normalize_axis_string(value: str | None) -> str:
+        return "".join(character for character in (value or "") if character.isalnum())
+
+    @staticmethod
+    def normalize_hierarchy_levels(value: str | None, rank: int) -> str:
+        levels = Placement.normalize_axis_string(value).lower()
+        if len(levels) != rank or any(level not in {"c", "d", "b"} for level in levels):
+            raise IRSchemaError(f"Placement hierarchy_levels must have {rank} entries drawn from c/d/b, got {value!r}.")
+        return levels
+
+    def __str__(self) -> str:
+        return "[" + ",".join(f"{name}:{size}" for name, size in zip(self.name, self.hierarchy)) + "]"
+
+
+def sbp_from_data(data: Mapping[str, object]) -> SBP:
+    kind = str(data.get("kind"))
+    if kind == "broadcast":
+        return SBP.broadcast()
+    if kind == "partial":
+        return SBP.partial(tuple(int(value) for value in data.get("axes", ())), str(data.get("reduce_op", "sum")))
+    if kind == "exclusive":
+        raw = data.get("owner_coordinates")
+        return SBP.exclusive(
+            tuple(int(value) for value in data.get("axes", ())),
+            None if raw is None else tuple(int(value) for value in raw),
+        )
+    if kind == "split":
+        return SBP.split(*(split_stage_from_data(value) for value in data.get("stages", ())))  # type: ignore[arg-type]
+    raise IRSchemaError(f"Unknown SBP kind {kind!r}.")
+
+
+def split_stage_from_data(data: Mapping[str, object]) -> SplitStage:
+    distribution = data.get("distribution")
+    if not isinstance(distribution, Mapping):
+        raise IRSchemaError("SplitStage distribution must be an object.")
+    kind = str(distribution.get("kind"))
+    axes = tuple(int(value) for value in data.get("hierarchy_axes", ()))
+    if kind == "contiguous":
+        granularity = distribution.get("granularity")
+        return SplitStage.contiguous(
+            axes, None if granularity is None else Dimension.from_data(granularity),  # type: ignore[arg-type]
+        )
+    if kind == "block_cyclic":
+        return SplitStage.block_cyclic(axes, int(distribution["block_size"]))
+    raise IRSchemaError(f"Unknown split distribution kind {kind!r}.")
+
+
+def placement_from_data(data: Mapping[str, object]) -> Placement:
+    return Placement(
+        tuple(int(value) for value in data.get("hierarchy", ())),
+        str(data.get("name", "")),
+        str(data.get("hierarchy_levels", "")),
+    )
+
+
+def is_distributable(tensor: TensorType, policies: Sequence[SBP], placement: Placement) -> bool:
+    if len(policies) != tensor.rank:
+        return False
+    split_axes: list[int] = []
+    for tensor_axis, policy in enumerate(policies):
+        if isinstance(policy, SBPSplit):
+            split_axes.extend(policy.hierarchy_axes)
+            divisor = 1
+            for stage in policy.stages:
+                for hierarchy_axis in stage.hierarchy_axes:
+                    if hierarchy_axis >= placement.rank:
+                        return False
+                    if isinstance(stage.distribution, ContiguousSplit):
+                        divisor *= placement.hierarchy[hierarchy_axis]
+            dimension = tensor.shape[tensor_axis]
+            if dimension.is_fixed and dimension.fixed_value % divisor:
+                return False
+        elif isinstance(policy, SBPPartial) and any(axis >= placement.rank for axis in policy.axes):
+            return False
+    return len(split_axes) == len(set(split_axes))
+
+
+def sharded_view_error(source_type: IRType, target_type: DistributedType) -> str | None:
+    """Validate the semantic, zero-copy ``Distributed.ShardedView`` contract.
+
+    The target names the same logical tensor. Same-placement views may narrow
+    coordinates within an exact reduction component; local-mesh changes must
+    preserve chip ownership and numerical policy. Physical realizability is
+    proved separately by the target policy and actual buffer backing.
+    """
+
+    from triton.flagmega.ir.model import DistributedType, TensorType
+
+    if not isinstance(target_type, DistributedType):
+        return "ShardedView target must be a DistributedType."
+    if isinstance(source_type, DistributedType):
+        source_tensor = source_type.tensor
+        if source_type.placement != target_type.placement:
+            return chip_view_error(source_type, target_type)
+        if _has_partial(source_type):
+            if source_type != target_type and is_component_shard_subview(source_type, target_type):
+                return None
+            return "ShardedView source cannot contain a partial value."
+        if not _has_only_split_or_broadcast(source_type):
+            return "ShardedView source policies must contain only Split or Broadcast."
+        if source_type == target_type:
+            return "ShardedView source and target distributed types must differ."
+    elif isinstance(source_type, TensorType):
+        source_tensor = source_type
+    else:
+        return "ShardedView source must be a TensorType or DistributedType."
+    if source_tensor != target_type.tensor:
+        return "ShardedView cannot change the logical tensor type."
+    if _has_partial(target_type):
+        return "ShardedView target cannot contain a partial value."
+    if not _has_only_split_or_broadcast(target_type):
+        return "ShardedView target policies must contain only Split or Broadcast."
+    if isinstance(source_type, DistributedType) and source_type.exclusive != target_type.exclusive:
+        # E is a whole-value ownership transition. It remains a legal typed
+        # view, while the realization policy supplies publication/barrier cost.
+        return None
+    return None
+
+
+@lru_cache(maxsize=4096)
+def is_local_shard_subview(
+    source_type: DistributedType,
+    target_type: DistributedType,
+) -> bool:
+    """Return whether each target owner shard is contained in its source shard.
+
+    The structural reference cases are handled without descriptor construction.
+    FlagMega additionally proves contiguous split refinements using bounded
+    symbolic owner coordinates.  The latter admits, for example, a ``y``
+    shard as the block-local backing of the corresponding ``yx`` subshard,
+    while sibling ownership and coarsening remain rejected.
+    """
+
+    if (source_type.tensor != target_type.tensor or source_type.placement != target_type.placement
+            or _has_partial(source_type) or _has_partial(target_type)
+            or len(source_type.axis_policies) != len(target_type.axis_policies)):
+        return False
+    structural = True
+    if source_type.exclusive != target_type.exclusive:
+        return False
+    for source_policy, target_policy in zip(
+            source_type.axis_policies,
+            target_type.axis_policies,
+    ):
+        if isinstance(source_policy, SBPBroadCast) and isinstance(target_policy, (SBPBroadCast, SBPSplit)):
+            continue
+        if isinstance(source_policy, SBPSplit) and source_policy == target_policy:
+            continue
+        # A broadcast target owns the complete logical tensor on every
+        # placement coordinate.  A genuine source split cannot contain that
+        # region on every owner, so this is a proven coarsening rather than a
+        # case that needs the considerably more expensive symbolic interval
+        # construction below.  Returning False is also conservative for an
+        # empty tensor or a split over unit mesh axes, where block-local
+        # promotion has no useful storage benefit.
+        if isinstance(source_policy, SBPSplit) and isinstance(target_policy, SBPBroadCast):
+            return False
+        if (isinstance(source_policy, SBPSplit) and isinstance(target_policy, SBPSplit)
+                and _is_contiguous_split_refinement(
+                    source_policy,
+                    target_policy,
+                    source_type.placement,
+                )):
+            continue
+        structural = False
+        break
+    if structural:
+        return True
+
+    # Keep non-contiguous/block-cyclic mappings conservative.  A rectangular
+    # local alias needs one dense parent-shard origin for every tensor axis.
+    # Bounded coordinates make the interval proof valid for every placement
+    # owner rather than for one sampled owner.
+    from triton.flagmega.ir.local_shard import (
+        _local_capacity,
+        _stage_shard_count,
+        local_shard_descriptor,
+        single_stage_owner_origins,
+        uniform_contiguous_owner_regions,
+    )
+
+    source_uniform = uniform_contiguous_owner_regions(source_type)
+    target_uniform = uniform_contiguous_owner_regions(target_type)
+    if source_uniform is not None and target_uniform is not None:
+        hierarchy = source_type.placement.hierarchy
+        for (source_origin, source_extent), (target_origin, target_extent) in zip(source_uniform, target_uniform):
+            if source_origin == target_origin and source_extent == target_extent:
+                continue
+            delta = tuple(target - source for source, target in zip(source_origin, target_origin))
+            minimum = sum(min(coefficient, 0) * (owners - 1) for coefficient, owners in zip(delta, hierarchy))
+            maximum = sum(max(coefficient, 0) * (owners - 1) for coefficient, owners in zip(delta, hierarchy))
+            if minimum < 0 or maximum > source_extent - target_extent:
+                return False
+        return True
+
+    # Ragged tails change active sizes, not a single-stage shard's origin.
+    # A negative minimum of the same relative-start expression used below
+    # disproves its containment contract before constructing any tail clamps.
+    source_origins = single_stage_owner_origins(source_type)
+    target_origins = single_stage_owner_origins(target_type)
+    if source_origins is not None and target_origins is not None:
+        hierarchy = source_type.placement.hierarchy
+        for source_origin, target_origin in zip(source_origins, target_origins):
+            minimum = sum(
+                min(target - source, 0) * (owners - 1)
+                for source, target, owners in zip(source_origin, target_origin, hierarchy))
+            if minimum < 0:
+                return False
+
+    # The first stage's parent extent does not depend on owner coordinates.
+    # Apply exactly LocalShardStageDescriptor.is_contiguous before constructing
+    # symbolic active extents: a stage spanning multiple cyclic blocks already
+    # rules out the rectangular region required by the existing proof. Later
+    # stages still use the full descriptor, preserving staged tail semantics.
+    for value_type in (source_type, target_type):
+        for extent, policy in zip(value_type.tensor.shape, value_type.axis_policies):
+            if isinstance(policy, SBPSplit) and policy.stages:
+                stage = policy.stages[0]
+                if isinstance(stage.distribution, BlockCyclicSplit):
+                    capacity = _local_capacity(extent, _stage_shard_count(stage, value_type.placement.hierarchy), stage)
+                    maximum = capacity.maximum
+                    if maximum is None or maximum > stage.distribution.block_size:
+                        return False
+
+    # Containment requires the target shard to fit inside the source shard on
+    # every tensor axis, so a strictly larger target capacity is already a
+    # proof of non-containment.  Comparing the static capacities costs a shape
+    # lookup, while the interval proof below runs a symbolic simplification per
+    # axis: on the 45-layer GLM-5.3 graph this answers 25,147 of 39,827 calls
+    # (63.1%), all of them negative, and never rejects a containment the
+    # interval proof accepts.
+    source_capacity = local_shape(source_type)
+    target_capacity = local_shape(target_type)
+    if len(source_capacity) == len(target_capacity):
+        for source_extent, target_extent in zip(source_capacity, target_capacity):
+            source_fixed = getattr(source_extent, "fixed_value", None)
+            target_fixed = getattr(target_extent, "fixed_value", None)
+            if source_fixed is None or target_fixed is None:
+                # A symbolic extent is not decidable here; let the proof run.
+                break
+            if target_fixed > source_fixed:
+                return False
+
+    coordinates = tuple(
+        dim(f"_owner_coord_{axis}", 0, extent - 1) for axis, extent in enumerate(source_type.placement.hierarchy))
+    source_shard = local_shard_descriptor(source_type, coordinates)
+    target_shard = local_shard_descriptor(target_type, coordinates)
+
+    source_region = source_shard.contiguous_region
+    target_region = target_shard.contiguous_region
+    if source_region is None or target_region is None:
+        return False
+    for source_offset, source_shape, target_offset, target_shape in zip(
+            source_region.offset,
+            source_region.shape,
+            target_region.offset,
+            target_region.shape,
+    ):
+        relative_start = (target_offset - source_offset).simplify()
+        remaining = (source_offset + source_shape - target_offset - target_shape).simplify()
+        if (relative_start.minimum is None or relative_start.minimum < 0 or remaining.minimum is None
+                or remaining.minimum < 0):
+            return False
+    return True
+
+
+def boxing_crossing_chip_axes(
+    source_type: IRType,
+    target_type: IRType,
+) -> tuple[int, ...]:
+    """Chip-level placement axes whose peer instances a boxing has to read.
+
+    Every chip owns a private instance of a distributed buffer, so a boxing can
+    only run chip-locally when each chip's target region is contained in the
+    same chip's source region.  A ``c``/``d`` axis that distinguishes source
+    owners breaks that containment unless the target distinguishes the same
+    owners the same way.  Block axes are projected away first: their owners all
+    share one chip instance, so a policy that only differs per block never
+    forces a remote read.
+
+    The result is conservative by construction: an axis is omitted only when
+    containment is proven, so an unexpressible projection reports a crossing.
+    """
+
+    from triton.flagmega.ir.model import DistributedType as DistributedTypeImpl
+
+    if not isinstance(source_type, DistributedTypeImpl):
+        # A plain tensor is materialized whole on every chip.
+        return ()
+    placement = source_type.placement
+    chip_axes = tuple(axis for axis, level in enumerate(placement.hierarchy_levels)
+                      if level in {"c", "d"} and placement.hierarchy[axis] > 1)
+    if not chip_axes:
+        return ()
+    if (isinstance(target_type, DistributedTypeImpl) and target_type.placement != placement
+            and chip_view_error(source_type, target_type) is None):
+        return ()
+    target = (target_type
+              if isinstance(target_type, DistributedTypeImpl) and target_type.placement == placement else None)
+    source_partial = _partial_owner_axes(source_type)
+    target_partial = set() if target is None else _partial_owner_axes(target)
+    source_split_axes = _split_owner_axes(source_type)
+    source_exclusive = set(() if source_type.exclusive is None else source_type.exclusive.axes)
+    projected_source = _chip_projected_type(source_type)
+    projected_target = None if target is None else _chip_projected_type(target)
+    chip_local_region = (projected_source is not None and projected_target is not None
+                         and (projected_source == projected_target
+                              or is_local_shard_subview(projected_source, projected_target)))
+    crossing = []
+    for axis in chip_axes:
+        if axis in source_partial:
+            # The value is only complete once this axis' owners are reduced, so
+            # it stays chip-local exactly when the target keeps it partial.
+            if axis not in target_partial:
+                crossing.append(axis)
+            continue
+        if axis in source_exclusive:
+            if source_type.exclusive != (None if target is None else target.exclusive):
+                crossing.append(axis)
+            continue
+        if axis not in source_split_axes:
+            # Replicated over this axis: the local instance already holds it.
+            continue
+        if not chip_local_region:
+            crossing.append(axis)
+    return tuple(crossing)
+
+
+def boxing_reads_peer_chips(source_type: IRType, target_type: IRType) -> bool:
+    return bool(boxing_crossing_chip_axes(source_type, target_type))
+
+
+def _partial_owner_axes(value: DistributedType) -> set[int]:
+    axes = set(() if value.partial is None else value.partial.axes)
+    for policy in value.axis_policies:
+        if isinstance(policy, SBPPartial):
+            axes.update(policy.axes)
+    return axes
+
+
+def _split_owner_axes(value: DistributedType) -> set[int]:
+    axes: set[int] = set()
+    for policy in value.axis_policies:
+        if isinstance(policy, SBPSplit):
+            axes.update(policy.hierarchy_axes)
+    return axes
+
+
+def _chip_projected_type(value: DistributedType) -> DistributedType | None:
+    """Collapse block axes so the type describes one whole chip region.
+
+    Returns ``None`` when the collapse is not expressible; callers must read
+    that as "containment not proven" rather than as a chip-local proof.
+    """
+
+    from triton.flagmega.ir.model import DistributedType as DistributedTypeImpl
+
+    if value.partial is not None or value.exclusive is not None:
+        return None
+    placement = value.placement
+    block_axes = {axis for axis, level in enumerate(placement.hierarchy_levels) if level == "b"}
+    if not block_axes:
+        return value
+    policies = []
+    for policy in value.axis_policies:
+        if isinstance(policy, SBPBroadCast):
+            policies.append(policy)
+            continue
+        if not isinstance(policy, SBPSplit):
+            return None
+        projected = _chip_projected_split(policy, placement, block_axes)
+        if projected is None:
+            return None
+        policies.append(projected)
+    hierarchy = tuple(1 if axis in block_axes else extent for axis, extent in enumerate(placement.hierarchy))
+    try:
+        return DistributedTypeImpl(
+            value.tensor,
+            tuple(policies),
+            Placement(hierarchy, placement.name, placement.hierarchy_levels),
+        )
+    except IRSchemaError:
+        return None
+
+
+@lru_cache(maxsize=4096)
+def chip_data_type(value: IRType) -> IRType | None:
+    """Data available after local publication, with block axes removed.
+
+    This is an ownership/coordinate proof, not permission to alias private
+    memory. Block P/E needs reduction/publication before projection; device
+    P/E stays explicit. Vector payloads and chip split granularity are kept.
+    """
+    from triton.flagmega.ir.model import DistributedType as Dist, TupleType
+    if isinstance(value, TupleType):
+        fields = tuple(chip_data_type(field) for field in value.fields)
+        return None if any(field is None for field in fields) else TupleType(fields, value.is_variadic)
+    if not isinstance(value, Dist):
+        return value
+    placement = value.placement
+    blocks = {i for i, level in enumerate(placement.hierarchy_levels) if level == 'b'}
+    retained = tuple(i for i in range(placement.rank) if i not in blocks)
+    mapping = {old: new for new, old in enumerate(retained)}
+    if (value.partial is not None and blocks.intersection(value.partial.axes)
+            or value.exclusive is not None and blocks.intersection(value.exclusive.axes)):
+        return None
+    policies = []
+    for policy in value.axis_policies:
+        if isinstance(policy, SBPBroadCast):
+            policies.append(policy)
+        elif isinstance(policy, SBPSplit):
+            projected = _chip_projected_split(policy, placement, blocks)
+            if projected is None:
+                return None
+            policies.append(
+                SBP.split(*(SplitStage(tuple(mapping[i]
+                                             for i in stage.hierarchy_axes), stage.distribution)
+                            for stage in projected.stages)) if isinstance(projected, SBPSplit) else projected)
+        else:
+            return None
+    if not retained:
+        return value.tensor
+    partial = None if value.partial is None else SBP.partial(tuple(
+        mapping[i] for i in value.partial.axes), value.partial.reduce_op)
+    exclusive = None if value.exclusive is None else SBP.exclusive(tuple(
+        mapping[i] for i in value.exclusive.axes), value.exclusive.owner_coordinates)
+    try:
+        return Dist(
+            value.tensor, tuple(policies),
+            Placement(tuple(placement.hierarchy[i] for i in retained), ''.join(placement.name[i] for i in retained),
+                      ''.join(placement.hierarchy_levels[i] for i in retained)), partial=partial, exclusive=exclusive)
+    except IRSchemaError:
+        return None
+
+
+def chip_view_error(source: IRType, target: IRType) -> str | None:
+    """Prove local-mesh edits preserve chip values or exact partial components."""
+    from triton.flagmega.ir.model import DistributedType as Dist, TensorType
+    projected_source, projected_target = chip_data_type(source), chip_data_type(target)
+    if projected_source is None or projected_target is None:
+        return 'Chip view requires resolved block partial/exclusive ownership and expressible chip coordinates.'
+    if projected_source == projected_target:
+        return None
+    if isinstance(projected_source, Dist) and isinstance(projected_target, Dist):
+        if is_component_shard_subview(projected_source, projected_target):
+            return None
+    if isinstance(projected_source, TensorType) and isinstance(projected_target, Dist):
+        if projected_source == projected_target.tensor and projected_target.partial is None and projected_target.exclusive is None:
+            return None
+    return 'Chip view would change or widen device ownership, numerical type, or coordinate layout.'
+
+
+@lru_cache(maxsize=4096)
+def is_component_shard_subview(source: DistributedType, target: DistributedType) -> bool:
+    """Containment inside the same value/reduction component, without publishing it.
+
+    Partial ownership is independent of coordinate geometry. Compare geometry
+    only after proving the exact component owner and reduction policy agree;
+    the original IR and physical backing keep that policy throughout.
+    """
+    if source.partial != target.partial or source.exclusive != target.exclusive:
+        return False
+    if source.partial is None:
+        return is_local_shard_subview(source, target)
+    return is_local_shard_subview(replace(source, partial=None), replace(target, partial=None))
+
+
+@lru_cache(maxsize=4096)
+def chip_shared_backing_type(value: DistributedType, placement: Placement) -> DistributedType | None:
+    """Re-express one complete chip component under a new local execution mesh.
+
+    A compact array of CTA components cannot use this representation. Its
+    physical layout needs a producer/consumer materialization plan instead.
+    Actual shared-memory scope and pointer lifetime are proved by bufferization.
+    """
+    if block_owner_count(value) != 1:
+        return None
+    from triton.flagmega.ir.model import DistributedType as Dist, TensorType
+    projected = chip_data_type(value)
+    retained = tuple(i for i, level in enumerate(placement.hierarchy_levels) if level != 'b')
+    if isinstance(projected, TensorType):
+        if retained:
+            return None
+        return Dist(projected, (SBP.broadcast(), ) * projected.rank, placement)
+    if not isinstance(projected, Dist):
+        return None
+    target_chip = Placement(tuple(placement.hierarchy[i] for i in retained),
+                            ''.join(placement.name[i] for i in retained),
+                            ''.join(placement.hierarchy_levels[i] for i in retained))
+    if projected.placement != target_chip:
+        return None
+    mapping = dict(enumerate(retained))
+    policies = tuple(
+        SBP.split(*(SplitStage(tuple(mapping[i]
+                                     for i in stage.hierarchy_axes), stage.distribution)
+                    for stage in policy.stages)) if isinstance(policy, SBPSplit) else policy
+        for policy in projected.axis_policies)
+    partial = None if projected.partial is None else SBP.partial(tuple(
+        mapping[i] for i in projected.partial.axes), projected.partial.reduce_op)
+    exclusive = None if projected.exclusive is None else SBP.exclusive(
+        tuple(mapping[i] for i in projected.exclusive.axes), projected.exclusive.owner_coordinates)
+    backing = Dist(projected.tensor, policies, placement, partial, exclusive)
+    return backing if local_shape(backing) == local_shape(value) else None
+
+
+def _chip_projected_split(
+    policy: SBPSplit,
+    placement: Placement,
+    block_axes: set[int],
+) -> SBP | None:
+    """Drop block axes from a split, widening granularity by their extents.
+
+    A chip's region is the union of its blocks' shards, which is contiguous
+    only when the block axes are minor to every retained axis.  Split axes are
+    ordered major to minor across and within stages, so the retained axes must
+    form a prefix of that order; otherwise the projection is inexpressible.
+    """
+
+    ordered = tuple(axis for stage in policy.stages for axis in stage.hierarchy_axes)
+    minor_blocks = 0
+    for axis in reversed(ordered):
+        if axis not in block_axes:
+            break
+        minor_blocks += 1
+    kept_count = len(ordered) - minor_blocks
+    if any(axis in block_axes for axis in ordered[:kept_count]):
+        return None
+    stages = []
+    remaining = kept_count
+    for stage in policy.stages:
+        kept = stage.hierarchy_axes[:max(remaining, 0)]
+        remaining -= len(stage.hierarchy_axes)
+        if not kept:
+            break
+        distribution = stage.distribution
+        # Only axes dropped from within this stage widen its shard.  A stage
+        # dropped whole is already described by its parent stage's shard.
+        dropped = prod(placement.hierarchy[axis] for axis in stage.hierarchy_axes[len(kept):])
+        if dropped != 1:
+            if not isinstance(distribution, ContiguousSplit):
+                # A block-cyclic shard interleaves with its siblings, so the
+                # union over the dropped owners is not one contiguous shard.
+                return None
+            if distribution.granularity is not None:
+                distribution = ContiguousSplit(distribution.granularity * dropped)
+        stages.append(SplitStage(kept, distribution))
+    return SBP.split(*stages) if stages else SBP.broadcast()
+
+
+def _is_contiguous_split_refinement(
+    source: SBPSplit,
+    target: SBPSplit,
+    placement: Placement,
+) -> bool:
+    """Prove common parent/child contiguous shards without symbolic algebra."""
+
+    if (len(target.stages) > len(source.stages) and target.stages[:len(source.stages)] == source.stages):
+        return all(isinstance(stage.distribution, ContiguousSplit) for stage in target.stages[len(source.stages):])
+    if len(source.stages) != 1 or len(target.stages) != 1:
+        return False
+    source_stage = source.stages[0]
+    target_stage = target.stages[0]
+    if not (isinstance(source_stage.distribution, ContiguousSplit)
+            and isinstance(target_stage.distribution, ContiguousSplit)):
+        return False
+    source_axes = source_stage.hierarchy_axes
+    target_axes = target_stage.hierarchy_axes
+    if (len(target_axes) <= len(source_axes) or target_axes[:len(source_axes)] != source_axes):
+        return False
+    source_granularity = source_stage.distribution.granularity
+    target_granularity = target_stage.distribution.granularity
+    if source_granularity is None or target_granularity is None:
+        return False
+    refinement_factor = prod(placement.hierarchy[axis] for axis in target_axes[len(source_axes):])
+    return source_granularity == target_granularity * refinement_factor
+
+
+def is_fully_replicated(value: DistributedType) -> bool:
+    """Return whether every placement owner holds the complete tensor."""
+
+    return value.partial is None and value.exclusive is None and all(
+        isinstance(policy, SBPBroadCast) for policy in value.axis_policies)
+
+
+def is_exclusive(value: DistributedType) -> bool:
+    return value.exclusive is not None
+
+
+def exclusive_owner_count(value: DistributedType) -> int:
+    if value.exclusive is None:
+        return placement_owner_count(value)
+    return prod(value.placement.hierarchy[axis] for axis in value.exclusive.axes)
+
+
+def exclusive_transition_axes(
+    source: DistributedType,
+    target: DistributedType,
+) -> tuple[int, ...] | None:
+    """Return the mesh group required for a B/E ownership transition."""
+
+    if (source.placement != target.placement or source.partial is not None or target.partial is not None
+            or source.axis_policies != target.axis_policies or source.exclusive == target.exclusive
+            or (source.exclusive is None and target.exclusive is None)):
+        return None
+    axes = set(() if source.exclusive is None else source.exclusive.axes)
+    axes.update(() if target.exclusive is None else target.exclusive.axes)
+    return tuple(sorted(axes))
+
+
+def _has_partial(value: DistributedType) -> bool:
+    return value.partial is not None or any(isinstance(policy, SBPPartial) for policy in value.axis_policies)
+
+
+def _has_only_split_or_broadcast(value: DistributedType) -> bool:
+    return all(isinstance(policy, (SBPSplit, SBPBroadCast)) for policy in value.axis_policies)
+
+
+def scale_split_units(
+    split: SBPSplit,
+    numerator: int,
+    denominator: int,
+) -> SBPSplit | None:
+    """Scale explicit split units across pack/unpack element boundaries."""
+
+    if numerator <= 0 or denominator <= 0:
+        return None
+    common = _greatest_common_divisor(numerator, denominator)
+    numerator //= common
+    denominator //= common
+    stages: list[SplitStage] = []
+    for stage in split.stages:
+        distribution = stage.distribution
+        if isinstance(distribution, ContiguousSplit):
+            if distribution.granularity is None:
+                scaled = distribution
+            else:
+                granularity = try_div_exactly(
+                    distribution.granularity * numerator,
+                    denominator,
+                )
+                if granularity is None:
+                    return None
+                scaled = ContiguousSplit(granularity)
+        elif isinstance(distribution, BlockCyclicSplit):
+            block = distribution.block_size * numerator
+            if block % denominator:
+                return None
+            scaled = BlockCyclicSplit(block // denominator)
+        else:  # pragma: no cover - sealed by SplitDistribution today.
+            return None
+        stages.append(SplitStage(stage.hierarchy_axes, scaled))
+    return SBP.split(*stages)
+
+
+def _greatest_common_divisor(lhs: int, rhs: int) -> int:
+    while rhs:
+        lhs, rhs = rhs, lhs % rhs
+    return lhs
+
+
+def local_shape(distributed_type: DistributedType) -> tuple[Dimension, ...]:
+    """Return the maximum dense component shape held by one placement owner.
+
+    Contiguous stages divide the active extent. Block-cyclic stages reserve
+    enough whole blocks for the owner with the largest component. Partial and
+    broadcast axes do not divide a tensor dimension.
+    """
+
+    result: list[Dimension] = []
+    for dimension, policy in zip(
+            distributed_type.tensor.shape,
+            distributed_type.axis_policies,
+    ):
+        extent = dimension
+        if isinstance(policy, SBPSplit):
+            for stage in policy.stages:
+                owners = 1
+                for hierarchy_axis in stage.hierarchy_axes:
+                    owners *= distributed_type.placement.hierarchy[hierarchy_axis]
+                if isinstance(stage.distribution, ContiguousSplit):
+                    extent = (stage.distribution.granularity
+                              if stage.distribution.granularity is not None else ceil_div(extent, owners))
+                elif isinstance(stage.distribution, BlockCyclicSplit):
+                    block = stage.distribution.block_size
+                    extent = ceil_div(ceil_div(extent, block), owners) * block
+                else:  # pragma: no cover - sealed by SplitDistribution today.
+                    raise IRSchemaError(f"Unsupported split distribution {type(stage.distribution).__name__}.")
+        result.append(extent.simplify())
+    return tuple(result)
+
+
+def local_tensor_type(distributed_type: DistributedType) -> TensorType:
+    """Return the dense per-owner tensor type used for physical sizing."""
+
+    from triton.flagmega.ir.model import TensorType
+
+    return TensorType(
+        distributed_type.tensor.dtype,
+        local_shape(distributed_type),
+        distributed_type.tensor.layout,
+    )
+
+
+def placement_owner_count(distributed_type: DistributedType) -> int:
+    result = 1
+    for extent in distributed_type.placement.hierarchy:
+        result *= extent
+    return result
+
+
+def chip_owner_axes(distributed_type: DistributedType) -> tuple[int, ...]:
+    """Placement axes represented by one chip-local image segment."""
+
+    return tuple(axis for axis, level in enumerate(distributed_type.placement.hierarchy_levels) if level in {"c", "d"})
+
+
+def block_owner_axes(distributed_type: DistributedType) -> tuple[int, ...]:
+    """Block axes that own distinct components of a chip-local allocation.
+
+    A broadcast tensor does not need one readonly copy per block.  Only block
+    axes named by a split, partial, or exclusive SBP policy contribute an
+    owner component; this keeps chip-local replicated weights at one component
+    while preserving block-local shards for tensors that actually differ per
+    block.
+    """
+
+    block_axes = {axis for axis, level in enumerate(distributed_type.placement.hierarchy_levels) if level == "b"}
+    owners: set[int] = set()
+    for policy in distributed_type.axis_policies:
+        if isinstance(policy, SBPSplit):
+            owners.update(axis for stage in policy.stages for axis in stage.hierarchy_axes)
+        elif isinstance(policy, SBPPartial):
+            owners.update(policy.axes)
+        elif isinstance(policy, SBPExclusive):
+            owners.update(policy.axes)
+    return tuple(axis for axis in sorted(block_axes) if axis in owners)
+
+
+def chip_owner_count(distributed_type: DistributedType) -> int:
+    result = 1
+    for axis in chip_owner_axes(distributed_type):
+        result *= distributed_type.placement.hierarchy[axis]
+    return result
+
+
+def block_owner_count(distributed_type: DistributedType) -> int:
+    result = 1
+    for axis in block_owner_axes(distributed_type):
+        result *= distributed_type.placement.hierarchy[axis]
+    return result
+
+
+def launch_chip_count(module) -> int:
+    """Number of chip-local rdata segments in the launch mesh."""
+
+    launch = getattr(module, "metadata", {}).get("launch_contract", {})
+    mesh = launch.get("grid_mesh") if isinstance(launch, Mapping) else None
+    if not isinstance(mesh, Mapping):
+        return 1
+    hierarchy = tuple(int(value) for value in mesh.get("hierarchy", ()))
+    levels = str(mesh.get("hierarchy_levels", ""))
+    if not hierarchy or len(hierarchy) != len(levels):
+        return 1
+    result = 1
+    for extent, level in zip(hierarchy, levels, strict=True):
+        if level in {"c", "d"}:
+            result *= extent
+    return result
+
+
+def is_fully_sharded_across_placement(distributed_type: DistributedType) -> bool:
+    split_axes = {
+        hierarchy_axis
+        for policy in distributed_type.axis_policies if isinstance(policy, SBPSplit)
+        for hierarchy_axis in policy.hierarchy_axes
+    }
+    return bool(distributed_type.placement.rank) and len(split_axes) == distributed_type.placement.rank
+
+
+def leaf_candidate_policies(
+    tensor: TensorType,
+    placement: Placement,
+    *,
+    split_candidates: Callable[[TensorType, int, tuple[int, ...]], Sequence[SBPSplit]] | None = None,
+) -> tuple[tuple[SBP, ...], ...]:
+    """Port of reference ``DistributedUtility.GetLeafCandidatePolicies``.
+
+    Every tensor axis may be broadcast or split by any non-empty combination
+    of placement axes when a fixed extent divides exactly.  Cartesian products
+    are filtered by the same one-owner-axis-per-tensor-axis invariant.
+    A target may supply the split distributions without introducing a compiler
+    policy dependency into IR; the default remains portable contiguous SBP.
+    """
+
+    placement_combinations = tuple(axes for count in range(1, placement.rank + 1)
+                                   for axes in combinations(range(placement.rank), count))
+    by_tensor_axis: list[tuple[SBP, ...]] = []
+    for tensor_axis, dimension in enumerate(tensor.shape):
+        values: list[SBP] = []
+        for axes in placement_combinations:
+            divisor = 1
+            for axis in axes:
+                divisor *= placement.hierarchy[axis]
+            if divisor > 1 and (not dimension.is_fixed or dimension.fixed_value % divisor == 0):
+                granularity = None if not dimension.is_fixed else dimension.fixed_value // divisor
+                candidates = ((SBP.split_contiguous(axes, granularity), )
+                              if split_candidates is None else split_candidates(tensor, tensor_axis, axes))
+                for candidate in candidates:
+                    if candidate not in values:
+                        values.append(candidate)
+        values.append(SBP.broadcast())
+        by_tensor_axis.append(tuple(values))
+    return tuple(
+        tuple(candidate) for candidate in product(*by_tensor_axis) if is_distributable(tensor, candidate, placement))
+
+
+def distributed_type_signature(value: DistributedType) -> str:
+    policies = ",".join(str(policy) for policy in value.axis_policies)
+    partial = "" if value.partial is None else f";partial={value.partial}"
+    return f"{value.placement}:{policies}{partial}"
+
+
+__all__ = [
+    "BlockCyclicSplit",
+    "ContiguousSplit",
+    "Placement",
+    "ReduceOp",
+    "SBP",
+    "SBPBroadCast",
+    "SBPExclusive",
+    "SBPPartial",
+    "SBPSplit",
+    "SplitDistribution",
+    "SplitStage",
+    "distributed_type_signature",
+    "is_distributable",
+    "is_fully_sharded_across_placement",
+    "is_fully_replicated",
+    "is_exclusive",
+    "exclusive_owner_count",
+    "exclusive_transition_axes",
+    "is_local_shard_subview",
+    "boxing_crossing_chip_axes",
+    "boxing_reads_peer_chips",
+    "leaf_candidate_policies",
+    "local_shape",
+    "local_tensor_type",
+    "placement_owner_count",
+    "scale_split_units",
+    "sharded_view_error",
+    "placement_from_data",
+    "sbp_from_data",
+]

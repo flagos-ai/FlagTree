@@ -1,0 +1,119 @@
+# Copyright 2025- FlagOS Contributors
+# SPDX-License-Identifier: MIT
+"""Reader-only renderer for selected and bufferized Triton IR."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from triton.flagmega.codegen.triton.diagnostics import (
+    dump_codegen,
+    dump_schedules,
+)
+from triton.flagmega.codegen.triton.registry import (
+    PackageRendererRegistry,
+    PackageRendererSpec,
+    PreparedSourceRenderer,
+)
+from triton.flagmega.codegen.triton.program_sources import render_program_source_files
+from triton.flagmega.codegen.triton.tir_package import (
+    describe_tir_package,
+    prepare_tir_package,
+    render_tir_package,
+)
+from triton.flagmega.ir import (
+    IRModule,
+    verify_buffer_plan,
+    verify_module,
+)
+
+if TYPE_CHECKING:
+    from triton.flagmega.diagnostics import Dumper
+
+RENDERER_VERSION = "flagmega-triton-renderer/v23"
+
+renderer_registry = PackageRendererRegistry()
+renderer_registry.register(
+    PackageRendererSpec(
+        "bufferized-tir",
+        "tir_call_graph/v1",
+        lambda module: (module.stage == "bufferized_tir" and module.dialect == "bufferized_tir"),
+        lambda module: describe_tir_package(module, specialize_readonly_layout=True),
+        PreparedSourceRenderer(render_tir_package, prepare_tir_package),
+    ))
+
+
+def render_triton_package(
+    module: IRModule,
+    output_dir: str | Path,
+    *,
+    dumper: Dumper | None = None,
+    triton_trace=None,
+    readonly_layout_policy=None,
+) -> dict[str, object]:
+    verify_module(
+        module,
+        expected_stage="bufferized_tir",
+        expected_dialect="bufferized_tir",
+    )
+    verify_buffer_plan(module)
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    spec = renderer_registry.resolve(module)
+    descriptor = (spec.describe(module) if triton_trace is None and readonly_layout_policy is None else
+                  describe_tir_package(module, specialize_readonly_layout=True, triton_trace=triton_trace,
+                                       readonly_layout_policy=readonly_layout_policy))
+    from triton.flagmega.errors import CodegenError
+    for call in descriptor.get("render_calls", ()):
+        required = call.get("facts", {}).get("required_codegen_backend")
+        if required is not None and required != "triton":
+            raise CodegenError(
+                f"Selected implementation {call.get('implementation')!r} requires codegen backend {required!r}.")
+    prepared = spec.prepare(descriptor, RENDERER_VERSION) if spec.prepare is not None else descriptor
+    source = spec.render(prepared, RENDERER_VERSION)
+    source_path = destination / "generated_kernels.py"
+    source_path.write_text(source, encoding="utf-8")
+    source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    program_sources = render_program_source_files(prepared, RENDERER_VERSION, spec.render, destination, source)
+    package = {
+        "renderer": RENDERER_VERSION,
+        "renderer_spec": spec.name,
+        "kind": spec.kind,
+        "source": source_path.name,
+        "source_sha256": source_hash,
+        "symbol": descriptor["symbol"],
+        "grid": descriptor["grid"],
+        "num_warps": descriptor.get("num_warps", 1),
+        "dynamic_argument_indices": descriptor.get("dynamic_argument_indices", ()),
+        **{
+            key: value
+            for key, value in descriptor.items() if key not in {
+                "symbol", "kernel_templates", "render_calls", "programs"
+            }
+        },
+        **program_sources,
+    }
+    if readonly_layout_policy is not None:
+        from .nvidia_readonly_layout import write_layout_manifest
+        write_layout_manifest(destination, package)
+    if triton_trace is not None:
+        trace = package["triton_trace"]
+        for field in ("config", "dictionary"):
+            name = f"trace-{field}.json"
+            text = json.dumps(trace[field], indent=2, sort_keys=True) + "\n"
+            (destination / name).write_text(text, encoding="utf-8")
+            trace[field + "_file"] = name
+            trace[field + "_file_sha256"] = hashlib.sha256(text.encode()).hexdigest()
+    dump_schedules(module, dumper)
+    dump_codegen(module, package, source, dumper)
+    return package
+
+
+__all__ = [
+    "RENDERER_VERSION",
+    "render_triton_package",
+    "renderer_registry",
+]

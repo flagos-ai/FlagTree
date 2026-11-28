@@ -1,0 +1,23 @@
+# Copyright 2025- FlagOS Contributors
+# SPDX-License-Identifier: MIT
+"""Recurrent normalization respects each operand's independent physical ABI."""
+
+import pytest
+
+from python.test.flagmega.codegen.triton.kernels.gdn_recurrent.helpers import execute_recurrent
+from python.test.flagmega.gdn.recurrent_helpers import recurrent_case, recurrent_reference
+
+
+@pytest.mark.parametrize("local_z", [False, True])
+@pytest.mark.parametrize("local_result", [False, True])
+def test_gate_and_result_have_independent_storage_contracts(tmp_path, local_z, local_result):
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available() or torch.cuda.get_device_capability() != (9, 0):
+        pytest.skip("SM90 CUDA required")
+    config, attrs, types, values = recurrent_case(qk_norm_mode="add", qk_norm_epsilon=1e-6, round_core=True)
+    expected, expected_states = recurrent_reference(values, attrs)
+    actual, states = execute_recurrent(tmp_path, torch, config, attrs, types, values, local_z=local_z,
+                                       local_result=local_result)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    for actual_state, expected_state in zip(states, expected_states):
+        torch.testing.assert_close(actual_state, expected_state, rtol=2e-5, atol=1e-7)

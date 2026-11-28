@@ -1,0 +1,2210 @@
+# Copyright 2025- FlagOS Contributors
+# SPDX-License-Identifier: MIT
+"""Portable Triton implementation catalog and preference order.
+
+Despite living next to the `nvidia/` package historically, this catalog
+is not NVIDIA-exclusive: `targets/iluvatar_bi_v150.py`'s
+`corex_triton_implementation_model()` builds COREX's own implementation
+model by taking this same catalog and filtering it down to the
+candidates that survive without a CUDA-TMA/tensor-descriptor ABI (see
+that function's docstring). Keep new implementations here
+target-neutral (portable Triton, no target-specific codegen) unless
+they genuinely only make sense on NVIDIA hardware.
+"""
+
+from dataclasses import replace
+
+from triton.flagmega.codegen.triton.delta_rule_implementations import delta_rule_implementations
+from triton.flagmega.codegen.triton.implementation import (
+    TritonImplementation,
+    TritonImplementationModel,
+)
+from triton.flagmega.codegen.triton.portable_implementations import (
+    portable_attention_implementations,
+    portable_attention_preferences,
+    portable_axis_reduction_implementations,
+    portable_gather_implementations,
+    portable_kda_implementations,
+    portable_local_reduction_implementations,
+    portable_local_reduction_preferences,
+    portable_mhc_implementations,
+    portable_normalization_implementations,
+    portable_normalization_preferences,
+    portable_router_elementwise_implementations,
+    portable_sparse_experts_implementations,
+    portable_staged_routing_implementations,
+    portable_tensor_transform_implementations,
+)
+from triton.flagmega.ir import tensor_type
+from triton.flagmega.ir.tir import (
+    TIRAuxiliaryConsumerContract,
+    TIRSharedWorkspaceDescriptor,
+    TIRTransferPipelineChannel,
+    TIRTransferPipelineContract,
+)
+from triton.flagmega.targets.nvidia.gdn import (
+    gdn_large_key_implementations,
+    gdn_state_pipeline_implementations,
+    gdn_scalar_head_gate_implementations,
+)
+from triton.flagmega.targets.nvidia.mhc import mhc_contiguous_tf32_implementations
+from triton.flagmega.targets.nvidia.mla import mla_projection_implementations
+from triton.flagmega.targets.nvidia.kda_input_projection import kda_input_projection_implementations
+from triton.flagmega.targets.nvidia.partitioned_linear import partitioned_linear_implementations
+from triton.flagmega.targets.nvidia.partitioned_block_scaled_linear import partitioned_block_scaled_linear_implementations
+from triton.flagmega.targets.nvidia.shared_layout import align_shared_workspaces
+from triton.flagmega.targets.nvidia.sparse_experts import sparse_experts_wgmma_implementations
+
+
+def _implementation(
+        candidate_id: str,
+        family: str,
+        variant: str,
+        parameters=None,
+        *,
+        contract=None,
+        requires=(),
+        facts=None,
+        shared_workspaces=(),
+        transfer_pipeline=None,
+) -> TritonImplementation:
+    facts = dict(facts or {})
+    # The decode lookup addresses the table by (token_id, feature).  The
+    # vocabulary axis is always broadcast -- a token id is a runtime value, so
+    # an owner holding only some rows could not answer for the rest -- and the
+    # feature axis is projected exactly onto the output's, so a chip-compact
+    # table needs no Boxing: the renderer indexes it with the local feature
+    # coordinate.  Pinning `weight` canonical here instead obliged every chip to
+    # store the whole vocabulary.
+    if (facts.get("host_tensor_descriptor") and (parameters or {}).get("descriptor_kind") != "table"):
+        # A single tensor map spans the canonical weight shape, so it needs a
+        # canonical global base address. Make that requirement visible before
+        # allocation. A descriptor table instead emits one map per resident
+        # owner, so it addresses whatever storage the weight already has and
+        # must not force every chip to hold the whole tensor.
+        arguments = {
+            "dense_matmul": ("rhs", ),
+            "dense_matmul_glu": ("gate_weight", "up_weight"),
+        }.get(family)
+        if arguments is not None:
+            facts["canonical_global_arguments"] = arguments
+    return TritonImplementation(
+        candidate_id,
+        family,
+        variant,
+        parameters or {},
+        contract or {},
+        requires,
+        facts or {},
+        align_shared_workspaces(shared_workspaces),
+        transfer_pipeline,
+    )
+
+
+def portable_triton_implementation_model() -> TritonImplementationModel:
+    """Describe implemented SM90 variants without putting machine knobs in rules."""
+
+    cooperative = ("cooperative_grid", )
+    implementations = (
+        *gdn_state_pipeline_implementations(),
+        *gdn_large_key_implementations(),
+        *gdn_scalar_head_gate_implementations(),
+        *delta_rule_implementations(),
+        *portable_tensor_transform_implementations(),
+        *portable_gather_implementations(),
+        *portable_kda_implementations(),
+        *portable_mhc_implementations(),
+        *mhc_contiguous_tf32_implementations(),
+        *mla_projection_implementations(),
+        *kda_input_projection_implementations(),
+        *partitioned_linear_implementations(),
+        *partitioned_block_scaled_linear_implementations(),
+        *portable_staged_routing_implementations(),
+        *portable_sparse_experts_implementations(),
+        *sparse_experts_wgmma_implementations(),
+        *portable_axis_reduction_implementations(),
+        *portable_router_elementwise_implementations(),
+        *portable_attention_implementations(),
+        *portable_local_reduction_implementations(),
+        *portable_normalization_implementations(),
+        _implementation(
+            "tir.elementwise.add.scalar",
+            "elementwise",
+            "add",
+            # Scalar is an IR element/packing contract, not a single CUDA
+            # lane. Process owner-local tensors in masked parallel tiles.
+            {"elements_per_program": 256},
+            contract={"semantic_op": "math.add", "vectorization_kind": "scalar"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.elementwise.add",
+            "elementwise",
+            "add",
+            {"vector_groups": 32},
+            contract={"semantic_op": "math.add", "vectorization_kind": "axes"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.elementwise.mul.scalar",
+            "elementwise",
+            "mul",
+            {"elements_per_program": 256},
+            contract={"semantic_op": "math.mul", "vectorization_kind": "scalar"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.elementwise.mul",
+            "elementwise",
+            "mul",
+            {"vector_groups": 32},
+            contract={"semantic_op": "math.mul", "vectorization_kind": "axes"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.elementwise.silu.scalar",
+            "elementwise",
+            "silu",
+            {"elements_per_program": 256},
+            contract={"semantic_op": "math.silu", "vectorization_kind": "scalar"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.elementwise.silu",
+            "elementwise",
+            "silu",
+            {"vector_groups": 32},
+            contract={"semantic_op": "math.silu", "vectorization_kind": "axes"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.elementwise.cast.scalar",
+            "elementwise",
+            "cast",
+            {"elements_per_program": 256},
+            contract={"semantic_op": "tensors.cast", "vectorization_kind": "scalar"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.elementwise.cast",
+            "elementwise",
+            "cast",
+            {"vector_groups": 32},
+            contract={"semantic_op": "tensors.cast", "vectorization_kind": "axes"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.elementwise.cast.typed",
+            "elementwise",
+            "cast",
+            {"vector_groups": 32},
+            contract={"semantic_op": "tensors.cast", "vectorization_kind": "typed_elements"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.embedding.decode",
+            "embedding",
+            "decode",
+            {"elements_per_program": 16},
+            contract={"mode": "decode"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.block_fp8.simt",
+            "block_fp8",
+            "simt",
+            {"tile_n": 16},
+            requires=("fp8", ),
+        ),
+        _implementation(
+            "tir.interleaved_projection.simt",
+            "interleaved_projection",
+            "simt",
+            {"tile_n": 16},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.block_fp8.mma",
+            "block_fp8",
+            "mma",
+            {"tile_n": 16},
+            requires=("fp8_mma", ),
+        ),
+        _implementation(
+            "tir.matmul_glu.simt",
+            "matmul_glu",
+            "simt",
+            {"tile_n": 16},
+            requires=("fp8", ),
+        ),
+        _implementation(
+            "tir.matmul_glu.mma",
+            "matmul_glu",
+            "mma",
+            {"tile_n": 16},
+            requires=("fp8_mma", ),
+        ),
+        _implementation(
+            "tir.greedy_sample.distributed_argmax",
+            "greedy_sample",
+            "distributed_argmax",
+            {"vocab_tile": 1024},
+            contract={"tie_break": "lowest_index"},
+            requires=cooperative,
+            facts={"internal_grid_barriers": 1},
+        ),
+        _implementation(
+            "tir.rms_norm.local",
+            "rms_norm",
+            "local",
+            {"block_size": 128},
+            contract={"schedule": "local", "fuse_consumer": False},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.norm_stats.local",
+            "norm_stats",
+            "local",
+            {"block_size": 128},
+            contract={"supports_mean": True, "axis_kind": "suffix"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.norm_apply.local",
+            "norm_apply",
+            "local",
+            {"block_size": 1024},
+            contract={
+                "supports_mean": True,
+                "axis_kind": "suffix",
+                "bias_mode": "tensor",
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.gated_norm_apply.local",
+            "gated_norm_apply",
+            "local",
+            {"block_size": 1024},
+            contract={
+                "supports_mean": True,
+                "axis_kind": "suffix",
+                "bias_mode": "tensor",
+                "activations": ("sigmoid", "silu", "swish"),
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.gdn_convolution.persistent",
+            "gdn_convolution",
+            "persistent",
+            {"tile_channels": 128},
+            requires=cooperative,
+        ),
+        _implementation(
+            "tir.gdn_recurrent.persistent",
+            "gdn_recurrent",
+            "persistent",
+            {"tile_state": (128, 4), "projection_tile": 128},
+            requires=("cooperative_grid", "grid_sync"),
+            facts={"internal_grid_barriers": 1},
+        ),
+        _implementation(
+            "tir.distributed_boxing.tensor_load",
+            "distributed_boxing",
+            "tensor_load",
+            {"tile": 1024},
+            contract={"transition": "tensor_load"},
+        ),
+        _implementation(
+            "tir.distributed_boxing.tensor_store",
+            "distributed_boxing",
+            "tensor_store",
+            {"tile": 1024},
+            contract={"transition": "tensor_store"},
+        ),
+        _implementation(
+            "tir.distributed_boxing.gather_reduce_scatter",
+            "distributed_boxing",
+            # Maximum scalar elements across local-value and partial-owner axes.
+            "gather_reduce_scatter",
+            {"tile": 1024},
+            contract={"transition": "gather_reduce_scatter"},
+            requires=("cooperative_grid", "grid_sync"),
+        ),
+        _implementation(
+            "tir.gather_reduce_add_norm_stats.sum_rms",
+            "gather_reduce_add_norm_stats",
+            "sum_rms",
+            {"tile": 64, "partial_reduction_width": 16},
+            contract={
+                "reduction": "sum",
+                "axis_kind": "last",
+                "use_mean": False,
+                "output_layout": "broadcast",
+            },
+            requires=("cooperative_grid", "grid_sync"),
+            facts={"internal_grid_barriers": 1},
+        ),
+        _implementation(
+            "tir.add_norm_stats.rms",
+            "add_norm_stats",
+            "rms",
+            {"tile": 16},
+            contract={
+                "input_kind": "materialized",
+                "axis_kind": "last",
+                "use_mean": False,
+                "output_layout": "broadcast",
+            },
+            requires=("cooperative_grid", "grid_sync"),
+            facts={"internal_grid_barriers": 1, "result_memory_scope": "chip"},
+        ),
+        _implementation(
+            "tir.add_norm_stats.persistent_rms",
+            "add_norm_stats",
+            "persistent_rms",
+            {"tile": 128},
+            contract={
+                "input_kind": "materialized",
+                "axis_kind": "last",
+                "use_mean": False,
+                "output_layout": "broadcast",
+            },
+            facts={
+                "portable_triton": True,
+                "participant_scope": "single_program",
+            },
+        ),
+        _implementation(
+            "tir.dense_matmul.scalar_gemv",
+            "dense_matmul",
+            "gemv",
+            {"block_k": 128, "tile_n": 1},
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "logical",
+                "epilogue": "none",
+                "vectorization_kind": "scalar",
+                "distribution_kind": "canonical",
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul.gemv",
+            "dense_matmul",
+            "gemv",
+            {"block_k": 128, "tile_n": 16},
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "logical",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul.tensor_descriptor_gemv",
+            "dense_matmul",
+            "tensor_descriptor_gemv",
+            {"block_k": 128, "tile_n": 16},
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "logical",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "requires_full_reduction_tiles": True,
+                "requires_contiguous_local_tiles": True,
+            },
+            requires=("tma", ),
+            facts={"host_tensor_descriptor": True},
+        ),
+        _implementation(
+            "tir.dense_matmul.tensor_descriptor_smem_pipeline_gemv",
+            "dense_matmul",
+            "tensor_descriptor_smem_pipeline_gemv",
+            {
+                "block_k": 128,
+                "tile_n": 16,
+                "num_stages": 2,
+                "producer_warps": 1,
+                "producer_registers": 32,
+            },
+            contract={
+                "input_kind": "logical",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "transpose_b": True,
+                "requires_full_reduction_tiles": True,
+                "requires_contiguous_local_tiles": True,
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "transfer_pipeline": True,
+            },
+            shared_workspaces=(TIRSharedWorkspaceDescriptor(
+                "weight_stage",
+                tensor_type("bfloat16", (2, 16, 128)),
+                128,
+                matrix_compatible=True,
+            ), ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, ),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                capacity=2,
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul.tensor_descriptor_smem_pipeline_aux_gemv",
+            "dense_matmul",
+            "tensor_descriptor_smem_pipeline_aux_gemv",
+            {
+                "block_k": 128,
+                "tile_n": 16,
+                "num_stages": 2,
+                "producer_warps": 1,
+                "producer_registers": 32,
+                "auxiliary_consumer_warps": 4,
+                "auxiliary_consumer_registers": 160,
+            },
+            contract={
+                "input_kind": "logical",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "transpose_b": True,
+                "requires_full_reduction_tiles": True,
+                "requires_contiguous_local_tiles": True,
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "transfer_pipeline": True,
+                "auxiliary_consumer": True,
+            },
+            shared_workspaces=(TIRSharedWorkspaceDescriptor(
+                "weight_stage",
+                tensor_type("bfloat16", (2, 16, 128)),
+                128,
+                matrix_compatible=True,
+            ), ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, ),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                auxiliary_consumer=TIRAuxiliaryConsumerContract(channel_indices=(0, ), ),
+                capacity=2,
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul.split_k_gemv",
+            "dense_matmul",
+            "split_k_gemv",
+            {
+                "block_k": 1024,
+                "split_k_block_k": 64,
+                "tile_n": 16,
+            },
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "logical",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "reduction_split",
+                "requires_full_reduction_tiles": True,
+            },
+            facts={
+                "chip_visible_partial_owners": True,
+                "portable_triton": True,
+            },
+        ),
+        _implementation(
+            "tir.dense_matmul.split_k_packed_k_major_gemv",
+            "dense_matmul",
+            "split_k_packed_k_major_gemv",
+            {
+                "block_k": 1024,
+                "split_k_block_k": 64,
+                "tile_n": 16,
+            },
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "packed_layout": "k_major_n8_k16",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "reduction_split",
+                "supports_masked_tiles": True,
+            },
+            facts={
+                "chip_visible_partial_owners": True,
+                "portable_triton": True,
+            },
+        ),
+        _implementation(
+            "tir.dense_matmul.split_k_n_packed_k_major_gemv",
+            "dense_matmul",
+            "split_k_n_packed_k_major_gemv",
+            {
+                "block_k": 256,
+                "split_k_block_k": 64,
+                "tile_n": 16,
+            },
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "packed_layout": "k_major_n8_k16",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "output_reduction_split",
+                "supports_masked_tiles": True,
+            },
+            facts={
+                "chip_visible_partial_owners": True,
+                "portable_triton": True,
+            },
+        ),
+        # Prefill (M>1) bf16 WMMA GEMM via tl.dot. Catalog + renderer
+        # (_dense_matmul_mma_call) + template (mma.py.jinja) + provider gate
+        # (supports_local_row_tile) are wired. It stays dormant until a
+        # logical+canonical matmul DISTRIBUTION candidate is offered: the default
+        # matmul distribution is split-K (output_reduction_split, packed), which
+        # is incompatible with this candidate's logical/canonical contract, so
+        # propose-tir never offers it today. Wiring that GEMM-shaped distribution
+        # path (plus an M>1 cost-model preference) completes automatic selection;
+        # until then the standalone amd-rdna tutorial kernel (prefill_wmma.py)
+        # is the proven ~10-30x microkernel.
+        _implementation(
+            "tir.dense_matmul.mma",
+            "dense_matmul",
+            "mma",
+            {"block_k": 32, "tile_n": 128},
+            contract={
+                "supports_local_row_loop": False,
+                "supports_local_row_tile": True,
+                "input_kind": "logical",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+            },
+            requires=("wmma", ),
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul.split_k_n_packed_k_major_gemv_tn64",
+            "dense_matmul",
+            "split_k_n_packed_k_major_gemv",
+            {
+                "block_k": 256,
+                "split_k_block_k": 64,
+                "tile_n": 64,
+                "compute_num_warps": 16,
+            },
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "packed_layout": "k_major_n8_k16",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "output_reduction_split",
+                "supports_masked_tiles": True,
+            },
+            facts={
+                "chip_visible_partial_owners": True,
+                "portable_triton": True,
+            },
+        ),
+        _implementation(
+            "tir.dense_matmul.split_k_n_packed_k_major_gemv_tn64_bk128",
+            "dense_matmul",
+            "split_k_n_packed_k_major_gemv",
+            {
+                "block_k": 256,
+                "split_k_block_k": 128,
+                "tile_n": 64,
+            },
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "packed_layout": "k_major_n8_k16",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "output_reduction_split",
+                "supports_masked_tiles": True,
+            },
+            facts={
+                "chip_visible_partial_owners": True,
+                "portable_triton": True,
+            },
+        ),
+        _implementation(
+            "tir.dense_matmul.split_k_n_packed_k_major_gemv_tn128",
+            "dense_matmul",
+            "split_k_n_packed_k_major_gemv",
+            {
+                "block_k": 256,
+                "split_k_block_k": 64,
+                "tile_n": 128,
+            },
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "packed_layout": "k_major_n8_k16",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "output_reduction_split",
+                "supports_masked_tiles": True,
+            },
+            facts={
+                "chip_visible_partial_owners": True,
+                "portable_triton": True,
+            },
+        ),
+        _implementation(
+            "tir.dense_matmul."
+            "split_k_n_packed_tensor_descriptor_smem_pipeline_gemv",
+            "dense_matmul",
+            "packed_tensor_descriptor_smem_pipeline_gemv",
+            {
+                "block_k": 128,
+                "tile_n": 64,
+                "num_stages": 4,
+                "reduction_group": 32,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+            },
+            contract={
+                "input_kind": "packed",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "output_reduction_split",
+                "packed_layout": "k_major_n8_k16",
+                "requires_full_reduction_tiles": True,
+                "requires_contiguous_local_tiles": True,
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "transfer_pipeline": True,
+                "chip_visible_partial_owners": True,
+            },
+            shared_workspaces=(TIRSharedWorkspaceDescriptor(
+                "weight_stage",
+                tensor_type("bfloat16", (4, 8, 8, 2, 64)),
+                128,
+                matrix_compatible=True,
+            ), ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, ),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                capacity=4,
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul."
+            "split_k_n_packed_tensor_descriptor_table_smem_pipeline_gemv",
+            "dense_matmul",
+            "packed_tensor_descriptor_smem_pipeline_gemv",
+            {
+                "block_k": 128,
+                "tile_n": 64,
+                "num_stages": 4,
+                "reduction_group": 32,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+                "descriptor_kind": "table",
+            },
+            contract={
+                "input_kind": "packed",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "output_reduction_split",
+                "packed_layout": "k_major_n8_k16",
+                "requires_full_reduction_tiles": True,
+                "requires_affine_local_tiles": True,
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "host_tensor_descriptor_table": True,
+                "transfer_pipeline": True,
+                "chip_visible_partial_owners": True,
+            },
+            shared_workspaces=(TIRSharedWorkspaceDescriptor(
+                "weight_stage",
+                tensor_type("bfloat16", (4, 8, 8, 2, 64)),
+                128,
+                matrix_compatible=True,
+            ), ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, ),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                capacity=4,
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul.packed_k_major_threaded_fma",
+            "dense_matmul",
+            "packed_k_major_threaded_fma",
+            {"block_k": 1024, "tile_n": 8, "dot_lanes": 128, "values_per_lane": 8, "compute_num_warps": 4},
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+                "required_input_dtype": "bfloat16",
+                "required_output_dtype": "float32",
+                "requires_unpartitioned_reduction": True,
+                "supports_masked_output_tiles": True,
+            },
+            requires=("cooperative_grid", "ptx"),
+        ),
+        _implementation(
+            "tir.dense_matmul.packed_k_major_mma",
+            "dense_matmul",
+            "packed_k_major_mma",
+            {"block_k": 32, "tile_n": 16, "compute_num_warps": 4},
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+                "required_input_dtype": "bfloat16",
+                "required_output_dtype": "bfloat16",
+                "requires_unpartitioned_reduction": True,
+                "supports_masked_tiles": True,
+            },
+            requires=("mma_v3", ),
+        ),
+        _implementation(
+            "tir.dense_matmul.packed_k_major_gemv",
+            "dense_matmul",
+            "packed_k_major_gemv",
+            {"block_k": 16, "tile_n": 8},
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul.packed_k_major_gemv_tn16_bk128",
+            "dense_matmul",
+            "packed_k_major_gemv",
+            {"block_k": 128, "tile_n": 16},
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+                "supports_masked_tiles": True,
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul.packed_k_major_gemv_tn32_bk128",
+            "dense_matmul",
+            "packed_k_major_gemv",
+            {"block_k": 128, "tile_n": 32},
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+                "supports_masked_tiles": True,
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul.packed_k_major_gemv_tn64_bk256",
+            "dense_matmul",
+            "packed_k_major_gemv",
+            {"block_k": 256, "tile_n": 64},
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+                "supports_masked_tiles": True,
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul.packed_k_major_gemv_tn128_bk128",
+            "dense_matmul",
+            "packed_k_major_gemv",
+            {"block_k": 128, "tile_n": 128},
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+                "supports_masked_tiles": True,
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul.packed_k_major_gemv_tn128_bk256",
+            "dense_matmul",
+            "packed_k_major_gemv",
+            {"block_k": 256, "tile_n": 128},
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+                "supports_masked_tiles": True,
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul.packed_k_major_gemv_norm_stats",
+            "dense_matmul",
+            "packed_k_major_gemv_norm_stats",
+            {"block_k": 16, "tile_n": 8},
+            contract={
+                "supports_local_row_loop": True,
+                "input_kind": "packed",
+                "epilogue": "residual_norm_stats",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+                "statistics_kind": "local_shard",
+            },
+            facts={
+                "portable_triton": True,
+                "owner_local_stats": True,
+                "internal_grid_barriers": 0,
+            },
+        ),
+        _implementation(
+            "tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv",
+            "dense_matmul",
+            "packed_tensor_descriptor_smem_pipeline_gemv",
+            {
+                "block_k": 1024,
+                "tile_n": 16,
+                "num_stages": 3,
+                "reduction_group": 32,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+            },
+            contract={
+                "input_kind": "packed",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+                "requires_full_reduction_tiles": True,
+                "requires_contiguous_local_tiles": True,
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "transfer_pipeline": True,
+            },
+            shared_workspaces=(TIRSharedWorkspaceDescriptor(
+                "weight_stage",
+                tensor_type("bfloat16", (4, 64, 2, 2, 64)),
+                128,
+                matrix_compatible=True,
+            ), ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, ),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                capacity=4,
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul."
+            "packed_tensor_descriptor_table_smem_pipeline_gemv",
+            "dense_matmul",
+            "packed_tensor_descriptor_smem_pipeline_gemv",
+            {
+                "block_k": 1024,
+                "tile_n": 16,
+                "num_stages": 3,
+                "reduction_group": 32,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+                "descriptor_kind": "table",
+            },
+            contract={
+                "input_kind": "packed",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+                "requires_full_reduction_tiles": True,
+                "requires_affine_local_tiles": True,
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "host_tensor_descriptor_table": True,
+                "transfer_pipeline": True,
+            },
+            shared_workspaces=(TIRSharedWorkspaceDescriptor(
+                "weight_stage",
+                tensor_type("bfloat16", (4, 64, 2, 2, 64)),
+                128,
+                matrix_compatible=True,
+            ), ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, ),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                capacity=4,
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul."
+            "packed_tensor_descriptor_table_smem_pipeline_gemv_tn64_bk512",
+            "dense_matmul",
+            "packed_tensor_descriptor_smem_pipeline_gemv",
+            {
+                "block_k": 512,
+                "tile_n": 64,
+                "num_stages": 3,
+                "reduction_group": 32,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+                "descriptor_kind": "table",
+            },
+            contract={
+                "input_kind": "packed",
+                "epilogue": "none",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+                "requires_full_reduction_tiles": True,
+                "requires_affine_local_tiles": True,
+                "supports_masked_output_tiles": True,
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "host_tensor_descriptor_table": True,
+                "transfer_pipeline": True,
+            },
+            shared_workspaces=(TIRSharedWorkspaceDescriptor(
+                "weight_stage",
+                tensor_type("bfloat16", (2, 32, 8, 2, 64)),
+                128,
+                matrix_compatible=True,
+            ), ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, ),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                capacity=2,
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv_norm_stats",
+            "dense_matmul",
+            "packed_tensor_descriptor_smem_pipeline_gemv_norm_stats",
+            {
+                "block_k": 1024,
+                "tile_n": 16,
+                "num_stages": 3,
+                "reduction_group": 128,
+                "reduction_unroll": 4,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+            },
+            contract={
+                "input_kind": "packed",
+                "epilogue": "residual_norm_stats",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+                "requires_full_reduction_tiles": True,
+                "requires_contiguous_local_tiles": True,
+                "statistics_kind": "owner_partial",
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "transfer_pipeline": True,
+                "owner_local_stats": True,
+                "internal_grid_barriers": 0,
+            },
+            shared_workspaces=(
+                TIRSharedWorkspaceDescriptor(
+                    "weight_stage",
+                    # Compiler loop stages and logical pipe capacity are
+                    # independent schedule choices. The four-slot profile is
+                    # retained; TLE also supports non-power-of-two capacities.
+                    tensor_type("bfloat16", (4, 64, 2, 2, 64)),
+                    128,
+                    matrix_compatible=True,
+                ), ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, ),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                capacity=4,
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul."
+            "packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats",
+            "dense_matmul",
+            "packed_tensor_descriptor_smem_pipeline_gemv_norm_stats",
+            {
+                "block_k": 1024,
+                "tile_n": 16,
+                "num_stages": 3,
+                "reduction_group": 128,
+                "reduction_unroll": 4,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+                "descriptor_kind": "table",
+            },
+            contract={
+                "input_kind": "packed",
+                "epilogue": "residual_norm_stats",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+                "requires_full_reduction_tiles": True,
+                "requires_affine_local_tiles": True,
+                "statistics_kind": "owner_partial",
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "host_tensor_descriptor_table": True,
+                "transfer_pipeline": True,
+                "owner_local_stats": True,
+                "internal_grid_barriers": 0,
+            },
+            shared_workspaces=(TIRSharedWorkspaceDescriptor(
+                "weight_stage",
+                tensor_type("bfloat16", (4, 64, 2, 2, 64)),
+                128,
+                matrix_compatible=True,
+            ), ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, ),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                capacity=4,
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul."
+            "packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats_lhs8192",
+            "dense_matmul",
+            "packed_tensor_descriptor_smem_pipeline_gemv_norm_stats",
+            {
+                "block_k": 1024,
+                "tile_n": 16,
+                "num_stages": 3,
+                "reduction_group": 128,
+                "reduction_unroll": 4,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+                "descriptor_kind": "table",
+                "lhs_stage_extent": 8192,
+                "lhs_copy_tile": 1024,
+            },
+            contract={
+                "input_kind": "packed",
+                "epilogue": "residual_norm_stats",
+                "vectorization_kind": "output_axis",
+                "distribution_kind": "canonical",
+                "packed_layout": "k_major_n8_k16",
+                "requires_full_reduction_tiles": True,
+                "requires_affine_local_tiles": True,
+                "statistics_kind": "owner_partial",
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "host_tensor_descriptor_table": True,
+                "transfer_pipeline": True,
+                "owner_local_stats": True,
+                "internal_grid_barriers": 0,
+                "stages_local_lhs": True,
+            },
+            shared_workspaces=(
+                TIRSharedWorkspaceDescriptor(
+                    "weight_stage",
+                    tensor_type("bfloat16", (4, 64, 2, 2, 64)),
+                    128,
+                    matrix_compatible=True,
+                ),
+                TIRSharedWorkspaceDescriptor(
+                    "lhs_stage",
+                    tensor_type("bfloat16", (1, 8192)),
+                    128,
+                    matrix_compatible=True,
+                ),
+            ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, ),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                capacity=4,
+                consumer_shared_workspace_indices=(1, ),
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul_glu."
+            "packed_tensor_descriptor_smem_pipeline_full_lhs_gemv",
+            "dense_matmul_glu",
+            "packed_tensor_descriptor_smem_pipeline_gemv",
+            {
+                "block_k": 1024,
+                "tile_n": 16,
+                "num_stages": 3,
+                "reduction_group": 32,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+                "lhs_stage_extent": 2048,
+            },
+            contract={
+                "input_kind": "packed",
+                "fusion": "none",
+                "packed_layout": "k_major_n8_k16",
+                "requires_full_reduction_tiles": True,
+                "requires_contiguous_local_tiles": True,
+                "supports_masked_output_tiles": True,
+                "required_local_reduction_extent": 2048,
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "transfer_pipeline": True,
+                "complete_consumer_lhs_stage": True,
+            },
+            shared_workspaces=(
+                TIRSharedWorkspaceDescriptor(
+                    "weight_stage",
+                    tensor_type("bfloat16", (4, 64, 2, 2, 64)),
+                    128,
+                    matrix_compatible=True,
+                ),
+                TIRSharedWorkspaceDescriptor(
+                    "lhs_stage",
+                    tensor_type("bfloat16", (1, 2048)),
+                    128,
+                    matrix_compatible=True,
+                ),
+            ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, 2),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                consumer_shared_workspace_indices=(1, ),
+                capacity=4,
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul_glu."
+            "packed_tensor_descriptor_smem_pipeline_full_lhs_inline_gemv",
+            "dense_matmul_glu",
+            "packed_tensor_descriptor_smem_pipeline_gemv",
+            {
+                "block_k": 1024,
+                "tile_n": 16,
+                "num_stages": 3,
+                "reduction_group": 32,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+                "lhs_stage_extent": 2048,
+            },
+            contract={
+                "input_kind": "packed",
+                "fusion": "none",
+                "packed_layout": "k_major_n8_k16",
+                "requires_full_reduction_tiles": True,
+                "requires_contiguous_local_tiles": True,
+                "supports_masked_output_tiles": True,
+                "required_local_reduction_extent": 2048,
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "transfer_pipeline": True,
+                "complete_consumer_lhs_stage": True,
+            },
+            shared_workspaces=(
+                TIRSharedWorkspaceDescriptor(
+                    "weight_stage",
+                    tensor_type("bfloat16", (4, 64, 2, 2, 64)),
+                    128,
+                    matrix_compatible=True,
+                ),
+                TIRSharedWorkspaceDescriptor(
+                    "lhs_stage",
+                    tensor_type("bfloat16", (1, 2048)),
+                    128,
+                    matrix_compatible=True,
+                ),
+            ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, 2),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                consumer_shared_workspace_indices=(1, ),
+                capacity=4,
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul_glu.packed_tensor_descriptor_smem_pipeline_gemv",
+            "dense_matmul_glu",
+            "packed_tensor_descriptor_smem_pipeline_gemv",
+            {
+                "block_k": 1024,
+                "tile_n": 16,
+                "num_stages": 3,
+                "reduction_group": 32,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+            },
+            contract={
+                "input_kind": "packed",
+                "fusion": "none",
+                "packed_layout": "k_major_n8_k16",
+                "requires_full_reduction_tiles": True,
+                "requires_contiguous_local_tiles": True,
+                "supports_masked_output_tiles": True,
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "transfer_pipeline": True,
+            },
+            shared_workspaces=(TIRSharedWorkspaceDescriptor(
+                "weight_stage",
+                tensor_type("bfloat16", (4, 64, 2, 2, 64)),
+                128,
+                matrix_compatible=True,
+            ), ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, 2),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                capacity=4,
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul_glu."
+            "packed_tensor_descriptor_smem_pipeline_inline_gemv",
+            "dense_matmul_glu",
+            "packed_tensor_descriptor_smem_pipeline_gemv",
+            {
+                "block_k": 1024,
+                "tile_n": 16,
+                "num_stages": 3,
+                "reduction_group": 32,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+            },
+            contract={
+                "input_kind": "packed",
+                "fusion": "none",
+                "packed_layout": "k_major_n8_k16",
+                "requires_full_reduction_tiles": True,
+                "requires_contiguous_local_tiles": True,
+                "supports_masked_output_tiles": True,
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "transfer_pipeline": True,
+            },
+            shared_workspaces=(TIRSharedWorkspaceDescriptor(
+                "weight_stage",
+                tensor_type("bfloat16", (4, 64, 2, 2, 64)),
+                128,
+                matrix_compatible=True,
+            ), ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, 2),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                capacity=4,
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul_glu."
+            "packed_tensor_descriptor_paired_smem_pipeline_inline_gemv",
+            "dense_matmul_glu",
+            "packed_tensor_descriptor_smem_pipeline_gemv",
+            {
+                "block_k": 1024,
+                "tile_n": 16,
+                "num_stages": 3,
+                "reduction_group": 32,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+                "paired_weight_fields": True,
+            },
+            contract={
+                "input_kind": "packed",
+                "fusion": "none",
+                "packed_layout": "k_major_n8_k16",
+                "requires_full_reduction_tiles": True,
+                "requires_contiguous_local_tiles": True,
+                "supports_masked_output_tiles": True,
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "transfer_pipeline": True,
+                "paired_weight_transfer": True,
+            },
+            shared_workspaces=(
+                TIRSharedWorkspaceDescriptor(
+                    "gate_stage",
+                    tensor_type("bfloat16", (2, 64, 2, 2, 64)),
+                    128,
+                    matrix_compatible=True,
+                ),
+                TIRSharedWorkspaceDescriptor(
+                    "up_stage",
+                    tensor_type("bfloat16", (2, 64, 2, 2, 64)),
+                    128,
+                    matrix_compatible=True,
+                ),
+            ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, 2),
+                    shared_workspace_indices=(0, 1),
+                    source_alignment_bytes=16,
+                ), ),
+                capacity=2,
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul_glu."
+            "packed_tensor_descriptor_table_paired_smem_pipeline_inline_gemv",
+            "dense_matmul_glu",
+            "packed_tensor_descriptor_smem_pipeline_gemv",
+            {
+                "block_k": 1024,
+                "tile_n": 16,
+                "num_stages": 3,
+                "reduction_group": 32,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+                "paired_weight_fields": True,
+                "descriptor_kind": "table",
+            },
+            contract={
+                "input_kind": "packed",
+                "fusion": "none",
+                "packed_layout": "k_major_n8_k16",
+                "requires_full_reduction_tiles": True,
+                "requires_contiguous_local_tiles": True,
+                "supports_masked_output_tiles": True,
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "host_tensor_descriptor_table": True,
+                "transfer_pipeline": True,
+                "paired_weight_transfer": True,
+            },
+            shared_workspaces=(
+                TIRSharedWorkspaceDescriptor(
+                    "gate_stage",
+                    tensor_type("bfloat16", (2, 64, 2, 2, 64)),
+                    128,
+                    matrix_compatible=True,
+                ),
+                TIRSharedWorkspaceDescriptor(
+                    "up_stage",
+                    tensor_type("bfloat16", (2, 64, 2, 2, 64)),
+                    128,
+                    matrix_compatible=True,
+                ),
+            ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, 2),
+                    shared_workspace_indices=(0, 1),
+                    source_alignment_bytes=16,
+                ), ),
+                capacity=2,
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul_glu."
+            "packed_tensor_descriptor_paired_smem_pipeline_full_lhs_gemv",
+            "dense_matmul_glu",
+            "packed_tensor_descriptor_smem_pipeline_gemv",
+            {
+                "block_k": 1024,
+                "tile_n": 16,
+                "num_stages": 4,
+                "reduction_group": 32,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+                "lhs_stage_extent": 2048,
+                "paired_weight_fields": True,
+            },
+            contract={
+                "input_kind": "packed",
+                "fusion": "none",
+                "packed_layout": "k_major_n8_k16",
+                "requires_full_reduction_tiles": True,
+                "requires_contiguous_local_tiles": True,
+                "supports_masked_output_tiles": True,
+                "required_local_reduction_extent": 2048,
+            },
+            requires=("tma", "warp_specialize"),
+            facts={
+                "host_tensor_descriptor": True,
+                "transfer_pipeline": True,
+                "complete_consumer_lhs_stage": True,
+                "paired_weight_transfer": True,
+            },
+            shared_workspaces=(
+                TIRSharedWorkspaceDescriptor(
+                    "gate_stage",
+                    tensor_type("bfloat16", (2, 64, 2, 2, 64)),
+                    128,
+                    matrix_compatible=True,
+                ),
+                TIRSharedWorkspaceDescriptor(
+                    "up_stage",
+                    tensor_type("bfloat16", (2, 64, 2, 2, 64)),
+                    128,
+                    matrix_compatible=True,
+                ),
+                TIRSharedWorkspaceDescriptor(
+                    "lhs_stage",
+                    tensor_type("bfloat16", (1, 2048)),
+                    128,
+                    matrix_compatible=True,
+                ),
+            ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, 2),
+                    shared_workspace_indices=(0, 1),
+                    source_alignment_bytes=16,
+                ), ),
+                consumer_shared_workspace_indices=(2, ),
+                capacity=2,
+            ),
+        ),
+        _implementation(
+            "tir.dense_matmul_glu.gemv_tn16",
+            "dense_matmul_glu",
+            "gemv",
+            {"block_k": 128, "tile_n": 16},
+            contract={"input_kind": "logical", "fusion": "none"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul_glu.gemv_tn32",
+            "dense_matmul_glu",
+            "gemv",
+            {"block_k": 256, "tile_n": 32},
+            contract={"input_kind": "logical", "fusion": "none"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul_glu.gemv_tn64",
+            "dense_matmul_glu",
+            "gemv",
+            {"block_k": 128, "tile_n": 64},
+            contract={"input_kind": "logical", "fusion": "none"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul_glu.packed_k_major_gemv_tn16",
+            "dense_matmul_glu",
+            "packed_k_major_gemv",
+            {"block_k": 128, "tile_n": 16},
+            contract={
+                "input_kind": "packed",
+                "fusion": "none",
+                "packed_layout": "k_major_n8_k16",
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul_glu.packed_k_major_gemv_tn32",
+            "dense_matmul_glu",
+            "packed_k_major_gemv",
+            {"block_k": 256, "tile_n": 32},
+            contract={
+                "input_kind": "packed",
+                "fusion": "none",
+                "packed_layout": "k_major_n8_k16",
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul_glu.packed_k_major_gemv_tn64",
+            "dense_matmul_glu",
+            "packed_k_major_gemv",
+            {"block_k": 128, "tile_n": 64, "compute_num_warps": 16},
+            contract={
+                "input_kind": "packed",
+                "fusion": "none",
+                "packed_layout": "k_major_n8_k16",
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul_glu.packed_k_major_gemv_tn128",
+            "dense_matmul_glu",
+            "packed_k_major_gemv",
+            {"block_k": 128, "tile_n": 128},
+            contract={
+                "input_kind": "packed",
+                "fusion": "none",
+                "packed_layout": "k_major_n8_k16",
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.dense_matmul_glu.packed_k_major_gemv_tn256",
+            "dense_matmul_glu",
+            "packed_k_major_gemv",
+            {"block_k": 128, "tile_n": 256},
+            contract={
+                "input_kind": "packed",
+                "fusion": "none",
+                "packed_layout": "k_major_n8_k16",
+            },
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.qkv_parallel_linear.packed_gemv_smem_pipeline",
+            "qkv_parallel_linear",
+            "packed_gemv_smem_pipeline",
+            {
+                "block_n": 32,
+                "block_k": 1024,
+                "num_stages": 2,
+                "reduction_group": 128,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+            },
+            contract={
+                "input_kind": "fused_rhs",
+                "rhs_layout": "k_major",
+                "required_input_dtype": "bfloat16",
+                "required_weight_dtype": "bfloat16",
+                "required_output_dtype": "bfloat16",
+                "required_input_lanes": (),
+                "required_weight_lanes": (8, 2, 8),
+                "required_weight_rank": 3,
+                "required_output_lanes": (8, ),
+                "required_local_rows": 1,
+                "required_local_reduction_extent": 2048,
+                "required_local_output_extent": 32,
+                "requires_matching_output_lanes": True,
+                "requires_full_output_placement_ownership": True,
+                "requires_weight_owner_count_match": True,
+                "requires_none_optional_inputs": True,
+            },
+            requires=("tma", "warp_specialize"),
+            facts={"host_tensor_descriptor": True, "transfer_pipeline": True},
+            shared_workspaces=(
+                TIRSharedWorkspaceDescriptor(
+                    "rhs_stage",
+                    tensor_type("bfloat16", (2, 1, 4, 64, 2, 64)),
+                    128,
+                    matrix_compatible=True,
+                ),
+                TIRSharedWorkspaceDescriptor(
+                    "lhs_stage",
+                    tensor_type("bfloat16", (1, 2048)),
+                    128,
+                    matrix_compatible=True,
+                ),
+            ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, ),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                consumer_shared_workspace_indices=(1, ),
+                capacity=2,
+            ),
+        ),
+        _implementation(
+            "tir.qkv_parallel_linear.packed_mma_smem_pipeline",
+            "qkv_parallel_linear",
+            "packed_mma_smem_pipeline",
+            {
+                "block_n": 32,
+                "block_k": 1024,
+                "num_stages": 2,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+            },
+            contract={
+                "input_kind": "fused_rhs",
+                "rhs_layout": "k_major",
+                "required_input_dtype": "bfloat16",
+                "required_weight_dtype": "bfloat16",
+                "required_output_dtype": "bfloat16",
+                "required_input_lanes": (),
+                "required_weight_lanes": (8, 2, 8),
+                "required_weight_rank": 3,
+                "required_output_lanes": (8, ),
+                "required_local_rows": 1,
+                "required_local_reduction_extent": 2048,
+                "required_local_output_extent": 32,
+                "requires_matching_output_lanes": True,
+                "requires_full_output_placement_ownership": True,
+                "requires_weight_owner_count_match": True,
+                "requires_none_optional_inputs": True,
+            },
+            requires=("tma", "warp_specialize", "mma_v3"),
+            facts={
+                "host_tensor_descriptor": True,
+                "transfer_pipeline": True,
+                "matrix_primitive": "m16n8k16.bf16",
+            },
+            shared_workspaces=(
+                TIRSharedWorkspaceDescriptor(
+                    "rhs_stage",
+                    tensor_type("bfloat16", (2, 1, 4, 64, 2, 64)),
+                    128,
+                    matrix_compatible=True,
+                ),
+                TIRSharedWorkspaceDescriptor(
+                    "lhs_stage",
+                    tensor_type("bfloat16", (1, 2048)),
+                    128,
+                    matrix_compatible=True,
+                ),
+            ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, ),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                consumer_shared_workspace_indices=(1, ),
+                capacity=2,
+            ),
+        ),
+        _implementation(
+            "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline",
+            "qkv_parallel_linear",
+            "packed_mma_smem_pipeline",
+            {
+                "block_n": 256,
+                "block_k": 64,
+                "num_stages": 2,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+            },
+            contract={
+                "input_kind": "fused_rhs",
+                "rhs_layout": "k_major",
+                "required_input_dtype": "bfloat16",
+                "required_weight_dtype": "bfloat16",
+                "supported_output_dtypes": ("bfloat16", "float32"),
+                "required_input_lanes": (),
+                "required_weight_lanes": (8, 2, 8),
+                "required_weight_rank": 3,
+                "required_output_lanes": (8, ),
+                "required_local_rows": 1,
+                "required_local_reduction_extent": 256,
+                "required_local_output_extent": 256,
+                "requires_matching_output_lanes": True,
+                "required_output_partial_reduce_op": "sum",
+                "requires_partial_axes_match_input_reduction_ownership": True,
+                "requires_uniform_full_input_reduction_tiles": True,
+                "requires_weight_owner_count_match": True,
+                "requires_none_optional_inputs": True,
+            },
+            requires=("tma", "warp_specialize", "mma_v3"),
+            facts={
+                "host_tensor_descriptor": True,
+                "transfer_pipeline": True,
+                "matrix_primitive": "m16n8k16.bf16",
+                "produces_sum_partials": True,
+            },
+            shared_workspaces=(
+                TIRSharedWorkspaceDescriptor(
+                    "rhs_stage",
+                    tensor_type("bfloat16", (2, 1, 32, 4, 2, 64)),
+                    128,
+                    matrix_compatible=True,
+                ),
+                TIRSharedWorkspaceDescriptor(
+                    "lhs_stage",
+                    tensor_type("bfloat16", (1, 256)),
+                    128,
+                    matrix_compatible=True,
+                ),
+            ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, ),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                consumer_shared_workspace_indices=(1, ),
+                capacity=2,
+            ),
+        ),
+        _implementation(
+            "tir.qkv_parallel_linear."
+            "packed_partial_mma_descriptor_table_smem_pipeline",
+            "qkv_parallel_linear",
+            "packed_mma_smem_pipeline",
+            {
+                "block_n": 256,
+                "block_k": 64,
+                "num_stages": 2,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+                "descriptor_kind": "table",
+            },
+            contract={
+                "input_kind": "fused_rhs",
+                "rhs_layout": "k_major",
+                "required_input_dtype": "bfloat16",
+                "required_weight_dtype": "bfloat16",
+                "supported_output_dtypes": ("bfloat16", "float32"),
+                "required_input_lanes": (),
+                "required_weight_lanes": (8, 2, 8),
+                "required_weight_rank": 3,
+                "required_output_lanes": (8, ),
+                "required_local_rows": 1,
+                "required_local_reduction_extent": 256,
+                "required_local_output_extent": 256,
+                "requires_matching_output_lanes": True,
+                "required_output_partial_reduce_op": "sum",
+                "requires_partial_axes_match_input_reduction_ownership": True,
+                "requires_uniform_full_input_reduction_tiles": True,
+                "requires_weight_owner_count_match": True,
+                "requires_none_optional_inputs": True,
+            },
+            requires=("tma", "warp_specialize", "mma_v3"),
+            facts={
+                "host_tensor_descriptor": True,
+                "host_tensor_descriptor_table": True,
+                "transfer_pipeline": True,
+                "matrix_primitive": "m16n8k16.bf16",
+                "produces_sum_partials": True,
+            },
+            shared_workspaces=(
+                TIRSharedWorkspaceDescriptor(
+                    "rhs_stage",
+                    tensor_type("bfloat16", (2, 32, 4, 2, 64)),
+                    128,
+                    matrix_compatible=True,
+                ),
+                TIRSharedWorkspaceDescriptor(
+                    "lhs_stage",
+                    tensor_type("bfloat16", (1, 256)),
+                    128,
+                    matrix_compatible=True,
+                ),
+            ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (TIRTransferPipelineChannel(
+                    "weight",
+                    source_argument_indices=(1, ),
+                    shared_workspace_indices=(0, ),
+                    source_alignment_bytes=16,
+                ), ),
+                consumer_shared_workspace_indices=(1, ),
+                capacity=2,
+            ),
+        ),
+        _implementation(
+            "tir.paged_attention_partial.mma_tma_smem_pipeline",
+            "paged_attention_partial",
+            "mma_tma_smem_pipeline",
+            {
+                "block_m": 1,
+                "block_n": 64,
+                "block_k": 128,
+                "num_stages": 2,
+                "consumer_warps": 8,
+                "worker_width": 32,
+                "producer_warps": 1,
+                "producer_registers": 24,
+            },
+            contract={
+                "mode": "decode",
+                "required_query_dtype": "bfloat16",
+                "required_cache_dtype": "bfloat16",
+                "required_query_lanes": (8, ),
+                "required_cache_lanes": (8, ),
+                "required_local_query_tokens": 1,
+                # The m16n8k16 tile carries the whole GQA group, so any
+                # owner-local head count that is a whole sub-block of one KV
+                # group is served by this implementation's single KV stream.
+                "requires_local_query_heads_within_one_kv_group": True,
+                "required_scalar_head_dim": 128,
+            },
+            requires=("tma", "warp_specialize", "mma_v3"),
+            facts={
+                "host_tensor_descriptor": True,
+                "transfer_pipeline": True,
+                "matrix_primitive": "m16n8k16.bf16",
+            },
+            shared_workspaces=(
+                TIRSharedWorkspaceDescriptor(
+                    "key_stage",
+                    tensor_type("bfloat16", (2, 1, 1, 64, 1, 128)),
+                    128,
+                    matrix_compatible=True,
+                ),
+                TIRSharedWorkspaceDescriptor(
+                    "value_stage",
+                    tensor_type("bfloat16", (2, 1, 1, 64, 1, 128)),
+                    128,
+                    matrix_compatible=True,
+                ),
+            ),
+            transfer_pipeline=TIRTransferPipelineContract(
+                (
+                    TIRTransferPipelineChannel(
+                        "key",
+                        source_argument_indices=(1, ),
+                        shared_workspace_indices=(0, ),
+                        source_alignment_bytes=16,
+                    ),
+                    TIRTransferPipelineChannel(
+                        "value",
+                        source_argument_indices=(1, ),
+                        shared_workspace_indices=(1, ),
+                        source_alignment_bytes=16,
+                    ),
+                ),
+                capacity=2,
+            ),
+        ),
+        _implementation(
+            "tir.qkv_parallel_linear.packed_fused_gemv",
+            "qkv_parallel_linear",
+            "packed_fused_gemv",
+            {"block_k": 64, "tile_n": 16},
+            contract={"input_kind": "fused_rhs", "rhs_layout": "k_major"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.qkv_parallel_linear.packed_fused_gemv_tn64",
+            "qkv_parallel_linear",
+            "packed_fused_gemv",
+            {"block_k": 64, "tile_n": 64},
+            contract={"input_kind": "fused_rhs", "rhs_layout": "k_major"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.qkv_parallel_linear.packed_fused_gemv_tn128",
+            "qkv_parallel_linear",
+            "packed_fused_gemv",
+            {"block_k": 64, "tile_n": 128},
+            contract={"input_kind": "fused_rhs", "rhs_layout": "k_major"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.qkv_parallel_linear.packed_fused_gemv_tn256",
+            "qkv_parallel_linear",
+            "packed_fused_gemv",
+            {"block_k": 64, "tile_n": 256, "compute_num_warps": 16},
+            contract={"input_kind": "fused_rhs", "rhs_layout": "k_major"},
+            facts={"portable_triton": True},
+        ),
+        _implementation(
+            "tir.qkv_parallel_linear.packed_fused_gemv_tn512",
+            "qkv_parallel_linear",
+            "packed_fused_gemv",
+            {"block_k": 64, "tile_n": 512},
+            contract={"input_kind": "fused_rhs", "rhs_layout": "k_major"},
+            facts={"portable_triton": True},
+        ),
+    )
+    # Typed pointwise lanes use the existing portable elementwise templates.
+    # Keep their semantic contract separate from scalar tensors and tensor-axis
+    # packing. Scalar-only semantic operations retain their existing schema;
+    # typed exponential/sigmoid use the explicit VectorizedUnary operation.
+    identities = {implementation.id for implementation in implementations}
+    implementations += tuple(
+        replace(
+            implementation, id=implementation.id.removesuffix(".scalar") + ".typed", parameters={
+                **{
+                    key: value
+                    for key, value in implementation.parameters.items() if key != "elements_per_program"
+                }, "vector_groups": 32
+            }, contract={**implementation.contract, "vectorization_kind": "typed_elements"})
+        for implementation in implementations
+        if implementation.family == "elementwise" and implementation.contract.get("vectorization_kind") == "scalar"
+        and implementation.contract.get("semantic_op") != "math.div" and implementation.id.removesuffix(".scalar") +
+        ".typed" not in identities)
+    from .nvidia.sparse_experts import sparse_experts_pipeline_implementations
+    implementations += sparse_experts_pipeline_implementations()
+    from .nvidia.packed_qkv import packed_qkv_n_tiled_implementations, packed_qkv_ordered_implementations
+    implementations += packed_qkv_n_tiled_implementations(
+        next(value for value in implementations
+             if value.id == "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline"))
+    implementations += packed_qkv_ordered_implementations(
+        next(value for value in implementations
+             if value.id == "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline"))
+    # A separate, explicit transport choice. The synchronous candidate keeps
+    # its masked-row contract and remains the preference until measured.
+    staged = next(
+        value for value in implementations
+        if value.id == ("tir.dense_matmul.packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats_lhs8192"))
+    from .nvidia.dense_lhs_staging import dense_lhs_staging_implementations
+    implementations += dense_lhs_staging_implementations(
+        next(value for value in implementations
+             if value.id == ("tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv")),
+        staged.shared_workspaces[1])
+    implementations += (replace(
+        staged,
+        id=staged.id + "_async",
+        parameters={**staged.parameters, "lhs_copy_kind": "async"},
+        requires=(*staged.requires, "async_copy"),
+    ), )
+    attention_preferences = portable_attention_preferences()
+    preferences = {
+        "mla_projection": ("tir.mla_projection.mma", ),
+        "delta_rule_gates": ("tir.delta_rule_gates.local", ),
+        "l2_normalization": ("tir.l2_normalization.local", ),
+        "delta_rule_coefficients": ("tir.delta_rule_coefficients.blockwise", ),
+        "delta_rule_log_prefix": ("tir.delta_rule_log_prefix.grouped", ),
+        "delta_rule_block_update": ("tir.delta_rule_block_update.blockwise", ),
+        "delta_rule_chunk_transfer": ("tir.delta_rule_chunk_transfer.blockwise", ),
+        "delta_rule_chunk_fixup": ("tir.delta_rule_chunk_fixup.ordered", ),
+        "delta_rule_chunked_block_update": ("tir.delta_rule_chunked_block_update.blockwise", ),
+        **attention_preferences,
+        **portable_local_reduction_preferences(),
+        **portable_normalization_preferences(),
+        "block_fp8": ("tir.block_fp8.mma", "tir.block_fp8.simt"),
+        "interleaved_projection": ("tir.interleaved_projection.simt", ),
+        "matmul_glu": ("tir.matmul_glu.mma", "tir.matmul_glu.simt"),
+        "greedy_sample": ("tir.greedy_sample.distributed_argmax", ),
+        "rms_norm": ("tir.rms_norm.local", ),
+        "norm_stats": ("tir.norm_stats.local", ),
+        "norm_apply": ("tir.norm_apply.local", ),
+        "gated_norm_apply": ("tir.gated_norm_apply.local", ),
+        "gdn_convolution": ("tir.gdn_convolution.persistent", ),
+        "gdn_recurrent":
+        ("tir.gdn_recurrent.persistent", "tir.gdn_recurrent.persistent_k256", "tir.gdn_recurrent.persistent_k512"),
+        "distributed_boxing": (
+            "tir.distributed_boxing.tensor_load",
+            "tir.distributed_boxing.tensor_store",
+            "tir.distributed_boxing.gather_reduce_scatter",
+        ),
+        "gather_reduce_add_norm_stats": (
+            "tir.gather_reduce_add_norm_stats.local_shard_sum_rms",
+            "tir.gather_reduce_add_norm_stats.sum_rms",
+        ),
+        "add_norm_stats": (
+            "tir.add_norm_stats.local_partial_rms",
+            "tir.add_norm_stats.rms",
+            "tir.add_norm_stats.persistent_rms",
+            "tir.add_norm_stats.local_rows_rms_distributed",
+            "tir.add_norm_stats.local_rows_rms_broadcast",
+        ),
+        "dense_matmul": (
+            "tir.dense_matmul."
+            "split_k_n_packed_tensor_descriptor_smem_pipeline_gemv",
+            "tir.dense_matmul.split_k_n_packed_k_major_gemv_tn64",
+            "tir.dense_matmul.split_k_n_packed_k_major_gemv_tn128",
+            "tir.dense_matmul.split_k_n_packed_k_major_gemv_tn64_bk128",
+            "tir.dense_matmul."
+            "split_k_n_packed_tensor_descriptor_table_smem_pipeline_gemv",
+            "tir.dense_matmul.split_k_n_packed_k_major_gemv",
+            "tir.dense_matmul.split_k_packed_k_major_gemv",
+            "tir.dense_matmul.split_k_gemv",
+            "tir.dense_matmul."
+            "packed_tensor_descriptor_table_smem_pipeline_gemv_norm_stats",
+            "tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv_norm_stats",
+            "tir.dense_matmul.packed_k_major_gemv_norm_stats",
+            "tir.dense_matmul.packed_tensor_descriptor_smem_pipeline_gemv",
+            "tir.dense_matmul.packed_tensor_descriptor_table_smem_pipeline_gemv_tn64_bk512",
+            "tir.dense_matmul.packed_k_major_gemv_tn64_bk256",
+            "tir.dense_matmul.packed_k_major_gemv_tn128_bk128",
+            "tir.dense_matmul.packed_k_major_gemv_tn128_bk256",
+            "tir.dense_matmul.packed_k_major_gemv_tn32_bk128",
+            "tir.dense_matmul.packed_k_major_gemv_tn16_bk128",
+            "tir.dense_matmul.packed_k_major_gemv",
+            "tir.dense_matmul.gemv",
+            "tir.dense_matmul.tensor_descriptor_gemv",
+            "tir.dense_matmul.tensor_descriptor_smem_pipeline_gemv",
+            "tir.dense_matmul.tensor_descriptor_smem_pipeline_aux_gemv",
+            "tir.dense_matmul.scalar_gemv",
+        ),
+        "dense_matmul_glu": (
+            "tir.dense_matmul_glu."
+            "packed_tensor_descriptor_table_paired_smem_pipeline_inline_gemv",
+            "tir.dense_matmul_glu."
+            "packed_tensor_descriptor_paired_smem_pipeline_inline_gemv",
+            "tir.dense_matmul_glu."
+            "packed_tensor_descriptor_smem_pipeline_inline_gemv",
+            "tir.dense_matmul_glu."
+            "packed_tensor_descriptor_paired_smem_pipeline_full_lhs_gemv",
+            "tir.dense_matmul_glu."
+            "packed_tensor_descriptor_smem_pipeline_full_lhs_inline_gemv",
+            "tir.dense_matmul_glu.packed_tensor_descriptor_smem_pipeline_gemv",
+            "tir.dense_matmul_glu."
+            "packed_tensor_descriptor_smem_pipeline_full_lhs_gemv",
+            "tir.dense_matmul_glu.packed_k_major_gemv_tn16",
+            "tir.dense_matmul_glu.packed_k_major_gemv_tn32",
+            "tir.dense_matmul_glu.packed_k_major_gemv_tn64",
+            "tir.dense_matmul_glu.gemv_tn16",
+            "tir.dense_matmul_glu.gemv_tn32",
+            "tir.dense_matmul_glu.gemv_tn64",
+        ),
+        "qkv_parallel_linear": (
+            "tir.qkv_parallel_linear.packed_ordered_mma_table_pipeline",
+            "tir.qkv_parallel_linear.packed_ordered_mma",
+            "tir.qkv_parallel_linear.packed_partial_mma_smem_pipeline",
+            "tir.qkv_parallel_linear."
+            "packed_partial_mma_descriptor_table_smem_pipeline",
+            "tir.qkv_parallel_linear.packed_mma_smem_pipeline",
+            # tn512 stays registered but is deliberately NOT preferred over
+            # tn512: it reaches the 256-register boundary at prepare() on
+            # BI-V150 (perf-iteration/ITERATION.md Trial 58), so keep the
+            # lower-register tn256 choice as the default until full serving
+            # validation establishes that the boundary has sufficient margin.
+            "tir.qkv_parallel_linear.packed_fused_gemv_tn256",
+            "tir.qkv_parallel_linear.packed_fused_gemv_tn128",
+            "tir.qkv_parallel_linear.packed_fused_gemv_tn64",
+            "tir.qkv_parallel_linear.packed_fused_gemv",
+            "tir.qkv_parallel_linear.packed_fused_gemv_tn512",
+        ),
+        "paged_attention_partial": (
+            "tir.paged_attention_partial.mma_tma_smem_pipeline",
+            *attention_preferences["paged_attention_partial"],
+        ),
+    }
+    # These templates emit the declared BF16 projection rounding before a
+    # register-only F32 widening PostOps body. Other variants remain ineligible
+    # for that contract until their own epilogue emitter supports it.
+    implementations = tuple(
+        replace(implementation, contract={**implementation.contract, "supports_projection_widening_post_ops": True}
+                ) if implementation.family == "dense_matmul" and implementation.variant in
+        {"packed_k_major_gemv", "packed_tensor_descriptor_smem_pipeline_gemv"} else implementation
+        for implementation in implementations)
+    return TritonImplementationModel(implementations, preferences, "nvidia-sm90/v45")
+
+
+__all__ = ["portable_triton_implementation_model"]

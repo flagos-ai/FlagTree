@@ -905,6 +905,7 @@ def get_entry_points():
             "proton-viewer = triton.profiler.viewer:main",
             "proton = triton.profiler.proton:main",
         ]
+    entry_points.setdefault("console_scripts", []).append("flagmega = triton.flagmega.cli:main")
     entry_points["triton.backends"] = [f"{b.name} = triton.backends.{b.name}" for b in backends]
     return entry_points
 
@@ -967,7 +968,7 @@ setup(
     ],
     packages=list(get_packages()),
     package_dir=dict(get_package_dirs()),
-    package_data=helper.get_package_data(backends),  # flagtree
+    package_data={**helper.get_package_data(backends), "triton.flagmega": ["codegen/triton/**/*.jinja"]},  # flagtree
     exclude_package_data=helper.get_excluded_package_data(),  # flagtree
     entry_points=get_entry_points(),
     include_package_data=True,
@@ -991,6 +992,10 @@ setup(
     classifiers=CLASSIFIERS,
     test_suite="tests",
     extras_require={
+        "flagmega": [
+            "jinja2>=3.1",
+            "ortools==9.10.4067",
+        ],
         "build": [
             "cmake>=3.20,<4.0",
             "GitPython",  # flagtree

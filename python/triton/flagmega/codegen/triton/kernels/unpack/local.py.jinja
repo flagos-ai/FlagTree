@@ -1,0 +1,6 @@
+{# Copyright 2026 FlagOS Contributors
+   SPDX-License-Identifier: MIT #}# flagmega-kernel: unpack/local platform=generic
+{% if render_calls is defined %}
+{% set transform_family = "unpack" %}
+{% include "kernels/tensor_transform/_function.py.jinja" %}
+{% endif %}

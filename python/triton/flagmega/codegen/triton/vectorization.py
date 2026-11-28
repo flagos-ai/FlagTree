@@ -1,0 +1,265 @@
+# Copyright 2025- FlagOS Contributors
+# SPDX-License-Identifier: MIT
+"""Typed AutoVectorize decisions lowered to executable Triton schedules.
+
+Most semantic vector expressions are lowered to schedule contracts after
+AutoDistribution. Operations such as ``ntt.packed_matmul`` consume their typed
+Pack/Unpack boundaries directly and retain both the physical ``VectorType`` and
+this schedule contract. Unlike the old metadata hint, this object is part of
+the selected TIR ABI and must determine physical indexing/tile parameters in
+codegen.
+"""
+
+from __future__ import annotations
+
+from math import prod
+from typing import Mapping
+
+from triton.flagmega.errors import CodegenError, IRVerificationError
+from triton.flagmega.ir import Node, TensorType, VectorType, logical_type
+from triton.flagmega.ir.ops.tensors.pack import normalize_axes
+
+SCALAR_VECTORIZATION = {"kind": "scalar", "axes": (), "lanes": (), "lane_count": 1}
+ELEMENTWISE_OP_NAMES = frozenset({
+    "math.add",
+    "math.mul",
+    "math.div",
+    "math.exp",
+    "math.sigmoid",
+    "math.silu",
+    "math.vectorized_binary",
+    "math.vectorized_unary",
+    "ntt.vectorized_cast",
+    "tensors.cast",
+})
+_TYPED_LANE_OP_NAMES = ELEMENTWISE_OP_NAMES - {"ntt.vectorized_cast", "math.div", "math.exp", "math.sigmoid"}
+
+
+def vectorization_contract(node: Node) -> dict[str, object]:
+    """Return the normalized, semantic vector-layout contract for ``node``."""
+
+    from triton.flagmega.ir.op_fusion import has_ops
+    if node.op == 'math.vectorized_binary' and node.attrs.get('result_unpack') is not None:
+        output = node.attrs['result_unpack']
+        value_type = logical_type(node.type)
+        if not isinstance(value_type, TensorType):
+            raise IRVerificationError('Arithmetic result lane access requires tensor storage.', node_id=node.id)
+        if isinstance(value_type.dtype, VectorType):
+            lanes = tuple(value_type.dtype.lanes)
+            return {
+                'kind': 'typed_elements', 'axes': (), 'lanes': lanes, 'lane_count': prod(lanes), 'source_candidate':
+                'arithmetic-result-lanes'
+            }
+        lanes = tuple(output['lanes'])
+        axes = normalize_axes(tuple(output.get('axes', (output.get('axis', -1), ) * len(lanes))), value_type.rank)
+        return {
+            'kind': 'axes', 'axes': axes, 'lanes': lanes, 'lane_count': prod(lanes), 'source_candidate':
+            'arithmetic-result-lanes'
+        }
+    if has_ops(node.attrs):
+        from triton.flagmega.codegen.triton.fusion import vector_axes
+        value_type = logical_type(node.type)
+        axes = vector_axes(node.attrs, value_type.rank if isinstance(value_type, TensorType) else None)
+        if axes and isinstance(value_type, TensorType) and isinstance(value_type.dtype, VectorType):
+            # A cast may be inside either PreOps or PostOps. Its logical axes
+            # remain the indexing proof; the enclosing result owns the final
+            # lanes, even when no AutoVectorize metadata was authored.
+            axes = normalize_axes(axes, value_type.rank)
+            lanes = tuple(value_type.dtype.lanes)
+            if len(set(axes)) == 1:
+                axes = (axes[0], ) * len(lanes)
+            kind = ("output_axis" if node.op == "ntt.packed_matmul" and all(axis == value_type.rank - 1
+                                                                            for axis in axes) else "axes")
+            return {
+                "kind": kind, "axes": axes, "lanes": lanes, "lane_count": prod(lanes), "source_candidate":
+                "fused-typed-ir"
+            }
+    candidate = node.metadata.get("selected_vectorization")
+    value_type = logical_type(node.type)
+    if (node.op in _TYPED_LANE_OP_NAMES and candidate is None and isinstance(value_type, TensorType)
+            and isinstance(value_type.dtype, VectorType)):
+        # Pointwise arithmetic and plain casts traverse the existing physical
+        # lanes. They do not need a packing axis or an AutoVectorize decision,
+        # including when the outer tensor has rank zero. VectorizedCast keeps
+        # its explicit lane-remapping contract in the separate branch below.
+        lanes = tuple(value_type.dtype.lanes)
+        return {
+            "kind": "typed_elements", "axes": (), "lanes": lanes, "lane_count": prod(lanes), "source_candidate":
+            "typed-ir"
+        }
+    # Explicit/propagated VectorizedCast is physical typed IR, not a scalar
+    # equality witness. It can be authored without an AutoVectorize choice.
+    # Its operation attributes and result type own the lane mapping.
+    if node.op == "ntt.vectorized_cast":
+        value_type = logical_type(node.type)
+        if not isinstance(value_type, TensorType) or not isinstance(value_type.dtype, VectorType):
+            raise IRVerificationError("VectorizedCast needs a vector result type.", node_id=node.id)
+        axes = normalize_axes(tuple(int(axis) for axis in node.attrs["vectorize_axes"]), value_type.rank)
+        lanes = tuple(value_type.dtype.lanes)
+        if len(set(axes)) == 1:
+            axes = (axes[0], ) * len(lanes)
+        return {
+            "kind": "axes", "axes": axes, "lanes": lanes, "lane_count": prod(lanes), "source_candidate":
+            str(candidate) if candidate is not None else "typed-ir"
+        }
+    if node.op == "math.vectorized_matmul":
+        # A surviving VectorizedMatMul carries its contract as physical op
+        # attrs: the selected output axes/lanes are the executable proof, with
+        # no AutoVectorize metadata behind them.
+        value_type = logical_type(node.type)
+        if not isinstance(value_type, TensorType) or not isinstance(value_type.dtype, VectorType):
+            raise IRVerificationError("VectorizedMatMul needs a vector result type.", node_id=node.id)
+        axes = normalize_axes(tuple(int(axis) for axis in node.attrs["output_axes"]), value_type.rank)
+        lanes = tuple(int(value) for value in value_type.dtype.lanes)
+        if len(set(axes)) == 1:
+            axes = (axes[0], ) * len(lanes)
+        if not axes or len(axes) != len(lanes) or any(value <= 1 for value in lanes):
+            raise IRVerificationError(
+                f"Node {node.id!r} has an incomplete VectorizedMatMul contract: "
+                f"axes={axes}, lanes={lanes}.",
+                node_id=node.id,
+            )
+        normalized_axes = tuple(axis + value_type.rank if axis < 0 else axis for axis in axes)
+        if any(axis < 0 or axis >= value_type.rank for axis in normalized_axes):
+            raise IRVerificationError(
+                f"Node {node.id!r} vectorization axes {axes} exceed rank {value_type.rank}.",
+                node_id=node.id,
+            )
+        if any(axis != value_type.rank - 1 for axis in normalized_axes):
+            raise IRVerificationError(
+                f"Triton dense MatMul currently lowers only its output axis, got "
+                f"{normalized_axes} on {node.id!r}.",
+                node_id=node.id,
+            )
+        return {
+            "kind": "output_axis", "axes": normalized_axes, "lanes": lanes, "lane_count": prod(lanes),
+            "source_candidate": "vectorized-matmul-attrs"
+        }
+    if candidate is None:
+        return dict(SCALAR_VECTORIZATION)
+    axes = tuple(int(value) for value in node.metadata.get("selected_vector_axes", ()))
+    lanes = tuple(int(value) for value in node.metadata.get("selected_vector_lanes", ()))
+    if not axes or len(axes) != len(lanes) or any(value <= 1 for value in lanes):
+        raise IRVerificationError(
+            f"Node {node.id!r} has an incomplete selected vectorization contract: "
+            f"axes={axes}, lanes={lanes}.",
+            node_id=node.id,
+        )
+    value_type = logical_type(node.type)
+    if not isinstance(value_type, TensorType):
+        raise IRVerificationError(
+            f"Node {node.id!r} attaches tensor vectorization to {value_type!r}.",
+            node_id=node.id,
+        )
+    normalized_axes = tuple(axis + value_type.rank if axis < 0 else axis for axis in axes)
+    if any(axis < 0 or axis >= value_type.rank for axis in normalized_axes):
+        raise IRVerificationError(
+            f"Node {node.id!r} vectorization axes {axes} exceed rank {value_type.rank}.",
+            node_id=node.id,
+        )
+    if node.op in {"math.matmul", "math.packed_dense_matmul", "ntt.packed_matmul"}:
+        kind = "output_axis"
+        if any(axis != value_type.rank - 1 for axis in normalized_axes):
+            raise IRVerificationError(
+                f"Triton dense MatMul currently lowers only its output axis, got "
+                f"{normalized_axes} on {node.id!r}.",
+                node_id=node.id,
+            )
+    elif node.op in {
+            "nn.norm_apply",
+            "nn.rms_norm",
+            "ntt.gather_reduce_norm_apply",
+    }:
+        kind = "reduction_axis"
+        if any(axis != value_type.rank - 1 for axis in normalized_axes):
+            raise IRVerificationError(
+                f"Triton RMSNorm currently lowers only its last reduction axis, got "
+                f"{normalized_axes} on {node.id!r}.",
+                node_id=node.id,
+            )
+    else:
+        # Elementwise execution is layout-polymorphic. The physical schedule
+        # traverses the selected packed axes (including padding masks) instead
+        # of constraining the semantic rule to a last-axis shortcut.
+        kind = "axes"
+    return {
+        "kind": kind,
+        "axes": normalized_axes,
+        "lanes": lanes,
+        "lane_count": prod(lanes),
+        "source_candidate": str(candidate),
+    }
+
+
+def elementwise_work_size(tensor: TensorType, contract: Mapping[str, object]) -> int:
+    """Count the selected scalar traversal, including aligned outer tails."""
+    if any(not dim.is_fixed for dim in tensor.shape):
+        raise IRVerificationError('Elementwise task coverage requires statically bounded dimensions.')
+    shape = [dim.fixed_value for dim in tensor.shape]
+    if isinstance(tensor.dtype, VectorType):
+        return prod(shape) * tensor.dtype.lane_count
+    if contract.get('kind') == 'axes':
+        from triton.flagmega.ir.ops.tensors.pack import axis_lane_products
+        for axis, lanes in axis_lane_products(tuple(contract['lanes']), tuple(contract['axes'])).items():
+            shape[axis] = ((shape[axis] + lanes - 1) // lanes) * lanes
+    return prod(shape)
+
+
+def configured_vector_schedule(
+    contract: Mapping[str, object],
+    *,
+    lowering: str,
+    **physical: object,
+) -> dict[str, object]:
+    """Build the serializable proof that a target candidate consumes a layout."""
+
+    return {
+        "contract": dict(contract),
+        "lowering": str(lowering),
+        "physical": dict(physical),
+    }
+
+
+def consumed_vector_contracts(
+    module,
+    requirements: Mapping[str, tuple[str, str]],
+) -> dict[str, object] | None:
+    """Return contracts only when every fused semantic boundary is vector-legal.
+
+    ``requirements`` maps a fused role to ``(node_id, required_kind)``.  A
+    scalar agent choice therefore disables the fused implementation instead
+    of being silently ignored by it.
+    """
+
+    values: dict[str, object] = {}
+    for role, (node_id, required_kind) in requirements.items():
+        contract = vectorization_contract(module.node_map[node_id])
+        if contract["kind"] != required_kind:
+            return None
+        values[str(role)] = contract
+    return values
+
+
+def require_vector_schedule(parameters: Mapping[str, object], node_id: str) -> Mapping[str, object]:
+    """Reject the historical metadata-only vectorization failure mode."""
+
+    value = parameters.get("vector_schedule")
+    if not isinstance(value, Mapping):
+        raise CodegenError(f"Selected TIR node {node_id!r} has no executable vector_schedule; "
+                           "AutoVectorize decisions may not survive as metadata-only hints.")
+    contract = value.get("contract")
+    physical = value.get("physical")
+    if not isinstance(contract, Mapping) or not isinstance(physical, Mapping):
+        raise CodegenError(f"Selected TIR node {node_id!r} has a malformed vector_schedule.")
+    return value
+
+
+__all__ = [
+    "ELEMENTWISE_OP_NAMES",
+    "SCALAR_VECTORIZATION",
+    "configured_vector_schedule",
+    "elementwise_work_size",
+    "consumed_vector_contracts",
+    "require_vector_schedule",
+    "vectorization_contract",
+]
